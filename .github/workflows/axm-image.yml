@@ -139,7 +139,6 @@ jobs:
             fi
           done < <(env)
           docker run --rm --network host "${env_args[@]}" listmonk-axm:ci ./listmonk --install --idempotent --yes
-          trap 'docker logs axm-smoke; docker rm -f axm-smoke' EXIT
           docker run -d --name axm-smoke --network host "${env_args[@]}" listmonk-axm:ci
           curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9000/health
           python3 - <<'PY'
@@ -164,6 +163,20 @@ jobs:
           bundles = [get(path) for path in scripts]
           assert any('github.com/aegislab-dev/listmonk' in bundle and 'source-footer' in bundle for bundle in bundles)
           PY
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.22.2'
+
+      - name: Browser import tests
+        env:
+          CYPRESS_LISTMONK_ADMIN_USER: ci-admin
+          CYPRESS_LISTMONK_ADMIN_PASSWORD: ci-only-password
+        run: |
+          npm install --global yarn@1.22.22
+          cd frontend
+          yarn install --frozen-lockfile
+          npx cypress run --browser chrome --spec cypress/e2e/import-mapping.cy.js
 
       - name: Login to GHCR
         if: steps.version.outputs.publish == 'true'
@@ -192,3 +205,9 @@ jobs:
             echo "Digest: $image@$digest"
             echo "Source: https://github.com/aegislab-dev/listmonk/tree/$VERSION"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke container logs and cleanup
+        if: always()
+        run: |
+          docker logs axm-smoke || true
+          docker rm -f axm-smoke || true
