@@ -3,3 +3,5 @@ Allow: /subscription/form
 Disallow: /subscription/
 Disallow: /campaign/
 Disallow: /link/
+Disallow: /archive
+Disallow: /archive.xml

@@ -593,7 +593,26 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 		lo.Println("running in passive mode. won't process campaigns.")
 	}
 
+	footerHTML, footerText := manager.BuildBusinessFooter(models.BusinessFooter{
+		Enabled:        ko.Bool("axm.business_footer.enabled"),
+		CompanyName:    ko.String("axm.business_footer.company_name"),
+		Representative: ko.String("axm.business_footer.representative"),
+		RegistrationNo: ko.String("axm.business_footer.registration_no"),
+		Address:        ko.String("axm.business_footer.address"),
+		Phone:          ko.String("axm.business_footer.phone"),
+		Email:          ko.String("axm.business_footer.email"),
+		Extra:          ko.String("axm.business_footer.extra"),
+	}, manager.BusinessFooterLabels{
+		Representative: i.T("email.businessFooter.representative"),
+		RegistrationNo: i.T("email.businessFooter.registrationNo"),
+		Phone:          i.T("email.businessFooter.phone"),
+		Email:          i.T("email.businessFooter.email"),
+	})
+
 	mgr := manager.New(manager.Config{
+		BusinessFooterHTML:    footerHTML,
+		BusinessFooterText:    footerText,
+		BusinessFooterMarker:  ko.String("axm.business_footer.registration_no"),
 		BatchSize:             ko.Int("app.batch_size"),
 		Concurrency:           ko.Int("app.concurrency"),
 		MessageRate:           ko.Int("app.message_rate"),

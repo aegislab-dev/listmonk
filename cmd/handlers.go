@@ -7,6 +7,7 @@ import (
 	"path"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/labstack/echo/v4"
@@ -230,6 +231,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 	{
 		// Public unauthenticated endpoints.
 		g := e.Group("")
+		content := g.Group("", blockCrawlers(a.log))
 
 		if a.cfg.BounceWebhooksEnabled {
 			// Public bounce endpoints for webservices like SES.
@@ -237,7 +239,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		}
 
 		// Landing page.
-		g.GET("/", func(c echo.Context) error {
+		content.GET("/", func(c echo.Context) error {
 			return c.Render(http.StatusOK, "home", publicTpl{Title: "listmonk"})
 		})
 
@@ -261,13 +263,13 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/api/public/subscription", a.PublicSubscription)
 		g.GET("/api/public/captcha/altcha", a.AltchaChallenge)
 		if a.cfg.EnablePublicArchive {
-			g.GET("/api/public/archive", a.GetCampaignArchives)
+			content.GET("/api/public/archive", noIndex(a.GetCampaignArchives))
 		}
 
 		// /public/static/* file server is registered in initHTTPServer().
 		// Public subscriber facing views.
-		g.GET("/subscription/form", a.SubscriptionFormPage)
-		g.POST("/subscription/form", a.SubscriptionForm)
+		content.GET("/subscription/form", a.SubscriptionFormPage)
+		content.POST("/subscription/form", a.SubscriptionForm)
 		g.GET("/subscription/:campUUID/:subUUID", noIndex(a.hasUUID(a.hasSub(a.SubscriptionPage), "campUUID", "subUUID")))
 		g.POST("/subscription/:campUUID/:subUUID", a.hasUUID(a.hasSub(a.SubscriptionPrefs), "campUUID", "subUUID"))
 		g.GET("/subscription/optin/:subUUID", noIndex(a.hasUUID(a.hasSub(a.OptinPage), "subUUID")))
@@ -275,14 +277,14 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/subscription/export/:subUUID", a.hasUUID(a.hasSub(a.SelfExportSubscriberData), "subUUID"))
 		g.POST("/subscription/wipe/:subUUID", a.hasUUID(a.hasSub(a.WipeSubscriberData), "subUUID"))
 		g.GET("/link/:linkUUID/:campUUID/:subUUID", noIndex(a.hasUUID(a.LinkRedirect, "linkUUID", "campUUID", "subUUID")))
-		g.GET("/campaign/:campUUID/:subUUID", noIndex(a.hasUUID(a.ViewCampaignMessage, "campUUID", "subUUID")))
+		content.GET("/campaign/:campUUID/:subUUID", noIndex(a.hasUUID(a.ViewCampaignMessage, "campUUID", "subUUID")))
 		g.GET("/campaign/:campUUID/:subUUID/px.png", noIndex(a.hasUUID(a.RegisterCampaignView, "campUUID", "subUUID")))
 
 		if a.cfg.EnablePublicArchive {
-			g.GET("/archive", a.CampaignArchivesPage)
-			g.GET("/archive.xml", a.GetCampaignArchivesFeed)
-			g.GET("/archive/:id", a.CampaignArchivePage)
-			g.GET("/archive/latest", a.CampaignArchivePageLatest)
+			content.GET("/archive", noIndex(a.CampaignArchivesPage))
+			content.GET("/archive.xml", noIndex(a.GetCampaignArchivesFeed))
+			content.GET("/archive/:id", noIndex(a.CampaignArchivePage))
+			content.GET("/archive/latest", noIndex(a.CampaignArchivePageLatest))
 		}
 
 		g.GET("/public/custom.css", serveCustomAppearance("public.custom_css"))
@@ -329,7 +331,15 @@ func (a *App) RobotsTxt(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "robots.txt not found")
 	}
-	return c.Blob(http.StatusOK, "text/plain; charset=utf-8", b)
+	// Keep the HTTP blocklist and robots directives in sync without two lists.
+	var out strings.Builder
+	out.Write(b)
+	out.WriteString("\n# AI crawler policy and sources: cmd/crawlers.go (LST-6, 2026-11-10).\n")
+	for _, agent := range strings.Fields(crawlerUserAgents) {
+		out.WriteString("User-agent: " + agent + "\n")
+	}
+	out.WriteString("Disallow: /\n")
+	return c.String(http.StatusOK, out.String())
 }
 
 // serveCustomAppearance serves the given custom CSS/JS appearance blob
