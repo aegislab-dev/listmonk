@@ -147,6 +147,7 @@ type Config struct {
 	ViewTrackURL          string
 	ArchiveURL            string
 	RootURL               string
+	SenderPolicyEnabled   bool
 	UnsubHeader           bool
 
 	// Pre-rendered business footer. Empty bodies disable insertion.
@@ -544,7 +545,7 @@ func (m *Manager) worker() {
 				}
 			}
 
-			if msg.Campaign.ReplyTo != "" && (msg.Campaign.Messenger == "email" || strings.HasPrefix(msg.Campaign.Messenger, "email-")) {
+			if m.cfg.SenderPolicyEnabled && msg.Campaign.ReplyTo != "" && (msg.Campaign.Messenger == "email" || strings.HasPrefix(msg.Campaign.Messenger, "email-")) {
 				h.Set("Reply-To", msg.Campaign.ReplyTo)
 			}
 			// Set the headers.

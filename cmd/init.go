@@ -616,6 +616,7 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 	})
 
 	mgr := manager.New(manager.Config{
+		SenderPolicyEnabled:   len(ko.Strings("axm.sender_domains")) > 0,
 		BusinessFooterHTML:    footerHTML,
 		BusinessFooterText:    footerText,
 		BusinessFooterMarker:  ko.String("axm.business_footer.registration_no"),
