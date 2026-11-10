@@ -16,13 +16,13 @@ test('references distinguish fixed fields, identifiers and literal keys', () => 
   for (const key of ['company_name', '회사명', '_x']) {
     assert.equal(buildToken(attr(key)), `{{ .Subscriber.Attribs.${key} }}`);
   }
-  for (const key of ['회사 이름', 'a.b', 'a-b', '1st', '😀', 'a"}']) {
+  for (const key of ['회사 이름', 'a.b', 'a-b', '1st', 'a½', '😀', 'a"}']) {
     assert.equal(buildToken(attr(key)), `{{ index .Subscriber.Attribs ${goString(key)} }}`);
   }
 });
 
 test('recognized tokens retain raw bytes and decode keys/fallbacks', () => {
-  for (const item of [...BASE_ITEMS, ...['한글', '공백 키', 'a.b', 'a-b', '1st', '"}😀'].map(attr)]) {
+  for (const item of [...BASE_ITEMS, ...['한글', '공백 키', 'a.b', 'a-b', '1st', 'a½', '"}😀'].map(attr)]) {
     for (const fallback of ['', '고객', '"\\&<>{}\n😀']) {
       const raw = buildToken(item, fallback);
       const parts = parseTokens(`앞\n${raw}뒤`);

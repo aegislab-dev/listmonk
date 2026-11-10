@@ -39,7 +39,7 @@ export default function HeadingSidebarPanel({ data, setData }: HeadingSidebarPan
           onChange={(text) => {
             updateData({ ...data, props: { ...data.props, text } });
           }}
-      />
+        />
       ) : (
         <TextInput
           label="Content"
@@ -48,7 +48,7 @@ export default function HeadingSidebarPanel({ data, setData }: HeadingSidebarPan
           onChange={(text) => {
             updateData({ ...data, props: { ...data.props, text } });
           }}
-      />
+        />
       )}
       <RadioGroupInput
         label="Level"

@@ -3,7 +3,8 @@ export const BASE_ITEMS = [
   { id: 'name', expression: '.Subscriber.Name' },
   { id: 'email', expression: '.Subscriber.Email' },
 ];
-const identifier = /^[\p{L}_][\p{L}\p{N}_]*$/u;
+// Go identifiers accept decimal digits, not every Unicode number (for example ½).
+const identifier = /^[\p{L}_][\p{L}\p{Nd}_]*$/u;
 
 // Punctuation must survive both Markdown and HTML rendering, including }}.
 export function goString(value) {
@@ -43,7 +44,7 @@ function readString(value) {
 // Deliberately recognize only our references and optional default pipeline.
 // Everything else (TrackLink, if, custom functions) stays byte-for-byte text.
 const quoted = '"(?:[^"\\\\\\r\\n]|\\\\u[\\da-fA-F]{4}|\\\\U[\\da-fA-F]{8})*"';
-const reference = '(?:\\.Subscriber\\.(Name|Email)|\\.Subscriber\\.Attribs\\.([\\p{L}_][\\p{L}\\p{N}_]*)';
+const reference = '(?:\\.Subscriber\\.(Name|Email)|\\.Subscriber\\.Attribs\\.([\\p{L}_][\\p{L}\\p{Nd}_]*)';
 const tokenPattern = new RegExp(`^\\{\\{\\s*${reference}|index\\s+\\.Subscriber\\.Attribs\\s+(${quoted}))`
   + `\\s*(?:\\|\\s*default\\s+(${quoted})\\s*)?\\}\\}$`, 'u');
 

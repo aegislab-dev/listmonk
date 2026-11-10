@@ -21,7 +21,17 @@ function serialize(node: Node): string {
     if (node.dataset.token !== undefined) return node.dataset.token;
     if (node.tagName === 'BR') return '\n';
   }
-  return Array.from(node.childNodes).map(serialize).join('');
+  // Chromium also creates block wrappers when insertText contains a newline.
+  // A lone <br> is an empty-line caret placeholder, not an extra stored newline.
+  if (node instanceof HTMLElement && node.childNodes.length === 1 && node.firstChild?.nodeName === 'BR') return '';
+  let text = '';
+  Array.from(node.childNodes).forEach((child, index, children) => {
+    const isBlock = (n: Node) => n instanceof HTMLElement && /^(DIV|P)$/.test(n.tagName);
+    if (isBlock(child) && index > 0) text += '\n';
+    text += serialize(child);
+    if (isBlock(child) && children[index + 1] && !isBlock(children[index + 1])) text += '\n';
+  });
+  return text;
 }
 
 function makeChip(config: Personalization, item: PersonalizationItem, fallback: string, raw: string) {
@@ -145,6 +155,14 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
     emit();
     close();
   };
+  const copy = (ev: React.ClipboardEvent, cut = false) => {
+    const selection = window.getSelection();
+    if (selection?.rangeCount && !selection.isCollapsed) {
+      ev.preventDefault();
+      ev.clipboardData.setData('text/plain', serialize(selection.getRangeAt(0).cloneContents()));
+      if (cut) { document.execCommand('delete'); emit(); }
+    }
+  };
   const chipFrom = (target: EventTarget) => (target instanceof Element ? target.closest<HTMLElement>('[data-token]') : null);
   const query = search.trim().toLocaleLowerCase();
   const filtered = items.items.filter((item) => `${config.getLabel(item)} ${item.key || ''}`.toLocaleLowerCase().includes(query));
@@ -192,13 +210,8 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
         document.execCommand('insertText', false, ev.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n'));
       }}
       onDrop={(ev) => ev.preventDefault()}
-      onCopy={(ev) => {
-        const selection = window.getSelection();
-        if (selection?.rangeCount) {
-          ev.preventDefault();
-          ev.clipboardData.setData('text/plain', serialize(selection.getRangeAt(0).cloneContents()));
-        }
-      }}
+      onCopy={(ev) => copy(ev)}
+      onCut={(ev) => copy(ev, true)}
     />
     <Popover open={Boolean(anchor)} anchorEl={anchor} onClose={cancel} disableRestoreFocus
       anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }} transformOrigin={{ vertical: 'top', horizontal: 'right' }}

@@ -36,14 +36,14 @@ export default function TextSidebarPanel({ data, setData }: TextSidebarPanelProp
           rows={5}
           defaultValue={data.props?.text ?? ''}
           onChange={(text) => updateData({ ...data, props: { ...data.props, text } })}
-      />
+        />
       ) : (
         <TextInput
           label="Content"
           rows={5}
           defaultValue={data.props?.text ?? ''}
           onChange={(text) => updateData({ ...data, props: { ...data.props, text } })}
-      />
+        />
       )}
       <BooleanInput
         label="Markdown"
