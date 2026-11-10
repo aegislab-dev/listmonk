@@ -220,6 +220,19 @@ section {
     flex-grow: 1;
     position: relative;
   }
+
+  .source-footer {
+    margin-top: 30px;
+    padding-bottom: 10px;
+    color: $grey;
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+
+    a {
+      color: inherit;
+      text-decoration: underline;
+    }
+  }
 }
 
 .navbar {
