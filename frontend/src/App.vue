@@ -102,6 +102,11 @@
         </div>
 
         <router-view :key="$route.fullPath" />
+        <footer class="source-footer">
+          listmonk {{ version }} &middot;
+          <a :href="sourceURL" target="_blank" rel="noopener noreferrer">{{ $t('public.sourceCode') }}</a>
+          &middot; AGPL-3.0
+        </footer>
       </div>
     </div>
 
@@ -207,7 +212,13 @@ export default Vue.extend({
     },
 
     version() {
-      return import.meta.env.VUE_APP_VERSION;
+      return this.serverConfig.version;
+    },
+
+    sourceURL() {
+      const repo = 'https://github.com/aegislab-dev/listmonk';
+      return this.version && this.version.includes('-axm.')
+        ? `${repo}/tree/${this.version}` : repo;
     },
 
     isMobile() {

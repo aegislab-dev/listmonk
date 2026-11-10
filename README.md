@@ -1,3 +1,14 @@
+# AXM listmonk fork
+
+이 저장소는 [knadh/listmonk](https://github.com/knadh/listmonk)의 공개 수정판(AGPL-3.0)입니다.
+2026-11-10: 프론트 포함 이미지 빌드와 화면 하단 소스 링크를 추가했습니다. CSV 열 맞춤·에디터 개인화·동적 리스트는 후속 구현 범위입니다.
+기본 브랜치는 **`axm/v6.2`**, 배포 버전별 소스는 **`v6.2.0-axm.N` 태그**, 이미지는 **`ghcr.io/aegislab-dev/listmonk`**에서 제공합니다(첫 게시 전).
+빌드·릴리스·upstream 추종·Go/DB 변경 규칙은 [FORK.md](FORK.md)를 참고하세요.
+
+Public AGPL-3.0 fork of knadh/listmonk; see [FORK.md](FORK.md) for modifications, versioned source and build/release rules.
+
+---
+
 <a href="https://zerodha.tech"><img src="https://zerodha.tech/static/images/github-badge.svg" align="right" /></a>
 
 [![listmonk-logo](https://user-images.githubusercontent.com/547147/231084896-835dba66-2dfe-497c-ba0f-787564c0819e.png)](https://listmonk.app)
