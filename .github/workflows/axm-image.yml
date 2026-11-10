@@ -139,8 +139,10 @@ jobs:
             fi
           done < <(env)
           docker run --rm --network host "${env_args[@]}" listmonk-axm:ci ./listmonk --install --idempotent --yes
+          count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
+          test "$count" = 1
           docker run -d --name axm-smoke --network host "${env_args[@]}" listmonk-axm:ci
-          curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9000/health
+          curl --fail --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 http://127.0.0.1:9000/health
           python3 - <<'PY'
           import html, http.cookiejar, json, os, re, urllib.parse, urllib.request
           root = 'http://127.0.0.1:9000'
@@ -156,6 +158,8 @@ jobs:
           with client.open(root + '/admin/login', data=data) as response:
               assert response.status == 200
           assert json.loads(get('/api/config'))['data']['version'] == os.environ['VERSION']
+          footer = json.loads(get('/api/settings'))['data']['axm.business_footer']
+          assert footer['enabled'] is False and footer['company_name'] == ''
           # Fetch the actual embedded Vue entry bundle, not a source file.
           admin = get('/admin/')
           scripts = re.findall(r'<script[^>]+src="([^"]+\.js)"', admin)
@@ -177,6 +181,37 @@ jobs:
           cd frontend
           yarn install --frozen-lockfile
           npx cypress run --browser chrome --spec cypress/e2e/import-mapping.cy.js
+
+      - name: Upgrade official v6.2.0 database and smoke test
+        env:
+          LISTMONK_db__host: 127.0.0.1
+          LISTMONK_db__port: '5432'
+          LISTMONK_db__user: listmonk
+          LISTMONK_db__password: listmonk-ci
+          LISTMONK_db__database: listmonk_upgrade
+          LISTMONK_db__ssl_mode: disable
+          LISTMONK_app__address: 0.0.0.0:9001
+          LISTMONK_ADMIN_USER: ci-admin
+          LISTMONK_ADMIN_PASSWORD: ci-only-password
+        run: |
+          set -euo pipefail
+          docker exec ${{ job.services.postgres.id }} createdb -U listmonk listmonk_upgrade
+          env_args=()
+          while IFS='=' read -r key _; do
+            if [[ "$key" == LISTMONK_* ]]; then
+              env_args+=(-e "$key")
+            fi
+          done < <(env)
+          docker run --rm --network host "${env_args[@]}" listmonk/listmonk:v6.2.0 ./listmonk --install --idempotent --yes
+          docker run --rm --network host "${env_args[@]}" listmonk-axm:ci ./listmonk --upgrade --yes
+          docker run --rm --network host "${env_args[@]}" listmonk-axm:ci ./listmonk --upgrade --yes
+          count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
+          test "$count" = 1
+          migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
+          test "$migration" = v6.2.1-axm.1
+          trap 'docker logs axm-upgrade-smoke; docker rm -f axm-upgrade-smoke' EXIT
+          docker run -d --name axm-upgrade-smoke --network host "${env_args[@]}" listmonk-axm:ci
+          curl --fail --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 http://127.0.0.1:9001/health
 
       - name: Login to GHCR
         if: steps.version.outputs.publish == 'true'

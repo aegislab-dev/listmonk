@@ -416,7 +416,9 @@ export default Vue.extend({
       const request = this.keyRequest;
       const keys = new Set(this.memory().keys);
       this.existingKeys = [...keys];
-      const results = await Promise.all(this.form.lists.slice(0, 5).map((list) => this.$api.getSubscriberAttribSample(list.id).catch(() => null)));
+      const results = await Promise.all(this.form.lists.slice(0, 5).map((list) => this.$api.getSubscriberAttribSample({
+        list_id: list.id, page: 1, per_page: 50, order_by: 'id', order: 'desc',
+      }).catch(() => null)));
       if (request !== this.keyRequest || !this.isCSV) return;
       results.forEach((result) => (result?.results || []).forEach((subscriber) => {
         Object.keys(subscriber.attribs || {}).forEach((key) => keys.add(key));

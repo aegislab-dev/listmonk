@@ -169,15 +169,15 @@ export const getSubscribers = async (params) => http.get(
   },
 );
 
-// Sample attribute names without mutating the subscriber list store or showing
-// permission errors to users who can import but cannot read subscribers.
-export const getSubscriberAttribSample = (listId) => http.get('/api/subscribers', {
-  params: {
-    list_id: listId, page: 1, per_page: 50, order_by: 'id', order: 'desc',
+// Bounded key discovery must not overwrite the subscriber list or show error toasts.
+export const getSubscriberAttribSample = (params) => http.get(
+  '/api/subscribers',
+  {
+    params,
+    disableToast: true,
+    camelCase: (keyPath) => !keyPath.startsWith('.results.*.attribs'),
   },
-  disableToast: true,
-  camelCase: false,
-});
+);
 
 export const getSubscriber = async (id) => http.get(
   `/api/subscribers/${id}`,

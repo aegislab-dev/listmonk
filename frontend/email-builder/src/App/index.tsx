@@ -1,11 +1,12 @@
 import { Stack, useTheme } from '@mui/material';
-import React from 'react';
+import React, { useEffect } from 'react';
 
 import { TEditorConfiguration } from '../documents/editor/core';
 import { setDocument, subscribeDocument, useInspectorDrawerOpen, useSamplesDrawerOpen } from '../documents/editor/EditorContext';
 import { renderHtmlWithMeta } from '../utils';
 import InspectorDrawer, { INSPECTOR_DRAWER_WIDTH } from './InspectorDrawer';
 import TemplatePanel from './TemplatePanel';
+import { Personalization, setPersonalization } from './personalization';
 
 export const DEFAULT_SOURCE: TEditorConfiguration = {
   "root": {
@@ -23,6 +24,7 @@ function useDrawerTransition(cssProperty: 'margin-left' | 'margin-right', open: 
 }
 
 export interface AppProps {
+  personalization?: Personalization,
   // Initial configuration to load. Optional.
   data?: TEditorConfiguration,
   // Callback for any change in document. Optional.
@@ -32,6 +34,10 @@ export interface AppProps {
 }
 
 export default function App(props: AppProps) {
+  useEffect(() => {
+    setPersonalization(props.personalization);
+    return () => setPersonalization(undefined);
+  }, [props.personalization]);
   const inspectorDrawerOpen = useInspectorDrawerOpen();
   const samplesDrawerOpen = useSamplesDrawerOpen();
 

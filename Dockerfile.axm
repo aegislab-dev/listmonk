@@ -18,6 +18,7 @@ RUN cd frontend && yarn test:unit
 ARG VERSION
 ARG COMMIT
 RUN test -n "$VERSION" && test -n "$COMMIT" \
+    && go test ./... \
     && make dist VERSION="$VERSION" LAST_COMMIT="$COMMIT" \
     && ./listmonk --version
 
