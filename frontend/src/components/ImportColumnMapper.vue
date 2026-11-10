@@ -24,9 +24,10 @@
           <option value="cp949">CP949</option>
         </b-select>
       </b-field>
-      <p>{{ $t('import.mapDetected', { encoding: encoding === 'cp949' ? 'CP949' : 'UTF-8', count: total }) }}</p>
+      <p>{{ $t('import.mapDetected', { encoding: encoding === 'cp949' ? 'CP949' : (encoding === 'utf-8' ? 'UTF-8' : '—'), count: total }) }}</p>
       <b-checkbox :value="header" @input="$emit('header', $event)" data-cy="map-header">{{ $t('import.mapHeader') }}</b-checkbox>
     </div>
+    <p v-if="busy" class="help" role="status" data-cy="map-busy">{{ $t('import.mapBusy') }}</p>
     <b-message v-if="headerHint" type="is-warning" :closable="false">{{ $t('import.mapHeaderHint') }}</b-message>
     <b-message v-if="error" type="is-danger" :closable="false" data-cy="map-error">{{ error }}</b-message>
     <b-message v-if="mode === 'raw'" type="is-info" :closable="false" data-cy="map-raw-info">{{ $t('import.mapRawHelp') }}</b-message>
@@ -123,9 +124,10 @@
 </template>
 
 <script>
-// Presentation shell for UI approval. Worker and upload wiring follow approval.
+// Spreadsheet presentation; parsing and conversion run in the parent’s Worker.
 export default {
   props: {
+    busy: { type: Boolean, default: false },
     mode: { type: String, default: 'mapping' },
     encoding: { type: String, default: 'utf-8' },
     encodingChoice: { type: String, default: 'auto' },
