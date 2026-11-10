@@ -11,8 +11,16 @@ import (
 
 // Queries contains all prepared SQL queries.
 type Queries struct {
-	GetDashboardCharts *sqlx.Stmt `query:"get-dashboard-charts"`
-	GetDashboardCounts *sqlx.Stmt `query:"get-dashboard-counts"`
+	ListSenderAddresses *sqlx.Stmt `query:"list-sender-addresses"`
+	GetSenderAddress    *sqlx.Stmt `query:"get-sender-address"`
+	UpsertSenderAddress *sqlx.Stmt `query:"upsert-sender-address"`
+	GetSenderToken      *sqlx.Stmt `query:"get-sender-token"`
+	VerifySenderToken   *sqlx.Stmt `query:"verify-sender-token"`
+	DeleteSenderAddress *sqlx.Stmt `query:"delete-sender-address"`
+	SenderAddressInUse  *sqlx.Stmt `query:"sender-address-in-use"`
+	UpdateCampaignFrom  *sqlx.Stmt `query:"update-campaign-from"`
+	GetDashboardCharts  *sqlx.Stmt `query:"get-dashboard-charts"`
+	GetDashboardCounts  *sqlx.Stmt `query:"get-dashboard-counts"`
 
 	InsertSubscriber                *sqlx.Stmt `query:"insert-subscriber"`
 	UpsertSubscriber                *sqlx.Stmt `query:"upsert-subscriber"`

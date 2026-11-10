@@ -22,6 +22,7 @@ const (
 	TplSubscriberOptin = "subscriber-optin"
 	TplSubscriberData  = "subscriber-data"
 	TplForgotPassword  = "forgot-password"
+	TplSenderVerify    = "sender-verify"
 )
 
 type FuncPush func(msg models.Message) error

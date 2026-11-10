@@ -16,7 +16,10 @@ type BusinessFooter struct {
 
 // Settings represents the app settings stored in the DB.
 type Settings struct {
-	BusinessFooter BusinessFooter `json:"axm.business_footer"`
+	AxmSenderDomains  []string       `json:"axm.sender_domains"`
+	AxmDefaultFrom    string         `json:"axm.default_from"`
+	AxmDefaultReplyTo string         `json:"axm.default_reply_to"`
+	BusinessFooter    BusinessFooter `json:"axm.business_footer"`
 
 	AppSiteName                   string   `json:"app.site_name"`
 	AppRootURL                    string   `json:"app.root_url"`

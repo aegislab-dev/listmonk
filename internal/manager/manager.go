@@ -544,6 +544,9 @@ func (m *Manager) worker() {
 				}
 			}
 
+			if msg.Campaign.ReplyTo != "" && (msg.Campaign.Messenger == "email" || strings.HasPrefix(msg.Campaign.Messenger, "email-")) {
+				h.Set("Reply-To", msg.Campaign.ReplyTo)
+			}
 			// Set the headers.
 			out.Headers = h
 

@@ -1,0 +1,9 @@
+{{ define "sender-verify" }}
+{{ template "header" . }}
+<h2>{{ L.T "email.senderVerify.subject" }}</h2>
+<p>{{ L.Ts "email.senderVerify.request" "name" .RequesterName "email" .RequesterEmail }}</p>
+<p><strong>{{ .Email }}</strong></p>
+<p><a href="{{ .VerifyURL }}" class="button">{{ L.T "email.senderVerify.button" }}</a></p>
+<p>{{ L.T "email.senderVerify.info" }}</p>
+{{ template "footer" }}
+{{ end }}
