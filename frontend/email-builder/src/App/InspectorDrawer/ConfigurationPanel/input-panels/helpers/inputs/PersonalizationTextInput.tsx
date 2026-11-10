@@ -209,20 +209,19 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
         if (chip && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); open(chip, chip); }
         else if (chip && (ev.key === 'Backspace' || ev.key === 'Delete')) {
           ev.preventDefault(); restore(chip); document.execCommand('delete'); emit();
-        } else if (ev.key === 'Enter') { ev.preventDefault(); document.execCommand('insertText', false, '\n'); }
+        } else if (ev.key === 'Enter') { ev.preventDefault(); document.execCommand('insertLineBreak'); }
       }}
       onPaste={(ev) => {
         ev.preventDefault();
         const text = ev.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n');
         const parts = config.parseTokens(text);
-        if (parts.some((part) => part.type === 'token')) {
-          const content = document.createElement('div');
-          parts.forEach((part) => content.append(part.type === 'text' ? document.createTextNode(part.value)
-            : makeChip(config, part.item, part.fallback, part.raw)));
-          insertMarkup(content.innerHTML);
-        } else {
-          document.execCommand('insertText', false, text);
-        }
+        // Insert escaped text as HTML so line breaks stay text nodes. Native
+        // insertText creates DIVs, and Chromium moves a trailing noneditable
+        // chip out of such a DIV, adding an unintended line break.
+        const content = document.createElement('div');
+        parts.forEach((part) => content.append(part.type === 'text' ? document.createTextNode(part.value)
+          : makeChip(config, part.item, part.fallback, part.raw)));
+        insertMarkup(content.innerHTML);
         emit();
       }}
       onDrop={(ev) => ev.preventDefault()}
