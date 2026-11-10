@@ -888,8 +888,8 @@ section.lists {
 
 /* Import page */
 section.import {
+  contain: inline-size;
   @media screen and (max-width: 768px) {
-    width: calc(100vw - 45px);
     .status { padding: 24px 16px !important; }
   }
   .column-mapper {
@@ -906,16 +906,30 @@ section.import {
     .map-controls .field { margin-bottom: 0; }
     .map-controls > p { font-size: .85rem; color: $grey; }
     .map-key-help { margin: 18px 0 12px; }
-    .map-columns { table-layout: fixed; }
-    .map-columns th:first-child { width: 19%; }
-    .map-columns th:nth-child(2) { width: 25%; }
-    .map-columns th:nth-child(3) { width: 27%; }
-    .map-columns td, .map-columns th { padding: 14px 10px; vertical-align: middle; }
-    .map-columns thead { background: $white-bis; font-size: .85rem; }
-    .map-column-number { color: $grey; font-size: .75rem; font-weight: normal; margin-right: 10px; }
-    .map-samples span { display: block; font-size: .85rem; color: $grey; }
-    .map-field-target { color: $grey; font-size: .85rem; }
-    .map-discard { background: $white-bis; }
+    .map-sheet-caption { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 20px; }
+    .map-sheet-navigation { display: flex; gap: 6px; }
+    .map-scroll-help { margin: 8px 0 12px; }
+    .map-sheet-scroll { contain: inline-size; overflow: auto; max-width: 100%; border: 1px solid $grey-lighter; border-radius: 4px; }
+    .map-sheet-scroll:focus-visible { outline: 2px solid $primary; outline-offset: 3px; }
+    .map-sheet { table-layout: fixed; width: max-content; margin: 0; font-size: .85rem; }
+    .map-sheet col { width: 220px; }
+    .map-sheet col.map-row-number { width: 44px; }
+    .map-sheet th, .map-sheet td { border: 1px solid $grey-lighter; padding: 12px; vertical-align: top; }
+    .map-sheet thead th { font-weight: normal; }
+    .map-sheet .map-sheet-letters th { background: #edf1f4; text-align: center; padding: 6px; font-weight: 600; color: #526174; }
+    .map-sheet .map-row-label, .map-sheet .map-sheet-corner { position: sticky; left: 0; z-index: 10; text-align: center; background: #edf1f4; color: #526174; padding: 12px 6px; font-weight: normal; }
+    .map-sheet .map-row-label { font-variant-numeric: tabular-nums; }
+    .map-sheet .map-source-header { font-weight: 600; font-size: .95rem; min-height: 26px; margin-bottom: 14px; }
+    .map-cell-label { display: block; color: $grey; font-size: .75rem; margin: 8px 0 4px; }
+    .map-key-cell { min-height: 84px; }
+    .map-field-target { display: block; color: $grey; font-size: .8rem; padding-top: 28px; }
+    .map-sheet .map-column-muted { background: #f6f7f8; }
+    .map-sheet td.map-column-muted, .map-sheet .map-column-muted .map-source-header { color: #7d8794; }
+    .map-sheet .map-column-has-error { background: #fff5f2; border-left-color: #dc623c; border-right-color: #dc623c; }
+    .map-sheet .map-sheet-letters .map-column-has-error { background: #ffe3d9; color: #b03919; }
+    .map-column-error { color: #b03919; font-weight: 500; font-size: .75rem; margin-top: 6px; }
+    .map-sheet .dropdown-content { max-height: 130px; }
+    .map-sheet td { height: 44px; }
     .map-review { border: 1px solid $grey-lighter; border-radius: 4px; padding: 20px; margin: 24px 0; }
     .map-review .title { margin-bottom: 20px; }
     .map-counts { display: flex; gap: 40px; margin-bottom: 18px; }
@@ -940,11 +954,6 @@ section.import {
       .map-mode { gap: 16px; }
       .map-controls { display: block; }
       .map-controls > * { margin-bottom: 14px !important; }
-      .map-columns, .map-columns tbody, .map-columns tr, .map-columns td, .map-columns th { display: block; width: auto !important; }
-      .map-columns thead { display: none; }
-      .map-columns tr { border: 1px solid $grey-lighter; border-radius: 4px; margin-bottom: 12px; padding: 12px; }
-      .map-columns td, .map-columns th { border: 0; padding: 6px 0; }
-      .map-columns td::before { content: attr(data-label); display: block; font-size: .75rem; color: $grey; margin-bottom: 6px; }
       .map-counts { gap: 22px; }
       .map-counts strong { font-size: 1.4rem; }
       .map-review { padding: 16px; }

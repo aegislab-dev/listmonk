@@ -714,7 +714,7 @@
     "users.username": "사용자명",
     "users.usernameHelp": "비밀번호 로그인에 사용됩니다.",
     "import.mapTitle": "열 맞춤",
-    "import.mapIntro": "각 열을 어디에 저장할지 확인하세요. 파일을 올리기 전에 내용을 검사합니다.",
+    "import.mapIntro": "엑셀 시트처럼 원본 열을 확인하고, 각 열 머리글에서 저장 위치를 지정하세요.",
     "import.mapLocal": "브라우저에서만 검사 중",
     "import.mapMode": "열 맞춤",
     "import.mapRaw": "원본 그대로 올리기",
@@ -736,8 +736,8 @@
     "import.mapEmail": "이메일",
     "import.mapName": "이름",
     "import.mapAttribute": "속성 · 글자",
-    "import.mapTags": "속성 · 쉼표 목록",
-    "import.mapDiscard": "버리기",
+    "import.mapTags": "태그 · 쉼표 목록",
+    "import.mapDiscard": "건너뛰기",
     "import.mapTagsHelp": "쉼표로 나누어 배열로 저장",
     "import.mapNotSaved": "저장하지 않음",
     "import.mapOverwrite": "사용자 정보 덮어쓰기가 켜져 있습니다. 맞춘 열에 없는 기존 속성은 사라집니다. 기존 속성과 합쳐지지 않습니다.",
@@ -756,5 +756,11 @@
     "import.mapRemember": "가져오기를 시작하면 이 브라우저에 열 맞춤을 기억합니다. 열 이름·지정·속성 키만 저장하며 구독자 값은 저장하지 않습니다.",
     "import.mapMismatch": "보낸 {sent}행 중 서버 반영은 {imported}행입니다. 완료 상태여도 일부가 반영되지 않았을 수 있습니다. 아래 로그를 확인하고 결과를 대조하세요.",
     "import.mapMismatchTitle": "가져온 건수 확인 필요",
-    "import.mapKeyPlaceholder": "기존 키 선택 / 새 키 입력"
+    "import.mapKeyPlaceholder": "기존 키 선택 / 새 키 입력",
+    "import.mapSheetTitle": "원본 시트 · {columns}열 · 앞 {rows}행",
+    "import.mapSheetHelp": "← 표를 가로로 스크롤해 각 열 머리글에서 저장 위치를 지정하세요. 옅은 열은 저장하지 않거나 지정이 필요하고, 오류가 있는 열에는 ! 표시가 붙습니다.",
+    "import.mapSheetLabel": "CSV 원본 시트와 열별 저장 위치 지정",
+    "import.mapPreviousColumn": "이전 열로 이동",
+    "import.mapNextColumn": "다음 열로 이동",
+    "import.mapUnassigned": "지정 안 함"
 }

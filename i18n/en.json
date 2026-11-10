@@ -714,7 +714,7 @@
     "maintenance.database.title": "Database",
     "maintenance.database.vacuumHelp": "PostgreSQL VACUUM ANALYZE reclaims storage used by deleted rows and significantly speeds up database performance on large databases. IMPORTANT: For large databases, this is a slow, blocking operation. Schedule to run this during off-peak hours.",
     "import.mapTitle": "Match columns",
-    "import.mapIntro": "Choose where to save each column. Review the file before uploading.",
+    "import.mapIntro": "Review the original sheet and choose where to save each column directly in its header.",
     "import.mapLocal": "Checking in your browser",
     "import.mapMode": "Match columns",
     "import.mapRaw": "Upload original",
@@ -736,8 +736,8 @@
     "import.mapEmail": "Email",
     "import.mapName": "Name",
     "import.mapAttribute": "Attribute · text",
-    "import.mapTags": "Attribute · comma list",
-    "import.mapDiscard": "Discard",
+    "import.mapTags": "Tags · comma list",
+    "import.mapDiscard": "Skip",
     "import.mapTagsHelp": "Split on commas and save as an array",
     "import.mapNotSaved": "Not saved",
     "import.mapOverwrite": "Overwrite user information is on. Existing attributes absent from the mapped columns will be removed. Attributes are replaced, not merged.",
@@ -756,5 +756,11 @@
     "import.mapRemember": "When you start importing, this browser remembers column names, assignments and attribute keys only. Subscriber values are never saved.",
     "import.mapMismatch": "Sent {sent} rows; the server imported {imported}. Some rows may not have been saved even though the status is finished. Check the logs below and compare the results.",
     "import.mapMismatchTitle": "Check imported count",
-    "import.mapKeyPlaceholder": "Choose a key or enter a new one"
+    "import.mapKeyPlaceholder": "Choose a key or enter a new one",
+    "import.mapSheetTitle": "Source sheet · {columns} columns · first {rows} rows",
+    "import.mapSheetHelp": "← Scroll horizontally and assign each column in its header. Pale columns are skipped or need an assignment; columns with errors show !.",
+    "import.mapSheetLabel": "CSV source sheet and column assignments",
+    "import.mapPreviousColumn": "Go to previous column",
+    "import.mapNextColumn": "Go to next column",
+    "import.mapUnassigned": "Unassigned"
 }
