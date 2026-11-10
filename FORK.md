@@ -95,7 +95,7 @@ upstream `Makefile`·`Dockerfile`은 보존한다. Go 변경이 허용되는 후
 런타임의 `/listmonk`, `config.toml`, entrypoint, 포트 9000, 기본 명령 `./listmonk`은 공식 이미지와 같다.
 
 CI는 빈 Postgres 17에 `--install --idempotent --yes` 후 `/health`, `/admin/login`, 임베드된 관리 JS 번들, 버전 출력과 라이선스 파일을 확인한다.
-프론트 lint는 `yarn build`의 prebuild에서 실행한다. 이 태스크에서는 Go·SQL·schema 변경과 DB 마이그레이션이 없다.
+프론트 lint는 `yarn build`의 prebuild에서 실행한다. LST-6부터 이미지 빌드에 `go test ./...`도 포함하며 크롤러 차단·메일 경로 예외·robots.txt를 검사한다. SQL·schema 변경과 DB 마이그레이션은 없다.
 
 ## 소스 제공과 배포
 
