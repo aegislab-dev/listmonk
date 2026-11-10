@@ -811,5 +811,7 @@
     "settings.general.defaultFromHelp": "Use an address in the domains above. Leave blank to use the default From email. System mail is unaffected.",
     "settings.general.defaultReplyTo": "Default reply address for other accounts",
     "settings.general.defaultReplyToHelp": "External default reply addresses also require verification. Campaigns using this address cannot send until it is verified.",
-    "settings.general.senderSaveHelp": "Save changes with the Save button above. Verification emails use the saved domain settings."
+    "settings.general.senderSaveHelp": "Save changes with the Save button above. Verification emails use the saved domain settings.",
+    "senders.requestedAt": "Requested at",
+    "settings.general.defaultReplyToVerifiedHelp": "This reply address is filled in by default for new campaigns from other accounts."
 }

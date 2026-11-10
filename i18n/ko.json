@@ -811,5 +811,7 @@
     "settings.general.defaultFromHelp": "위 도메인에 속한 주소를 입력하세요. 비워 두면 기본 발신 이메일을 사용합니다. 시스템 메일에는 영향을 주지 않습니다.",
     "settings.general.defaultReplyTo": "그 외 계정의 기본 답장 주소",
     "settings.general.defaultReplyToHelp": "기본 답장 주소도 외부 주소이면 인증이 필요합니다. 인증 전에는 이 주소를 쓰는 캠페인의 발송이 제한됩니다.",
-    "settings.general.senderSaveHelp": "설정 변경은 상단의 변경사항 저장 버튼으로 저장하세요. 인증 메일은 저장된 도메인 설정을 기준으로 보냅니다."
+    "settings.general.senderSaveHelp": "설정 변경은 상단의 변경사항 저장 버튼으로 저장하세요. 인증 메일은 저장된 도메인 설정을 기준으로 보냅니다.",
+    "senders.requestedAt": "인증 요청",
+    "settings.general.defaultReplyToVerifiedHelp": "그 외 계정의 새 캠페인에 이 답장 주소가 기본으로 채워집니다."
 }

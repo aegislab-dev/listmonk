@@ -44,8 +44,14 @@
       </b-field>
       <sender-address-input ref="defaultReplyTo" v-model="data['axm.default_reply_to']"
         name="axm.default_reply_to" :label="$t('settings.general.defaultReplyTo')"
-        :disabled="!$can('settings:manage')" @addresses="addresses = $event" />
-      <p class="help">{{ $t('settings.general.defaultReplyToHelp') }}</p>
+        :disabled="!$can('settings:manage')" @addresses="addresses = $event">
+        <template #help="{ verified, invalid }">
+          <p class="help" :class="{ 'is-danger': invalid }">
+            {{ invalid ? $t('senders.invalidEmail') : $t(verified
+              ? 'settings.general.defaultReplyToVerifiedHelp' : 'settings.general.defaultReplyToHelp') }}
+          </p>
+        </template>
+      </sender-address-input>
       <template v-if="canManageCampaigns">
         <h4 class="has-text-weight-semibold mt-5 mb-2">{{ $t('senders.addresses') }}</h4>
         <p class="help mb-3">{{ $t('senders.addressesHelp') }}</p>
@@ -57,11 +63,9 @@
               {{ $t(address.status === 'verified' ? 'senders.verified' : 'senders.pending') }}
             </b-tag>
             <p class="help">
-{{ $t('senders.requestedBy') }}: {{ address.requesterName || '—' }}
-              <template v-if="address.verifiedAt">
-· {{ $t('senders.verifiedAt') }}:
-                {{ $utils.niceDate(address.verifiedAt, true) }}
-              </template>
+              {{ $t('senders.requestedBy') }}: {{ address.requesterName || '—' }} ·
+              {{ $t(address.status === 'verified' ? 'senders.verifiedAt' : 'senders.requestedAt') }}:
+              {{ formatAddressTime(address.status === 'verified' ? address.verifiedAt : address.lastSentAt) }}
             </p>
           </div>
           <b-button v-if="$can('settings:manage') || address.requestedBy === profile.id" size="is-small"
@@ -143,6 +147,7 @@
 </template>
 
 <script>
+import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import SenderAddressInput from '../../components/SenderAddressInput.vue';
@@ -164,6 +169,10 @@ export default Vue.extend({
   },
 
   methods: {
+    formatAddressTime(value) {
+      return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '—';
+    },
+
     deleteAddress(address) {
       this.$utils.confirm(null, async () => {
         this.deleting = address.id;

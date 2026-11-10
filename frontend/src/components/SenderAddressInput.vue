@@ -21,14 +21,16 @@
         {{ $t('senders.refresh') }}
       </b-button>
     </div>
-    <p v-if="sentTo === mailbox && !verified" class="help has-text-success" role="status">
-      {{ $t('senders.sent') }}
-    </p>
-    <p class="help" :class="{ 'is-danger': invalid }">
-      {{ invalid ? $t('senders.invalidEmail') : !value.trim() ? $t('campaigns.replyToEmptyHelp')
-        : !allowed ? $t('campaigns.replyToPendingHelp') : $t('campaigns.replyToHelp') }}
-    </p>
-    <p v-if="mailbox && !internal && !verified" class="help">{{ $t('senders.linkHelp') }}</p>
+    <slot name="help" :verified="verified" :invalid="invalid">
+      <p v-if="sentTo === mailbox && !verified" class="help has-text-success" role="status">
+        {{ $t('senders.sent') }}
+      </p>
+      <p class="help" :class="{ 'is-danger': invalid }">
+        {{ invalid ? $t('senders.invalidEmail') : !value.trim() ? $t('campaigns.replyToEmptyHelp')
+          : !allowed ? $t('campaigns.replyToPendingHelp') : $t('campaigns.replyToHelp') }}
+      </p>
+      <p v-if="mailbox && !internal && !verified" class="help">{{ $t('senders.linkHelp') }}</p>
+    </slot>
   </div>
 </template>
 

@@ -31,6 +31,19 @@ func TestResolveFrom(t *testing.T) {
 	}
 }
 
+// An API user must use the configured fallback even if it has an internal email.
+func TestResolveFromAPIUser(t *testing.T) {
+	user := auth.User{Type: auth.UserTypeAPI, Name: "API", Email: null.StringFrom("api@crevasse.ai")}
+	for _, tc := range []struct{ defaultFrom, want string }{
+		{"Team <team@crevasse.ai>", "Team <team@crevasse.ai>"},
+		{"", "app@example.org"},
+	} {
+		if got := resolveFrom(user, tc.defaultFrom, "app@example.org", []string{"crevasse.ai"}); got != tc.want {
+			t.Errorf("API user with internal email: got %q, want %q", got, tc.want)
+		}
+	}
+}
+
 func TestReplyToAllowed(t *testing.T) {
 	for _, tc := range []struct {
 		addr          string
