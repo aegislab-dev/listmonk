@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/mail"
+	"strconv"
 	"strings"
 
 	"github.com/knadh/listmonk/internal/auth"
@@ -40,7 +41,9 @@ func internalSender(addr string, domains []string) bool {
 func resolveFrom(user auth.User, defaultFrom, appFrom string, domains []string) string {
 	if user.Type != auth.UserTypeAPI && user.Email.Valid && internalSender(user.Email.String, domains) {
 		a, _ := mail.ParseAddress(user.Email.String)
-		return (&mail.Address{Name: user.Name, Address: a.Address}).String()
+		// Keep the stored/UI value readable. The SMTP messenger encodes the
+		// display name on the wire; quote it here to preserve commas/quotes.
+		return strconv.Quote(user.Name) + " " + (&mail.Address{Address: a.Address}).String()
 	}
 	if defaultFrom != "" {
 		return defaultFrom

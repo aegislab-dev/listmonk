@@ -14,6 +14,7 @@ func TestResolveFrom(t *testing.T) {
 		name, email, want string
 		valid             bool
 	}{
+		{"홍 길동, 팀", "a@crevasse.ai", `"홍 길동, 팀" <a@crevasse.ai>`, true},
 		{"A", "a@CREVASSE.ai", `"A" <a@CREVASSE.ai>`, true},
 		{"A", "a@newsletter.crevasse.ai", "Team <team@crevasse.ai>", true},
 		{"A", "a@example.com", "Team <team@crevasse.ai>", true},
