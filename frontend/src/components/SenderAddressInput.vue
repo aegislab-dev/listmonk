@@ -81,9 +81,10 @@ export default {
     },
     async sendVerification() {
       this.sending = true;
+      const { mailbox } = this;
       try {
         await this.$api.requestSenderAddress({ email: this.value });
-        this.sentTo = this.mailbox;
+        this.sentTo = mailbox;
       } finally {
         try { await this.refresh(); } finally { this.sending = false; }
       }

@@ -744,7 +744,7 @@ func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error)
 			if addr.Name == "" {
 				c.ReplyTo = addr.Address
 			} else {
-				c.ReplyTo = addr.String()
+				c.ReplyTo = strconv.Quote(addr.Name) + " " + (&mail.Address{Address: addr.Address}).String()
 			}
 		}
 		if hasReservedHeader(c.Headers) {
