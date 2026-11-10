@@ -93,7 +93,8 @@ var (
 	frontendDir string = "frontend/dist"
 )
 
-func init() {
+// initApp performs startup I/O only when the application is run, not in tests.
+func initApp() {
 	// Initialize commandline flags.
 	initFlags(ko)
 
@@ -191,6 +192,8 @@ func init() {
 }
 
 func main() {
+	initApp()
+
 	var (
 		// Initialize static global config.
 		cfg = initConstConfig(ko)

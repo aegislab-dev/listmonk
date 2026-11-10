@@ -2,7 +2,7 @@
 
 이 저장소는 [knadh/listmonk](https://github.com/knadh/listmonk)의 공개 수정판이다.
 기반: **v6.2.0** (`ef0a75872463f10a4848af6c547d1c057405453a`).
-2026-11-10 수정: 프론트 포함 이미지 빌드, AGPL 소스 링크, 캠페인 사업자정보 자동 푸터, 포크 운영 문서.
+2026-11-10 수정: 프론트 포함 이미지 빌드, AGPL 소스 링크, 캠페인 사업자정보 자동 푸터, 공개 콘텐츠 AI 크롤러 차단, 포크 운영 문서.
 원저작자의 저작권 고지와 [AGPL-3.0 라이선스](LICENSE)를 유지한다.
 현재 CSV 열 맞춤·개인화·동적 리스트 기능은 아직 구현하지 않았다.
 
@@ -95,7 +95,7 @@ upstream `Makefile`·`Dockerfile`은 보존한다. Go 변경이 허용되는 후
 런타임의 `/listmonk`, `config.toml`, entrypoint, 포트 9000, 기본 명령 `./listmonk`은 공식 이미지와 같다.
 
 CI는 빈 Postgres 17에 `--install --idempotent --yes` 후 `/health`, `/admin/login`, 임베드된 관리 JS 번들, 버전 출력과 라이선스 파일을 확인한다.
-프론트 lint는 `yarn build`의 prebuild에서 실행한다. 새 설치의 사업자정보 설정 기본값과 공식 v6.2.0 설치 DB에서 포크 이미지로 `--upgrade --yes`(반복 실행 포함) 후 설정 행·마이그레이션 번호·기동을 검사한다.
+프론트 lint는 `yarn build`의 prebuild에서 실행한다. LST-6부터 이미지 빌드에 `go test ./...`도 포함하며 크롤러 차단·메일 경로 예외·robots.txt와 사업자정보 푸터를 검사한다. 새 설치의 사업자정보 설정 기본값과 공식 v6.2.0 설치 DB에서 포크 이미지로 `--upgrade --yes`(반복 실행 포함) 후 설정 행·마이그레이션 번호·기동을 검사한다.
 
 ## 소스 제공과 배포
 
@@ -108,9 +108,19 @@ CI는 빈 Postgres 17에 `--install --idempotent --yes` 후 `/health`, `/admin/l
 - Railway 이미지 교체는 별도 승인 범위다. 이전 deployment와 이미지 digest·환경·시작 명령을 기록하고, DB·미디어 백업과 폐기용 환경 검증 후 진행한다. 기존 Custom JS/CSS의 중복 기능도 확인한다.
 - 이미지 롤백은 가져온 구독자 데이터·해지·차단 상태를 되돌리지 않는다. DB에 저장된 Custom JS/CSS도 이미지 교체만으로 복원되지 않는다.
 
+## 공개 콘텐츠 크롤러 정책 (LST-6)
+
+`/robots.txt`는 기존 `static/public/static/robots.txt`를 읽는 Go 핸들러에서 제공한다. 일반 검색엔진에는 `/subscription/form` 허용과 기존 `/subscription/`·`/campaign/`·`/link/` 금지를 유지하고 `/archive`·`/archive.xml` 금지를 추가했다. AI 전체 금지 그룹은 `cmd/crawlers.go`의 단일 상수 목록에서 덧붙인다. 목록의 출처·확인일·레거시 이름은 그 상수 주석에 있다. 정적 파일만 복사해서는 이 그룹이 추가되지 않으므로 전체 이미지를 다시 빌드한다.
+
+같은 목록을 대소문자 구분 없는 UA 부분 문자열로 비교해 홈·구독 폼·공개 캠페인 보기·아카이브 HTML/RSS·공개 아카이브 API에서 **403**을 반환한다. 아카이브 HTML/RSS/API와 캠페인 보기는 `X-Robots-Tag: noindex`를 제공한다. 응답 캐시가 UA별 허용/차단을 섞지 않도록 보호 경로에 `Vary: User-Agent`를 붙인다. 차단 로그에는 프로세스 시작 이후 누적 건수만 기록하며 UA·IP·URL·쿼리·구독자 식별자를 남기지 않는다.
+
+**수신거부 GET/POST(원클릭 List-Unsubscribe POST 포함), 구독 확인 GET/POST, 개인정보 내보내기·삭제, `/link/` 추적 리다이렉트, `/campaign/:campUUID/:subUUID/px.png` 열람 픽셀은 UA 차단을 적용하지 않는다.** Gmail·Outlook·보안 스캐너가 같은 UA로 접근해도 기존 처리를 거친다. 관리 화면·로그인·인증 API와 구독 API도 기존 인증·동작을 유지한다.
+
+robots.txt와 noindex는 권고일 뿐 강제 차단이 아니다. UA 미들웨어는 알려진 이름을 밝히는 요청만 막으며, UA를 위장하거나 생략한 크롤러와 이미 수집된 데이터는 막거나 회수할 수 없다. Google-Extended·Applebot-Extended는 별도 HTTP UA가 아닌 사용 목적 제어 토큰이므로 Googlebot·Applebot의 AI 활용을 UA로 구분할 수도 없다. 완전한 차단을 목표로 하려면 CDN/WAF(Cloudflare 등)의 봇 검증·접근 제어가 필요하며, 그때에도 메일 필수 경로 예외를 유지해야 한다. 이 변경은 DB 마이그레이션이 없고 운영 배포는 LST-5 이후 별도 범위다.
+
 ## Go·DB 변경 규칙
 
-기본 범위는 프론트 변경이다. Go·SQL 변경은 태스크가 명시적으로 허용했을 때만(LST-7 사업자정보 푸터 등) 최소 범위로 수행하고, upstream에 낼 수 있는 구조를 유지한다(실제 기여는 별도 결정).
+기본 범위는 프론트 변경이다. Go·SQL 변경은 태스크가 명시적으로 허용했을 때만(LST-4, LST-6 크롤러 차단, LST-7 사업자정보 푸터 등) 최소 범위로 수행하고, upstream에 낼 수 있는 구조를 유지한다(실제 기여는 별도 결정).
 
 포크 전용 마이그레이션 번호는 **`v<기반 upstream 버전의 패치+1>-axm.<N>`**이다.
 v6.2.0 기반이면 `v6.2.1-axm.1`, `v6.2.1-axm.2` …을 사용한다.
