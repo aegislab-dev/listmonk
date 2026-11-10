@@ -54,6 +54,7 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
   const composing = useRef(false);
   const mounted = useRef(false);
   const request = useRef(0);
+  const pendingFocus = useRef<(() => void) | null>(null);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [editing, setEditing] = useState<HTMLElement | null>(null);
   const [items, setItems] = useState<ItemResult>({ items: config.baseItems, noLists: false, error: false, truncated: false });
@@ -103,6 +104,15 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
     selection.removeAllRanges();
     selection.addRange(range);
   };
+  useEffect(() => {
+    if (anchor || !pendingFocus.current) return;
+    // The click/Esc handler still runs inside MUI's active focus trap. Restore
+    // after its closed render has released the trap, before typing continues.
+    const focus = pendingFocus.current;
+    pendingFocus.current = null;
+    focus();
+  }, [anchor]);
+
   const refresh = async () => {
     const version = ++request.current;
     setLoading(true);
@@ -126,11 +136,15 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
     setAnchor(target);
     refresh();
   };
-  const close = () => { setAnchor(null); request.current += 1; };
+  const close = (focus: () => void) => {
+    pendingFocus.current = focus;
+    setAnchor(null);
+    request.current += 1;
+  };
   const cancel = () => {
-    close();
-    // The popover does not restore focus itself: preserve the content selection.
-    if (editing?.isConnected) editing.focus(); else button.current?.focus();
+    close(() => {
+      if (editing?.isConnected) editing.focus(); else button.current?.focus();
+    });
   };
   const leaveChip = () => {
     // Chromium may leave the caret inside a noneditable span after insertHTML.
@@ -159,7 +173,7 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
     }
     lastRange.current = window.getSelection()?.getRangeAt(0).cloneRange() || null;
     emit();
-    close();
+    close(() => restore());
   };
   const copy = (ev: React.ClipboardEvent, cut = false) => {
     const selection = window.getSelection();
@@ -244,7 +258,12 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
           </Typography>}
       </Box>
       <Button size="small" startIcon={<Refresh />} disabled={loading} onClick={refresh} sx={{ mb: 2 }}>{s.refresh}</Button>
-      <TextField fullWidth size="small" label={s.fallback} value={fallback} onChange={(ev) => setFallback(ev.target.value)} helperText={s.fallbackHelp} />
+      <TextField fullWidth size="small" label={s.fallback} value={fallback} onChange={(ev) => setFallback(ev.target.value)} helperText={s.fallbackHelp}
+        onKeyDown={(ev) => {
+          if (ev.key === 'Enter' && !ev.nativeEvent.isComposing && selected) {
+            ev.preventDefault(); apply();
+          }
+        }} />
       <Stack direction="row" gap={1} justifyContent="flex-end" sx={{ pt: 2, position: 'sticky', bottom: -16, bgcolor: 'background.paper', pb: 1 }}>
         {editing && <Button color="error" onClick={() => apply(true)} sx={{ mr: 'auto' }}>{s.remove}</Button>}
         <Button onClick={cancel}>{s.cancel}</Button>
