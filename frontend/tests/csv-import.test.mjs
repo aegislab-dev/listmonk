@@ -4,6 +4,7 @@ import Papa from 'papaparse';
 import {
   LIMITS, STORAGE_KEY, checkInputSize, cleanEmail, validEmail, maskEmail, maskSample,
   parseCSV, suggestMapping, validateMapping, convertCSV, readMemory, rememberMapping,
+  inspectOriginalCSV, inspectCSVHeader, columnLetter,
 } from '../src/lib/csv-import.js';
 
 const converted = (text, mapping, keys) => {
@@ -43,6 +44,16 @@ test('suggestions use memory, dictionary, email samples, English snake_case, the
     { role: 'attribute', key: 'legacy' }, { role: 'name', key: '' }, { role: 'email', key: '' },
     { role: 'attribute', key: 'customer_id' }, { role: 'attribute', key: '' }, { role: 'discard', key: '' }, { role: 'tags', key: 'tags' },
   ]);
+});
+
+test('every email dictionary header suggests email without relying on sample values', () => {
+  const headers = ['이메일', '메일', '메일 주소', 'e-mail', 'email'];
+  const parsed = parseCSV(`${headers.join(',')}\n${headers.map(() => 'not an address').join(',')}`);
+  assert.deepEqual(suggestMapping(parsed), headers.map(() => ({ role: 'email', key: '' })));
+});
+
+test('spreadsheet column letters match validation labels beyond Z', () => {
+  assert.deepEqual([0, 4, 5, 25, 26, 51, 52, 701, 702].map(columnLetter), ['A', 'E', 'F', 'Z', 'AA', 'AZ', 'BA', 'ZZ', 'AAA']);
 });
 
 test('header toggle keeps first data row; standard detection only accepts standard names', () => {
@@ -95,10 +106,44 @@ test('email cleaning, validation, first duplicate wins, logical source rows and 
   assert.equal(JSON.stringify(result.preview).includes('ab@example.invalid'), false);
 });
 
-test('malformed widths and quotes are excluded and keep source row numbers', () => {
-  const parsed = parseCSV('email,name\na@example.invalid,A\nb@example.invalid,B,extra\nc@example.invalid,"unterminated');
-  assert.deepEqual(parsed.issues, [{ row: 3, type: 'width' }, { row: 4, type: 'quotes' }]);
+test('malformed widths are excluded and keep source row numbers', () => {
+  const parsed = parseCSV('email,name\na@example.invalid,A\nb@example.invalid,B,extra');
+  assert.deepEqual(parsed.issues, [{ row: 3, type: 'width' }]);
   assert.deepEqual(convertCSV(parsed, suggestMapping(parsed)).sourceRows, [2]);
+});
+
+test('unclosed or invalid closing quotes reject the whole file instead of hiding later people', () => {
+  const people = Array.from({ length: 10 }, (_, i) => `person-${i}@example.invalid,Name ${i}`);
+  for (const bad of ['person-2@example.invalid,"unclosed', 'person-2@example.invalid,"홍"길동']) {
+    const rows = [...people];
+    rows[2] = bad;
+    assert.throws(() => parseCSV(`email,name\n${rows.join('\n')}`), { code: 'quotes' });
+  }
+  assert.throws(() => parseCSV('email,"name\na@example.invalid,A'), { code: 'quotes' });
+  assert.throws(() => parseCSV('email,name\na@example.invalid,"unclosed'), { code: 'quotes' });
+  // Legitimate multiline cells must still produce all people and logical rows.
+  const parsed = parseCSV('email,name\na@example.invalid,"first\nsecond"\nb@example.invalid,"He said ""yes"""');
+  assert.equal(parsed.total, 2);
+  assert.deepEqual(convertCSV(parsed, suggestMapping(parsed)).sourceRows, [2, 3]);
+});
+
+test('mapping row limits do not prevent inspecting a standard original CSV header', () => {
+  const text = `email,name,attributes\n${'a@example.invalid,A,\n'.repeat(60000)}`;
+  assert.deepEqual(inspectCSVHeader(text), { delimiter: ',', standard: true });
+  assert.throws(() => parseCSV(text), { code: 'rowLimit', total: 60000 });
+});
+
+test('original inspection has bounded reads and no mapping size limit, but validates all UTF-8 bytes', async () => {
+  const header = 'email,name,attributes\n';
+  const text = header + 'a'.repeat(512 * 1024 - header.length - 1) + '똠' + 'a'.repeat(LIMITS.input);
+  const blob = new Blob([text]);
+  const reads = [];
+  const file = { size: blob.size, slice(start, end) { reads.push(end - start); return blob.slice(start, end); } };
+  assert.deepEqual(await inspectOriginalCSV(file), { encoding: 'utf-8', delimiter: ',', standard: true });
+  assert.ok(reads.length > 20 && reads.every((size) => size <= 512 * 1024));
+  await assert.rejects(inspectOriginalCSV(new Blob([text, new Uint8Array([0xe3, 0x81])])), { code: 'rawEncoding' });
+  await assert.rejects(inspectOriginalCSV(new Blob([header, new Uint8Array([0x8c, 0x63])])), { code: 'rawEncoding' });
+  await assert.rejects(inspectOriginalCSV(new Blob([text, '\0'])), { code: 'nul' });
 });
 
 test('input, data row and output limits stop processing; NUL and empty files rejected', () => {

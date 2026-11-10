@@ -11,7 +11,7 @@
       <b-radio :value="mode" native-value="mapping" @input="$emit('mode', $event)" data-cy="map-mode-mapping">
         {{ $t('import.mapMode') }}
       </b-radio>
-      <b-radio :value="mode" native-value="raw" :disabled="encoding !== 'utf-8'" @input="$emit('mode', $event)" data-cy="map-mode-raw">
+      <b-radio :value="mode" native-value="raw" :disabled="!rawAvailable" @input="$emit('mode', $event)" data-cy="map-mode-raw">
         {{ $t('import.mapRaw') }}
       </b-radio>
     </div>
@@ -24,7 +24,7 @@
           <option value="cp949">CP949</option>
         </b-select>
       </b-field>
-      <p>{{ $t('import.mapDetected', { encoding: encoding === 'cp949' ? 'CP949' : (encoding === 'utf-8' ? 'UTF-8' : '—'), count: total }) }}</p>
+      <p>{{ $t('import.mapDetected', { encoding: encoding === 'cp949' ? 'CP949' : (encoding === 'utf-8' ? 'UTF-8' : '—'), count: total === null ? '—' : total }) }}</p>
       <b-checkbox :value="header" @input="$emit('header', $event)" data-cy="map-header">{{ $t('import.mapHeader') }}</b-checkbox>
     </div>
     <p v-if="busy" class="help" role="status" data-cy="map-busy">{{ $t('import.mapBusy') }}</p>
@@ -124,11 +124,14 @@
 </template>
 
 <script>
+import { columnLetter } from '../lib/csv-import';
+
 // Spreadsheet presentation; parsing and conversion run in the parent’s Worker.
 export default {
   props: {
     busy: { type: Boolean, default: false },
     mode: { type: String, default: 'mapping' },
+    rawAvailable: { type: Boolean, default: false },
     encoding: { type: String, default: 'utf-8' },
     encodingChoice: { type: String, default: 'auto' },
     header: { type: Boolean, default: true },
@@ -157,16 +160,7 @@ export default {
     },
   },
   methods: {
-    columnLetter(index) {
-      let value = index + 1;
-      let label = '';
-      while (value > 0) {
-        value -= 1;
-        label = String.fromCharCode(65 + (value % 26)) + label;
-        value = Math.floor(value / 26);
-      }
-      return label;
-    },
+    columnLetter,
     columnClass(index) {
       const { role, key } = this.mapping[index];
       return {

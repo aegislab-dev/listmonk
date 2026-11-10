@@ -16,6 +16,53 @@ export function checkInputSize(size) {
   if (size > LIMITS.input) throw new ImportError('inputLimit');
 }
 
+export function columnLetter(index) {
+  let value = index + 1;
+  let label = '';
+  while (value > 0) {
+    value -= 1;
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26);
+  }
+  return label;
+}
+
+export function inspectCSVHeader(text, delimiter = '') {
+  if (delimiter && (delimiter.length !== 1 || /["\r\n\0]/.test(delimiter))) throw new ImportError('delimiter');
+  const result = Papa.parse(text.replace(/^\uFEFF/, ''), {
+    header: false, preview: 1, delimiter, delimitersToGuess: [',', ';', '\t', '|'],
+  });
+  const columns = (result.data[0] || []).map((cell) => cell.trim());
+  return {
+    delimiter: result.meta.delimiter,
+    standard: !result.errors.some((error) => error.type === 'Quotes')
+      && columns.includes('email') && columns.every((column) => ['email', 'name', 'attributes'].includes(column)),
+  };
+}
+
+// Original uploads have no mapping size limit. Check UTF-8 in bounded chunks in
+// the Worker, retaining only a header prefix, without copying the entire file.
+export async function inspectOriginalCSV(file, delimiter = '') {
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let prefix = '';
+  const accept = (text) => {
+    if (text.includes('\0')) throw new ImportError('nul');
+    if (prefix.length < 65536) prefix += text.slice(0, 65536 - prefix.length);
+  };
+  try {
+    for (let offset = 0; offset < file.size; offset += 512 * 1024) {
+      // eslint-disable-next-line no-await-in-loop
+      const bytes = await file.slice(offset, offset + 512 * 1024).arrayBuffer();
+      accept(decoder.decode(bytes, { stream: true }));
+    }
+    accept(decoder.decode());
+  } catch (error) {
+    if (error instanceof ImportError) throw error;
+    throw new ImportError('rawEncoding');
+  }
+  return { encoding: 'utf-8', ...inspectCSVHeader(prefix, delimiter) };
+}
+
 // CP949 must also be tested in Chromium: Node's euc-kr decoder differs.
 export function decodeCSV(bytes, encoding = 'auto') {
   checkInputSize(bytes.byteLength);
@@ -76,17 +123,18 @@ export function parseCSV(text, { delimiter = '', header = true } = {}) {
     delimitersToGuess: [',', ';', '\t', '|'],
     skipEmptyLines: false,
   });
+  // A quote error can consume all later physical lines as one logical record.
+  // Their boundaries/count cannot be recovered safely; reject the whole file.
+  if (result.errors.some((error) => error.type === 'Quotes')) throw new ImportError('quotes');
   const nonempty = result.data.map((cells, index) => ({ cells, row: index + 1 }))
     .filter(({ cells }) => !(cells.length === 1 && cells[0].trim() === ''));
   const first = nonempty[0];
   if (!first) throw new ImportError('empty');
   const columns = first.cells.map((cell, index) => (header ? cell.trim() : `Column ${index + 1}`));
   const data = header ? nonempty.slice(1) : nonempty;
-  if (data.length > LIMITS.rows) throw new ImportError('rowLimit');
-  const quoteRows = new Set(result.errors.filter((err) => err.type === 'Quotes').map((err) => err.row + 1));
-  const issues = data.filter(({ cells, row }) => quoteRows.has(row) || cells.length !== columns.length)
-    .map(({ row }) => ({ row, type: quoteRows.has(row) ? 'quotes' : 'width' }));
-  if (header && quoteRows.has(first.row)) throw new ImportError('header');
+  if (data.length > LIMITS.rows) throw Object.assign(new ImportError('rowLimit'), { total: data.length });
+  const issues = data.filter(({ cells }) => cells.length !== columns.length)
+    .map(({ row }) => ({ row, type: 'width' }));
   const excluded = new Set(issues.map(({ row }) => row));
   return {
     columns,

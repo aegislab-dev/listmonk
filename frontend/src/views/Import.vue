@@ -90,6 +90,7 @@
             </b-tag>
           </div>
           <import-column-mapper v-if="isCSV" :mode="csv.mode" :encoding="csv.encoding" :encoding-choice="csv.encodingChoice"
+            :raw-available="csv.rawReady && (!csv.busy || csv.parsed)"
             :header="csv.header" :header-hint="csv.headerHint" :columns="displayColumns" :samples="csv.samples"
             :mapping="csv.mapping" :sample-row-numbers="csv.sampleRowNumbers" :column-errors="columnErrors"
             :existing-keys="existingKeys" :validation="mappingMessages" :total="csv.total" :summary="csv.summary"
@@ -163,7 +164,7 @@ import ListSelector from '../components/ListSelector.vue';
 import LogView from '../components/LogView.vue';
 import ImportColumnMapper from '../components/ImportColumnMapper.vue';
 import {
-  checkInputSize, readMemory, rememberMapping, maskSample,
+  LIMITS, columnLetter, readMemory, rememberMapping, maskSample,
 } from '../lib/csv-import';
 
 function csvState() {
@@ -177,12 +178,14 @@ function csvState() {
     mapping: [],
     samples: [],
     sampleRowNumbers: [],
-    total: 0,
+    total: null,
     delimiter: '',
     headerHint: false,
     parsed: false,
     busy: false,
     ready: false,
+    rawReady: false,
+    limit: '',
     validation: [],
     summary: null,
     examples: {},
@@ -252,6 +255,7 @@ export default Vue.extend({
         this.csv.busy = false;
         return;
       }
+      if (value === this.csv.delimiter && this.csv.limit) return;
       if (value !== this.csv.delimiter || !this.csv.parsed) this.parseCSV(false, true);
     },
     'form.lists': function listsChanged() {
@@ -294,6 +298,10 @@ export default Vue.extend({
       const id = this.csvRequest;
       this.csv.busy = true;
       this.csv.ready = false;
+      this.csv.rawReady = false;
+      this.csv.limit = '';
+      this.csv.encoding = '';
+      this.csv.total = null;
       this.csv.parsed = false;
       this.csv.error = '';
       this.csv.columns = [];
@@ -301,8 +309,8 @@ export default Vue.extend({
       this.csv.preview = [];
       this.csv.validation = [];
       try {
-        checkInputSize(file.size);
-        const bytes = await file.arrayBuffer();
+        const oversized = file.size > LIMITS.input;
+        const bytes = oversized ? null : await file.arrayBuffer();
         if (id !== this.csvRequest) return;
         // Vite emits this module under /admin/static in packed builds.
         this.csvWorker = new Worker(new URL('../lib/csv-import.worker.js', import.meta.url), { type: 'module' });
@@ -313,7 +321,16 @@ export default Vue.extend({
         this.csvWorker.onmessage = ({ data }) => {
           if (data.id !== this.csvRequest) return;
           if (data.type === 'error') {
-            this.csvFailure(data.code);
+            this.csvFailure(data.code, data.total);
+          } else if (data.type === 'source') {
+            this.csv.encoding = data.encoding;
+            this.csv.rawReady = data.encoding === 'utf-8';
+            this.csv.delimiter = data.delimiter;
+            if (initial || !this.csv.modeChosen) {
+              this.csv.mode = data.standard && this.csv.rawReady ? 'raw' : 'mapping';
+              this.csv.modeChosen = true;
+            }
+            if (!this.csv.rawReady) this.csv.mode = 'mapping';
           } else if (data.type === 'parse') {
             Object.assign(this.csv, {
               encoding: data.encoding,
@@ -327,11 +344,6 @@ export default Vue.extend({
               parsed: true,
             });
             this.form.delim = data.delimiter;
-            if (initial || !this.csv.modeChosen) {
-              this.csv.mode = data.standard && data.encoding === 'utf-8' ? 'raw' : 'mapping';
-              this.csv.modeChosen = true;
-            }
-            if (data.encoding !== 'utf-8') this.csv.mode = 'mapping';
             this.convertCSV();
           } else if (data.type === 'convert') {
             this.csvBytes = data.bytes;
@@ -347,12 +359,24 @@ export default Vue.extend({
             });
           }
         };
+        const delimiter = initial || (!manualDelimiter && !this.csv.delimiter) ? '' : this.form.delim;
+        if (oversized) {
+          if (this.csv.encodingChoice === 'cp949') {
+            this.csv.mode = 'mapping';
+            this.csvFailure('inputLimit');
+            return;
+          }
+          this.csvWorker.postMessage({
+            id, type: 'inspectOriginal', file, delimiter,
+          });
+          return;
+        }
         this.csvWorker.postMessage({
           id,
           type: 'parse',
           bytes,
           encoding: this.csv.encodingChoice,
-          delimiter: initial || (!manualDelimiter && !this.csv.delimiter) ? '' : this.form.delim,
+          delimiter,
           header: this.csv.header,
           memory: this.memory(),
         }, [bytes]);
@@ -361,10 +385,21 @@ export default Vue.extend({
       }
     },
 
-    csvFailure(code) {
+    csvFailure(code, total) {
       this.csv.busy = false;
       this.csv.ready = false;
       this.csvBytes = null;
+      if (total !== undefined) this.csv.total = total;
+      if (['inputLimit', 'rowLimit'].includes(code)) {
+        this.csv.limit = code;
+        if (this.csv.delimiter) this.form.delim = this.csv.delimiter;
+        if (this.csv.mode === 'raw' && this.csv.rawReady) {
+          this.csv.error = '';
+          return;
+        }
+      } else if (code !== 'outputLimit') {
+        this.csv.rawReady = false;
+      }
       this.csv.error = this.$t(`import.mapError${code}`);
     },
 
@@ -375,6 +410,11 @@ export default Vue.extend({
       this.csv.ready = false;
       this.csv.summary = null;
       this.csv.preview = [];
+      if (this.csv.limit) {
+        this.csv.error = this.csv.mode === 'mapping' ? this.$t(`import.mapError${this.csv.limit}`) : '';
+        this.csv.busy = false;
+        return;
+      }
       this.csv.error = '';
       if (!this.csv.parsed) return;
       if (this.csv.mode === 'raw') {
@@ -396,8 +436,8 @@ export default Vue.extend({
       this.convertCSV();
     },
     setCSVMode(mode) {
-      if (!this.csv.parsed) return;
-      if (mode === 'raw' && this.csv.encoding !== 'utf-8') return;
+      if (!this.csv.parsed && !this.csv.limit) return;
+      if (mode === 'raw' && !this.csv.rawReady) return;
       this.csv.mode = mode;
       this.csv.modeChosen = true;
       this.convertCSV();
@@ -592,21 +632,23 @@ export default Vue.extend({
     canUpload() {
       if (!this.form.file || this.isProcessing || this.form.delim.length !== 1) return false;
       if (!this.isCSV) return true;
-      return this.csv.parsed && !this.csv.busy && !this.csv.error
-        && (this.csv.mode === 'raw' || this.csv.ready);
+      if (this.csv.busy || this.csv.error) return false;
+      return this.csv.mode === 'raw' ? this.csv.rawReady : this.csv.parsed && this.csv.ready;
     },
     displayColumns() {
       return this.csv.columns.map((column, index) => (this.csv.header ? maskSample(column) : this.$t('import.mapUnnamed', { num: index + 1 })));
     },
     mappingMessages() {
-      return this.csv.validation.map(({ type, index }) => this.$t(`import.mapValidation${type}`, { column: index === undefined ? '' : index + 1 }));
+      return this.csv.validation.map(({ type, index }) => this.$t(`import.mapValidation${type}`, { column: index === undefined ? '' : columnLetter(index) }));
     },
     columnErrors() {
       const errors = {};
       this.csv.validation.forEach(({ type, index }) => {
-        const message = this.$t(`import.mapValidation${type}`, { column: index === undefined ? '' : index + 1 });
-        if (index !== undefined) errors[index] = message;
-        else {
+        const message = this.$t(`import.mapValidation${type}`);
+        if (index !== undefined) {
+          const detail = type === 'key' && this.csv.mapping[index].key ? 'keyInvalid' : type;
+          errors[index] = this.$t(`import.mapColumnError${detail}`);
+        } else {
           this.csv.mapping.forEach(({ role }, n) => {
             if ((type === 'emailColumns' && role === 'email') || (type === 'nameColumns' && role === 'name')) errors[n] = message;
           });

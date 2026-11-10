@@ -1,6 +1,7 @@
 /* global globalThis */
 import {
   decodeCSV, parseCSV, suggestMapping, validateMapping, convertCSV, maskSample,
+  inspectCSVHeader, inspectOriginalCSV,
 } from './csv-import';
 
 // Subscriber cells stay here. Only masked samples, review results and the final
@@ -11,11 +12,18 @@ function samples(mapping) {
     .map(({ cells }) => maskSample(cells[index], mapping[index]?.role === 'email')));
 }
 
-globalThis.onmessage = ({ data }) => {
+globalThis.onmessage = async ({ data }) => {
   const { id, type } = data;
   try {
-    if (type === 'parse') {
+    if (type === 'inspectOriginal') {
+      const source = await inspectOriginalCSV(data.file, data.delimiter);
+      globalThis.postMessage({ id, type: 'source', ...source });
+      globalThis.postMessage({ id, type: 'error', code: 'inputLimit' });
+    } else if (type === 'parse') {
       const decoded = decodeCSV(data.bytes, data.encoding);
+      globalThis.postMessage({
+        id, type: 'source', encoding: decoded.encoding, ...inspectCSVHeader(decoded.text, data.delimiter),
+      });
       parsed = parseCSV(decoded.text, { delimiter: data.delimiter, header: data.header });
       const mapping = suggestMapping(parsed, data.memory);
       globalThis.postMessage({
@@ -44,6 +52,8 @@ globalThis.onmessage = ({ data }) => {
       globalThis.postMessage({ ...review, ...result, bytes: bytes.buffer }, [bytes.buffer]);
     }
   } catch (error) {
-    globalThis.postMessage({ id, type: 'error', code: error.code || 'worker' });
+    globalThis.postMessage({
+      id, type: 'error', code: error.code || 'worker', total: error.total,
+    });
   }
 };

@@ -23,8 +23,8 @@ function setKey(index, value) {
   cy.get(`[data-cy=map-key-${index}]`).clear();
   cy.get(`[data-cy=map-key-${index}]`).focus().type(value, { scrollBehavior: false });
 }
-function importRows(count) {
-  ready(count);
+function importRows(count, mapped = true) {
+  if (mapped) ready(count);
   submit().click();
   cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
   cy.request('/api/import/subscribers').its('body.data.imported').should('eq', count);
@@ -181,13 +181,84 @@ describe('CSV column mapping with the real Worker and import API', () => {
     cy.get('[data-cy=map-error]').should('be.visible');
     submit().should('be.disabled');
     cy.window().then((win) => cy.spy(win.File.prototype, 'arrayBuffer').as('readFile'));
-    inlineFile(Cypress.Buffer.alloc(10 * 1024 * 1024 + 1));
+    inlineFile(Cypress.Buffer.alloc(10 * 1024 * 1024 + 1, 65));
     cy.get('[data-cy=map-error]').should('contain', '10 MiB');
     cy.get('@readFile').should('not.have.been.called');
     submit().should('be.disabled');
-    inlineFile(`email\n${'too-many@example.invalid\n'.repeat(50001)}`);
+    inlineFile(`이메일\n${'too-many@example.invalid\n'.repeat(50001)}`);
     cy.get('[data-cy=map-error]').should('contain', '50,000');
     submit().should('be.disabled');
+  });
+
+  it('blocks the entire mapping when bad quotes make later row boundaries uncertain', () => {
+    const people = Array.from({ length: 10 }, (_, i) => `quote-${i}@example.invalid,가상 ${i}`);
+    for (const bad of ['quote-2@example.invalid,"unclosed', 'quote-2@example.invalid,"홍"길동']) {
+      inlineFile('이메일,이름\nvalid-before@example.invalid,가상');
+      ready(1);
+      const rows = [...people];
+      rows[2] = bad;
+      inlineFile(`이메일,이름\n${rows.join('\n')}`);
+      cy.get('[data-cy=map-error]').should('contain', 'quotes');
+      cy.get('[data-cy=map-summary]').should('not.exist');
+      cy.get('[data-cy=map-preview]').should('not.exist');
+      cy.get('[data-cy=map-mode-raw] input').should('be.disabled');
+      submit().should('be.disabled');
+    }
+    inlineFile('이메일,이름\nquote-good-a@example.invalid,"first\nsecond"\nquote-good-b@example.invalid,"He said ""yes"""');
+    ready(2);
+    importRows(2);
+    subscriber('quote-good-b@example.invalid').its('name').should('eq', 'He said "yes"');
+  });
+
+  it('labels validation by spreadsheet letter and keeps the in-column note short', () => {
+    inlineFile('이메일,이름,회사명,관심 태그,메모,추가 정보\nletter@example.invalid,가상,회사,AI,메모,00123');
+    cy.get('[data-cy=map-validation]').should('contain', 'Column F:');
+    cy.get('[data-cy=map-column-error-5]').should('have.text', '! Enter an attribute key');
+    submit().should('be.disabled');
+    setKey(5, 'custom_key');
+    ready(1);
+  });
+
+  it('uploads a standard 60,000-row CSV unchanged while keeping the mapping row limit', () => {
+    const text = `email;name;attributes\n${Array.from({ length: 60000 }, (_, i) => `raw-rows-${i}@example.invalid;Synthetic;`).join('\n')}`;
+    inlineFile(text);
+    cy.get('[data-cy=map-mode-raw] input').should('be.checked').and('not.be.disabled');
+    cy.get('[data-cy=map-busy]').should('not.exist');
+    cy.get('input[name=delim]').should('have.value', ';');
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.get('[data-cy=map-error]').should('contain', '50,000');
+    submit().should('be.disabled');
+    cy.get('[data-cy=map-mode-raw]').click();
+    cy.get('[data-cy=map-error]').should('not.exist');
+    cy.intercept('POST', '/api/import/subscribers', (req) => {
+      const body = typeof req.body === 'string' ? req.body : new TextDecoder().decode(req.body);
+      expect(body).to.include(text);
+      expect(body).to.include('"delim":";"');
+    }).as('largeOriginal');
+    importRows(60000, false);
+    cy.wait('@largeOriginal');
+    subscriber('raw-rows-59999@example.invalid').its('name').should('eq', 'Synthetic');
+  });
+
+  it('checks all UTF-8 bytes in an original CSV over 10 MiB without applying the mapping size limit', () => {
+    const note = 'x'.repeat(900);
+    const text = `email,name,attributes\n${Array.from({ length: 12000 }, (_, i) => `raw-size-${i}@example.invalid,Synthetic,"{""note"":""${note}""}"`).join('\n')}`;
+    expect(Cypress.Buffer.byteLength(text)).to.be.greaterThan(10 * 1024 * 1024);
+    inlineFile(Cypress.Buffer.concat([Cypress.Buffer.from(text), Cypress.Buffer.from([0xe3, 0x81])]));
+    cy.get('[data-cy=map-error]', { timeout: 30000 }).should('contain', 'valid UTF-8');
+    cy.get('[data-cy=map-mode-raw] input').should('be.disabled');
+    submit().should('be.disabled');
+    cy.window().then((win) => cy.spy(win.File.prototype, 'arrayBuffer').as('wholeFileRead'));
+    inlineFile(text);
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-mode-raw] input').should('be.checked').and('not.be.disabled');
+    cy.get('@wholeFileRead').should('not.have.been.called');
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.get('[data-cy=map-error]').should('contain', '10 MiB');
+    submit().should('be.disabled');
+    cy.get('[data-cy=map-mode-raw]').click();
+    importRows(12000, false);
+    subscriber('raw-size-11999@example.invalid').its('attribs.note').should('eq', note);
   });
 
   it('lets users override encoding, change the delimiter, or treat the first row as data', () => {
