@@ -169,6 +169,7 @@ import {
 function csvState() {
   return {
     mode: 'mapping',
+    modeChosen: false,
     encoding: '',
     encodingChoice: 'auto',
     header: true,
@@ -242,7 +243,7 @@ export default Vue.extend({
       }
     },
     'form.delim': function delimiterChanged(value) {
-      if (this.isCSV && value !== this.csv.delimiter) this.parseCSV();
+      if (this.isCSV && value !== this.csv.delimiter) this.parseCSV(false, true);
     },
     'form.lists': function listsChanged() {
       if (this.isCSV) this.loadAttributeKeys();
@@ -277,7 +278,7 @@ export default Vue.extend({
       this.csvSourceRows = null;
     },
 
-    async parseCSV(initial = false) {
+    async parseCSV(initial = false, manualDelimiter = false) {
       const { file } = this.form;
       if (!this.isCSV) return;
       this.stopCSV();
@@ -317,7 +318,7 @@ export default Vue.extend({
               parsed: true,
             });
             this.form.delim = data.delimiter;
-            if (initial) this.csv.mode = data.standard && data.encoding === 'utf-8' ? 'raw' : 'mapping';
+            if (initial || !this.csv.modeChosen) this.csv.mode = data.standard && data.encoding === 'utf-8' ? 'raw' : 'mapping';
             if (data.encoding !== 'utf-8') this.csv.mode = 'mapping';
             this.convertCSV();
           } else if (data.type === 'convert') {
@@ -339,7 +340,7 @@ export default Vue.extend({
           type: 'parse',
           bytes,
           encoding: this.csv.encodingChoice,
-          delimiter: initial ? '' : this.form.delim,
+          delimiter: initial || (!manualDelimiter && !this.csv.delimiter) ? '' : this.form.delim,
           header: this.csv.header,
           memory: this.memory(),
         }, [bytes]);
@@ -386,6 +387,7 @@ export default Vue.extend({
       if (!this.csv.parsed) return;
       if (mode === 'raw' && this.csv.encoding !== 'utf-8') return;
       this.csv.mode = mode;
+      this.csv.modeChosen = true;
       this.convertCSV();
     },
     setEncoding(value) {
