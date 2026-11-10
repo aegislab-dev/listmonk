@@ -318,7 +318,10 @@ export default Vue.extend({
               parsed: true,
             });
             this.form.delim = data.delimiter;
-            if (initial || !this.csv.modeChosen) this.csv.mode = data.standard && data.encoding === 'utf-8' ? 'raw' : 'mapping';
+            if (initial || !this.csv.modeChosen) {
+              this.csv.mode = data.standard && data.encoding === 'utf-8' ? 'raw' : 'mapping';
+              this.csv.modeChosen = true;
+            }
             if (data.encoding !== 'utf-8') this.csv.mode = 'mapping';
             this.convertCSV();
           } else if (data.type === 'convert') {
