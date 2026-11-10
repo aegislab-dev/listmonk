@@ -149,6 +149,11 @@ type Config struct {
 	RootURL               string
 	UnsubHeader           bool
 
+	// Pre-rendered business footer. Empty bodies disable insertion.
+	BusinessFooterHTML   []byte
+	BusinessFooterText   []byte
+	BusinessFooterMarker string
+
 	// Interval to scan the DB for active campaign checkpoints.
 	ScanInterval time.Duration
 
