@@ -70,7 +70,7 @@
                     <b-autocomplete :id="`map-key-${index}`" :value="mapping[index].key" :data="keyOptions(mapping[index].key)"
                       :open-on-focus="true" :clear-on-select="false" :placeholder="$t('import.mapKeyPlaceholder')" dropdown-position="bottom"
                       :aria-label="$t('import.mapKeyFor', { column: column || index + 1 })" :data-cy="`map-key-${index}`"
-                      :aria-invalid="!!columnErrors[index]" @input="change(index, 'key', $event)" @select="change(index, 'key', $event || '')" />
+                      :aria-invalid="!!columnErrors[index]" @input="change(index, 'key', $event)" @select="selectKey(index, $event)" />
                     <span class="help" v-if="mapping[index].role === 'tags'">{{ $t('import.mapTagsHelp') }}</span>
                   </template>
                   <span v-else class="map-field-target">{{ fieldTarget(mapping[index].role) }}</span>
@@ -179,6 +179,10 @@ export default {
     },
     change(index, field, value) {
       this.$emit('mapping', this.mapping.map((entry, n) => (n === index ? { ...entry, [field]: value } : entry)));
+    },
+    selectKey(index, key) {
+      // Deselecting an old suggestion must not erase the new text being typed.
+      if (typeof key === 'string') this.change(index, 'key', key);
     },
     keyOptions(query) {
       return this.existingKeys.filter((key) => key.toLowerCase().includes(query.toLowerCase()));
