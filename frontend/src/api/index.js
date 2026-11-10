@@ -169,6 +169,16 @@ export const getSubscribers = async (params) => http.get(
   },
 );
 
+// Bounded key discovery must not overwrite the subscriber list or show error toasts.
+export const getSubscriberAttribSample = (params) => http.get(
+  '/api/subscribers',
+  {
+    params,
+    disableToast: true,
+    camelCase: (keyPath) => !keyPath.startsWith('.results.*.attribs'),
+  },
+);
+
 export const getSubscriber = async (id) => http.get(
   `/api/subscribers/${id}`,
   { loading: models.subscribers },
