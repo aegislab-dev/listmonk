@@ -16,6 +16,9 @@
 
 <script>
 import Media from '../views/Media.vue';
+import {
+  BASE_ITEMS, buildToken, parseTokens, loadItems,
+} from '../personalization';
 
 export default {
   components: {
@@ -24,6 +27,8 @@ export default {
 
   props: {
     source: { type: String, default: '' },
+    listIds: { type: Array, default: () => [] },
+    disabled: { type: Boolean, default: false },
     height: { type: String, default: 'auto' },
   },
 
@@ -34,6 +39,28 @@ export default {
   },
 
   methods: {
+    personalization() {
+      const keys = ['insert', 'edit', 'search', 'base', 'attributes', 'noResults', 'loading', 'error',
+        'noLists', 'sample', 'truncated', 'refresh', 'fallback', 'fallbackHelp', 'remove', 'cancel',
+        'apply', 'add', 'ifEmpty'];
+      const strings = Object.fromEntries(keys.map((key) => [key, this.$t(`campaigns.personalize.${key}`)]));
+      const baseItems = BASE_ITEMS.map((item) => ({ ...item, label: this.$t(`campaigns.personalize.${item.id}`) }));
+      const labels = () => window.listmonkPersonalization?.labels || {};
+      return {
+        strings,
+        baseItems,
+        disabled: this.disabled,
+        loadItems: () => loadItems(this.$api, this.listIds, labels()),
+        buildToken,
+        parseTokens,
+        getLabel: (item) => {
+          const base = baseItems.find((b) => b.id === item.id);
+          if (base) return base.label;
+          const custom = labels();
+          return Object.hasOwn(custom, item.key) && typeof custom[item.key] === 'string' ? custom[item.key] : item.key;
+        },
+      };
+    },
     loadScript() {
       return new Promise((resolve, reject) => {
         const iframe = this.$refs.visualEditor;
@@ -64,6 +91,7 @@ export default {
       if (!em || !em.isRendered('visual-editor-container')) {
         iframe.contentWindow.EmailBuilder.render('visual-editor-container', {
           data: {},
+          personalization: this.personalization(),
           onChange: (data, body) => {
             // Hack to fix quotes in Go {{ templating }} in the HTML body.
             const tpl = body.replace(/\{\{[^}]*\}\}/g, (match) => match.replace(/&quot;/g, '"'));
