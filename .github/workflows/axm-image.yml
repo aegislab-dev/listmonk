@@ -1,0 +1,194 @@
+name: axm-image
+
+on:
+  pull_request:
+    branches: ['axm/**']
+  push:
+    tags: ['v*-axm.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# Serialize reruns of a release so the second run sees the published tag.
+concurrency:
+  group: axm-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: listmonk
+          POSTGRES_PASSWORD: listmonk-ci
+          POSTGRES_DB: listmonk
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U listmonk'
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate version
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          publish=false
+          if [[ "$EVENT" == push && "$REF_TYPE" == tag ]]; then
+            [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-axm\.[1-9][0-9]*$ ]] || exit 1
+            git fetch origin '+refs/heads/axm/*:refs/remotes/origin/axm/*'
+            branches=$(git for-each-ref --format='%(refname)' --contains HEAD refs/remotes/origin/axm/)
+            test -n "$branches" || { echo 'Release commit must belong to origin/axm/*'; exit 1; }
+            version="$REF_NAME"
+            publish=true
+          else
+            version="v6.2.0-axm.0-pr${PR_NUMBER:-manual}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-$(git rev-parse HEAD | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Reject an already published release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, urllib.error, urllib.parse, urllib.request
+          credentials = base64.b64encode(f"{os.environ['GITHUB_ACTOR']}:{os.environ['GH_TOKEN']}".encode()).decode()
+          query = urllib.parse.urlencode({'service': 'ghcr.io', 'scope': 'repository:aegislab-dev/listmonk:pull'})
+          request = urllib.request.Request('https://ghcr.io/token?' + query, headers={'Authorization': 'Basic ' + credentials})
+          with urllib.request.urlopen(request) as response:
+              token = json.load(response)['token']
+          request = urllib.request.Request('https://ghcr.io/v2/aegislab-dev/listmonk/manifests/' + os.environ['VERSION'], method='HEAD', headers={
+              'Authorization': 'Bearer ' + token,
+              'Accept': 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
+          })
+          try:
+              urllib.request.urlopen(request).close()
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+          else:
+              raise SystemExit('Release tag exists; increment axm.N instead of publishing again')
+          PY
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build packed image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.axm
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: listmonk-axm:ci
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ steps.version.outputs.commit }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/aegislab-dev/listmonk
+            org.opencontainers.image.url=https://github.com/aegislab-dev/listmonk/tree/${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.version.outputs.revision }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.licenses=AGPL-3.0
+            org.opencontainers.image.created=${{ steps.version.outputs.created }}
+            org.opencontainers.image.title=listmonk (AXM fork)
+            org.opencontainers.image.description=Modified version of knadh/listmonk with AXM frontend changes
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install and smoke test packed image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          LISTMONK_db__host: 127.0.0.1
+          LISTMONK_db__port: '5432'
+          LISTMONK_db__user: listmonk
+          LISTMONK_db__password: listmonk-ci
+          LISTMONK_db__database: listmonk
+          LISTMONK_db__ssl_mode: disable
+          LISTMONK_app__address: 0.0.0.0:9000
+          LISTMONK_ADMIN_USER: ci-admin
+          LISTMONK_ADMIN_PASSWORD: ci-only-password
+        run: |
+          set -euo pipefail
+          actual=$(docker run --rm --entrypoint ./listmonk listmonk-axm:ci --version)
+          [[ "$actual" == "$VERSION ("* ]]
+          docker run --rm --entrypoint sh listmonk-axm:ci -c 'test -s LICENSE && test -s FORK.md'
+          env_args=()
+          while IFS='=' read -r key _; do
+            if [[ "$key" == LISTMONK_* ]]; then
+              env_args+=(-e "$key")
+            fi
+          done < <(env)
+          docker run --rm --network host "${env_args[@]}" listmonk-axm:ci ./listmonk --install --idempotent --yes
+          trap 'docker logs axm-smoke; docker rm -f axm-smoke' EXIT
+          docker run -d --name axm-smoke --network host "${env_args[@]}" listmonk-axm:ci
+          curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9000/health
+          python3 - <<'PY'
+          import html, http.cookiejar, json, os, re, urllib.parse, urllib.request
+          root = 'http://127.0.0.1:9000'
+          client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+          def get(path):
+              with client.open(root + path) as response:
+                  assert response.status == 200
+                  return response.read().decode()
+          login = get('/admin/login')
+          assert 'github.com/aegislab-dev/listmonk' in login
+          nonce = html.unescape(re.search(r'name="nonce" value="([^"]+)"', login)[1])
+          data = urllib.parse.urlencode({'username': os.environ['LISTMONK_ADMIN_USER'], 'password': os.environ['LISTMONK_ADMIN_PASSWORD'], 'nonce': nonce, 'next': '/admin/'}).encode()
+          with client.open(root + '/admin/login', data=data) as response:
+              assert response.status == 200
+          assert json.loads(get('/api/config'))['data']['version'] == os.environ['VERSION']
+          # Fetch the actual embedded Vue entry bundle, not a source file.
+          admin = get('/admin/')
+          scripts = re.findall(r'<script[^>]+src="([^"]+\.js)"', admin)
+          assert scripts, 'Missing packed admin bundle'
+          bundles = [get(path) for path in scripts]
+          assert any('github.com/aegislab-dev/listmonk' in bundle and 'source-footer' in bundle for bundle in bundles)
+          PY
+
+      - name: Login to GHCR
+        if: steps.version.outputs.publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish tested image
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_TAG: ${{ steps.version.outputs.sha_tag }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/aegislab-dev/listmonk
+          docker tag listmonk-axm:ci "$image:$VERSION"
+          docker tag listmonk-axm:ci "$image:$SHA_TAG"
+          docker push "$image:$VERSION" | tee "$RUNNER_TEMP/axm-push.log"
+          docker push "$image:$SHA_TAG"
+          digest=$(sed -n 's/.*digest: \(sha256:[a-f0-9]*\).*/\1/p' "$RUNNER_TEMP/axm-push.log")
+          test -n "$digest"
+          {
+            echo "Published: $image:$VERSION"
+            echo "Digest: $image@$digest"
+            echo "Source: https://github.com/aegislab-dev/listmonk/tree/$VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"

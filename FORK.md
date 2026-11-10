@@ -1,0 +1,147 @@
+# AXM listmonk 포크 운영 규칙
+
+이 저장소는 [knadh/listmonk](https://github.com/knadh/listmonk)의 공개 수정판이다.
+기반: **v6.2.0** (`ef0a75872463f10a4848af6c547d1c057405453a`).
+2026-11-10 수정: 프론트 포함 이미지 빌드, AGPL 소스 링크, 포크 운영 문서.
+원저작자의 저작권 고지와 [AGPL-3.0 라이선스](LICENSE)를 유지한다.
+현재 CSV 열 맞춤·개인화·동적 리스트 기능은 아직 구현하지 않았다.
+
+## 브랜치와 upstream 추종
+
+- `master`: upstream 거울. 직접 커밋하거나 배포하지 않는다.
+- `axm/v6.2`: v6.2.0 기반 유지 브랜치이자 GitHub 기본 브랜치. 기능 브랜치를 여기서 만들고 PR로 돌려보낸다. 직접 푸시 대신 PR을 사용한다.
+- 공유 유지 브랜치는 force-push하지 않는다. 게시한 태그는 수정하거나 삭제하지 않는다. 유지 브랜치에 PR 검사와 브랜치 보호 설정을 권고한다.
+- **knadh/listmonk에 푸시·PR·이슈·댓글을 보내지 않는다.** upstream 기여는 별도 결정한다. `gh`가 부모 저장소를 선택할 수 있으므로 PR 생성은 항상 대상을 명시한다.
+
+```sh
+git remote -v
+git remote get-url --push upstream # 반드시 no_push
+# 새 clone에서는 upstream을 등록한 뒤 푸시를 막는다.
+git remote add upstream https://github.com/knadh/listmonk.git
+git remote set-url --push upstream no_push
+gh repo set-default aegislab-dev/listmonk
+gh pr create --repo aegislab-dev/listmonk --base axm/v6.2 --head <feature-branch>
+```
+
+`upstream`이 이미 있으면 `remote add`는 생략한다. `master`의 동기화는 다음처럼 fast-forward만 허용한다. 강제 푸시하지 않는다.
+
+```sh
+git fetch upstream --tags
+git push origin upstream/master:master
+```
+
+`axm/v6.2`에서는 GitHub의 **Sync fork** 버튼을 누르지 않는다. upstream master의 v7 개발 코드를 섞게 된다.
+upstream이 `v6.2.x` 패치를 내면 그 태그를 유지 브랜치에 **merge**하고(rebase하지 않음), 이미지 태그를 `v6.2.x-axm.1`부터 다시 센다.
+마이너·메이저 변경은 해당 공식 태그에서 `axm/v6.3`·`axm/v7` 같은 새 브랜치를 만들고 포크 변경을 옮겨 검증한 뒤 기본 브랜치를 바꾼다.
+v7은 UI 전면 교체이므로 프론트 포팅이 필요하다.
+
+- upstream 보안 릴리스 확인 담당: **[사람 지정 필요]**
+- 확인 주기: **[사람 지정 필요]**
+
+## 버전, 이미지와 릴리스
+
+Git 태그 = 이미지 태그 = `v<upstream 버전>-axm.<N>`.
+N은 1부터 시작하고 같은 upstream 버전 안에서 하나씩 증가한다. 예: `v6.2.0-axm.1`.
+수정된 이미지는 N+1로 새로 발행한다. 이미 존재하는 릴리스 태그의 재게시는 CI가 거부한다.
+`latest`는 만들지 않는다. 보조 태그는 `sha-<전체 커밋 SHA 앞 12자리>`다.
+운영 기록에는 버전 태그와 digest를 함께 적고 이미지는 digest로 고정한다.
+
+**첫 릴리스 태그와 GHCR 게시는 초기 설정 PR 머지 뒤에 수행한다.**
+Squash 머지 전 태스크 커밋에 릴리스 태그를 달지 않는다.
+
+```sh
+git fetch origin --tags
+# 최신 유지 브랜치의 검증된 머지 커밋에서, 사용하지 않은 번호로 실행한다.
+git tag -a v6.2.0-axm.1 origin/axm/v6.2 -m 'AXM listmonk v6.2.0-axm.1'
+git push origin v6.2.0-axm.1
+```
+
+`axm-image` 성공 뒤 job summary의 `ghcr.io/aegislab-dev/listmonk@sha256:…`와 태그 커밋을 기록한다.
+처음 게시한 뒤 사람이 GitHub 패키지 설정에서 GHCR 패키지를 **public**으로 전환하고, 인증 없는 환경에서 pull이 되는지 확인한다.
+공개 저장소라고 패키지가 자동 공개된다고 가정하지 않는다.
+포크에서 Actions가 비활성화되어 있으면 사람이 Actions 탭에서 활성화해야 한다.
+상속된 release/nightly/Pages/stale/Hodor/build-sanity 워크플로는 포크 브랜치에서 제거한다. GitHub Actions 목록에 옛 워크플로가 남으면 disable한다.
+`.goreleaser*.yml`은 upstream 추종을 위해 보존하지만 이 포크에서 실행하지 않는다.
+
+워크플로 동작:
+
+- `axm/**` 대상 PR: linux/amd64 이미지 빌드 + 폐기용 Postgres 설치·기동 검사, 게시 없음.
+- 수동 실행: 같은 검사만 수행, 게시 없음.
+- `v*-axm.*` 태그: 엄격한 버전 형식·유지 브랜치 포함 여부·미게시 태그 확인 → 같은 검사 → GHCR 게시.
+- 게시에는 `GITHUB_TOKEN`만 사용한다. DockerHub로 보내지 않는다.
+- OCI 라벨에는 source, url(소스 태그), revision(전체 SHA), version, licenses, created, title, 원본의 수정판이라는 description을 담는다.
+
+## 로컬 빌드와 검증
+
+빌더는 **Node 24.22.2 / Go 1.26.1 / Yarn 1.22.22**, 런타임은 **Alpine 3.23.4**로 고정한다.
+두 프론트에서 `yarn install --frozen-lockfile`을 사용한다.
+Cypress 실행 파일은 이미지 빌드에 필요 없어 자동 다운로드를 생략한다.
+
+```sh
+docker build --platform linux/amd64 -f Dockerfile.axm \
+  --build-arg VERSION=v6.2.0-axm.0-local \
+  --build-arg COMMIT="$(git rev-parse --short HEAD)" \
+  -t listmonk-axm:local .
+docker run --rm --entrypoint ./listmonk listmonk-axm:local --version
+```
+
+`VERSION`과 `COMMIT`은 필수다. PR·수동 빌드는 `v6.2.0-axm.0-pr…`로 구별하며 릴리스용 정규식에 맞지 않아 게시할 수 없다.
+릴리스 작업에서는 Git 태그를 VERSION으로 넘기고 COMMIT은 `git rev-parse --short HEAD` 결과를 쓴다.
+이미지 보조 태그의 12자리 SHA와 바이너리의 short SHA는 별개다.
+
+React 이메일 빌더 → Vue 관리 프론트 → Go 바이너리 → **stuffbin 패킹**을 `make dist`로 실행한다.
+프론트만 고쳐도 바이너리와 이미지를 다시 빌드해야 한다. `go build`만 실행하거나 `.vue` 파일을 런타임에 복사하면 배포되지 않는다.
+upstream `Makefile`·`Dockerfile`은 보존한다. Go 변경이 허용되는 후속 태스크도 `Dockerfile.axm`으로 전체 빌드한다.
+런타임의 `/listmonk`, `config.toml`, entrypoint, 포트 9000, 기본 명령 `./listmonk`은 공식 이미지와 같다.
+
+CI는 빈 Postgres 17에 `--install --idempotent --yes` 후 `/health`, `/admin/login`, 임베드된 관리 JS 번들, 버전 출력과 라이선스 파일을 확인한다.
+프론트 lint는 `yarn build`의 prebuild에서 실행한다. 이 태스크에서는 Go·SQL·schema 변경과 DB 마이그레이션이 없다.
+
+## 소스 제공과 배포
+
+- 관리 화면 하단에는 `listmonk {version} · 소스 코드 · AGPL-3.0`를 표시한다. 포크 버전의 링크는 해당 버전 Git 태그다. 일반 개발 버전은 저장소 첫 화면으로 연결한다.
+  버전은 Settings와 동일한 기존 `/api/config`의 `serverConfig.version`을 사용한다. 기존 `import.meta.env.VUE_APP_VERSION`은 v6.2.0 Vite 설정에서 노출되지 않으므로 사용하지 않는다.
+- 공개·로그인 화면의 기존 Powered by listmonk 뒤에도 소스 링크를 표시한다. 공개 템플릿에는 버전 값이 없어 저장소 첫 화면으로 연결한다. **배포 버전별 소스는 `v6.2.0-axm.N` 태그**에서 제공한다.
+- 소스 링크·기존 저작권·라이선스 고지를 지우지 않는다. 이미지에는 LICENSE·README·이 문서를 포함한다. 배포한 버전의 태그·소스·빌드 스크립트·lockfile을 보존한다.
+- 비밀값, 실제 명단·이메일·속성값을 저장소에 넣지 않는다. 공개 키 카탈로그에도 공개하면 안 되는 내부 용어를 넣지 않는다.
+- `--static-dir`로 공개 템플릿을 덮어쓰면 해당 템플릿에도 소스 링크가 필요하다.
+- Railway 이미지 교체는 별도 승인 범위다. 이전 deployment와 이미지 digest·환경·시작 명령을 기록하고, DB·미디어 백업과 폐기용 환경 검증 후 진행한다. 기존 Custom JS/CSS의 중복 기능도 확인한다.
+- 이미지 롤백은 가져온 구독자 데이터·해지·차단 상태를 되돌리지 않는다. DB에 저장된 Custom JS/CSS도 이미지 교체만으로 복원되지 않는다.
+
+## Go·DB 변경 규칙 (LST-4 대비, 이번에는 문서만)
+
+기본 범위는 프론트 변경이다. Go·SQL 변경은 태스크가 명시적으로 허용했을 때만(LST-4) 최소 범위로 수행하고, upstream에 낼 수 있는 구조를 유지한다(실제 기여는 별도 결정).
+
+포크 전용 마이그레이션 번호는 **`v<기반 upstream 버전의 패치+1>-axm.<N>`**이다.
+v6.2.0 기반이면 `v6.2.1-axm.1`, `v6.2.1-axm.2` …을 사용한다.
+이미지 태그 `v6.2.0-axm.N`과 다른 번호다.
+`golang.org/x/mod/semver` 순서는 다음과 같다.
+
+```text
+v6.2.0 < v6.2.1-axm.1 < v6.2.1-axm.2 < v6.2.1 < v6.3.0 < v7.0.0
+```
+
+공식 안정 버전 마이그레이션보다 먼저 정렬되고 번호도 겹치지 않는다. upstream의 미래 prerelease 마이그레이션을 도입할 때에는 그 목록과의 실제 정렬도 확인한다.
+`+axm` build metadata는 비교에서 무시되어 실행되지 않으므로 쓰지 않는다.
+
+- 파일: `internal/migrations/v6.2.1-axm.N.go`, 함수: `V6_2_1_axm_N`. `cmd/upgrade.go`의 `migList` 맨 끝에 추가하며 semver 오름차순을 유지한다.
+- 이미 게시된 이미지의 마이그레이션 내용·번호를 바꾸지 않는다.
+- 모두 멱등(`IF NOT EXISTS` 등)으로 쓴다. 새 기반으로 포팅할 때에는 `v7.0.1-axm.N`처럼 다시 번호를 매겨도 기존 운영 DB에서 재실행이 안전해야 한다.
+- **추가만 허용한다**: 새 nullable 컬럼, 테이블, 인덱스. upstream 컬럼의 이름·타입·제약을 바꾸지 않는다.
+- 같은 변경을 `schema.sql`에도 반영한다. 새 설치는 schema.sql만 실행하고 마지막 마이그레이션 번호를 기록한다.
+- `queries/*.sql`의 기존 쿼리 이름과 인자 순서를 유지하고, 필터가 없는 리스트의 동작을 바이트 단위로 유지한다.
+- `settings.migrations`의 마지막 번호보다 큰 것만 실행한다. pending migration이 있으면 부팅을 거부한다.
+- 공식 v6.2.0으로 복귀하면 포크 컬럼은 남지만, 더 높은 기록 번호를 보고 대기 마이그레이션이 없다고 판단한다. **공식 이미지가 동적 리스트를 일반 리스트로 취급할 위험**은 LST-4에서 별도로 다뤄야 한다.
+- 마이그레이션이 있는 릴리스는 릴리스 설명에 명시한다. 교체 전 DB 백업 → `./listmonk --upgrade --yes` → 기동. 프론트만 바뀐 릴리스에는 마이그레이션이 없다.
+- 첫 마이그레이션을 추가하는 LST-4에서는 CI에 **새 설치와 공식 v6.2.0 스키마에서의 upgrade** 시험을 함께 추가해야 한다. 현재 CI에는 새 설치 시험만 있다.
+
+## 확정된 제품 기본값 (NEWS-30)
+
+우선순위: **LST-2(CSV 열 맞춤)·LST-3(개인화) → LST-4(동적 리스트)**.
+
+- 개인화는 네 형식 본문과 비주얼 Text/Heading부터 지원한다.
+- 키는 영문 snake_case + 한국어 라벨, 일반 값은 문자열, 태그만 배열이다. 기존 한글·중첩 속성을 자동 마이그레이션하지 않는다.
+- CSV 입력 상한은 10 MiB·50,000행이다.
+- userinfo/subscription overwrite는 기본 off다.
+
+v6.2.0 importer의 UTF-8 오류·실패 복구 결함은 프론트 변경으로 근본 해결할 수 없다. 이번 초기 설정에서는 수정하지 않는다.

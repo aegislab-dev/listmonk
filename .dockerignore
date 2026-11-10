@@ -21,5 +21,9 @@
 **/obj
 **/secrets.dev.yaml
 **/values.dev.yaml
-LICENSE
-README.md
+frontend/dist
+frontend/email-builder/dist
+frontend/public/static/email-builder
+docs
+# frontend's prebuild ESLint command reads this file explicitly.
+!frontend/.gitignore
