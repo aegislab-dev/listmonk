@@ -1,10 +1,11 @@
 package migrations
 
 import (
+	"log"
+
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/koanf/v2"
 	"github.com/knadh/stuffbin"
-	"log"
 )
 
 // V6_2_1_axm_2 adds optional account senders and verified reply addresses.

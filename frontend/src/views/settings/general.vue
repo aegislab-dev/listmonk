@@ -28,6 +28,52 @@
       <b-input v-model="data['app.from_email']" name="app.from_email"
         placeholder="Listmonk <noreply@listmonk.yoursite.com>" pattern="((.+?)\s)?<(.+?)@(.+?)>" :maxlength="300" />
     </b-field>
+    <section class="sender-settings">
+      <hr />
+      <h3 class="is-size-5 has-text-weight-semibold">{{ $t('settings.general.senderTitle') }}</h3>
+      <p class="help mb-5">{{ $t('settings.general.senderHelp') }}</p>
+      <b-field :label="$t('settings.general.senderDomains')" label-position="on-border"
+        :message="$t('settings.general.senderDomainsHelp')">
+        <b-taginput v-model="data['axm.sender_domains']" name="axm.sender_domains"
+          :disabled="!$can('settings:manage')" :placeholder="$t('settings.general.senderDomainsPlaceholder')" />
+      </b-field>
+      <b-field :label="$t('settings.general.defaultFrom')" label-position="on-border"
+        :message="$t('settings.general.defaultFromHelp')">
+        <b-input v-model="data['axm.default_from']" name="axm.default_from" :maxlength="2000"
+          :disabled="!$can('settings:manage')" />
+      </b-field>
+      <sender-address-input ref="defaultReplyTo" v-model="data['axm.default_reply_to']"
+        name="axm.default_reply_to" :label="$t('settings.general.defaultReplyTo')"
+        :disabled="!$can('settings:manage')" @addresses="addresses = $event" />
+      <p class="help">{{ $t('settings.general.defaultReplyToHelp') }}</p>
+      <template v-if="canManageCampaigns">
+        <h4 class="has-text-weight-semibold mt-5 mb-2">{{ $t('senders.addresses') }}</h4>
+        <p class="help mb-3">{{ $t('senders.addressesHelp') }}</p>
+        <p v-if="addresses.length === 0" class="help">{{ $t('senders.empty') }}</p>
+        <div v-for="address in addresses" :key="address.id" class="sender-address">
+          <div>
+            <strong>{{ address.email }}</strong>
+            <b-tag :type="address.status === 'verified' ? 'is-success is-light' : 'is-warning is-light'">
+              {{ $t(address.status === 'verified' ? 'senders.verified' : 'senders.pending') }}
+            </b-tag>
+            <p class="help">
+{{ $t('senders.requestedBy') }}: {{ address.requesterName || '—' }}
+              <template v-if="address.verifiedAt">
+· {{ $t('senders.verifiedAt') }}:
+                {{ $utils.niceDate(address.verifiedAt, true) }}
+              </template>
+            </p>
+          </div>
+          <b-button v-if="$can('settings:manage') || address.requestedBy === profile.id" size="is-small"
+            type="is-danger is-outlined" :loading="deleting === address.id" @click="deleteAddress(address)">
+            {{ $t('globals.buttons.delete') }}
+          </b-button>
+        </div>
+        <p class="help">{{ $t('senders.inUse') }}</p>
+      </template>
+      <p class="help mt-4">{{ $t('settings.general.senderSaveHelp') }}</p>
+      <hr />
+    </section>
     <b-field :label="$t('settings.general.adminNotifEmails')" label-position="on-border"
       :message="$t('settings.general.adminNotifEmailsHelp')">
       <b-taginput v-model="data['app.notify_emails']" name="app.notify_emails"
@@ -99,8 +145,10 @@
 <script>
 import Vue from 'vue';
 import { mapState } from 'vuex';
+import SenderAddressInput from '../../components/SenderAddressInput.vue';
 
 export default Vue.extend({
+  components: { SenderAddressInput },
   props: {
     form: {
       type: Object, default: () => { },
@@ -110,12 +158,40 @@ export default Vue.extend({
   data() {
     return {
       data: this.form,
+      addresses: [],
+      deleting: null,
     };
   },
 
+  methods: {
+    deleteAddress(address) {
+      this.$utils.confirm(null, async () => {
+        this.deleting = address.id;
+        try {
+          await this.$api.deleteSenderAddress(address.id);
+          await this.$refs.defaultReplyTo.refresh();
+        } finally {
+          this.deleting = null;
+        }
+      });
+    },
+  },
+
   computed: {
-    ...mapState(['serverConfig', 'loading']),
+    ...mapState(['serverConfig', 'loading', 'profile']),
+    canManageCampaigns() { return this.$can('campaigns:manage', 'campaigns:manage_all'); },
   },
 
 });
 </script>
+
+<style scoped>
+.sender-settings .help { line-height: 1.7; }
+.sender-settings .field { margin-top: 28px; margin-bottom: 28px; }
+.sender-address {
+  border: 1px solid #ddd; padding: 16px; border-radius: 4px; display: flex; gap: 16px;
+  align-items: center; justify-content: space-between; flex-wrap: wrap; margin: 12px 0;
+}
+.sender-address strong { overflow-wrap: anywhere; }
+.sender-address .tag { margin: 4px 0; }
+</style>

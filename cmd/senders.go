@@ -252,6 +252,11 @@ func (a *App) senderPolicyGuard(next echo.HandlerFunc) echo.HandlerFunc {
 		if len(a.cfg.SenderDomains) == 0 {
 			return next(c)
 		}
+		// Queue local waiters before reserving a DB connection. Otherwise a
+		// burst of requests waiting on the advisory lock can exhaust the pool
+		// while the lock holder needs another connection for campaign queries.
+		a.senderPolicyMu.Lock()
+		defer a.senderPolicyMu.Unlock()
 		tx, err := a.db.BeginTxx(c.Request().Context(), nil)
 		if err != nil {
 			return err
