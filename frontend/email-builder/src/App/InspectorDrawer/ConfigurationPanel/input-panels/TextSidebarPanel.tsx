@@ -5,6 +5,8 @@ import { TextProps, TextPropsSchema } from '@usewaypoint/block-text';
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
 import BooleanInput from './helpers/inputs/BooleanInput';
 import TextInput from './helpers/inputs/TextInput';
+import PersonalizationTextInput from './helpers/inputs/PersonalizationTextInput';
+import { usePersonalization } from '../../../personalization';
 import MultiStylePropertyPanel from './helpers/style-inputs/MultiStylePropertyPanel';
 
 type TextSidebarPanelProps = {
@@ -12,6 +14,7 @@ type TextSidebarPanelProps = {
   setData: (v: TextProps) => void;
 };
 export default function TextSidebarPanel({ data, setData }: TextSidebarPanelProps) {
+  const personalization = usePersonalization();
   const [, setErrors] = useState<Zod.ZodError | null>(null);
 
   const updateData = (d: unknown) => {
@@ -26,12 +29,22 @@ export default function TextSidebarPanel({ data, setData }: TextSidebarPanelProp
 
   return (
     <BaseSidebarPanel title="Text block">
-      <TextInput
-        label="Content"
-        rows={5}
-        defaultValue={data.props?.text ?? ''}
-        onChange={(text) => updateData({ ...data, props: { ...data.props, text } })}
+      {personalization ? (
+        <PersonalizationTextInput
+          config={personalization}
+          label="Content"
+          rows={5}
+          defaultValue={data.props?.text ?? ''}
+          onChange={(text) => updateData({ ...data, props: { ...data.props, text } })}
       />
+      ) : (
+        <TextInput
+          label="Content"
+          rows={5}
+          defaultValue={data.props?.text ?? ''}
+          onChange={(text) => updateData({ ...data, props: { ...data.props, text } })}
+      />
+      )}
       <BooleanInput
         label="Markdown"
         defaultValue={data.props?.markdown ?? false}

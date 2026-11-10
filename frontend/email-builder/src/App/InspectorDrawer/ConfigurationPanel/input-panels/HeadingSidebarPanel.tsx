@@ -6,6 +6,8 @@ import { HeadingProps, HeadingPropsDefaults, HeadingPropsSchema } from '@usewayp
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
 import RadioGroupInput from './helpers/inputs/RadioGroupInput';
 import TextInput from './helpers/inputs/TextInput';
+import PersonalizationTextInput from './helpers/inputs/PersonalizationTextInput';
+import { usePersonalization } from '../../../personalization';
 import MultiStylePropertyPanel from './helpers/style-inputs/MultiStylePropertyPanel';
 
 type HeadingSidebarPanelProps = {
@@ -13,6 +15,7 @@ type HeadingSidebarPanelProps = {
   setData: (v: HeadingProps) => void;
 };
 export default function HeadingSidebarPanel({ data, setData }: HeadingSidebarPanelProps) {
+  const personalization = usePersonalization();
   const [, setErrors] = useState<Zod.ZodError | null>(null);
 
   const updateData = (d: unknown) => {
@@ -27,14 +30,26 @@ export default function HeadingSidebarPanel({ data, setData }: HeadingSidebarPan
 
   return (
     <BaseSidebarPanel title="Heading block">
-      <TextInput
-        label="Content"
-        rows={3}
-        defaultValue={data.props?.text ?? HeadingPropsDefaults.text}
-        onChange={(text) => {
-          updateData({ ...data, props: { ...data.props, text } });
-        }}
+      {personalization ? (
+        <PersonalizationTextInput
+          config={personalization}
+          label="Content"
+          rows={3}
+          defaultValue={data.props?.text ?? HeadingPropsDefaults.text}
+          onChange={(text) => {
+            updateData({ ...data, props: { ...data.props, text } });
+          }}
       />
+      ) : (
+        <TextInput
+          label="Content"
+          rows={3}
+          defaultValue={data.props?.text ?? HeadingPropsDefaults.text}
+          onChange={(text) => {
+            updateData({ ...data, props: { ...data.props, text } });
+          }}
+      />
+      )}
       <RadioGroupInput
         label="Level"
         defaultValue={data.props?.level ?? HeadingPropsDefaults.level}
