@@ -51,6 +51,8 @@ func TestInsertBusinessFooter(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"HTML", "<body>unsubscribe</body></html>", "<body>unsubscribeFOOTER</body></html>"},
 		{"uppercase", "<BODY>unsubscribe</BoDy></HTML>", "<BODY>unsubscribeFOOTER</BoDy></HTML>"},
+		{"space before body end", "<body>unsubscribe</body >\n</html >", "<body>unsubscribeFOOTER</body >\n</html >"},
+		{"HTML whitespace before body end", "<body>unsubscribe</BoDy \t\r\n\f></html>", "<body>unsubscribeFOOTER</BoDy \t\r\n\f></html>"},
 		{"fragment", "<p>unsubscribe</p>", "<p>unsubscribe</p>FOOTER"},
 		{"last closing tag", "<body>one</body>two</body>", "<body>one</body>twoFOOTER</body>"},
 		{"Unicode", "<body>한국어 Ⱥ</body>", "<body>한국어 ȺFOOTER</body>"},
@@ -179,5 +181,43 @@ func TestBusinessFooterDefaultTemplates(t *testing.T) {
 				t.Fatal("Existing template changed")
 			}
 		})
+	}
+}
+
+func TestBusinessFooterPreservesEmptyAltBody(t *testing.T) {
+	markup, plain := BuildBusinessFooter(models.BusinessFooter{Enabled: true, CompanyName: "Example"}, testFooterLabels)
+	enabled := Manager{cfg: Config{BusinessFooterHTML: markup, BusinessFooterText: plain}}
+	disabled := Manager{}
+	for _, format := range []string{models.CampaignContentTypeHTML, models.CampaignContentTypeRichtext, models.CampaignContentTypeMarkdown, models.CampaignContentTypeVisual} {
+		for _, tc := range []struct {
+			name string
+			alt  null.String
+		}{
+			{"null", null.String{}},
+			{"stored empty string", null.StringFrom("")},
+			{"template renders empty", null.StringFrom(`{{ if .Subscriber.Name }}Alternative content{{ end }}`)},
+		} {
+			t.Run(format+"/"+tc.name, func(t *testing.T) {
+				c := models.Campaign{
+					ContentType: format, Messenger: "email", Body: "Content", AltBody: tc.alt,
+					TemplateBody: `<body>{{ template "content" . }}</body>`,
+				}
+				if err := c.CompileTemplate(nil); err != nil {
+					t.Fatal(err)
+				}
+				for _, mgr := range []*Manager{&disabled, &enabled} {
+					msg, err := mgr.NewCampaignMessage(&c, models.Subscriber{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(msg.AltBody()) != 0 {
+						t.Fatalf("Empty alternative body gained content: %q", msg.AltBody())
+					}
+					if mgr == &enabled && !bytes.Contains(msg.Body(), markup) {
+						t.Fatal("Main HTML body lost its footer")
+					}
+				}
+			})
+		}
 	}
 }

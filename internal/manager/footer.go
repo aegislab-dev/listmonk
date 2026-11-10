@@ -61,7 +61,7 @@ func BuildBusinessFooter(info models.BusinessFooter, labels BusinessFooterLabels
 	return []byte(markup.String()), []byte(text.String())
 }
 
-var businessFooterBodyEnd = regexp.MustCompile(`(?i)</body>`)
+var businessFooterBodyEnd = regexp.MustCompile(`(?i)</body[\t\n\f\r ]*>`)
 
 // insertHTMLFooter places the block after the existing footer, before the last body end.
 func insertHTMLFooter(body, footer []byte, marker string) []byte {

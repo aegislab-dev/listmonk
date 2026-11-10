@@ -32,7 +32,8 @@ func (m *Manager) NewCampaignMessage(c *models.Campaign, s models.Subscriber) (C
 			msg.body = appendTextFooter(msg.body, m.cfg.BusinessFooterText, m.cfg.BusinessFooterMarker)
 		} else {
 			msg.body = insertHTMLFooter(msg.body, m.cfg.BusinessFooterHTML, m.cfg.BusinessFooterMarker)
-			if c.AltBody.Valid {
+			// Preserve absent text parts, including empty strings and templates that render empty.
+			if len(msg.altBody) > 0 {
 				msg.altBody = appendTextFooter(msg.altBody, m.cfg.BusinessFooterText, m.cfg.BusinessFooterMarker)
 			}
 		}
