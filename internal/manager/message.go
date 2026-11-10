@@ -3,6 +3,7 @@ package manager
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/knadh/listmonk/models"
 )
@@ -23,6 +24,18 @@ func (m *Manager) NewCampaignMessage(c *models.Campaign, s models.Subscriber) (C
 
 	if err := msg.render(); err != nil {
 		return msg, err
+	}
+
+	// Campaign previews, test sends and public message views use this same path.
+	if c.Messenger == "email" || strings.HasPrefix(c.Messenger, "email-") {
+		if c.ContentType == models.CampaignContentTypePlain {
+			msg.body = appendTextFooter(msg.body, m.cfg.BusinessFooterText, m.cfg.BusinessFooterMarker)
+		} else {
+			msg.body = insertHTMLFooter(msg.body, m.cfg.BusinessFooterHTML, m.cfg.BusinessFooterMarker)
+			if c.AltBody.Valid {
+				msg.altBody = appendTextFooter(msg.altBody, m.cfg.BusinessFooterText, m.cfg.BusinessFooterMarker)
+			}
+		}
 	}
 
 	return msg, nil

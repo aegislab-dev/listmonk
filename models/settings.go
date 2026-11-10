@@ -2,8 +2,22 @@ package models
 
 import "gopkg.in/volatiletech/null.v6"
 
+// BusinessFooter holds the global business details appended to campaign emails.
+type BusinessFooter struct {
+	Enabled        bool   `json:"enabled"`
+	CompanyName    string `json:"company_name"`
+	Representative string `json:"representative"`
+	RegistrationNo string `json:"registration_no"`
+	Address        string `json:"address"`
+	Phone          string `json:"phone"`
+	Email          string `json:"email"`
+	Extra          string `json:"extra"`
+}
+
 // Settings represents the app settings stored in the DB.
 type Settings struct {
+	BusinessFooter BusinessFooter `json:"axm.business_footer"`
+
 	AppSiteName                   string   `json:"app.site_name"`
 	AppRootURL                    string   `json:"app.root_url"`
 	AppLogoURL                    string   `json:"app.logo_url"`

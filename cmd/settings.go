@@ -92,6 +92,10 @@ func (a *App) UpdateSettings(c echo.Context) error {
 		return err
 	}
 
+	if !normalizeBusinessFooter(&set.BusinessFooter) {
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("settings.businessFooter.required"))
+	}
+
 	// Get the existing settings.
 	cur, err := a.core.GetSettings()
 	if err != nil {
@@ -331,12 +335,33 @@ func (a *App) UpdateSettingsByKey(c echo.Context) error {
 		return err
 	}
 
+	// Apply the same validation when this setting is saved through the keyed API.
+	if key == "axm.business_footer" {
+		var footer models.BusinessFooter
+		if err := json.Unmarshal(b, &footer); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("globals.messages.invalidData"))
+		}
+		if !normalizeBusinessFooter(&footer) {
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("settings.businessFooter.required"))
+		}
+		b, _ = json.Marshal(footer)
+	}
+
 	// Update the value in the DB.
 	if err := a.core.UpdateSettingsByKey(key, b); err != nil {
 		return err
 	}
 
 	return a.handleSettingsRestart(c)
+}
+
+// normalizeBusinessFooter trims plain text settings and checks enabled-only requirements.
+func normalizeBusinessFooter(footer *models.BusinessFooter) bool {
+	for _, field := range []*string{&footer.CompanyName, &footer.Representative,
+		&footer.RegistrationNo, &footer.Address, &footer.Phone, &footer.Email, &footer.Extra} {
+		*field = strings.TrimSpace(*field)
+	}
+	return !footer.Enabled || (footer.CompanyName != "" && footer.Address != "" && footer.Phone != "" && footer.Email != "")
 }
 
 // handleSettingsRestart checks for running campaigns and either triggers an

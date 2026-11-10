@@ -57,6 +57,9 @@
           <b-tab-item :label="$t('settings.appearance.name')">
             <appearance-settings :form="form" :key="key" />
           </b-tab-item><!-- appearance -->
+          <b-tab-item :label="$t('settings.businessFooter.name')">
+            <business-settings :form="form" :key="key" />
+          </b-tab-item><!-- business footer -->
         </b-tabs>
       </section>
     </section>
@@ -68,6 +71,7 @@ import Vue from 'vue';
 import { mapState } from 'vuex';
 import AppearanceSettings from './settings/appearance.vue';
 import BounceSettings from './settings/bounces.vue';
+import BusinessSettings from './settings/business.vue';
 import GeneralSettings from './settings/general.vue';
 import MediaSettings from './settings/media.vue';
 import MessengerSettings from './settings/messengers.vue';
@@ -78,6 +82,7 @@ import SmtpSettings from './settings/smtp.vue';
 
 export default Vue.extend({
   components: {
+    BusinessSettings,
     GeneralSettings,
     PerformanceSettings,
     PrivacySettings,
