@@ -243,7 +243,16 @@ export default Vue.extend({
       }
     },
     'form.delim': function delimiterChanged(value) {
-      if (this.isCSV && value !== this.csv.delimiter) this.parseCSV(false, true);
+      if (!this.isCSV) return;
+      if (!value) {
+        this.stopCSV();
+        this.csv.parsed = false;
+        this.csv.delimiter = '';
+        this.csv.ready = false;
+        this.csv.busy = false;
+        return;
+      }
+      if (value !== this.csv.delimiter || !this.csv.parsed) this.parseCSV(false, true);
     },
     'form.lists': function listsChanged() {
       if (this.isCSV) this.loadAttributeKeys();
@@ -579,7 +588,7 @@ export default Vue.extend({
       return !!this.form.file && /\.csv$/i.test(this.form.file.name);
     },
     canUpload() {
-      if (!this.form.file || this.isProcessing) return false;
+      if (!this.form.file || this.isProcessing || this.form.delim.length !== 1) return false;
       if (!this.isCSV) return true;
       return this.csv.parsed && !this.csv.busy && !this.csv.error
         && (this.csv.mode === 'raw' || this.csv.ready);
