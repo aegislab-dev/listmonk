@@ -132,6 +132,22 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
     // The popover does not restore focus itself: preserve the content selection.
     if (editing?.isConnected) editing.focus(); else button.current?.focus();
   };
+  const leaveChip = () => {
+    // Chromium may leave the caret inside a noneditable span after insertHTML.
+    // Place it immediately after the inserted chip, without adding stored text.
+    const selection = window.getSelection()!;
+    const node = selection.anchorNode;
+    const inserted = node instanceof Element ? node.closest('[data-token]') : node?.parentElement?.closest('[data-token]');
+    if (inserted) {
+      const range = document.createRange();
+      range.setStartAfter(inserted); range.collapse(true);
+      selection.removeAllRanges(); selection.addRange(range);
+    }
+  };
+  const insertMarkup = (html: string) => {
+    document.execCommand('insertHTML', false, html);
+    leaveChip();
+  };
   const apply = (remove = false) => {
     if (!remove && !selected) return;
     restore(editing || undefined);
@@ -139,17 +155,7 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
       document.execCommand('delete');
     } else {
       const chip = makeChip(config, selected!, fallback, config.buildToken(selected!, fallback));
-      document.execCommand('insertHTML', false, chip.outerHTML);
-      // Chromium may leave the caret inside a noneditable span after insertHTML.
-      // Place it immediately after the inserted chip, without adding stored text.
-      const selection = window.getSelection()!;
-      const node = selection.anchorNode;
-      const inserted = node instanceof Element ? node.closest('[data-token]') : node?.parentElement?.closest('[data-token]');
-      if (inserted) {
-        const range = document.createRange();
-        range.setStartAfter(inserted); range.collapse(true);
-        selection.removeAllRanges(); selection.addRange(range);
-      }
+      insertMarkup(chip.outerHTML);
     }
     lastRange.current = window.getSelection()?.getRangeAt(0).cloneRange() || null;
     emit();
@@ -207,7 +213,17 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
       }}
       onPaste={(ev) => {
         ev.preventDefault();
-        document.execCommand('insertText', false, ev.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n'));
+        const text = ev.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n');
+        const parts = config.parseTokens(text);
+        if (parts.some((part) => part.type === 'token')) {
+          const content = document.createElement('div');
+          parts.forEach((part) => content.append(part.type === 'text' ? document.createTextNode(part.value)
+            : makeChip(config, part.item, part.fallback, part.raw)));
+          insertMarkup(content.innerHTML);
+        } else {
+          document.execCommand('insertText', false, text);
+        }
+        emit();
       }}
       onDrop={(ev) => ev.preventDefault()}
       onCopy={(ev) => copy(ev)}
