@@ -61,7 +61,7 @@
     <richtext-editor v-if="self.contentType === 'richtext'" :disabled="disabled" v-model="self.body" />
 
     <!-- visual editor //-->
-    <visual-editor v-if="self.contentType === 'visual'" :source="self.bodySource" @change="onVisualEditorChange"
+    <visual-editor v-if="self.contentType === 'visual'" :source="self.bodySource" :list-ids="listIds" :disabled="disabled" @change="onVisualEditorChange"
       height="65vh" ref="visualEditor" />
 
     <!-- raw html editor //-->
@@ -102,6 +102,7 @@ export default {
   },
 
   props: {
+    listIds: { type: Array, default: () => [] },
     contentTypes: { type: Object, default: () => ({}) },
     id: { type: Number, default: 0 },
     title: { type: String, default: '' },

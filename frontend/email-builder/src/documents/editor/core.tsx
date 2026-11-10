@@ -4,11 +4,11 @@ import { z } from 'zod';
 import { Avatar, AvatarPropsSchema } from '@usewaypoint/block-avatar';
 import { Button, ButtonPropsSchema } from '@usewaypoint/block-button';
 import { Divider, DividerPropsSchema } from '@usewaypoint/block-divider';
-import { Heading, HeadingPropsSchema } from '@usewaypoint/block-heading';
+import { HeadingPropsSchema } from '@usewaypoint/block-heading';
 import { Html, HtmlPropsSchema } from '@usewaypoint/block-html';
 import { Image, ImagePropsSchema } from '@usewaypoint/block-image';
 import { Spacer, SpacerPropsSchema } from '@usewaypoint/block-spacer';
-import { Text, TextPropsSchema } from '@usewaypoint/block-text';
+import { TextPropsSchema } from '@usewaypoint/block-text';
 import {
   buildBlockComponent,
   buildBlockConfigurationDictionary,
@@ -22,6 +22,7 @@ import ContainerPropsSchema from '../blocks/Container/ContainerPropsSchema';
 import EmailLayoutEditor from '../blocks/EmailLayout/EmailLayoutEditor';
 import EmailLayoutPropsSchema from '../blocks/EmailLayout/EmailLayoutPropsSchema';
 import EditorBlockWrapper from '../blocks/helpers/block-wrappers/EditorBlockWrapper';
+import PersonalizedText from '../blocks/helpers/PersonalizedText';
 
 // Adds an opt-in `embed` flag to the upstream Image props. The renderer
 // (frontend/email-builder/src/utils.tsx) re-tags marked <img>s with
@@ -76,7 +77,7 @@ const EDITOR_DICTIONARY = buildBlockConfigurationDictionary({
     schema: HeadingPropsSchema,
     Component: (props) => (
       <EditorBlockWrapper>
-        <Heading {...props} />
+        <PersonalizedText heading {...props} />
       </EditorBlockWrapper>
     ),
   },
@@ -109,7 +110,7 @@ const EDITOR_DICTIONARY = buildBlockConfigurationDictionary({
     schema: TextPropsSchema,
     Component: (props) => (
       <EditorBlockWrapper>
-        <Text {...props} />
+        <PersonalizedText {...props} />
       </EditorBlockWrapper>
     ),
   },

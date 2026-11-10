@@ -169,6 +169,7 @@
                   <b-taginput v-model="form.testEmails" :before-adding="$utils.validateEmail" :disabled="isNew" ellipsis
                     icon="email-outline" :placeholder="$t('campaigns.testEmails')" />
                 </b-field>
+                <p class="help mb-4">{{ $t('campaigns.personalize.testHelp') }}</p>
                 <b-field>
                   <b-button @click="() => onSubmit('test')" :loading="loading.campaigns" :disabled="isNew"
                     type="is-primary" icon-left="email-outline">
@@ -183,7 +184,7 @@
 
       <b-tab-item :label="$t('campaigns.content')" icon="text" :disabled="isNew" value="content">
         <editor v-if="data.id" v-model="form.content" :id="data.id" :title="data.name" :disabled="!canEdit"
-          :templates="templates" :content-types="contentTypes" />
+          :templates="templates" :content-types="contentTypes" :list-ids="form.lists.map((l) => l.id)" />
 
         <div class="columns">
           <div class="column is-6">
