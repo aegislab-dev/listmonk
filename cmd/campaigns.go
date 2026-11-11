@@ -363,7 +363,9 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 		o = c
 	}
 
-	if len(a.cfg.SenderDomains) > 0 && (o.SendAt.Valid || cm.Status == models.CampaignStatusScheduled || cm.Status == models.CampaignStatusPaused) {
+	// A send_at value does not activate a draft. Only edits to campaigns
+	// already scheduled or paused must pass the sending checks here.
+	if len(a.cfg.SenderDomains) > 0 && (cm.Status == models.CampaignStatusScheduled || cm.Status == models.CampaignStatusPaused) {
 		if err := a.requireVerifiedReply(&o.Campaign); err != nil {
 			return err
 		}

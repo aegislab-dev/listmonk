@@ -85,7 +85,7 @@
                     <p class="help">{{ $t(usesAccountFrom ? 'campaigns.sentFromAccountHelp' : 'campaigns.sentFromDefaultHelp') }}</p>
                   </div>
                   <sender-address-input ref="replyTo" v-model="form.replyTo" :label="$t('campaigns.replyTo')"
-                    :disabled="!canEdit" />
+                    :disabled="!canEdit" @addresses="onReplyAddresses" />
                 </template>
                 <b-field v-else :label="$t('campaigns.fromAddress')" label-position="on-border">
                   <b-input :maxlength="200" v-model="form.fromEmail" name="from_email" :disabled="!canEdit"
@@ -421,6 +421,10 @@ export default Vue.extend({
   },
 
   methods: {
+    onReplyAddresses() {
+      if (this.$refs.replyTo?.allowed) this.replyError = '';
+    },
+
     senderFields() {
       return this.senderPolicyEnabled ? { reply_to: this.form.replyTo } : { from_email: this.form.fromEmail };
     },
