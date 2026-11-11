@@ -25,6 +25,7 @@ func (m *Manager) NewCampaignMessage(c *models.Campaign, s models.Subscriber) (C
 	if err := msg.render(); err != nil {
 		return msg, err
 	}
+	m.trackVisualMessage(&msg)
 
 	// Campaign previews, test sends and public message views use this same path.
 	if c.Messenger == "email" || strings.HasPrefix(c.Messenger, "email-") {
