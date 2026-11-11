@@ -78,7 +78,6 @@ describe('Import', () => {
 
     cy.get('.list-selector input').click();
     cy.get('.list-selector .autocomplete a').first().click();
-    cy.get('input[name=delim]').clear().type('|');
 
     cy.fixture('subs.csv').then((data) => {
       cy.get('input[type="file"]').attachFile({
@@ -87,6 +86,11 @@ describe('Import', () => {
         mimeType: 'text/csv',
       });
     });
+
+    cy.get('[data-cy=map-mode-raw] input').should('be.checked');
+    cy.get('[data-cy=map-mode-raw]').click();
+    cy.get('input[name=delim]').clear().type('|');
+    cy.get('[data-cy=map-busy]').should('not.exist');
 
     cy.get('button.is-primary').click();
     cy.wait(250);

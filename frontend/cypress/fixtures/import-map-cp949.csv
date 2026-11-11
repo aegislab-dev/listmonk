@@ -1,0 +1,7 @@
+메일 주소,성함,회사명,관심 태그,회원 번호,비고
+ CSV-CP949-FIRST@EXAMPLE.INVALID ,똠 가상 하나,가상 회사,"개발, AI,개발, ,마케팅",00123,버림
+csv-cp949-second@example.invalid,가상 둘,가상 연구소,AI,00456,확인
+csv-cp949-first@example.invalid,가상 중복,가상 회사,AI,00123,중복
+wrong@localhost,가상 오류,가상 회사,AI,00999,오류
+,가상 빈칸,가상 회사,AI,00888,오류
+extra@example.invalid,가상 열,가상 회사,AI,00777,오류,추가

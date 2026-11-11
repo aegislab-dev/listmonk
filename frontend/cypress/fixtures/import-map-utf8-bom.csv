@@ -1,0 +1,3 @@
+﻿메일 주소,성함,회사명,관심 태그,회원 번호,비고
+csv-utf8-first@example.invalid,가상 UTF 하나,가상 상점,"개발, AI",00123,버림
+csv-utf8-second@example.invalid,가상 UTF 둘,가상 연구소,AI,00456,버림
