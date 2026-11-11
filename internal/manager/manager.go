@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net/mail"
 	"net/textproto"
 	"net/url"
 	"path"
@@ -147,6 +148,7 @@ type Config struct {
 	ViewTrackURL          string
 	ArchiveURL            string
 	RootURL               string
+	SenderPolicyEnabled   bool
 	UnsubHeader           bool
 
 	// Pre-rendered business footer. Empty bodies disable insertion.
@@ -521,6 +523,13 @@ func (m *Manager) worker() {
 				}
 			}
 
+			if m.cfg.SenderPolicyEnabled && msg.Campaign.ReplyTo != "" && (msg.Campaign.Messenger == "email" || strings.HasPrefix(msg.Campaign.Messenger, "email-")) {
+				replyTo := msg.Campaign.ReplyTo
+				if address, err := mail.ParseAddress(replyTo); err == nil && address.Name != "" {
+					replyTo = address.String()
+				}
+				h.Set("Reply-To", replyTo)
+			}
 			// Set the headers.
 			out.Headers = h
 

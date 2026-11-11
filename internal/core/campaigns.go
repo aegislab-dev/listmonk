@@ -192,6 +192,7 @@ func (c *Core) CreateCampaign(o models.Campaign, listIDs []int, mediaIDs []int) 
 		o.ArchiveMeta,
 		pq.Array(mediaIDs),
 		o.BodySource,
+		o.ReplyTo,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.noSubs"))
@@ -231,7 +232,7 @@ func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs
 		o.ArchiveTemplateID,
 		o.ArchiveMeta,
 		pq.Array(mediaIDs),
-		o.BodySource)
+		o.BodySource, o.ReplyTo)
 	if err != nil {
 		c.log.Printf("error updating campaign: %v", err)
 		return models.Campaign{}, echo.NewHTTPError(http.StatusInternalServerError,
@@ -247,7 +248,7 @@ func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs
 }
 
 // UpdateCampaignStatus updates a campaign's status, eg: draft to running.
-func (c *Core) UpdateCampaignStatus(id int, status string) (models.Campaign, error) {
+func (c *Core) UpdateCampaignStatus(id int, status string, from string) (models.Campaign, error) {
 	cm, err := c.GetCampaign(id, "", "")
 	if err != nil {
 		return models.Campaign{}, err
@@ -285,7 +286,18 @@ func (c *Core) UpdateCampaignStatus(id int, status string) (models.Campaign, err
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, errMsg)
 	}
 
-	res, err := c.q.UpdateCampaignStatus.Exec(cm.ID, status)
+	tx, err := c.db.Beginx()
+	if err != nil {
+		return models.Campaign{}, err
+	}
+	defer tx.Rollback()
+	if from != "" && cm.Status == models.CampaignStatusDraft {
+		if _, err := tx.Stmtx(c.q.UpdateCampaignFrom).Exec(id, from); err != nil {
+			return models.Campaign{}, err
+		}
+		cm.FromEmail = from
+	}
+	res, err := tx.Stmtx(c.q.UpdateCampaignStatus).Exec(cm.ID, status)
 	if err != nil {
 		c.log.Printf("error updating campaign status: %v", err)
 
@@ -298,8 +310,10 @@ func (c *Core) UpdateCampaignStatus(id int, status string) (models.Campaign, err
 			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
 	}
 
-	cm.Status = status
-	return cm, nil
+	if err := tx.Commit(); err != nil {
+		return models.Campaign{}, err
+	}
+	return c.GetCampaign(id, "", "")
 }
 
 // UpdateCampaignArchive updates a campaign's archive properties.

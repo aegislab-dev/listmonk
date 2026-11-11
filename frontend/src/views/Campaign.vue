@@ -60,6 +60,9 @@
       <b-tab-item :label="$tc('globals.terms.campaign')" label-position="on-border" value="campaign"
         icon="rocket-launch-outline">
         <section class="wrap">
+          <b-notification v-if="replyError" type="is-danger is-light" :closable="false" role="alert">
+            {{ replyError }}
+          </b-notification>
           <div class="columns">
             <div class="column is-7">
               <form @submit.prevent="() => onSubmit(isNew ? 'create' : 'update')">
@@ -73,7 +76,18 @@
                     :placeholder="$t('campaigns.subject')" required />
                 </b-field>
 
-                <b-field :label="$t('campaigns.fromAddress')" label-position="on-border">
+                <template v-if="senderPolicyEnabled">
+                  <div class="field">
+                    <p class="label is-size-7">{{ $t('campaigns.sentFrom') }}</p>
+                    <div class="sender-readonly" data-cy="sent-from">
+                      <span>{{ resolvedFrom }}</span><span class="has-text-grey is-size-7">{{ $t('senders.automatic') }}</span>
+                    </div>
+                    <p class="help">{{ $t(usesAccountFrom ? 'campaigns.sentFromAccountHelp' : 'campaigns.sentFromDefaultHelp') }}</p>
+                  </div>
+                  <sender-address-input ref="replyTo" v-model="form.replyTo" :label="$t('campaigns.replyTo')"
+                    :disabled="!canEdit" @addresses="onReplyAddresses" />
+                </template>
+                <b-field v-else :label="$t('campaigns.fromAddress')" label-position="on-border">
                   <b-input :maxlength="200" v-model="form.fromEmail" name="from_email" :disabled="!canEdit"
                     :placeholder="$t('campaigns.fromAddressPlaceholder')" required />
                 </b-field>
@@ -233,6 +247,9 @@
 
       <b-tab-item :label="$t('campaigns.archive')" icon="newspaper-variant-outline" value="archive" :disabled="isNew">
         <section class="wrap">
+          <b-notification v-if="replyError" type="is-danger is-light" :closable="false" role="alert">
+            {{ replyError }}
+          </b-notification>
           <div class="columns">
             <div class="column is-4">
               <b-field :label="$t('campaigns.archiveEnable')" data-cy="btn-archive"
@@ -332,6 +349,8 @@ import CopyText from '../components/CopyText.vue';
 import Editor from '../components/Editor.vue';
 import ListSelector from '../components/ListSelector.vue';
 import Media from './Media.vue';
+import SenderAddressInput from '../components/SenderAddressInput.vue';
+import { isSenderDomain } from '../senders';
 
 export default Vue.extend({
   components: {
@@ -340,6 +359,7 @@ export default Vue.extend({
     Media,
     CopyText,
     CampaignPreview,
+    SenderAddressInput,
   },
 
   data() {
@@ -359,6 +379,7 @@ export default Vue.extend({
       isAttachModalOpen: false,
       isPreviewingArchive: false,
       activeTab: 'campaign',
+      replyError: '',
 
       data: {},
 
@@ -371,6 +392,7 @@ export default Vue.extend({
         name: '',
         subject: '',
         fromEmail: '',
+        replyTo: '',
         headersStr: '[]',
         headers: [],
         attribsStr: '{}',
@@ -399,6 +421,23 @@ export default Vue.extend({
   },
 
   methods: {
+    onReplyAddresses() {
+      if (this.$refs.replyTo?.allowed) this.replyError = '';
+    },
+
+    senderFields() {
+      return this.senderPolicyEnabled ? { reply_to: this.form.replyTo } : { from_email: this.form.fromEmail };
+    },
+
+    async checkReplyTo() {
+      if (!this.senderPolicyEnabled) return true;
+      await this.$refs.replyTo.refresh();
+      if (this.$refs.replyTo.allowed) { this.replyError = ''; return true; }
+      this.activeTab = 'campaign';
+      this.replyError = this.$refs.replyTo.invalid ? this.$t('senders.invalidEmail')
+        : this.$t('senders.unverified', { email: this.form.replyTo });
+      return false;
+    },
     formatDateTime(s) {
       return dayjs(s).format('YYYY-MM-DD HH:mm');
     },
@@ -507,7 +546,7 @@ export default Vue.extend({
           this.sendTest();
           break;
         default:
-          this.updateCampaign();
+          this.updateCampaign().catch(() => {});
           break;
       }
     },
@@ -541,13 +580,14 @@ export default Vue.extend({
       });
     },
 
-    sendTest() {
+    async sendTest() {
+      if (!await this.checkReplyTo()) return false;
       const data = {
         id: this.data.id,
         name: this.form.name,
         subject: this.form.subject,
         lists: this.form.lists.map((l) => l.id),
-        from_email: this.form.fromEmail,
+        ...this.senderFields(),
         messenger: this.form.messenger,
         type: 'regular',
         headers: this.form.headers,
@@ -562,6 +602,8 @@ export default Vue.extend({
 
       this.$api.testCampaign(data).then(() => {
         this.$utils.toast(this.$t('campaigns.testSent'));
+      }).catch((err) => {
+        if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
       });
       return false;
     },
@@ -572,7 +614,7 @@ export default Vue.extend({
         name: this.form.name,
         subject: this.form.subject,
         lists: this.form.lists.map((l) => l.id),
-        from_email: this.form.fromEmail,
+        ...this.senderFields(),
         content_type: this.form.content.contentType,
         messenger: this.form.messenger,
         type: 'regular',
@@ -595,7 +637,7 @@ export default Vue.extend({
         name: this.form.name,
         subject: this.form.subject,
         lists: this.form.lists.map((l) => l.id),
-        from_email: this.form.fromEmail,
+        ...this.senderFields(),
         messenger: this.form.messenger,
         type: 'regular',
         tags: this.form.tags,
@@ -622,17 +664,20 @@ export default Vue.extend({
         this.form.sendLater = false;
       }
 
-      // This promise is used by startCampaign to first save before starting.
-      return new Promise((resolve) => {
-        this.$api.updateCampaign(this.data.id, data).then((d) => {
-          this.data = d;
-          this.form.archiveSlug = d.archiveSlug;
-          this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
-
-          this.$utils.toast(this.$t(typMsg, { name: d.name }));
-          resolve();
-        });
-      });
+      // Save and propagate errors before starting or scheduling a campaign.
+      try {
+        const d = await this.$api.updateCampaign(this.data.id, data);
+        this.data = d;
+        this.form.fromEmail = d.fromEmail;
+        this.form.replyTo = d.replyTo;
+        this.form.archiveSlug = d.archiveSlug;
+        this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
+        this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        return d;
+      } catch (err) {
+        if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
+        throw err;
+      }
     },
 
     onUpdateCampaignArchive() {
@@ -653,11 +698,12 @@ export default Vue.extend({
     },
 
     // Starts or schedule a campaign.
-    startCampaign() {
+    async startCampaign() {
       if (!this.canStart && !this.canSchedule) {
         return;
       }
 
+      if (!await this.checkReplyTo()) return;
       this.$utils.confirm(
         null,
         () => {
@@ -670,12 +716,14 @@ export default Vue.extend({
             } else if (this.canSchedule) {
               status = 'scheduled';
             } else {
-              return;
+              return undefined;
             }
 
-            this.$api.changeCampaignStatus(this.data.id, status).then(() => {
+            return this.$api.changeCampaignStatus(this.data.id, status).then(() => {
               this.$router.push({ name: 'campaigns' });
             });
+          }).catch((err) => {
+            if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
           });
         },
       );
@@ -689,7 +737,14 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['serverConfig', 'loading', 'lists', 'templates']),
+    ...mapState(['serverConfig', 'loading', 'lists', 'templates', 'profile']),
+
+    senderPolicyEnabled() { return (this.serverConfig.sender_domains || []).length > 0; },
+    usesAccountFrom() { return isSenderDomain(this.profile.email, this.serverConfig.sender_domains); },
+    resolvedFrom() {
+      if (this.isEditing && !['draft', 'scheduled'].includes(this.data.status)) return this.data.fromEmail;
+      return this.serverConfig.resolved_from;
+    },
 
     canManage() {
       return this.$can('campaigns:manage_all', 'campaigns:manage');
@@ -746,6 +801,7 @@ export default Vue.extend({
   },
 
   watch: {
+    'form.replyTo': function clearReplyError() { this.replyError = ''; },
     selectedLists() {
       this.form.lists = this.selectedLists;
     },
@@ -765,8 +821,12 @@ export default Vue.extend({
   mounted() {
     window.onbeforeunload = () => this.isUnsaved() || null;
 
+    // Refresh the server-computed sender after a profile change in this session.
+    if (this.senderPolicyEnabled) this.$api.getServerConfig();
+
     // Fill default form fields.
     this.form.fromEmail = this.serverConfig.from_email;
+    if (this.senderPolicyEnabled && !this.usesAccountFrom) this.form.replyTo = this.serverConfig.default_reply_to;
 
     // New campaign.
     const { id } = this.$route.params;
@@ -829,3 +889,11 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.sender-readonly {
+  background: #f7f8fa; border: 1px solid #ddd; border-radius: 4px; padding: 12px; font-size: 14px;
+  display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; overflow-wrap: anywhere;
+}
+.sender-readonly + .help { line-height: 1.7; }
+</style>

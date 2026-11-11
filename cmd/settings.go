@@ -96,6 +96,9 @@ func (a *App) UpdateSettings(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("settings.businessFooter.required"))
 	}
 
+	if err := normalizeSenderSettings(&set); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("senders.invalidSettings"))
+	}
 	// Get the existing settings.
 	cur, err := a.core.GetSettings()
 	if err != nil {
@@ -347,6 +350,31 @@ func (a *App) UpdateSettingsByKey(c echo.Context) error {
 		b, _ = json.Marshal(footer)
 	}
 
+	if key == "axm.sender_domains" || key == "axm.default_from" || key == "axm.default_reply_to" {
+		set, err := a.core.GetSettings()
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "axm.sender_domains":
+			err = json.Unmarshal(b, &set.AxmSenderDomains)
+		case "axm.default_from":
+			err = json.Unmarshal(b, &set.AxmDefaultFrom)
+		case "axm.default_reply_to":
+			err = json.Unmarshal(b, &set.AxmDefaultReplyTo)
+		}
+		if err != nil || normalizeSenderSettings(&set) != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("senders.invalidSettings"))
+		}
+		switch key {
+		case "axm.sender_domains":
+			b, _ = json.Marshal(set.AxmSenderDomains)
+		case "axm.default_from":
+			b, _ = json.Marshal(set.AxmDefaultFrom)
+		case "axm.default_reply_to":
+			b, _ = json.Marshal(set.AxmDefaultReplyTo)
+		}
+	}
 	// Update the value in the DB.
 	if err := a.core.UpdateSettingsByKey(key, b); err != nil {
 		return err
