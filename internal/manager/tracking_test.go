@@ -105,6 +105,27 @@ func TestVisualTrackingPerRecipient(t *testing.T) {
 	}
 }
 
+func TestVisualArchiveMessageDoesNotAddTracking(t *testing.T) {
+	for _, individual := range []bool{true, false} {
+		t.Run(fmt.Sprintf("individual_tracking_%t", individual), func(t *testing.T) {
+			m, store := trackingManager()
+			m.cfg.IndividualTracking = individual
+			body := `<html><body><a href="https://example.test/article">Read more</a></body></html>`
+			c := models.Campaign{UUID: "campaign", ContentType: models.CampaignContentTypeVisual, Messenger: "email", Body: body}
+			if err := c.CompileTemplate(m.TemplateFuncs(&c)); err != nil {
+				t.Fatal(err)
+			}
+			msg, err := m.NewCampaignMessage(&c, models.Subscriber{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(msg.Body()) != body || len(store.urls) != 0 {
+				t.Fatalf("Archive content or direct links changed: body=%s registered=%v", msg.Body(), store.urls)
+			}
+		})
+	}
+}
+
 func TestVisualExplicitTracking(t *testing.T) {
 	for _, body := range []string{
 		`<body><a href="https://example.test/@TrackLink">CTA</a>{{ TrackView }}</body>`,

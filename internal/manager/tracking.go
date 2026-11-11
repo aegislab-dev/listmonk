@@ -43,7 +43,7 @@ func (m *Manager) trackMessageView(msg *CampaignMessage) template.HTML {
 func (m *Manager) trackVisualMessage(msg *CampaignMessage) {
 	if m.cfg.DisableTracking || msg.Campaign.ContentType != models.CampaignContentTypeVisual ||
 		(msg.Campaign.Messenger != "email" && !strings.HasPrefix(msg.Campaign.Messenger, "email-")) ||
-		msg.Campaign.UUID == "" || msg.Campaign.UUID == dummyUUID {
+		msg.Campaign.UUID == "" || msg.Campaign.UUID == dummyUUID || msg.Subscriber.UUID == "" {
 		return
 	}
 
