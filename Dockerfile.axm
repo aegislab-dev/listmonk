@@ -13,6 +13,8 @@ ENV CYPRESS_INSTALL_BINARY=0
 RUN cd frontend && yarn install --frozen-lockfile \
     && cd email-builder && yarn install --frozen-lockfile
 
+RUN cd frontend && yarn test:unit
+
 ARG VERSION
 ARG COMMIT
 RUN test -n "$VERSION" && test -n "$COMMIT" \
