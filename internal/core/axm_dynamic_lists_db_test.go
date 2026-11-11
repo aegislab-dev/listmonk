@@ -448,14 +448,19 @@ func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 
 func TestDynamicDBMigrationParity(t *testing.T) {
 	db, _, schema := dynamicTestDB(t)
-	marker := "-- AXM dynamic lists. Keep this block identical to V6_2_1_axm_2."
+	marker := "-- AXM dynamic lists. Keep this block identical to V6_2_1_axm_3."
 	_, file, _, _ := runtime.Caller(0)
-	raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations/v6.2.1-axm.2.go"))
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations/v6.2.1-axm.3.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	block := schema[strings.Index(schema, marker):]
-	if !strings.Contains(string(raw), block) {
+	start := strings.Index(schema, marker)
+	end := strings.Index(schema[start:], "-- Verified external reply addresses (AXM).")
+	if end < 0 {
+		t.Fatal("missing sender schema block boundary")
+	}
+	block := schema[start : start+end]
+	if !strings.Contains(string(raw), strings.TrimSpace(block)) {
 		t.Fatal("schema and migration SQL differ")
 	}
 	defs := func() []string {
@@ -470,7 +475,7 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 	// Simulate official schema, then upgrade twice.
 	db.MustExec(`DROP TRIGGER axm_guard_dynamic_subscription ON subscriber_lists; ALTER TABLE lists DROP COLUMN axm_filter CASCADE`)
 	for i := 0; i < 2; i++ {
-		if err := migrations.V6_2_1_axm_2(db, nil, nil, nil); err != nil {
+		if err := migrations.V6_2_1_axm_3(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

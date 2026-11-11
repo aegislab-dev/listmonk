@@ -1,0 +1,12 @@
+{{ define "sender-verify" }}
+{{ template "header" . }}
+<h2>{{ L.T "senders.verifyTitle" }}</h2>
+<p>{{ L.T "senders.verifyPrompt" }}</p>
+<p><strong>{{ .Data.Email }}</strong></p>
+<form method="post" action="{{ .Data.Action }}">
+ <input type="hidden" name="confirm" value="yes" />
+ <p><button type="submit" class="button">{{ L.T "senders.verifyButton" }}</button></p>
+</form>
+<p>{{ L.T "senders.verifyNotice" }}</p>
+{{ template "footer" . }}
+{{ end }}

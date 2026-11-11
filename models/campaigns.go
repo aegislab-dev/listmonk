@@ -36,6 +36,8 @@ type Campaigns []Campaign
 
 // Campaign represents an e-mail campaign.
 type Campaign struct {
+	ReplyTo         string `db:"reply_to" json:"reply_to"`
+	ReplyToVerified bool   `db:"-" json:"reply_to_verified"`
 	Base
 	CampaignMeta
 

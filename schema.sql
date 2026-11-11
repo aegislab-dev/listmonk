@@ -99,6 +99,7 @@ CREATE TABLE campaigns (
     name             TEXT NOT NULL,
     subject          TEXT NOT NULL,
     from_email       TEXT NOT NULL,
+    reply_to         TEXT NOT NULL DEFAULT '',
     body             TEXT NOT NULL,
     body_source      TEXT NULL,
     altbody          TEXT NULL,
@@ -228,6 +229,9 @@ CREATE TABLE settings (
 );
 DROP INDEX IF EXISTS idx_settings_key; CREATE INDEX idx_settings_key ON settings(key);
 INSERT INTO settings (key, value) VALUES
+    ('axm.sender_domains', '[]'),
+    ('axm.default_from', '""'),
+    ('axm.default_reply_to', '""'),
     ('axm.business_footer', '{"enabled": false, "company_name": "", "representative": "", "registration_no": "", "address": "", "phone": "", "email": "", "extra": ""}'),
     ('app.site_name', '"Mailing list"'),
     ('app.root_url', '"http://localhost:9000"'),
@@ -446,7 +450,7 @@ CREATE MATERIALIZED VIEW mat_list_subscriber_stats AS
     SELECT NOW() AS updated_at, 0 AS list_id, NULL AS status, COUNT(id) AS subscriber_count FROM subscribers;
 DROP INDEX IF EXISTS mat_list_subscriber_stats_idx; CREATE UNIQUE INDEX mat_list_subscriber_stats_idx ON mat_list_subscriber_stats (list_id, status);
 
--- AXM dynamic lists. Keep this block identical to V6_2_1_axm_2.
+-- AXM dynamic lists. Keep this block identical to V6_2_1_axm_3.
 CREATE OR REPLACE FUNCTION axm_filter_match(p_attribs JSONB, p_filter JSONB)
 RETURNS BOOLEAN LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
@@ -527,3 +531,20 @@ $$;
 DROP TRIGGER IF EXISTS axm_guard_dynamic_subscription ON subscriber_lists;
 CREATE TRIGGER axm_guard_dynamic_subscription BEFORE INSERT OR UPDATE ON subscriber_lists
     FOR EACH ROW EXECUTE FUNCTION axm_guard_dynamic_subscription();
+
+
+-- Verified external reply addresses (AXM).
+
+CREATE TABLE IF NOT EXISTS sender_addresses (
+    id SERIAL PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE CHECK (email = LOWER(email)),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'verified')),
+    token_hash TEXT NULL,
+    token_expires_at TIMESTAMPTZ NULL,
+    requested_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    verified_at TIMESTAMPTZ NULL,
+    last_sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sender_token ON sender_addresses(token_hash) WHERE token_hash IS NOT NULL;

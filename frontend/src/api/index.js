@@ -293,6 +293,11 @@ export const getBounces = async (params) => http.get(
   { params, loading: models.bounces },
 );
 
+// Globally verified campaign reply addresses.
+export const getSenderAddresses = () => http.get('/api/sender-addresses');
+export const requestSenderAddress = (data) => http.post('/api/sender-addresses', data);
+export const deleteSenderAddress = (id) => http.delete(`/api/sender-addresses/${id}`);
+
 // Campaigns.
 export const getCampaigns = async (params) => http.get('/api/campaigns', {
   params,

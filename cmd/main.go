@@ -67,7 +67,8 @@ type App struct {
 	needsUserSetup bool
 
 	// Global state that stores data on an available remote update.
-	update *AppUpdate
+	update         *AppUpdate
+	senderPolicyMu sync.Mutex
 	sync.Mutex
 }
 

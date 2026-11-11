@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net/mail"
 	"net/textproto"
 	"net/url"
 	"path"
@@ -147,6 +148,7 @@ type Config struct {
 	ViewTrackURL          string
 	ArchiveURL            string
 	RootURL               string
+	SenderPolicyEnabled   bool
 	UnsubHeader           bool
 
 	// Pre-rendered business footer. Empty bodies disable insertion.
@@ -375,31 +377,8 @@ func (m *Manager) GetTpl(id int) (*models.Template, error) {
 // compiled campaign templates.
 func (m *Manager) TemplateFuncs(c *models.Campaign) template.FuncMap {
 	f := template.FuncMap{
-		"TrackLink": func(url string, msg *CampaignMessage) string {
-			if m.cfg.DisableTracking {
-				return url
-			}
-
-			subUUID := msg.Subscriber.UUID
-			if !m.cfg.IndividualTracking {
-				subUUID = dummyUUID
-			}
-
-			return m.trackLink(url, msg.Campaign.UUID, subUUID)
-		},
-		"TrackView": func(msg *CampaignMessage) template.HTML {
-			if m.cfg.DisableTracking {
-				return template.HTML("")
-			}
-
-			subUUID := msg.Subscriber.UUID
-			if !m.cfg.IndividualTracking {
-				subUUID = dummyUUID
-			}
-
-			return template.HTML(fmt.Sprintf(`<img src="%s" alt="" />`,
-				fmt.Sprintf(m.cfg.ViewTrackURL, msg.Campaign.UUID, subUUID)))
-		},
+		"TrackLink": m.trackMessageLink,
+		"TrackView": m.trackMessageView,
 		"UnsubscribeURL": func(msg *CampaignMessage) string {
 			return msg.unsubURL
 		},
@@ -544,6 +523,13 @@ func (m *Manager) worker() {
 				}
 			}
 
+			if m.cfg.SenderPolicyEnabled && msg.Campaign.ReplyTo != "" && (msg.Campaign.Messenger == "email" || strings.HasPrefix(msg.Campaign.Messenger, "email-")) {
+				replyTo := msg.Campaign.ReplyTo
+				if address, err := mail.ParseAddress(replyTo); err == nil && address.Name != "" {
+					replyTo = address.String()
+				}
+				h.Set("Reply-To", replyTo)
+			}
 			// Set the headers.
 			out.Headers = h
 
@@ -615,8 +601,6 @@ func (m *Manager) trackLink(url, campUUID, subUUID string) string {
 	if m.cfg.DisableTracking {
 		return url
 	}
-
-	url = strings.ReplaceAll(url, "&amp;", "&")
 
 	m.linksMut.RLock()
 	if uu, ok := m.links[url]; ok {
