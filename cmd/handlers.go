@@ -106,6 +106,9 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/dashboard/charts", a.GetDashboardCharts)
 		g.GET("/api/dashboard/counts", a.GetDashboardCounts)
 
+		g.GET("/api/sender-addresses", pm(a.ListSenderAddresses, auth.PermCampaignsManage, auth.PermCampaignsManageAll))
+		g.POST("/api/sender-addresses", pm(a.RequestSenderAddress, auth.PermCampaignsManage, auth.PermCampaignsManageAll))
+		g.DELETE("/api/sender-addresses/:id", pm(hasID(a.senderPolicyGuard(a.DeleteSenderAddress)), auth.PermCampaignsManage, auth.PermCampaignsManageAll, auth.PermSettingsManage))
 		g.GET("/api/settings", pm(a.GetSettings, "settings:get"))
 		g.PUT("/api/settings", pm(a.UpdateSettings, "settings:manage"))
 		g.PUT("/api/settings/:key", pm(a.UpdateSettingsByKey, "settings:manage"))
@@ -168,10 +171,10 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/api/campaigns/:id/preview", pm(hasID(a.PreviewCampaign), "campaigns:get_all", "campaigns:get"))
 		g.POST("/api/campaigns/:id/content", pm(hasID(a.CampaignContent), "campaigns:manage_all", "campaigns:manage"))
 		g.POST("/api/campaigns/:id/text", pm(hasID(a.PreviewCampaign), "campaigns:get"))
-		g.POST("/api/campaigns/:id/test", pm(hasID(a.TestCampaign), "campaigns:manage_all", "campaigns:manage"))
+		g.POST("/api/campaigns/:id/test", pm(hasID(a.senderPolicyGuard(a.TestCampaign)), "campaigns:manage_all", "campaigns:manage"))
 		g.POST("/api/campaigns", pm(a.CreateCampaign, "campaigns:manage_all", "campaigns:manage"))
-		g.PUT("/api/campaigns/:id", pm(hasID(a.UpdateCampaign), "campaigns:manage_all", "campaigns:manage"))
-		g.PUT("/api/campaigns/:id/status", pm(hasID(a.UpdateCampaignStatus), "campaigns:send"))
+		g.PUT("/api/campaigns/:id", pm(hasID(a.senderPolicyGuard(a.UpdateCampaign)), "campaigns:manage_all", "campaigns:manage"))
+		g.PUT("/api/campaigns/:id/status", pm(hasID(a.senderPolicyGuard(a.UpdateCampaignStatus)), "campaigns:send"))
 		g.PUT("/api/campaigns/:id/archive", pm(hasID(a.UpdateCampaignArchive), "campaigns:manage_all", "campaigns:manage"))
 		g.DELETE("/api/campaigns", pm(a.DeleteCampaigns, "campaigns:manage", "campaigns:manage_all"))
 		g.DELETE("/api/campaigns/:id", pm(hasID(a.DeleteCampaign), "campaigns:manage_all", "campaigns:manage"))
@@ -258,6 +261,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 			g.GET("/auth/oidc", a.OIDCFinish)
 		}
 
+		g.GET("/sender/verify/:token", noIndex(a.SenderVerify))
+		g.POST("/sender/verify/:token", noIndex(a.SenderVerify))
 		// Public APIs.
 		g.GET("/api/public/lists", a.GetPublicLists)
 		g.POST("/api/public/subscription", a.PublicSubscription)

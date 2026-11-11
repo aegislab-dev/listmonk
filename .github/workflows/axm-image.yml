@@ -158,7 +158,10 @@ jobs:
           with client.open(root + '/admin/login', data=data) as response:
               assert response.status == 200
           assert json.loads(get('/api/config'))['data']['version'] == os.environ['VERSION']
-          footer = json.loads(get('/api/settings'))['data']['axm.business_footer']
+          settings = json.loads(get('/api/settings'))['data']
+          assert settings['axm.sender_domains'] == []
+          assert settings['axm.default_from'] == settings['axm.default_reply_to'] == ''
+          footer = settings['axm.business_footer']
           assert footer['enabled'] is False and footer['company_name'] == ''
           # Fetch the actual embedded Vue entry bundle, not a source file.
           admin = get('/admin/')
@@ -172,7 +175,7 @@ jobs:
         with:
           node-version: '24.22.2'
 
-      - name: Browser import tests
+      - name: Browser import and sender tests
         env:
           CYPRESS_LISTMONK_ADMIN_USER: ci-admin
           CYPRESS_LISTMONK_ADMIN_PASSWORD: ci-only-password
@@ -180,7 +183,7 @@ jobs:
           npm install --global yarn@1.22.22
           cd frontend
           yarn install --frozen-lockfile
-          npx cypress run --browser chrome --spec cypress/e2e/import-mapping.cy.js
+          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js'
 
       - name: Upgrade official v6.2.0 database and smoke test
         env:
@@ -208,7 +211,7 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.1
+          test "$migration" = v6.2.1-axm.2
           trap 'docker logs axm-upgrade-smoke; docker rm -f axm-upgrade-smoke' EXIT
           docker run -d --name axm-upgrade-smoke --network host "${env_args[@]}" listmonk-axm:ci
           curl --fail --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 http://127.0.0.1:9001/health

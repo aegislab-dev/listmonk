@@ -7,14 +7,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/captcha"
 	"github.com/labstack/echo/v4"
 	null "gopkg.in/volatiletech/null.v6"
 )
 
 type serverConfig struct {
-	RootURL            string `json:"root_url"`
-	FromEmail          string `json:"from_email"`
+	SenderDomains      []string `json:"sender_domains"`
+	DefaultFrom        string   `json:"default_from"`
+	DefaultReplyTo     string   `json:"default_reply_to"`
+	ResolvedFrom       string   `json:"resolved_from"`
+	RootURL            string   `json:"root_url"`
+	FromEmail          string   `json:"from_email"`
 	PublicSubscription struct {
 		Enabled          bool        `json:"enabled"`
 		CaptchaEnabled   bool        `json:"captcha_enabled"`
@@ -41,11 +46,15 @@ type serverConfig struct {
 // GetServerConfig returns general server config.
 func (a *App) GetServerConfig(c echo.Context) error {
 	out := serverConfig{
-		RootURL:       a.urlCfg.RootURL,
-		FromEmail:     a.cfg.FromEmail,
-		Lang:          a.cfg.Lang,
-		Permissions:   a.cfg.PermissionsRaw,
-		HasLegacyUser: a.cfg.HasLegacyUser,
+		SenderDomains:  append([]string{}, a.cfg.SenderDomains...),
+		DefaultFrom:    a.cfg.DefaultFrom,
+		DefaultReplyTo: a.cfg.DefaultReplyTo,
+		ResolvedFrom:   resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains),
+		RootURL:        a.urlCfg.RootURL,
+		FromEmail:      a.cfg.FromEmail,
+		Lang:           a.cfg.Lang,
+		Permissions:    a.cfg.PermissionsRaw,
+		HasLegacyUser:  a.cfg.HasLegacyUser,
 		Privacy: struct {
 			DisableTracking    bool `json:"disable_tracking"`
 			IndividualTracking bool `json:"individual_tracking"`

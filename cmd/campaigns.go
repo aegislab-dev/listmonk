@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 // campaign creation and update data from APIs.
 type campReq struct {
 	models.Campaign
+	ReplyToInput *string `json:"reply_to"`
 
 	// This overrides Campaign.Lists to receive and
 	// write a list of int IDs during creation and updation.
@@ -84,6 +86,11 @@ func (a *App) GetCampaigns(c echo.Context) error {
 		return err
 	}
 
+	for i := range res {
+		if err := a.campaignReplyVerified(&res[i]); err != nil {
+			return err
+		}
+	}
 	// Remove the body from the response if requested.
 	if noBody {
 		for i := range res {
@@ -130,6 +137,9 @@ func (a *App) GetCampaign(c echo.Context) error {
 		out.Body = ""
 	}
 
+	if err := a.campaignReplyVerified(&out); err != nil {
+		return err
+	}
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
@@ -257,6 +267,8 @@ func (a *App) CreateCampaign(c echo.Context) error {
 		return err
 	}
 
+	o.Status = models.CampaignStatusDraft
+
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
 	o.ListIDs = user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, o.ListIDs)
@@ -277,8 +289,11 @@ func (a *App) CreateCampaign(c echo.Context) error {
 		o.Messenger = "email"
 	}
 
+	if len(a.cfg.SenderDomains) > 0 && o.ReplyToInput == nil {
+		o.ReplyTo = defaultReplyTo(user, a.cfg)
+	}
 	// Validate.
-	if c, err := a.validateCampaignFields(o); err != nil {
+	if c, err := a.validateCampaignFields(o, user); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
 		o = c
@@ -293,6 +308,9 @@ func (a *App) CreateCampaign(c echo.Context) error {
 		return err
 	}
 
+	if err := a.campaignReplyVerified(&out); err != nil {
+		return err
+	}
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
@@ -330,21 +348,36 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 		return err
 	}
 
+	o.Status = cm.Status
+	if len(a.cfg.SenderDomains) > 0 && cm.Status == models.CampaignStatusPaused {
+		o.FromEmail = cm.FromEmail
+	}
+
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
 	o.ListIDs = user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, o.ListIDs)
 
-	if c, err := a.validateCampaignFields(o); err != nil {
+	if c, err := a.validateCampaignFields(o, user); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
 		o = c
 	}
 
+	// A send_at value does not activate a draft. Only edits to campaigns
+	// already scheduled or paused must pass the sending checks here.
+	if len(a.cfg.SenderDomains) > 0 && (cm.Status == models.CampaignStatusScheduled || cm.Status == models.CampaignStatusPaused) {
+		if err := a.requireVerifiedReply(&o.Campaign); err != nil {
+			return err
+		}
+	}
 	out, err := a.core.UpdateCampaign(id, o.Campaign, o.ListIDs, o.MediaIDs)
 	if err != nil {
 		return err
 	}
 
+	if err := a.campaignReplyVerified(&out); err != nil {
+		return err
+	}
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
@@ -365,8 +398,21 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 		return err
 	}
 
+	from := ""
+	if len(a.cfg.SenderDomains) > 0 && (req.Status == models.CampaignStatusRunning || req.Status == models.CampaignStatusScheduled) {
+		camp, err := a.core.GetCampaign(id, "", "")
+		if err != nil {
+			return err
+		}
+		if err := a.requireVerifiedReply(&camp); err != nil {
+			return err
+		}
+		if camp.Status == models.CampaignStatusDraft {
+			from = resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+		}
+	}
 	// Update the campaign status in the DB.
-	out, err := a.core.UpdateCampaignStatus(id, req.Status)
+	out, err := a.core.UpdateCampaignStatus(id, req.Status, from)
 	if err != nil {
 		return err
 	}
@@ -376,6 +422,9 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 		a.manager.StopCampaign(id)
 	}
 
+	if err := a.campaignReplyVerified(&out); err != nil {
+		return err
+	}
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
@@ -533,10 +582,13 @@ func (a *App) TestCampaign(c echo.Context) error {
 	}
 
 	// Validate.
-	if c, err := a.validateCampaignFields(req); err != nil {
+	if c, err := a.validateCampaignFields(req, auth.GetUser(c)); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
 		req = c
+	}
+	if err := a.requireVerifiedReply(&req.Campaign); err != nil {
+		return err
 	}
 	if len(req.SubscriberEmails) == 0 {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.noSubsToTest"))
@@ -579,6 +631,10 @@ func (a *App) TestCampaign(c echo.Context) error {
 	camp.Name = req.Name
 	camp.Subject = req.Subject
 	camp.FromEmail = req.FromEmail
+	camp.ReplyTo = req.ReplyTo
+	if len(a.cfg.SenderDomains) > 0 {
+		camp.FromEmail = resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+	}
 	camp.Body = req.Body
 	camp.AltBody = req.AltBody
 	camp.Messenger = req.Messenger
@@ -677,7 +733,31 @@ func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign) erro
 }
 
 // validateCampaignFields validates incoming campaign field values.
-func (a *App) validateCampaignFields(c campReq) (campReq, error) {
+func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error) {
+	if len(a.cfg.SenderDomains) > 0 {
+		if c.ReplyToInput != nil {
+			c.ReplyTo = strings.TrimSpace(*c.ReplyToInput)
+		}
+		if c.ReplyTo != "" {
+			if _, err := mail.ParseAddress(c.ReplyTo); err != nil || strings.ContainsAny(c.ReplyTo, "\r\n") {
+				return c, errors.New(a.i18n.T("senders.invalidEmail"))
+			}
+			addr, _ := mail.ParseAddress(c.ReplyTo)
+			if addr.Name == "" {
+				c.ReplyTo = addr.Address
+			} else {
+				c.ReplyTo = strconv.Quote(addr.Name) + " " + (&mail.Address{Address: addr.Address}).String()
+			}
+		}
+		if hasReservedHeader(c.Headers) {
+			return c, errors.New(a.i18n.T("senders.reservedHeader"))
+		}
+		if c.Status == "" || c.Status == models.CampaignStatusDraft || c.Status == models.CampaignStatusScheduled {
+			c.FromEmail = resolveFrom(user, a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+		}
+	} else {
+		c.ReplyTo = ""
+	}
 	if c.FromEmail == "" {
 		c.FromEmail = a.cfg.FromEmail
 	} else if !reFromAddress.Match([]byte(c.FromEmail)) {
