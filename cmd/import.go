@@ -37,6 +37,10 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 			a.i18n.Ts("globals.messages.permissionDenied", "name", "lists"))
 	}
 
+	if err := a.rejectDynamicTargets(opt.ListIDs); err != nil {
+		return err
+	}
+
 	// Validate mode.
 	if opt.Mode != subimporter.ModeSubscribe && opt.Mode != subimporter.ModeBlocklist {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("import.invalidMode"))

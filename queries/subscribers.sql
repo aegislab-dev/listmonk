@@ -252,19 +252,32 @@ UPDATE subscriber_lists SET status='unsubscribed', updated_at=NOW()
 -- Unsubscribes a subscriber given a campaign UUID (from all the lists in the campaign) and the subscriber UUID.
 -- If $3 is TRUE, then all subscriptions of the subscriber is blocklisted
 -- and all existing subscriptions, irrespective of lists, unsubscribed.
-WITH lists AS (
-    SELECT list_id FROM campaign_lists
-    LEFT JOIN campaigns ON (campaign_lists.campaign_id = campaigns.id)
-    WHERE campaigns.uuid = $1
+WITH campLists AS (
+    SELECT l.* FROM lists l JOIN campaign_lists cl ON cl.list_id = l.id
+    JOIN campaigns ca ON ca.id = cl.campaign_id WHERE ca.uuid = $1
+),
+affectedLists AS (
+    SELECT id AS list_id FROM campLists WHERE axm_filter IS NULL
+    UNION
+    SELECT l.id FROM lists l WHERE l.axm_filter IS NULL AND EXISTS (
+        SELECT 1 FROM campLists d WHERE d.axm_filter IS NOT NULL AND
+            (d.axm_filter->'base'->>'type' = 'all' OR
+                (d.axm_filter->'base'->>'type' = 'lists' AND d.axm_filter->'base'->'lists' @> to_jsonb(l.id)))
+    )
 ),
 sub AS (
     UPDATE subscribers SET status = (CASE WHEN $3 IS TRUE THEN 'blocklisted' ELSE status END)
     WHERE uuid = $2 RETURNING id
+),
+excluded AS (
+    INSERT INTO subscriber_lists (subscriber_id, list_id, status)
+    SELECT sub.id, d.id, 'unsubscribed' FROM sub CROSS JOIN campLists d WHERE d.axm_filter IS NOT NULL
+    ON CONFLICT (subscriber_id, list_id) DO UPDATE SET status = 'unsubscribed', updated_at = NOW()
 )
 UPDATE subscriber_lists SET status = 'unsubscribed', updated_at=NOW() WHERE
     subscriber_id = (SELECT id FROM sub) AND status != 'unsubscribed' AND
-    -- If $3 is false, unsubscribe from the campaign's lists, otherwise all lists.
-    CASE WHEN $3 IS FALSE THEN list_id = ANY(SELECT list_id FROM lists) ELSE list_id != 0 END;
+    CASE WHEN $3 IS FALSE THEN list_id = ANY(SELECT list_id FROM affectedLists)
+        ELSE list_id != 0 END;
 
 -- name: delete-unconfirmed-subscriptions
 WITH optins AS (

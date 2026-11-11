@@ -11,6 +11,11 @@ import (
 
 // Queries contains all prepared SQL queries.
 type Queries struct {
+	AxmGetDynamicListIDs           *sqlx.Stmt `query:"axm-get-dynamic-list-ids"`
+	AxmDynamicListCounts           *sqlx.Stmt `query:"axm-dynamic-list-counts"`
+	AxmPreviewDynamicFilter        *sqlx.Stmt `query:"axm-preview-dynamic-filter"`
+	NextCampaignSubscribersDynamic *sqlx.Stmt `query:"next-campaign-subscribers-dynamic"`
+
 	GetDashboardCharts *sqlx.Stmt `query:"get-dashboard-charts"`
 	GetDashboardCounts *sqlx.Stmt `query:"get-dashboard-counts"`
 

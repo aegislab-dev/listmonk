@@ -103,6 +103,9 @@ func (a *App) CreateList(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("lists.invalidName"))
 	}
 
+	if err := a.validateDynamicList(c, &l); err != nil {
+		return err
+	}
 	out, err := a.core.CreateList(l)
 	if err != nil {
 		return err
@@ -134,6 +137,16 @@ func (a *App) UpdateList(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("lists.invalidName"))
 	}
 
+	old, err := a.core.GetList(id, "")
+	if err != nil {
+		return err
+	}
+	if old.AxmFilter != nil && l.AxmFilter == nil {
+		l.AxmFilter = old.AxmFilter
+	}
+	if err := a.validateDynamicList(c, &l); err != nil {
+		return err
+	}
 	// Update the list in the DB.
 	out, err := a.core.UpdateList(id, l)
 	if err != nil {

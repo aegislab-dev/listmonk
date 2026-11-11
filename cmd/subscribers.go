@@ -500,6 +500,9 @@ func (a *App) ManageSubscriberLists(c echo.Context) error {
 	var err error
 	switch req.Action {
 	case "add":
+		if err := a.rejectDynamicTargets(listIDs); err != nil {
+			return err
+		}
 		err = a.core.AddSubscriptions(subIDs, listIDs, req.Status)
 	case "remove":
 		err = a.core.DeleteSubscriptions(subIDs, listIDs)
@@ -673,6 +676,9 @@ func (a *App) ManageSubscriberListsByQuery(c echo.Context) error {
 	var err error
 	switch req.Action {
 	case "add":
+		if err := a.rejectDynamicTargets(targetListIDs); err != nil {
+			return err
+		}
 		err = a.core.AddSubscriptionsByQuery(req.Search, req.Query, sourceListIDs, targetListIDs, req.Status, req.SubscriptionStatus)
 	case "remove":
 		err = a.core.DeleteSubscriptionsByQuery(req.Search, req.Query, sourceListIDs, targetListIDs, req.SubscriptionStatus)
