@@ -18,6 +18,7 @@ type store struct {
 }
 
 type runningCamp struct {
+	IsDynamic        bool   `db:"is_dynamic"`
 	CampaignID       int    `db:"campaign_id"`
 	CampaignType     string `db:"campaign_type"`
 	LastSubscriberID int    `db:"last_subscriber_id"`
@@ -52,9 +53,13 @@ func (s *store) NextSubscribers(campID, limit int) ([]models.Subscriber, error) 
 		return nil, err
 	}
 
+	query := s.queries.NextCampaignSubscribers
 	var listIDs []int
 	for _, c := range camps {
 		listIDs = append(listIDs, c.ListID)
+		if c.IsDynamic {
+			query = s.queries.NextCampaignSubscribersDynamic
+		}
 	}
 
 	if len(listIDs) == 0 {
@@ -62,7 +67,7 @@ func (s *store) NextSubscribers(campID, limit int) ([]models.Subscriber, error) 
 	}
 
 	var out []models.Subscriber
-	err := s.queries.NextCampaignSubscribers.Select(&out, camps[0].CampaignID, camps[0].CampaignType, camps[0].LastSubscriberID, camps[0].MaxSubscriberID, pq.Array(listIDs), limit)
+	err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, camps[0].LastSubscriberID, camps[0].MaxSubscriberID, pq.Array(listIDs), limit)
 	return out, err
 }
 

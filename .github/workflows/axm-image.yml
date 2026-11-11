@@ -89,6 +89,19 @@ jobs:
               raise SystemExit('Release tag exists; increment axm.N instead of publishing again')
           PY
 
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.1'
+          cache: true
+
+      - name: Run Go unit and dynamic-list database tests
+        env:
+          AXM_TEST_DB_URL: postgres://listmonk:listmonk-ci@127.0.0.1:5432/listmonk_dynamic_tests?sslmode=disable
+        run: |
+          set -euo pipefail
+          docker exec ${{ job.services.postgres.id }} createdb -U listmonk listmonk_dynamic_tests
+          go test ./... -timeout 180s
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build packed image
@@ -183,7 +196,7 @@ jobs:
           npm install --global yarn@1.22.22
           cd frontend
           yarn install --frozen-lockfile
-          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js'
 
       - name: Upgrade official v6.2.0 database and smoke test
         env:
@@ -211,7 +224,11 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.2
+          test "$migration" = v6.2.1-axm.3
+          column=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM information_schema.columns WHERE table_name = 'lists' AND column_name = 'axm_filter'")
+          test "$column" = 1
+          trigger=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM pg_trigger WHERE tgname = 'axm_guard_dynamic_subscription' AND NOT tgisinternal")
+          test "$trigger" = 1
           trap 'docker logs axm-upgrade-smoke; docker rm -f axm-upgrade-smoke' EXIT
           docker run -d --name axm-upgrade-smoke --network host "${env_args[@]}" listmonk-axm:ci
           curl --fail --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 http://127.0.0.1:9001/health

@@ -71,7 +71,7 @@
 
           <list-selector v-if="form.mode === 'subscribe'" :label="$t('globals.terms.lists')"
             :placeholder="$t('import.listSubHelp')" :message="$t('import.listSubHelp')" v-model="form.lists"
-            :selected="form.lists" :all="lists.results" />
+            :selected="form.lists" :all="(lists.results || []).filter(l => !l.axmFilter)" />
           <hr />
 
           <b-field :label="$t('import.csvFile')" label-position="on-border">
@@ -686,7 +686,7 @@ export default Vue.extend({
     const ids = this.$utils.parseQueryIDs(this.$route.query.list_id);
     if (ids.length > 0 && this.lists.results) {
       this.$nextTick(() => {
-        this.form.lists = this.lists.results.filter((l) => ids.indexOf(l.id) > -1);
+        this.form.lists = this.lists.results.filter((l) => !l.axmFilter && ids.indexOf(l.id) > -1);
       });
     }
   },

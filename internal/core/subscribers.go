@@ -104,6 +104,11 @@ func (c *Core) GetSubscribersByEmail(emails []string) (models.Subscribers, error
 
 // QuerySubscribers queries and returns paginated subscrribers based on the given params including the total count.
 func (c *Core) QuerySubscribers(searchStr, queryExp string, listIDs []int, subStatus string, order, orderBy string, offset, limit int) (models.Subscribers, int, error) {
+	var resolveErr error
+	listIDs, queryExp, resolveErr = c.resolveDynamicListQuery(listIDs, subStatus, queryExp)
+	if resolveErr != nil {
+		return nil, 0, resolveErr
+	}
 	// Sort params.
 	if !strSliceContains(orderBy, subQuerySortFields) {
 		orderBy = "subscribers.id"
@@ -233,6 +238,11 @@ func (c *Core) GetSubscriberActivity(id int) (models.SubscriberActivity, error) 
 // repeatedly until there are nil subscribers. It's an iterator because exports can be extremely
 // large and may have to be fetched in batches from the DB and streamed somewhere.
 func (c *Core) ExportSubscribers(searchStr, query string, subIDs, listIDs []int, subStatus string, batchSize int) (func() ([]models.SubscriberExport, error), error) {
+	var resolveErr error
+	listIDs, query, resolveErr = c.resolveDynamicListQuery(listIDs, subStatus, query)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
 	if subIDs == nil {
 		subIDs = []int{}
 	}
@@ -459,6 +469,11 @@ func (c *Core) BlocklistSubscribers(subIDs []int) error {
 
 // BlocklistSubscribersByQuery blocklists the given list of subscribers.
 func (c *Core) BlocklistSubscribersByQuery(searchStr, queryExp string, listIDs []int, subStatus string) error {
+	var resolveErr error
+	listIDs, queryExp, resolveErr = c.resolveDynamicListQuery(listIDs, subStatus, queryExp)
+	if resolveErr != nil {
+		return resolveErr
+	}
 	if err := c.q.ExecSubQueryTpl(searchStr, sanitizeSQLExp(queryExp), c.q.BlocklistSubscribersByQuery, listIDs, c.db, subStatus); err != nil {
 		c.log.Printf("error blocklisting subscribers: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
@@ -488,6 +503,11 @@ func (c *Core) DeleteSubscribers(subIDs []int, subUUIDs []string) error {
 
 // DeleteSubscribersByQuery deletes subscribers by a given arbitrary query expression.
 func (c *Core) DeleteSubscribersByQuery(searchStr, queryExp string, listIDs []int, subStatus string) error {
+	var resolveErr error
+	listIDs, queryExp, resolveErr = c.resolveDynamicListQuery(listIDs, subStatus, queryExp)
+	if resolveErr != nil {
+		return resolveErr
+	}
 	err := c.q.ExecSubQueryTpl(searchStr, sanitizeSQLExp(queryExp), c.q.DeleteSubscribersByQuery, listIDs, c.db, subStatus)
 	if err != nil {
 		c.log.Printf("error deleting subscribers: %v", err)
@@ -567,6 +587,11 @@ func (c *Core) DeleteBlocklistedSubscribers() (int, error) {
 }
 
 func (c *Core) getSubscriberCount(searchStr, queryExp, subStatus string, listIDs []int) (int, error) {
+	var resolveErr error
+	listIDs, queryExp, resolveErr = c.resolveDynamicListQuery(listIDs, subStatus, queryExp)
+	if resolveErr != nil {
+		return 0, resolveErr
+	}
 	// If there's no condition, it's a "get all" call which can probably be optionally pulled from cache.
 	if queryExp == "" {
 		_ = c.refreshCache(matListSubStats, false)

@@ -71,6 +71,9 @@ func (c *Core) QueryLists(searchStr, typ, optin, status string, tags []string, o
 		}
 	}
 
+	if err := c.dynamicListCounts(out); err != nil {
+		return nil, 0, err
+	}
 	return out, total, nil
 }
 
@@ -94,13 +97,17 @@ func (c *Core) GetList(id int, uuid string) (models.List, error) {
 			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.list}"))
 	}
 
+	if err := c.dynamicListCounts(res); err != nil {
+		return models.List{}, err
+	}
 	out := res[0]
+	if out.AxmFilter == nil {
+		for _, count := range out.SubscriberCounts {
+			out.SubscriberCount += count
+		}
+	}
 	if out.Tags == nil {
 		out.Tags = []string{}
-	}
-	// Total counts.
-	for _, c := range out.SubscriberCounts {
-		out.SubscriberCount += c
 	}
 
 	return out, nil
@@ -147,6 +154,15 @@ func (c *Core) GetListTypes(ids []int, uuids []string) (map[any]string, error) {
 
 // CreateList creates a new list.
 func (c *Core) CreateList(l models.List) (models.List, error) {
+	if err := normalizeDynamicList(&l); err != nil {
+		return models.List{}, err
+	}
+	if l.AxmFilter != nil {
+		f, _ := ValidateDynamicFilter(*l.AxmFilter)
+		if err := c.ValidateDynamicBase(f); err != nil {
+			return models.List{}, err
+		}
+	}
 	uu, err := uuid.NewV4()
 	if err != nil {
 		c.log.Printf("error generating UUID: %v", err)
@@ -167,7 +183,7 @@ func (c *Core) CreateList(l models.List) (models.List, error) {
 	// Insert and read ID.
 	var newID int
 	l.UUID = uu.String()
-	if err := c.q.CreateList.Get(&newID, l.UUID, l.Name, l.Type, l.Optin, l.Status, pq.StringArray(normalizeTags(l.Tags)), l.Description); err != nil {
+	if err := c.q.CreateList.Get(&newID, l.UUID, l.Name, l.Type, l.Optin, l.Status, pq.StringArray(normalizeTags(l.Tags)), l.Description, l.AxmFilter); err != nil {
 		c.log.Printf("error creating list: %v", err)
 		return models.List{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorCreating", "name", "{globals.terms.list}", "error", pqErrMsg(err)))
@@ -178,7 +194,26 @@ func (c *Core) CreateList(l models.List) (models.List, error) {
 
 // UpdateList updates a given list.
 func (c *Core) UpdateList(id int, l models.List) (models.List, error) {
-	res, err := c.q.UpdateList.Exec(id, l.Name, l.Type, l.Optin, l.Status, pq.StringArray(normalizeTags(l.Tags)), l.Description)
+	old, err := c.GetList(id, "")
+	if err != nil {
+		return models.List{}, err
+	}
+	if old.AxmFilter == nil && l.AxmFilter != nil {
+		return models.List{}, echo.NewHTTPError(http.StatusBadRequest, "List composition cannot be changed")
+	}
+	if old.AxmFilter != nil && l.AxmFilter == nil {
+		l.AxmFilter = old.AxmFilter
+	}
+	if err := normalizeDynamicList(&l); err != nil {
+		return models.List{}, err
+	}
+	if l.AxmFilter != nil {
+		f, _ := ValidateDynamicFilter(*l.AxmFilter)
+		if err := c.ValidateDynamicBase(f); err != nil {
+			return models.List{}, err
+		}
+	}
+	res, err := c.q.UpdateList.Exec(id, l.Name, l.Type, l.Optin, l.Status, pq.StringArray(normalizeTags(l.Tags)), l.Description, l.AxmFilter)
 	if err != nil {
 		c.log.Printf("error updating list: %v", err)
 		return models.List{}, echo.NewHTTPError(http.StatusInternalServerError,

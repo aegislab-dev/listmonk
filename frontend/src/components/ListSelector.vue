@@ -5,6 +5,7 @@
         <b-tag v-for="l in selectedItems" :key="l.id" :class="[l.subscriptionStatus, { 'is-restricted': l.restricted }]"
           :closable="!$props.disabled && !l.restricted" :data-id="l.id" @close="removeList(l.id)" class="list">
           {{ l.name }}
+          <small v-if="l.axmFilter"> · {{ $t('lists.dynamic.dynamic') }}</small>
           <sup v-if="l.optin === 'double' && l.subscriptionStatus">
             {{ $t(`subscribers.status.${l.subscriptionStatus}`) }}
           </sup>
@@ -16,7 +17,12 @@
       label-position="on-border">
       <b-autocomplete v-model="query" :placeholder="placeholder" clearable dropdown-position="top"
         :disabled="all.length === 0 || $props.disabled" :keep-first="true" :clear-on-select="true" :open-on-focus="true"
-        :data="filteredLists" @select="selectList" field="name" />
+        :data="filteredLists" @select="selectList" field="name">
+        <template #default="props">
+          {{ props.option.name }}
+          <b-tag v-if="props.option.axmFilter" size="is-small" type="is-info is-light">{{ $t('lists.dynamic.dynamic') }}</b-tag>
+        </template>
+      </b-autocomplete>
     </b-field>
   </div>
 </template>

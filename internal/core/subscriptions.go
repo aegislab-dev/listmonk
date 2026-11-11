@@ -36,6 +36,11 @@ func (c *Core) AddSubscriptions(subIDs, listIDs []int, status string) error {
 // AddSubscriptionsByQuery adds list subscriptions to subscribers by a given arbitrary query expression.
 // sourceListIDs is the list of list IDs to filter the subscriber query with.
 func (c *Core) AddSubscriptionsByQuery(searchStr, queryExp string, sourceListIDs, targetListIDs []int, status string, subStatus string) error {
+	var resolveErr error
+	sourceListIDs, queryExp, resolveErr = c.resolveDynamicListQuery(sourceListIDs, subStatus, queryExp)
+	if resolveErr != nil {
+		return resolveErr
+	}
 	if sourceListIDs == nil {
 		sourceListIDs = []int{}
 	}
@@ -65,6 +70,11 @@ func (c *Core) DeleteSubscriptions(subIDs, listIDs []int) error {
 // DeleteSubscriptionsByQuery deletes list subscriptions from subscribers by a given arbitrary query expression.
 // sourceListIDs is the list of list IDs to filter the subscriber query with.
 func (c *Core) DeleteSubscriptionsByQuery(searchStr, queryExp string, sourceListIDs, targetListIDs []int, subStatus string) error {
+	var resolveErr error
+	sourceListIDs, queryExp, resolveErr = c.resolveDynamicListQuery(sourceListIDs, subStatus, queryExp)
+	if resolveErr != nil {
+		return resolveErr
+	}
 	if sourceListIDs == nil {
 		sourceListIDs = []int{}
 	}
@@ -93,6 +103,11 @@ func (c *Core) UnsubscribeLists(subIDs, listIDs []int, listUUIDs []string) error
 // UnsubscribeListsByQuery sets list subscriptions to 'unsubscribed' by a given arbitrary query expression.
 // sourceListIDs is the list of list IDs to filter the subscriber query with.
 func (c *Core) UnsubscribeListsByQuery(searchStr, queryExp string, sourceListIDs, targetListIDs []int, subStatus string) error {
+	var resolveErr error
+	sourceListIDs, queryExp, resolveErr = c.resolveDynamicListQuery(sourceListIDs, subStatus, queryExp)
+	if resolveErr != nil {
+		return resolveErr
+	}
 	if sourceListIDs == nil {
 		sourceListIDs = []int{}
 	}

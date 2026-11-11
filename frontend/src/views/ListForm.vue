@@ -1,13 +1,13 @@
 <template>
   <form @submit.prevent="onSubmit">
-    <div class="modal-card content" style="width: auto">
+    <div class="modal-card content dynamic-list-form" style="width: auto">
       <header class="modal-card-head">
         <p v-if="isEditing" class="has-text-grey-light is-size-7">
           {{ $t('globals.fields.id') }}: <copy-text :text="`${data.id}`" />
           {{ $t('globals.fields.uuid') }}: <copy-text :text="data.uuid" />
         </p>
-        <b-tag v-if="isEditing" :class="[data.type, 'is-pulled-right']">
-          {{ $t(`lists.types.${data.type}`) }}
+        <b-tag v-if="isEditing" :class="[composition === 'dynamic' ? 'is-info is-light' : data.type, 'is-pulled-right']">
+          {{ composition === 'dynamic' ? $t('lists.dynamic.dynamic') : $t(`lists.types.${data.type}`) }}
         </b-tag>
         <h4 v-if="isEditing">
           {{ data.name }}
@@ -17,12 +17,18 @@
         </h4>
       </header>
       <section expanded class="modal-card-body">
+        <b-field :label="$t('lists.dynamic.composition')">
+          <b-select v-model="composition" :disabled="isEditing" expanded data-cy="list-composition">
+            <option value="static">{{ $t('lists.dynamic.static') }}</option>
+            <option value="dynamic">{{ $t('lists.dynamic.dynamic') }}</option>
+          </b-select>
+        </b-field>
         <b-field :label="$t('globals.fields.name')" label-position="on-border">
           <b-input :maxlength="200" :ref="'focus'" v-model="form.name" name="name"
             :placeholder="$t('globals.fields.name')" required />
         </b-field>
 
-        <b-field :label="$t('lists.type')" label-position="on-border" :message="$t('lists.typeHelp')">
+        <b-field v-if="composition === 'static'" :label="$t('lists.type')" label-position="on-border" :message="$t('lists.typeHelp')">
           <b-select v-model="form.type" name="type" :placeholder="$t('lists.typeHelp')" required expanded>
             <option value="private">
               {{ $t('lists.types.private') }}
@@ -33,7 +39,7 @@
           </b-select>
         </b-field>
 
-        <b-field :label="$t('lists.optin')" label-position="on-border" :message="$t('lists.optinHelp')">
+        <b-field v-if="composition === 'static'" :label="$t('lists.optin')" label-position="on-border" :message="$t('lists.optinHelp')">
           <b-select v-model="form.optin" name="optin" placeholder="Opt-in type" required expanded>
             <option value="single">
               {{ $t('lists.optins.single') }}
@@ -44,6 +50,8 @@
           </b-select>
         </b-field>
 
+        <dynamic-list-filter v-if="composition === 'dynamic'" v-model="filter" :list-id="data.id || 0" />
+        <p v-if="filterError" role="alert" class="help is-danger">{{ filterError }}</p>
         <b-field :label="$t('globals.terms.tags')" label-position="on-border">
           <b-taginput v-model="form.tags" name="tags" ellipsis icon="tag-outline"
             :placeholder="$t('globals.terms.tags')" />
@@ -75,12 +83,14 @@
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import CopyText from '../components/CopyText.vue';
+import DynamicListFilter from '../components/DynamicListFilter.vue';
+import { filterToForm, formToFilter, validateDynamicForm } from '../dynamic-list';
 
 export default Vue.extend({
   name: 'ListForm',
 
   components: {
-    CopyText,
+    CopyText, DynamicListFilter,
   },
 
   props: {
@@ -90,6 +100,9 @@ export default Vue.extend({
 
   data() {
     return {
+      composition: this.data.axmFilter ? 'dynamic' : 'static',
+      filter: filterToForm(this.data.axmFilter),
+      filterError: '',
       // Binds form input values.
       form: {
         name: '',
@@ -102,7 +115,15 @@ export default Vue.extend({
   },
 
   methods: {
+    payload() {
+      return { ...this.form, axm_filter: this.composition === 'dynamic' ? formToFilter(this.filter) : null };
+    },
     onSubmit() {
+      this.filterError = '';
+      if (this.composition === 'dynamic') {
+        const error = validateDynamicForm(this.filter);
+        if (error) { this.filterError = this.$t(`lists.dynamic.${error}`); return; }
+      }
       if (this.isEditing) {
         this.updateList();
         return;
@@ -112,7 +133,7 @@ export default Vue.extend({
     },
 
     createList() {
-      this.$api.createList(this.form).then((data) => {
+      this.$api.createList(this.payload()).then((data) => {
         this.$emit('finished');
         this.$parent.close();
         this.$utils.toast(this.$t('globals.messages.created', { name: data.name }));
@@ -120,7 +141,7 @@ export default Vue.extend({
     },
 
     updateList() {
-      this.$api.updateList({ id: this.data.id, ...this.form }).then((data) => {
+      this.$api.updateList({ id: this.data.id, ...this.payload() }).then((data) => {
         this.$emit('finished');
         this.$parent.close();
         this.$utils.toast(this.$t('globals.messages.updated', { name: data.name }));
@@ -150,3 +171,10 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.dynamic-list-form { width: 100% !important; max-width: 100%; margin: 0; }
+@media screen and (max-width: 600px) {
+  .modal-card-body { padding: 20px 14px; }
+}
+</style>

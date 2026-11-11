@@ -188,7 +188,7 @@ WITH camps AS (
 ),
 campLists AS (
     -- Get the list_ids and their optin statuses for the campaigns found in the previous step.
-    SELECT lists.id AS list_id, campaign_id, optin FROM lists
+    SELECT lists.id AS list_id, campaign_id, optin, lists.axm_filter IS NOT NULL AS is_dynamic FROM lists
     INNER JOIN campaign_lists ON (campaign_lists.list_id = lists.id)
     WHERE campaign_lists.campaign_id = ANY(SELECT id FROM camps)
 ),
@@ -213,6 +213,26 @@ counts AS (
     JOIN subscribers s ON (s.id = sl.subscriber_id AND s.status != 'blocklisted')
     GROUP BY camps.id
 ),
+dynCounts AS (
+    SELECT ca.id AS campaign_id, COUNT(DISTINCT members.id) AS to_send,
+        COALESCE(MAX(members.id), 0) AS max_subscriber_id
+    FROM camps ca
+    LEFT JOIN LATERAL (
+        SELECT s.id FROM campLists cl
+        JOIN subscriber_lists sl ON sl.list_id = cl.list_id
+        JOIN subscribers s ON s.id = sl.subscriber_id AND s.status != 'blocklisted'
+        WHERE cl.campaign_id = ca.id AND NOT cl.is_dynamic
+            AND CASE WHEN ca.type = 'optin' THEN sl.status = 'unconfirmed' AND cl.optin = 'double'
+                WHEN cl.optin = 'double' THEN sl.status = 'confirmed'
+                ELSE sl.status != 'unsubscribed' END
+        UNION
+        SELECT m.subscriber_id FROM campLists cl
+        CROSS JOIN LATERAL axm_dynamic_list_members(cl.list_id) m
+        WHERE cl.campaign_id = ca.id AND cl.is_dynamic AND ca.type != 'optin'
+    ) members ON TRUE
+    WHERE EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = ca.id AND cl.is_dynamic)
+    GROUP BY ca.id
+),
 updateCounts AS (
     WITH uc (campaign_id, sent_count) AS (SELECT * FROM unnest($1::INT[], $2::INT[]))
     UPDATE campaigns
@@ -226,7 +246,12 @@ u AS (
         status = (CASE WHEN status != 'running' THEN 'running' ELSE status END),
         max_subscriber_id = co.max_subscriber_id,
         started_at=(CASE WHEN ca.started_at IS NULL THEN NOW() ELSE ca.started_at END)
-    FROM (SELECT * FROM counts) co
+    FROM (
+        SELECT * FROM counts co WHERE NOT EXISTS (
+            SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
+        )
+        UNION ALL SELECT * FROM dynCounts
+    ) co
     WHERE ca.id = co.campaign_id
 )
 SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);
@@ -309,7 +334,7 @@ SELECT link_clicks.campaign_id,
 -- name: get-running-campaign
 -- Returns the metadata for a running campaign that is required by next-campaign-subscribers to retrieve
 -- a batch of campaign subscribers for processing.
-SELECT campaigns.id AS campaign_id, campaigns.type as campaign_type, last_subscriber_id, max_subscriber_id, lists.id AS list_id
+SELECT campaigns.id AS campaign_id, campaigns.type as campaign_type, last_subscriber_id, max_subscriber_id, lists.id AS list_id, (lists.axm_filter IS NOT NULL) AS is_dynamic
     FROM campaigns
     JOIN campaign_lists ON (campaign_lists.campaign_id = campaigns.id)
     JOIN lists ON (lists.id = campaign_lists.list_id)
