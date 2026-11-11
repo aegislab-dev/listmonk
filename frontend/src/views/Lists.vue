@@ -77,19 +77,20 @@
       <b-table-column v-slot="props" field="type" :label="$t('globals.fields.type')" header-class="cy-type" sortable
         width="15%">
         <div class="tags">
-          <b-tag :class="props.row.type" :data-cy="`type-${props.row.type}`">
+          <b-tag v-if="props.row.axmFilter" type="is-info is-light" data-cy="type-dynamic">{{ $t('lists.dynamic.dynamic') }}</b-tag>
+          <b-tag v-else :class="props.row.type" :data-cy="`type-${props.row.type}`">
             {{ $t(`lists.types.${props.row.type}`) }}
           </b-tag>
           {{ ' ' }}
 
-          <b-tag :class="props.row.optin" :data-cy="`optin-${props.row.optin}`">
+          <b-tag v-if="!props.row.axmFilter" :class="props.row.optin" :data-cy="`optin-${props.row.optin}`">
             <b-icon :icon="props.row.optin === 'double' ? 'account-check-outline' : 'account-off-outline'"
               size="is-small" />
             {{ ' ' }}
             {{ $t(`lists.optins.${props.row.optin}`) }}
           </b-tag>{{ ' ' }}
 
-          <a v-if="props.row.optin === 'double'" class="is-size-7 send-optin" href="#"
+          <a v-if="!props.row.axmFilter && props.row.optin === 'double'" class="is-size-7 send-optin" href="#"
             @click="$utils.confirm(null, () => createOptinCampaign(props.row))" data-cy="btn-send-optin-campaign">
             <b-tooltip :label="$t('lists.sendOptinCampaign')" type="is-dark">
               <b-icon icon="rocket-launch-outline" size="is-small" />
@@ -170,7 +171,7 @@
     </b-table>
 
     <!-- Add / edit form modal -->
-    <b-modal scroll="keep" :aria-modal="true" :active.sync="isFormVisible" :width="600" @close="onFormClose">
+    <b-modal custom-class="axm-list-modal" has-modal-card scroll="keep" :aria-modal="true" :active.sync="isFormVisible" :width="860" @close="onFormClose">
       <list-form :data="curItem" :is-editing="isEditing" @finished="formFinished" />
     </b-modal>
 
@@ -382,3 +383,7 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style>
+.axm-list-modal .animation-content { width: calc(100vw - 20px); }
+</style>

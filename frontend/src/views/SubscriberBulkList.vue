@@ -23,7 +23,7 @@
         </b-field>
 
         <list-selector label="Target lists" placeholder="Lists to apply to" v-model="form.lists" :selected="form.lists"
-          :all="lists.results" />
+          :all="(lists.results || []).filter(l => !l.axmFilter)" />
 
         <b-field :message="$t('subscribers.preconfirmHelp')">
           <b-checkbox v-model="form.preconfirm" data-cy="preconfirm" :native-value="true" :disabled="!hasOptinList">

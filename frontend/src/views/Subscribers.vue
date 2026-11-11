@@ -23,6 +23,9 @@
       </div>
     </header>
 
+    <p v-if="currentList && currentList.axmFilter" class="notification is-info is-light" data-cy="dynamic-members-help">
+      {{ $t('lists.dynamic.membersHelp') }}
+    </p>
     <section class="subscribers-controls">
       <div class="columns">
         <div class="column is-8">
@@ -83,7 +86,7 @@
             {{ $t('subscribers.export') }}
           </a>
           <template v-if="bulk.checked.length > 0">
-            <a class="a" href="#" @click.prevent="showBulkListForm" data-cy="btn-manage-lists">
+            <a v-if="!currentList || !currentList.axmFilter" class="a" href="#" @click.prevent="showBulkListForm" data-cy="btn-manage-lists">
               <b-icon icon="format-list-bulleted-square" size="is-small" /> Manage lists
             </a>
             <a class="a" href="#" @click.prevent="deleteSubscribers" data-cy="btn-delete-subscribers">
