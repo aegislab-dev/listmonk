@@ -71,6 +71,16 @@ git push origin v6.2.0-axm.1
 - 게시에는 `GITHUB_TOKEN`만 사용한다. DockerHub로 보내지 않는다.
 - OCI 라벨에는 source, url(소스 태그), revision(전체 SHA), version, licenses, created, title, 원본의 수정판이라는 description을 담는다.
 
+### 릴리스 기록
+
+| 릴리스 | 소스 커밋 | 이미지 digest | 마이그레이션 | 운영 적용 |
+|---|---|---|---|---|
+| `v6.2.0-axm.1` (2026-11-11 게시, GHCR public) | `fcba2d60cefde01e53d430516a554bff84a9132c` (#1–#8 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:0ed937465fe4cc582ecb6ac21be05d7df02281d545f892212d24e9143909da4c` (linux/amd64) | `v6.2.1-axm.1`, `.2`, `.3` | 2026-11-12 12:28 KST, lists.crevasse.ai(Railway 서비스 `8960c2f9-68c5-4ed9-9179-4fbc68be6da2`) |
+
+이미지 롤백 기준은 직전 운영 이미지 `listmonk/listmonk@sha256:f535d59e14991337a9f2d570273685378ae86b0d7698c3e00da444e3bc205286`(공식 v6.2.0)이다.
+공식 이미지는 더 높은 migrations 기록을 보고 upgrade 없이 기동하며, 포크 컬럼·함수·트리거는 남는다(운영 백업 사본과 합성 DB에서 확인).
+운영 Railway 시작 명령이 기동마다 `--upgrade --yes`를 실행하므로 이미지 교체가 곧 마이그레이션 실행이다. 교체 전에 발송·가져오기 중지와 백업을 확인한다.
+
 ## 로컬 빌드와 검증
 
 빌더는 **Node 24.22.2 / Go 1.26.1 / Yarn 1.22.22**, 런타임은 **Alpine 3.23.4**로 고정한다.
