@@ -38,6 +38,8 @@ DROP INDEX IF EXISTS idx_subs_updated_at; CREATE INDEX idx_subs_updated_at ON su
 DROP TABLE IF EXISTS lists CASCADE;
 CREATE TABLE lists (
     axm_filter JSONB NULL,
+    -- The column preset the subscribers table shows for this list (see core.ColumnPresets).
+    axm_preset TEXT NOT NULL DEFAULT 'creator',
     id              SERIAL PRIMARY KEY,
     uuid            uuid NOT NULL UNIQUE,
     name            TEXT NOT NULL,

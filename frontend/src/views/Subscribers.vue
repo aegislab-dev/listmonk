@@ -91,7 +91,7 @@
       <form v-if="filterForm" class="attrib-filter-form" @submit.prevent="applyFilter" data-cy="attrib-filter-form">
         <b-field :label="$t('lists.dynamic.key')" label-for="attrib-filter-key">
           <b-autocomplete v-model="filterForm.key" :data="filterKeyOptions" maxlength="64" :open-on-focus="true"
-            :keep-first="false" id="attrib-filter-key" ref="filterKey" :placeholder="$t('subscribers.columns.customPlaceholder')"
+            :keep-first="false" id="attrib-filter-key" ref="filterKey" :placeholder="$t('subscribers.columns.filterKey')"
             data-cy="attrib-filter-key" />
         </b-field>
         <b-field :label="$t('lists.dynamic.operator')" label-for="attrib-filter-op">
@@ -125,6 +125,16 @@
     </section>
 
     <br v-else />
+    <p class="column-preset" data-cy="column-preset">
+      <span class="column-preset-label">{{ $t('subscribers.columns.preset') }}</span>
+      <strong>{{ presetName }}</strong>
+      <span v-if="attribColumns.length" class="column-preset-keys">{{ attribColumns.join(' · ') }}</span>
+      <router-link v-if="currentList && $canManageList(currentList.id)" :to="`/lists/${currentList.id}`"
+        data-cy="column-preset-change">
+        {{ $t('subscribers.columns.presetChange') }}
+      </router-link>
+      <span v-else-if="!queryParams.listID" class="column-preset-note">{{ $t('subscribers.columns.presetAll') }}</span>
+    </p>
     <p v-if="isTableWide" class="help table-wide-hint" data-cy="table-wide-hint">
       {{ $t('subscribers.columns.wideHint') }}
     </p>
@@ -139,70 +149,6 @@
             <b-icon icon="cloud-download-outline" size="is-small" />
             {{ $t('subscribers.export') }}
           </a>
-          <b-dropdown ref="columnPicker" class="a column-picker" v-bind="{ 'aria-role': 'dialog' }" :close-on-click="false"
-            :mobile-modal="true" trap-focus @active-change="onPickerToggle">
-            <template #trigger>
-              <a href="#" @click.prevent role="button" data-cy="btn-columns">
-                <svg class="axm-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M4 5h16v14H4zM9.5 5v14M14.5 5v14" />
-                </svg>
-                {{ $t('subscribers.columns.pick') }}
-                <span v-if="columns.attribs.length" class="column-count">{{ columns.attribs.length }}</span>
-              </a>
-            </template>
-            <b-dropdown-item custom :focusable="false" class="column-picker-body">
-              <div data-cy="column-picker">
-                <p class="column-picker-title">{{ $t('subscribers.columns.title') }}</p>
-                <p class="column-picker-group">{{ $t('subscribers.columns.base') }}</p>
-                <div class="column-picker-base">
-                  <b-checkbox :value="true" disabled>{{ $t('subscribers.email') }}</b-checkbox>
-                  <b-checkbox :value="true" disabled>{{ $t('globals.fields.name') }}</b-checkbox>
-                  <b-checkbox v-for="c in baseColumns" :key="c.id" :value="!columns.hidden.includes(c.id)"
-                    @input="toggleBaseColumn(c.id)" :data-cy="`column-base-${c.id}`">
-                    {{ c.label }}
-                  </b-checkbox>
-                </div>
-                <p class="column-picker-group">
-                  {{ $t('subscribers.columns.attribs') }}
-                  <span class="column-picker-limit">{{ columns.attribs.length }} / {{ maxAttribColumns }}</span>
-                </p>
-                <p v-if="columns.auto && columns.attribs.length" class="help column-picker-auto" data-cy="column-auto">
-                  {{ $t('subscribers.columns.autoNote') }}
-                </p>
-                <ul v-if="pickerKeys.length" class="column-picker-keys">
-                  <li v-for="k in pickerKeys" :key="k.key">
-                    <b-checkbox :value="columns.attribs.includes(k.key)" @input="toggleAttribColumn(k.key)"
-                      :disabled="!columns.attribs.includes(k.key) && columns.attribs.length >= maxAttribColumns"
-                      :data-cy="`column-attrib-${k.key}`">
-                      <span class="column-key">{{ k.key }}</span>
-                    </b-checkbox>
-                    <span class="column-filled">{{ $t('subscribers.columns.filled', { num: k.filled }) }}</span>
-                  </li>
-                </ul>
-                <p v-else class="help">{{ $t('subscribers.columns.none') }}</p>
-                <p class="help">{{ $t('subscribers.columns.found', { num: pageSize }) }}</p>
-                <form class="column-picker-custom" @submit.prevent="addCustomColumn">
-                  <b-field :label="$t('subscribers.columns.custom')" label-for="column-custom-key">
-                    <b-input v-model="customKey" maxlength="64" :has-counter="false" expanded id="column-custom-key"
-                      :placeholder="$t('subscribers.columns.customPlaceholder')" data-cy="column-custom-key" />
-                    <p class="control">
-                      <b-button native-type="submit" data-cy="column-custom-add"
-                        :disabled="!customKeyClean || columns.attribs.length >= maxAttribColumns">
-                        {{ $t('globals.buttons.add') }}
-                      </b-button>
-                    </p>
-                  </b-field>
-                </form>
-                <p class="column-picker-foot">
-                  <a href="#" @click.prevent="resetColumns" data-cy="column-reset">{{ $t('subscribers.columns.reset') }}</a>
-                  <a href="#" class="column-picker-close" @click.prevent="$refs.columnPicker.toggle()">
-                    {{ $t('globals.buttons.close') }}
-                  </a>
-                </p>
-                <p class="help">{{ $t('subscribers.columns.remembered') }}</p>
-              </div>
-            </b-dropdown-item>
-          </b-dropdown>
           <a class="a" href="#" @click.prevent="openFilter('')" data-cy="btn-attrib-filter">
             <svg class="axm-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M4 5h16l-6.2 7.6V19l-3.6-2v-4.4z" />
@@ -256,7 +202,8 @@
         </b-taglist>
       </b-table-column>
 
-      <b-table-column v-slot="props" field="name" :label="$t('globals.fields.name')" header-class="cy-name" sortable>
+      <b-table-column v-slot="props" field="name" :label="$t('globals.fields.name')" header-class="cy-name" sortable
+        cell-class="sub-name-cell">
         <a :href="`/subscribers/${props.row.id}`" @click.prevent="showEditForm(props.row)"
           :class="{ 'blocklisted': props.row.status === 'blocklisted' }">
           {{ props.row.name }}
@@ -264,12 +211,11 @@
         </a>
       </b-table-column>
 
-      <b-table-column v-slot="props" field="lists" :label="$t('globals.terms.lists')" header-class="cy-lists" centered
-        :visible="!columns.hidden.includes('lists')">
+      <b-table-column v-slot="props" field="lists" :label="$t('globals.terms.lists')" header-class="cy-lists" centered>
         {{ listCount(props.row.lists) }}
       </b-table-column>
 
-      <b-table-column v-for="key in columns.attribs" :key="`attrib-${key}`" :field="`attribs.${key}`" :label="key"
+      <b-table-column v-for="key in attribColumns" :key="`attrib-${key}`" :field="`attribs.${key}`" :label="key"
         header-class="attrib-head" cell-class="attrib-cell" sortable>
         <template #header="{ column }">
           <span class="attrib-head-label" :title="$t('subscribers.columns.headTitle', { key })">{{ column.label }}</span>
@@ -295,14 +241,12 @@
       </b-table-column>
 
       <b-table-column v-slot="props" field="created_at" :label="$t('globals.fields.createdAt')"
-        header-class="cy-created_at" sortable cell-class="sub-date-cell"
-        :visible="!columns.hidden.includes('created_at')">
+        header-class="cy-created_at" sortable cell-class="sub-date-cell">
         {{ $utils.niceDate(props.row.createdAt) }}
       </b-table-column>
 
       <b-table-column v-slot="props" field="updated_at" :label="$t('globals.fields.updatedAt')"
-        header-class="cy-updated_at" sortable cell-class="sub-date-cell"
-        :visible="!columns.hidden.includes('updated_at')">
+        header-class="cy-updated_at" sortable cell-class="sub-date-cell">
         {{ $utils.niceDate(props.row.updatedAt) }}
       </b-table-column>
 
@@ -356,8 +300,8 @@ import SubscriberForm from './SubscriberForm.vue';
 import CopyText from '../components/CopyText.vue';
 import { isNumberOp } from '../dynamic-list';
 import {
-  BASE_COLUMNS, FILTER_OPS, LONG_VALUE, MAX_ATTRIB_COLUMNS, MAX_CONDITIONS, attribStats, attribText, cleanCondition,
-  cleanKey, conditionError, conditionValueText, loadColumns, newCondition, saveColumns, suggestColumns,
+  FILTER_OPS, LONG_VALUE, MAX_CONDITIONS, attribKeys, attribText, cleanCondition, conditionError, conditionValueText,
+  newCondition, presetOf,
 } from '../subscriber-columns';
 
 export default Vue.extend({
@@ -385,17 +329,8 @@ export default Vue.extend({
 
       queryInput: '',
 
-      // Columns of the table. attribs are attribute keys shown as columns, hidden are base
-      // column IDs turned off. auto means the user has not picked columns for this list yet.
-      columns: {
-        attribs: [], hidden: [], auto: true, suggested: false,
-      },
-      // Attribute keys found in the subscribers of the current page, with how many have a value.
-      columnStats: [],
-      customKey: '',
       // Long values opened in place, keyed by subscriber ID and attribute key.
       openCells: {},
-      maxAttribColumns: MAX_ATTRIB_COLUMNS,
       filterOps: FILTER_OPS,
 
       // Attribute conditions applied to the table, and the condition being typed (or null).
@@ -424,56 +359,6 @@ export default Vue.extend({
 
   methods: {
     isNumberOp,
-
-    // The saved columns belong to one list; the page without a list has its own.
-    columnsKey() {
-      return this.queryParams.listID || 'all';
-    },
-
-    saveColumnChoice() {
-      this.columns.auto = false;
-      saveColumns(window.localStorage, this.columnsKey(), this.columns);
-    },
-
-    toggleAttribColumn(key) {
-      const on = this.columns.attribs.includes(key);
-      if (!on && this.columns.attribs.length >= MAX_ATTRIB_COLUMNS) return;
-      this.columns.attribs = on ? this.columns.attribs.filter((k) => k !== key) : [...this.columns.attribs, key];
-      this.saveColumnChoice();
-      // A hidden column cannot stay the sort order.
-      if (on && this.queryParams.orderBy === `attribs.${key}`) {
-        this.querySubscribers({ orderBy: 'id', order: 'desc', page: 1 });
-      }
-    },
-
-    toggleBaseColumn(id) {
-      const hidden = this.columns.hidden.includes(id);
-      this.columns.hidden = hidden ? this.columns.hidden.filter((c) => c !== id) : [...this.columns.hidden, id];
-      this.saveColumnChoice();
-    },
-
-    addCustomColumn() {
-      const key = this.customKeyClean;
-      if (!key) return;
-      if (!this.columns.attribs.includes(key)) this.toggleAttribColumn(key);
-      this.customKey = '';
-    },
-
-    // Forgets the choice for this list and goes back to the suggested columns.
-    resetColumns() {
-      saveColumns(window.localStorage, this.columnsKey(), null);
-      this.columns = {
-        attribs: suggestColumns(this.columnStats), hidden: [], auto: true, suggested: this.columnStats.length > 0,
-      };
-      if (this.queryParams.orderBy.startsWith('attribs.')
-        && !this.columns.attribs.includes(this.queryParams.orderBy.slice('attribs.'.length))) {
-        this.querySubscribers({ orderBy: 'id', order: 'desc', page: 1 });
-      }
-    },
-
-    onPickerToggle(active) {
-      if (!active) this.customKey = '';
-    },
 
     attribCell(row, key) {
       const text = attribText(row.attribs ? row.attribs[key] : undefined);
@@ -714,7 +599,7 @@ export default Vue.extend({
       const num = !this.bulk.all && this.bulk.checked.length > 0
         ? this.bulk.checked.length : this.subscribers.total;
 
-      const cols = this.columns.attribs;
+      const cols = this.attribColumns;
       const msg = this.$t('subscribers.confirmExport', { num })
         + (cols.length ? ` ${this.$t('subscribers.columns.exportNote', { columns: cols.join(', ') })}` : '');
       this.$utils.confirm(msg, () => {
@@ -820,7 +705,7 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['subscribers', 'lists', 'loading']),
+    ...mapState(['subscribers', 'lists', 'loading', 'serverConfig']),
 
     // True when nothing narrows the list down: no search, no SQL query, no attribute condition.
     noConditions() {
@@ -828,34 +713,30 @@ export default Vue.extend({
         && this.attribFilters.length === 0;
     },
 
-    baseColumns() {
-      const labels = {
-        lists: this.$t('globals.terms.lists'),
-        created_at: this.$t('globals.fields.createdAt'),
-        updated_at: this.$t('globals.fields.updatedAt'),
-      };
-      return BASE_COLUMNS.map((id) => ({ id, label: labels[id] }));
+    // The column preset of the list being viewed; the default one without a list.
+    preset() {
+      const id = this.currentList ? this.currentList.axmPreset : '';
+      return presetOf(this.serverConfig.axm_column_presets, id, this.serverConfig.axm_default_column_preset);
     },
 
-    // Keys offered in the column picker: those found on this page, most filled first, and
-    // the picked ones this page has no value for.
-    pickerKeys() {
-      const found = [...this.columnStats].sort((a, b) => b.filled - a.filled);
-      const known = new Set(found.map((s) => s.key));
-      return [...found, ...this.columns.attribs.filter((k) => !known.has(k)).map((key) => ({ key, filled: 0 }))];
+    // Attribute keys shown as columns, in the preset's order.
+    attribColumns() {
+      return this.preset.columns;
     },
 
-    pageSize() {
-      return (this.subscribers.results || []).length;
+    presetName() {
+      return this.preset.id ? this.$t(`lists.preset.${this.preset.id}`) : '';
     },
 
-    customKeyClean() {
-      return cleanKey(this.customKey);
+    // Keys offered when adding a condition: the preset's columns, then the other keys the
+    // subscribers of this page have.
+    knownKeys() {
+      return [...new Set([...this.attribColumns, ...attribKeys(this.subscribers.results)])];
     },
 
     filterKeyOptions() {
       const typed = ((this.filterForm && this.filterForm.key) || '').toLowerCase();
-      return this.pickerKeys.map((k) => k.key).filter((k) => k.toLowerCase().includes(typed));
+      return this.knownKeys.filter((k) => k.toLowerCase().includes(typed));
     },
 
     numSelectedSubscribers() {
@@ -876,15 +757,8 @@ export default Vue.extend({
   },
 
   watch: {
-    // The attribs come with the subscribers the table already loads.
-    'subscribers.results': function onResults(results) {
-      this.columnStats = attribStats(results);
+    'subscribers.results': function onResults() {
       this.openCells = {};
-      // Suggest columns once, from the first page that has subscribers, and keep them
-      // while paging so that the table does not jump.
-      if (this.columns.auto && !this.columns.suggested && (results || []).length) {
-        this.columns = { ...this.columns, attribs: suggestColumns(this.columnStats), suggested: true };
-      }
     },
   },
 
@@ -908,11 +782,6 @@ export default Vue.extend({
     }
     if (this.$route.query.subscription_status) {
       this.queryParams.subStatus = this.$route.query.subscription_status;
-    }
-
-    const saved = loadColumns(window.localStorage, this.columnsKey());
-    if (saved) {
-      this.columns = { ...saved, auto: false, suggested: true };
     }
 
     if (this.$route.params.id) {

@@ -901,7 +901,7 @@ section.lists {
     margin: 0 0 .5rem;
   }
   td.attrib-cell {
-    max-width: 13rem;
+    max-width: 12rem;
 
     .attrib-wrap {
       display: block;
@@ -926,101 +926,17 @@ section.lists {
     }
   }
 
-  /* Column picker */
-  .column-picker {
-    vertical-align: baseline;
+  /* The column preset of the list */
+  .column-preset {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .25rem .6rem;
+    margin: 0 0 .75rem;
+    font-size: .9rem;
 
-    .column-count {
-      display: inline-block;
-      min-width: 1.4em;
-      padding: 0 .35em;
-      margin-left: 2px;
-      border-radius: 1em;
-      background: $primary;
-      color: $white;
-      font-size: .75rem;
-      line-height: 1.5;
-      text-align: center;
-    }
-    .dropdown-content {
-      width: 22rem;
-      max-width: calc(100vw - 2rem);
-    }
-    .column-picker-body {
-      white-space: normal;
-      padding: .75rem 1rem;
-      font-size: .95rem;
-    }
-    .column-picker-title {
-      font-weight: 700;
-      margin-bottom: .5rem;
-    }
-    .column-picker-group {
-      display: flex;
-      justify-content: space-between;
-      font-weight: 600;
-      font-size: .85rem;
-      color: $grey-dark;
-      margin: .75rem 0 .35rem;
-    }
-    .column-picker-limit {
-      font-weight: 400;
+    .column-preset-label, .column-preset-keys, .column-preset-note {
       color: $grey;
-    }
-    .column-picker-base {
-      display: flex;
-      flex-wrap: wrap;
-      gap: .25rem 1rem;
-
-      .b-checkbox.checkbox {
-        margin: 0;
-      }
-    }
-    .column-picker-keys {
-      max-height: 14rem;
-      overflow-y: auto;
-      margin: 0 0 .5rem;
-      border: 1px solid $grey-lightest;
-      border-radius: 4px;
-
-      li {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: .5rem;
-        padding: .3rem .6rem;
-
-        & + li {
-          border-top: 1px solid $grey-lightest;
-        }
-      }
-      .b-checkbox.checkbox {
-        min-width: 0;
-        margin: 0;
-      }
-      .column-key {
-        overflow-wrap: anywhere;
-      }
-      .column-filled {
-        flex: none;
-        color: $grey;
-        font-size: .85rem;
-        font-variant-numeric: tabular-nums;
-      }
-    }
-    .column-picker-custom {
-      margin-top: .75rem;
-
-      .label {
-        font-size: .85rem;
-        font-weight: 600;
-        color: $grey-dark;
-      }
-    }
-    .column-picker-foot {
-      display: flex;
-      justify-content: space-between;
-      margin: .75rem 0 .25rem;
     }
   }
 
@@ -1089,6 +1005,10 @@ section.lists {
     td.sub-date-cell {
       word-break: keep-all;
       min-width: 6.8em;
+    }
+    /* A name wraps between words, never inside a Korean name. */
+    td.sub-name-cell {
+      word-break: keep-all;
     }
     td.actions a {
       margin: 0 6px;

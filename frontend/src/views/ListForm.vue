@@ -52,6 +52,13 @@
 
         <dynamic-list-filter v-if="composition === 'dynamic'" v-model="filter" :list-id="data.id || 0" />
         <p v-if="filterError" role="alert" class="help is-danger">{{ filterError }}</p>
+        <b-field :label="$t('lists.preset.label')" label-position="on-border" :message="presetHelp">
+          <b-select v-model="preset" expanded data-cy="list-preset" @input="presetTouched = true">
+            <option v-for="p in presets" :key="p.id" :value="p.id">
+              {{ $t(`lists.preset.${p.id}`) }} — {{ p.columns.join(', ') }}
+            </option>
+          </b-select>
+        </b-field>
         <b-field :label="$t('globals.terms.tags')" label-position="on-border">
           <b-taginput v-model="form.tags" name="tags" ellipsis icon="tag-outline"
             :placeholder="$t('globals.terms.tags')" />
@@ -103,6 +110,10 @@ export default Vue.extend({
       composition: this.data.axmFilter ? 'dynamic' : 'static',
       filter: filterToForm(this.data.axmFilter),
       filterError: '',
+      // The column preset of the subscribers table. A new dynamic list follows its base
+      // list's preset until the user picks one.
+      preset: this.data.axmPreset || '',
+      presetTouched: false,
       // Binds form input values.
       form: {
         name: '',
@@ -116,7 +127,11 @@ export default Vue.extend({
 
   methods: {
     payload() {
-      return { ...this.form, axm_filter: this.composition === 'dynamic' ? formToFilter(this.filter) : null };
+      return {
+        ...this.form,
+        axm_filter: this.composition === 'dynamic' ? formToFilter(this.filter) : null,
+        axm_preset: this.preset,
+      };
     },
     onSubmit() {
       this.filterError = '';
@@ -150,7 +165,24 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['loading', 'profile']),
+    ...mapState(['loading', 'profile', 'lists', 'serverConfig']),
+
+    presets() {
+      return this.serverConfig.axm_column_presets || [];
+    },
+
+    // The preset a new dynamic list takes over: that of its first base list.
+    inheritedPreset() {
+      if (this.isEditing || this.composition !== 'dynamic' || this.filter.base.type !== 'lists') return null;
+      const base = (this.lists.results || []).find((l) => l.id === (this.filter.base.lists || [])[0]);
+      return base ? { id: base.axmPreset, name: base.name } : null;
+    },
+
+    presetHelp() {
+      const inherited = this.inheritedPreset;
+      return inherited && !this.presetTouched && inherited.id === this.preset
+        ? this.$t('lists.preset.inherited', { name: inherited.name }) : this.$t('lists.preset.help');
+    },
 
     isArchived: {
       get() {
@@ -158,6 +190,18 @@ export default Vue.extend({
       },
       set(v) {
         this.form.status = v ? 'archived' : 'active';
+      },
+    },
+  },
+
+  watch: {
+    // Until the user picks a preset, a new list follows the base list (or the default).
+    inheritedPreset: {
+      immediate: true,
+      handler(inherited) {
+        if (this.isEditing || this.presetTouched) return;
+        const id = inherited ? inherited.id : this.serverConfig.axm_default_column_preset;
+        this.preset = this.presets.some((p) => p.id === id) ? id : this.serverConfig.axm_default_column_preset;
       },
     },
   },

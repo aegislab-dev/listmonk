@@ -180,10 +180,14 @@ func (c *Core) CreateList(l models.List) (models.List, error) {
 		l.Status = models.ListStatusActive
 	}
 
+	if l.AxmPreset, err = c.newListPreset(l); err != nil {
+		return models.List{}, err
+	}
+
 	// Insert and read ID.
 	var newID int
 	l.UUID = uu.String()
-	if err := c.q.CreateList.Get(&newID, l.UUID, l.Name, l.Type, l.Optin, l.Status, pq.StringArray(normalizeTags(l.Tags)), l.Description, l.AxmFilter); err != nil {
+	if err := c.q.CreateList.Get(&newID, l.UUID, l.Name, l.Type, l.Optin, l.Status, pq.StringArray(normalizeTags(l.Tags)), l.Description, l.AxmFilter, l.AxmPreset); err != nil {
 		c.log.Printf("error creating list: %v", err)
 		return models.List{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorCreating", "name", "{globals.terms.list}", "error", pqErrMsg(err)))
@@ -213,7 +217,11 @@ func (c *Core) UpdateList(id int, l models.List) (models.List, error) {
 			return models.List{}, err
 		}
 	}
-	res, err := c.q.UpdateList.Exec(id, l.Name, l.Type, l.Optin, l.Status, pq.StringArray(normalizeTags(l.Tags)), l.Description, l.AxmFilter)
+	// An empty preset keeps the one the list has.
+	if l.AxmPreset != "" && !ValidColumnPreset(l.AxmPreset) {
+		return models.List{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("lists.preset.invalid"))
+	}
+	res, err := c.q.UpdateList.Exec(id, l.Name, l.Type, l.Optin, l.Status, pq.StringArray(normalizeTags(l.Tags)), l.Description, l.AxmFilter, l.AxmPreset)
 	if err != nil {
 		c.log.Printf("error updating list: %v", err)
 		return models.List{}, echo.NewHTTPError(http.StatusInternalServerError,

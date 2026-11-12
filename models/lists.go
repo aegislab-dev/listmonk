@@ -20,6 +20,7 @@ type List struct {
 	Base
 
 	AxmFilter        *types.JSONText `db:"axm_filter" json:"axm_filter"`
+	AxmPreset        string          `db:"axm_preset" json:"axm_preset"`
 	UUID             string          `db:"uuid" json:"uuid"`
 	Name             string          `db:"name" json:"name"`
 	Type             string          `db:"type" json:"type"`
