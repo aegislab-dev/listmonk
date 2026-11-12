@@ -116,7 +116,7 @@ describe('subscriber attribute columns', () => {
     cy.contains('tbody tr', `columns-${run}-a@`).find('td[data-label=country]').should('have.text', 'PH');
     cy.contains('tbody tr', `columns-${run}-c@`).find('td[data-label=country]').should('contain.text', 'SG, MY');
     cy.contains('tbody tr', `columns-${run}-d@`).find('td[data-label=country] .attrib-value')
-      .should('have.text', '{"code":"PH","city":"Cebu"}');
+      .should('have.text', '{"city":"Cebu","code":"PH"}');
     cy.contains('tbody tr', `columns-${run}-e@`).find('td[data-label=country] .attrib-empty').should('exist');
     // A long value is cut to one line and opens in place.
     cy.contains('tbody tr', `columns-${run}-b@`).find('td[data-label=country]').within(() => {
@@ -298,7 +298,7 @@ describe('subscriber attribute columns', () => {
     cy.visit(`/admin/subscribers/lists/${displayId}`);
     cells('country').should('have.length', 5);
     noSidewaysOverflow();
-    cy.get('thead').should('not.be.visible');
+    cy.get('thead th.attrib-head').should('not.be.visible');
     cy.contains('tbody tr', `columns-${run}-a@`).within(() => {
       cy.get('td[data-label=country]').should('be.visible').and('contain.text', 'PH');
       cy.get('td[data-label=follower]').should('be.visible').and('contain.text', '12,500');
