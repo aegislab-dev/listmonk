@@ -52,7 +52,9 @@
 
         <dynamic-list-filter v-if="composition === 'dynamic'" v-model="filter" :list-id="data.id || 0" />
         <p v-if="filterError" role="alert" class="help is-danger">{{ filterError }}</p>
-        <b-field :label="$t('lists.preset.label')" label-position="on-border" :message="presetHelp">
+        <!-- Shown only when there is a choice to make: with one preset every list has it. -->
+        <b-field v-if="presets.length > 1" :label="$t('lists.preset.label')" label-position="on-border"
+          :message="presetHelp">
           <b-select v-model="preset" expanded data-cy="list-preset" :disabled="!canSave"
             @input="presetTouched = true">
             <option v-for="p in presets" :key="p.id" :value="p.id">

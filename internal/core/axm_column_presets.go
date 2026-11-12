@@ -20,9 +20,13 @@ const DefaultColumnPreset = "creator"
 // ColumnPresets are the presets a list can have. They are fixed here on purpose: there is no
 // screen to edit them. The keys follow the standard attribute names; renaming one here is all
 // it takes when the standard changes, as lists store only the preset ID.
+//
+// There is one preset for now. Lists already store their preset (lists.axm_preset), so adding
+// one here, with its name in the i18n files (lists.preset.<id>), is enough to offer it: the
+// list form shows its preset choice and the subscribers page its preset line only when there
+// is more than one.
 var ColumnPresets = []ColumnPreset{
 	{ID: "creator", Columns: []string{"country", "follower"}},
-	{ID: "b2b", Columns: []string{"company", "title", "industry", "country"}},
 }
 
 // ValidColumnPreset tells whether a preset ID exists.

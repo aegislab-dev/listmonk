@@ -997,7 +997,6 @@
     "lists.preset.help": "The attribute columns shown on this list's subscribers page. Everyone viewing the list sees the same columns.",
     "lists.preset.inherited": "Taken over from the base list ‘{name}’. You can change it.",
     "lists.preset.creator": "Creator",
-    "lists.preset.b2b": "B2B sales",
     "subscribers.columns.preset": "Columns",
     "subscribers.columns.presetChange": "Change in list settings",
     "subscribers.columns.presetAll": "The page of all subscribers shows the default columns.",

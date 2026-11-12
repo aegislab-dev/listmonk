@@ -68,9 +68,12 @@ func AttribFilterExp(raw []byte) (string, error) {
 	}
 	// The statement is assembled by replacing %query% and %order% placeholders, so the
 	// literal must never contain a percent sign.
-	lit := strings.ReplaceAll(string(b), "%", `%`)
+	lit := strings.ReplaceAll(string(b), "%", jsonPercent)
 	return "axm_filter_match(subscribers.attribs, " + pq.QuoteLiteral(lit) + "::JSONB)", nil
 }
+
+// jsonPercent is the JSON escape of a percent sign: a backslash, then u0025.
+var jsonPercent = string(rune(92)) + "u0025"
 
 // AndSQLExp joins two optional SQL conditions.
 func AndSQLExp(a, b string) string {

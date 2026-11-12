@@ -125,7 +125,8 @@
     </section>
 
     <br v-else />
-    <p class="column-preset" data-cy="column-preset">
+    <!-- Says which preset the list has, once there is more than one to tell apart. -->
+    <p v-if="hasPresetChoice" class="column-preset" data-cy="column-preset">
       <span class="column-preset-label">{{ $t('subscribers.columns.preset') }}</span>
       <strong>{{ presetName }}</strong>
       <span v-if="attribColumns.length" class="column-preset-keys">{{ attribColumns.join(' · ') }}</span>
@@ -722,6 +723,10 @@ export default Vue.extend({
     // Attribute keys shown as columns, in the preset's order.
     attribColumns() {
       return this.preset.columns;
+    },
+
+    hasPresetChoice() {
+      return (this.serverConfig.axm_column_presets || []).length > 1;
     },
 
     presetName() {
