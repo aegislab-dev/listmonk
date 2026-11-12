@@ -136,6 +136,7 @@ export default {
     header: { type: Boolean, default: true },
     headerHint: { type: Boolean, default: false },
     columns: { type: Array, default: () => [] },
+    sourceColumns: { type: Array, default: () => [] },
     samples: { type: Array, default: () => [] },
     columnErrors: { type: Object, default: () => ({}) },
     columnWarnings: { type: Object, default: () => ({}) },
@@ -161,19 +162,19 @@ export default {
           state = 'error';
           text = this.columnErrors[index];
           // Offer a ready-made name instead of explaining the naming rule.
-          if (named) fix = suggestKey(key || label);
-          if (fix === key) fix = '';
+          if (named) fix = suggestKey(key || this.sourceColumns[index] || '') || `column_${index + 1}`;
+          if (this.mapping.some((entry) => ['attribute', 'tags'].includes(entry.role) && entry.key === fix)) fix = '';
         } else if (role === 'discard') {
           state = 'skipped';
           text = this.$t('import.mapStateSkipped');
         } else if (this.columnWarnings[index]) {
           state = 'warning';
           text = this.columnWarnings[index];
-        } else if (role === 'attribute' && !this.existingKeys.includes(key) && isSpelledKey(label, key)) {
+        } else if (role === 'attribute' && !this.existingKeys.includes(key) && isSpelledKey(this.sourceColumns[index] || '', key)) {
           text = this.$t('import.mapStateAuto');
         }
         return {
-          index, label, state, text, fix, samples: (this.samples[index] || []).filter((sample) => sample.trim()),
+          index, label, state, text, fix, samples: (this.samples[index] || []).map((sample) => sample.trim()).filter(Boolean),
         };
       });
     },
@@ -190,7 +191,7 @@ export default {
       const { index } = this.rows.find(({ state }) => state === 'error');
       const row = this.$el.querySelector(`[data-cy=map-row-${index}]`);
       row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      row.querySelector(`#map-key-${index}, #map-role-${index}`).focus({ preventScroll: true });
+      (row.querySelector(`#map-key-${index}`) || row.querySelector(`#map-role-${index}`)).focus({ preventScroll: true });
     },
     change(index, field, value) {
       this.$emit('mapping', this.mapping.map((entry, n) => (n === index ? { ...entry, [field]: value } : entry)));

@@ -91,7 +91,8 @@
           </div>
           <import-column-mapper v-if="isCSV" :mode="csv.mode" :encoding="csv.encoding" :encoding-choice="csv.encodingChoice"
             :raw-available="csv.rawReady && (!csv.busy || csv.parsed)"
-            :header="csv.header" :header-hint="csv.headerHint" :columns="displayColumns" :samples="csv.samples"
+            :header="csv.header" :header-hint="csv.headerHint" :columns="displayColumns" :source-columns="csv.columns"
+            :samples="csv.samples"
             :mapping="csv.mapping" :column-errors="columnErrors" :column-warnings="columnWarnings"
             :existing-keys="existingKeys" :validation="mappingMessages" :total="csv.total" :summary="csv.summary"
             :examples="csv.examples" :preview="csv.preview" :error="csv.error" :busy="csv.busy"

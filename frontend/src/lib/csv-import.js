@@ -187,7 +187,7 @@ export function suggestMapping(parsed, memory = { columns: {} }) {
     if (KNOWN.get(label) === 'tags') return { role: 'tags', key: 'tags' };
     const samples = parsed.rows.slice(0, 20).map(({ cells }) => cells[index]).filter((v) => v.trim());
     if (samples.length && samples.filter((v) => validEmail(cleanEmail(v))).length > samples.length / 2) return { role: 'email', key: '' };
-    return { role: 'attribute', key: suggestKey(column) };
+    return { role: 'attribute', key: suggestKey(column) || `column_${index + 1}` };
   });
 }
 

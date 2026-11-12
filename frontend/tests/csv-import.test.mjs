@@ -76,6 +76,8 @@ test('attribute names are made from labels: known terms, spelled-out Hangul and 
     { role: 'attribute', key: 'customer_grade' }, { role: 'tags', key: 'tags' }, { role: 'discard', key: '' }, { role: 'attribute', key: 'signup_path' },
   ]);
   assert.deepEqual(validateMapping(mapping), []);
+  // A label that yields no name falls back to its position.
+  assert.deepEqual(suggestMapping(parseCSV('email,,###\na@example.invalid,x,y')).map(({ key }) => key), ['', 'column_2', 'column_3']);
 });
 
 test('header toggle keeps first data row; standard detection only accepts standard names', () => {

@@ -897,7 +897,7 @@
     "import.mapBusy": "파일을 읽고 검사하고 있습니다… 파일을 지우면 취소됩니다.",
     "import.mapErrorquotes": "따옴표(\")가 닫히지 않은 곳이 있어 행을 나눌 수 없습니다. 파일을 고친 뒤 다시 선택하세요. 일부만 가져오지는 않습니다.",
     "import.mapErrorrawEncoding": "원본 그대로 올리기는 UTF-8로 저장한 파일만 됩니다. 이 파일은 10MB 이하로 나눠 열 맞춤으로 가져오세요.",
-    "import.mapColumnErrorrole": "저장 위치를 지정하세요",
+    "import.mapColumnErrorrole": "저장할 곳을 골라 주세요",
     "import.mapColumnErrorkey": "항목 이름을 적어 주세요",
     "import.mapColumnErrorkeyInvalid": "영문 소문자·숫자·밑줄(_)만 쓸 수 있어요",
     "import.mapColumnErrorduplicateKey": "다른 열과 항목 이름이 같아요",

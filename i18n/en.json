@@ -897,7 +897,7 @@
     "import.mapBusy": "Reading and checking the file… Remove the file to cancel.",
     "import.mapErrorquotes": "Unclosed or misplaced quotes make it impossible to tell rows apart. Fix the file and select it again. Nothing is imported partially.",
     "import.mapErrorrawEncoding": "Upload original only works with files saved as valid UTF-8. Split this file into parts of 10 MB or less and use column matching.",
-    "import.mapColumnErrorrole": "Choose a destination",
+    "import.mapColumnErrorrole": "Choose where to save this column",
     "import.mapColumnErrorkey": "Enter an attribute name",
     "import.mapColumnErrorkeyInvalid": "Use lowercase letters, numbers and underscores only",
     "import.mapColumnErrorduplicateKey": "Another column uses this name",
