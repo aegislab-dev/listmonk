@@ -76,8 +76,10 @@ git push origin v6.2.0-axm.1
 | 릴리스 | 소스 커밋 | 이미지 digest | 마이그레이션 | 운영 적용 |
 |---|---|---|---|---|
 | `v6.2.0-axm.1` (2026-11-11 게시, GHCR public) | `fcba2d60cefde01e53d430516a554bff84a9132c` (#1–#8 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:0ed937465fe4cc582ecb6ac21be05d7df02281d545f892212d24e9143909da4c` (linux/amd64) | `v6.2.1-axm.1`, `.2`, `.3` | 2026-11-12 12:28 KST, lists.crevasse.ai(Railway 서비스 `8960c2f9-68c5-4ed9-9179-4fbc68be6da2`) |
+| `v6.2.0-axm.2` (2026-11-12 게시) | `e698d12617d59400ddc512828b22adcc4bdff6b8` (#10 가져오기 열 맞춤 화면 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:90bcf2fdf20dee75df1dc3ed00e6a32da44cb4f9f8e776af7bba4a258bca0b09` (linux/amd64) | 없음 (`v6.2.1-axm.3` 그대로) | 2026-11-12 14:52 KST, 같은 서비스. upgrade는 `no upgrades to run` |
 
-이미지 롤백 기준은 직전 운영 이미지 `listmonk/listmonk@sha256:f535d59e14991337a9f2d570273685378ae86b0d7698c3e00da444e3bc205286`(공식 v6.2.0)이다.
+이미지 롤백 기준은 직전 운영 이미지다. 지금은 `v6.2.0-axm.1`의 digest이고, 두 릴리스의 마이그레이션이 같아 되돌려도 upgrade 없이 기동한다(합성 DB에서 확인).
+포크 이전으로 되돌릴 때의 기준은 `listmonk/listmonk@sha256:f535d59e14991337a9f2d570273685378ae86b0d7698c3e00da444e3bc205286`(공식 v6.2.0)이다.
 공식 이미지는 더 높은 migrations 기록을 보고 upgrade 없이 기동하며, 포크 컬럼·함수·트리거는 남는다(운영 백업 사본과 합성 DB에서 확인).
 운영 Railway 시작 명령이 기동마다 `--upgrade --yes`를 실행하므로 이미지 교체가 곧 마이그레이션 실행이다. 교체 전에 발송·가져오기 중지와 백업을 확인한다.
 
