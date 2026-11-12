@@ -1,0 +1,27 @@
+[
+  {
+    "key": "country",
+    "kind": "country",
+    "aliases": ["국가", "지역", "나라", "국가코드", "국가 코드", "거주 국가", "country", "country code", "region", "nation"]
+  },
+  {
+    "key": "follower",
+    "kind": "integer",
+    "aliases": ["팔로워", "팔로워 수", "팔로어", "팔로어 수", "follower", "followers", "follower count", "followers count"]
+  },
+  {
+    "key": "company",
+    "kind": "text",
+    "aliases": ["회사", "회사명", "기업명", "소속", "업체명", "상호", "법인명", "company", "company name", "organization"]
+  },
+  {
+    "key": "title",
+    "kind": "text",
+    "aliases": ["직함", "직책", "직급", "직위", "title", "job title", "job rank", "position"]
+  },
+  {
+    "key": "industry",
+    "kind": "text",
+    "aliases": ["업종", "산업", "산업군", "industry", "sector"]
+  }
+]

@@ -18,8 +18,9 @@ type ColumnPreset struct {
 const DefaultColumnPreset = "creator"
 
 // ColumnPresets are the presets a list can have. They are fixed here on purpose: there is no
-// screen to edit them. The keys follow the standard attribute names; renaming one here is all
-// it takes when the standard changes, as lists store only the preset ID.
+// screen to edit them. The columns are keys of the standard attribute dictionary
+// (axm_standard_attribs.json; a test checks it). Renaming one there and here is all it takes
+// when the standard changes, as lists store only the preset ID.
 //
 // There is one preset for now. Lists already store their preset (lists.axm_preset), so adding
 // one here, with its name in the i18n files (lists.preset.<id>), is enough to offer it: the

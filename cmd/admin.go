@@ -46,6 +46,9 @@ type serverConfig struct {
 	// The column presets of the subscribers table and the default one.
 	AxmColumnPresets       []core.ColumnPreset `json:"axm_column_presets"`
 	AxmDefaultColumnPreset string              `json:"axm_default_column_preset"`
+
+	// The standard attribute dictionary (keys, value formats, column name aliases).
+	AxmStandardAttribs []core.StandardAttrib `json:"axm_standard_attribs"`
 }
 
 // GetServerConfig returns general server config.
@@ -63,6 +66,7 @@ func (a *App) GetServerConfig(c echo.Context) error {
 
 		AxmColumnPresets:       core.ColumnPresets,
 		AxmDefaultColumnPreset: core.DefaultColumnPreset,
+		AxmStandardAttribs:     core.StandardAttribs,
 		Privacy: struct {
 			DisableTracking    bool `json:"disable_tracking"`
 			IndividualTracking bool `json:"individual_tracking"`

@@ -92,7 +92,14 @@
         <b-field :label="$t('lists.dynamic.key')" label-for="attrib-filter-key">
           <b-autocomplete v-model="filterForm.key" :data="filterKeyOptions" maxlength="64" :open-on-focus="true"
             :keep-first="false" id="attrib-filter-key" ref="filterKey" :placeholder="$t('subscribers.columns.filterKey')"
-            data-cy="attrib-filter-key" />
+            data-cy="attrib-filter-key">
+            <template #default="props">
+              <span class="attrib-key-option">
+                <span>{{ props.option }}</span>
+                <span v-if="standardLabel(props.option)" class="attrib-key-std">{{ standardLabel(props.option) }} · {{ $t('lists.dynamic.standardTag') }}</span>
+              </span>
+            </template>
+          </b-autocomplete>
         </b-field>
         <b-field :label="$t('lists.dynamic.operator')" label-for="attrib-filter-op">
           <b-select v-model="filterForm.op" expanded id="attrib-filter-op" data-cy="attrib-filter-op"
@@ -120,6 +127,14 @@
           </b-button>
           <b-button @click="closeFilter" data-cy="attrib-filter-cancel">{{ $t('globals.buttons.cancel') }}</b-button>
         </div>
+        <p v-if="filterCountryHint" class="help attrib-country-hint" data-cy="attrib-country-hint">
+          {{ $t('lists.dynamic.countryHint') }}
+          <button v-if="filterCountryHint.code" type="button" class="attrib-country-use" data-cy="attrib-country-use"
+            @click="filterForm.value = filterCountryHint.code">
+            {{ $t('lists.dynamic.countryUse', { code: filterCountryHint.code }) }}
+          </button>
+          <template v-else>{{ $t('lists.dynamic.countryExample') }}</template>
+        </p>
         <p class="help attrib-filter-help">{{ $t('subscribers.columns.filterHelp') }}</p>
       </form>
     </section>
@@ -300,6 +315,7 @@ import SubscriberBulkList from './SubscriberBulkList.vue';
 import SubscriberForm from './SubscriberForm.vue';
 import CopyText from '../components/CopyText.vue';
 import { isNumberOp } from '../dynamic-list';
+import { countryHint, standardByKey } from '../lib/standard-attribs';
 import {
   FILTER_OPS, LONG_VALUE, MAX_CONDITIONS, attribKeys, attribText, cleanCondition, conditionError, conditionValueText,
   newCondition, presetOf,
@@ -360,6 +376,11 @@ export default Vue.extend({
 
   methods: {
     isNumberOp,
+
+    // The i18n label of a standard attribute key ('' for any other key).
+    standardLabel(key) {
+      return standardByKey(this.standardAttribs, key) ? this.$t(`subscribers.standard.${key}`) : '';
+    },
 
     attribCell(row, key) {
       const text = attribText(row.attribs ? row.attribs[key] : undefined);
@@ -736,7 +757,18 @@ export default Vue.extend({
     // Keys offered when adding a condition: the preset's columns, then the other keys the
     // subscribers of this page have.
     knownKeys() {
-      return [...new Set([...this.attribColumns, ...attribKeys(this.subscribers.results)])];
+      return [...new Set([...this.attribColumns, ...this.standardAttribs.map(({ key }) => key), ...attribKeys(this.subscribers.results)])];
+    },
+
+    // The standard attribute dictionary: [{ key, kind, aliases }].
+    standardAttribs() {
+      return this.serverConfig.axm_standard_attribs || [];
+    },
+
+    // "같음" compares the stored text exactly, and a country is stored as its code.
+    filterCountryHint() {
+      const f = this.filterForm;
+      return f && f.op === 'eq' ? countryHint(this.standardAttribs, f.key, f.value) : null;
     },
 
     filterKeyOptions() {

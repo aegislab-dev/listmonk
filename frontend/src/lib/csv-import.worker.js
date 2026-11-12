@@ -1,7 +1,7 @@
 /* global globalThis */
 import {
   decodeCSV, parseCSV, suggestMapping, validateMapping, convertCSV,
-  inspectCSVHeader, inspectOriginalCSV,
+  inspectCSVHeader, inspectOriginalCSV, unresolvedValues,
 } from './csv-import';
 
 // Subscriber cells stay here. Only the first rows' samples, review results and
@@ -24,7 +24,7 @@ globalThis.onmessage = async ({ data }) => {
         id, type: 'source', encoding: decoded.encoding, ...inspectCSVHeader(decoded.text, data.delimiter),
       });
       parsed = parseCSV(decoded.text, { delimiter: data.delimiter, header: data.header });
-      const mapping = suggestMapping(parsed, data.memory);
+      const mapping = suggestMapping(parsed, data.memory, { standard: data.standard, existingKeys: data.keys });
       globalThis.postMessage({
         id,
         type,
@@ -37,6 +37,11 @@ globalThis.onmessage = async ({ data }) => {
         mapping,
         samples: samples(),
       });
+    } else if (type === 'suggest' && parsed) {
+      // The keys in use arrive after the file was read (they depend on the chosen lists).
+      globalThis.postMessage({
+        id, type, mapping: suggestMapping(parsed, data.memory, { standard: data.standard, existingKeys: data.keys }),
+      });
     } else if (type === 'convert' && parsed) {
       const validation = validateMapping(data.mapping, data.keys);
       const review = {
@@ -46,7 +51,13 @@ globalThis.onmessage = async ({ data }) => {
         globalThis.postMessage(review);
         return;
       }
-      const { bytes, ...result } = convertCSV(parsed, data.mapping, data.keys);
+      const { bytes, ...result } = convertCSV(parsed, data.mapping, data.keys, data.standard);
+      // No upload exists while a column still has values that cannot be stored as they are.
+      const unresolved = unresolvedValues(result.values, data.mapping);
+      if (unresolved.length) {
+        globalThis.postMessage({ ...review, ...result, validation: unresolved.map((index) => ({ type: 'unreadable', index })) });
+        return;
+      }
       globalThis.postMessage({ ...review, ...result, bytes: bytes.buffer }, [bytes.buffer]);
     }
   } catch (error) {

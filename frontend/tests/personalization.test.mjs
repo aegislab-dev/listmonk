@@ -74,4 +74,15 @@ test('samples are bounded, deduplicated, labelled and do not query without lists
   const failed = await loadItems({ getSubscriberAttribSample: () => Promise.reject(new Error('403')) }, [1]);
   assert.equal(failed.error, true);
   assert.deepEqual(failed.items, BASE_ITEMS);
+  // Standard attributes are offered first, sampled or not, with or without lists or access.
+  const standard = ['country', 'follower'];
+  const labels = { country: '국가', follower: '팔로워 수' };
+  const sampled = { getSubscriberAttribSample: async () => ({ results: [{ attribs: { gmv: 1, follower: 2 } }] }) };
+  assert.deepEqual((await loadItems(sampled, [1], labels, standard)).items.slice(BASE_ITEMS.length), [
+    { id: 'attrib:country', key: 'country', label: '국가' }, { id: 'attrib:follower', key: 'follower', label: '팔로워 수' },
+    { id: 'attrib:gmv', key: 'gmv', label: 'gmv' },
+  ]);
+  assert.deepEqual((await loadItems(sampled, [], labels, standard)).items.slice(BASE_ITEMS.length).map(({ key }) => key), standard);
+  const denied = await loadItems({ getSubscriberAttribSample: () => Promise.reject(new Error('403')) }, [1], labels, standard);
+  assert.deepEqual(denied.items.slice(BASE_ITEMS.length).map(({ key }) => key), standard);
 });
