@@ -224,13 +224,16 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.4
+          test "$migration" = v6.2.1-axm.5
           number=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT axm_to_number('\" 100,000 \"'::jsonb)::text || ':' || (axm_to_number('\"100,000원\"'::jsonb) IS NULL)::text")
           test "$number" = 100000:true
           column=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM information_schema.columns WHERE table_name = 'lists' AND column_name = 'axm_filter'")
           test "$column" = 1
           trigger=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM pg_trigger WHERE tgname = 'axm_guard_dynamic_subscription' AND NOT tgisinternal")
           test "$trigger" = 1
+          # Lists that existed before the upgrade get the default column preset.
+          presets=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) || ':' || count(*) FILTER (WHERE axm_preset = 'creator') FROM lists")
+          test "$presets" = 2:2
           trap 'docker logs axm-upgrade-smoke; docker rm -f axm-upgrade-smoke' EXIT
           docker run -d --name axm-upgrade-smoke --network host "${env_args[@]}" listmonk-axm:ci
           curl --fail --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 http://127.0.0.1:9001/health
