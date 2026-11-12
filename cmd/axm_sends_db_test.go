@@ -189,7 +189,7 @@ func newSendsEnv(t *testing.T, n int) *sendsEnv {
 
 	e := &sendsEnv{t: t, db: db, q: q, schema: name}
 	e.core = core.New(&core.Opt{DB: db, Queries: q, Log: log.New(io.Discard, "", 0), I18n: &i18n.I18n{}}, nil)
-	e.store = newManagerStore(q, e.core, nil)
+	e.store = e.newStore()
 
 	e.get(&e.listID, `INSERT INTO lists (uuid, name, type, optin) VALUES (gen_random_uuid(), 'Synthetic', 'private', 'single') RETURNING id`)
 	for i := 0; i < n; i++ {
@@ -199,6 +199,12 @@ func newSendsEnv(t *testing.T, n int) *sendsEnv {
 	e.addSub("enabled", "unsubscribed")
 	e.campID, e.campUUID = e.addCampaign("running")
 	return e
+}
+
+// newStore returns a campaign manager store of its own, as every app instance has: it
+// takes and holds the campaign sending lock by itself.
+func (e *sendsEnv) newStore() *store {
+	return newManagerStore(e.q, e.core, nil, e.db)
 }
 
 // reinstall runs schema.sql again on the test schema, as a plain install does. It uses
@@ -298,10 +304,24 @@ func (e *sendsEnv) setStatus(status string) {
 	}
 }
 
+// checkpoint returns the campaign's saved checkpoint.
+func (e *sendsEnv) checkpoint() int {
+	e.t.Helper()
+	var id int
+	e.get(&id, `SELECT last_subscriber_id FROM campaigns WHERE id = $1`, e.campID)
+	return id
+}
+
 // startManager runs a campaign manager like the app does, with small batches.
 func (e *sendsEnv) startManager(st manager.Store, msgr manager.Messenger, logs io.Writer) *manager.Manager {
 	e.t.Helper()
-	m := manager.New(manager.Config{
+	return e.startManagerWith(st, msgr, logs, nil)
+}
+
+// startManagerWith is startManager with changes to the configuration.
+func (e *sendsEnv) startManagerWith(st manager.Store, msgr manager.Messenger, logs io.Writer, change func(*manager.Config)) *manager.Manager {
+	e.t.Helper()
+	cfg := manager.Config{
 		BatchSize:          10,
 		Concurrency:        2,
 		MessageRate:        1000,
@@ -315,7 +335,11 @@ func (e *sendsEnv) startManager(st manager.Store, msgr manager.Messenger, logs i
 		UnsubURL:           "https://lists.example.invalid/subscription/%s/%s",
 		MessageURL:         "https://lists.example.invalid/campaign/%s/%s",
 		OptinURL:           "https://lists.example.invalid/subscription/optin/%s?%s",
-	}, st, nil, log.New(logs, "", 0))
+	}
+	if change != nil {
+		change(&cfg)
+	}
+	m := manager.New(cfg, st, nil, log.New(logs, "", 0))
 	if err := m.AddMessenger(msgr); err != nil {
 		e.t.Fatal(err)
 	}
@@ -347,6 +371,9 @@ type gateMessenger struct {
 	// as if the process had died in the middle of sending.
 	hangAfter int
 	pushes    atomic.Int64
+
+	// dead makes every further push hang: the process that owns the messenger is gone.
+	dead atomic.Bool
 }
 
 func (g *gateMessenger) Name() string { return "email" }
@@ -360,6 +387,9 @@ func (g *gateMessenger) Push(m models.Message) error {
 	if g.allow != nil {
 		<-g.allow
 	}
+	if g.dead.Load() {
+		select {}
+	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -368,6 +398,16 @@ func (g *gateMessenger) Push(m models.Message) error {
 	}
 	g.sent = append(g.sent, m.Subscriber.ID)
 	return nil
+}
+
+// setFail changes the subscribers whose messages the messenger rejects.
+func (g *gateMessenger) setFail(ids ...int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.fail = map[int]bool{}
+	for _, id := range ids {
+		g.fail[id] = true
+	}
 }
 
 func (g *gateMessenger) sentIDs() []int {
@@ -460,13 +500,7 @@ func TestSendRecordsPauseResume(t *testing.T) {
 	e.setStatus(models.CampaignStatusPaused)
 	m.StopCampaign(e.campID)
 
-	// The two messages in flight still go out. Let them finish one after the other:
-	// the engine's checkpoint update is not atomic across workers, and two messages
-	// finishing in the same instant could leave it one subscriber low.
-	msgr.allow <- struct{}{}
-	waitFor(t, "the 16th delivery", func() bool { return len(msgr.sentIDs()) == 16 })
-	msgr.allow <- struct{}{}
-	waitFor(t, "the 17th delivery", func() bool { return len(msgr.sentIDs()) == 17 })
+	// The two messages in flight still go out, both at once.
 	close(msgr.allow)
 	waitFor(t, "the paused campaign to wind down", func() bool { return !m.HasRunningCampaigns() })
 
@@ -494,13 +528,48 @@ func TestSendRecordsPauseResume(t *testing.T) {
 	wantSame(t, "gap", e.ids(sendGapSQL, e.campID), nil)
 }
 
-// deadStore is a store whose process "dies": after kill(), nothing reaches the database.
+// deadStore is the store of an app instance that "dies": after kill(), nothing of that
+// instance reaches the database or a recipient any more, and its campaign sending lock
+// is free, as when Postgres sees the connection of a dead process end.
 type deadStore struct {
 	*store
 	dead atomic.Bool
+	msgr *gateMessenger
 }
 
 var errDead = errors.New("test: process is dead")
+
+// dyingInstance returns the store and the messenger of an app instance that the test
+// is going to kill.
+func (e *sendsEnv) dyingInstance(msgr *gateMessenger) *deadStore {
+	return &deadStore{store: e.newStore(), msgr: msgr}
+}
+
+func (d *deadStore) kill() {
+	d.msgr.dead.Store(true)
+	d.dead.Store(true)
+	d.store.ReleaseCampaignLock()
+}
+
+func (d *deadStore) GetCampaignSentIDs(campID, lastSubID int) ([]int, error) {
+	if d.dead.Load() {
+		return nil, errDead
+	}
+	return d.store.GetCampaignSentIDs(campID, lastSubID)
+}
+
+func (d *deadStore) HoldCampaignLock() (bool, error) {
+	if d.dead.Load() {
+		return false, errDead
+	}
+	return d.store.HoldCampaignLock()
+}
+
+func (d *deadStore) ReleaseCampaignLock() {
+	if !d.dead.Load() {
+		d.store.ReleaseCampaignLock()
+	}
+}
 
 func (d *deadStore) NextCampaigns(ids []int64, counts []int64) ([]*models.Campaign, error) {
 	if d.dead.Load() {
@@ -509,11 +578,11 @@ func (d *deadStore) NextCampaigns(ids []int64, counts []int64) ([]*models.Campai
 	return d.store.NextCampaigns(ids, counts)
 }
 
-func (d *deadStore) NextSubscribers(campID, limit int) ([]models.Subscriber, error) {
+func (d *deadStore) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscriber, error) {
 	if d.dead.Load() {
 		return nil, errDead
 	}
-	return d.store.NextSubscribers(campID, limit)
+	return d.store.NextSubscribers(campID, lastSubID, limit)
 }
 
 func (d *deadStore) GetCampaign(campID int) (*models.Campaign, error) {
@@ -551,56 +620,500 @@ func (d *deadStore) CountCampaignSends(campID int) (int, error) {
 	return d.store.CountCampaignSends(campID)
 }
 
-// The app is killed in the middle of a campaign and started again. The engine reads
-// subscribers ahead of sending and moves its checkpoint as it reads, so the restarted
-// app skips the recipients that were read but not sent and still ends the campaign as
-// finished. This task does not change that. The records must hold exactly the messages
-// that went out, so that the skipped recipients can be listed.
-func TestSendRecordsExposeRecipientsLostOnRestart(t *testing.T) {
-	e := newSendsEnv(t, 57)
-
-	// The first process delivers 13 messages and then dies.
-	first := &gateMessenger{hangAfter: 13}
-	dying := &deadStore{store: e.store}
-	e.startManager(dying, first, io.Discard)
-	waitFor(t, "13 deliveries", func() bool { return len(first.sentIDs()) == 13 })
-	waitFor(t, "their records", func() bool { return len(e.recorded()) == 13 })
-	dying.dead.Store(true)
-
-	before := first.sentIDs()
-	wantSame(t, "recorded before the restart", e.recorded(), before)
-
-	// The second process picks the running campaign up.
-	second := &gateMessenger{}
-	logs := &syncBuffer{}
-	e.startManager(e.store, second, logs)
-	waitFor(t, "the finished campaign's send record summary", func() bool {
-		return strings.Contains(logs.String(), "send records:")
-	})
-
-	delivered := append(append([]int{}, before...), second.sentIDs()...)
+// noRepeats fails the test if a subscriber appears twice in the deliveries.
+func noRepeats(t *testing.T, delivered []int) {
+	t.Helper()
 	sort.Ints(delivered)
 	for i := 1; i < len(delivered); i++ {
 		if delivered[i] == delivered[i-1] {
 			t.Fatalf("subscriber %d got the campaign twice", delivered[i])
 		}
 	}
-	wantSame(t, "recorded", e.recorded(), delivered)
+}
 
-	status, _, toSend := e.campaign()
-	if status != "finished" || toSend != len(e.eligible) {
-		t.Fatalf("campaign status=%s to_send=%d", status, toSend)
+// doneUpTo returns the last subscriber of the longest run of recipients, from the first
+// one on, that were all delivered: where the campaign's checkpoint belongs. It is 0
+// when the first recipient was not delivered.
+func doneUpTo(eligible, delivered []int) int {
+	in := map[int]bool{}
+	for _, id := range delivered {
+		in[id] = true
+	}
+	last := 0
+	for _, id := range eligible {
+		if !in[id] {
+			break
+		}
+		last = id
+	}
+	return last
+}
+
+// finishOnSecondInstance starts a second app instance after the first one went away,
+// waits for the campaign to finish and checks that, over both instances, every
+// recipient got the campaign exactly once and has one record.
+func (e *sendsEnv) finishOnSecondInstance(before []int, change func(*manager.Config)) (*gateMessenger, *syncBuffer) {
+	e.t.Helper()
+	second := &gateMessenger{}
+	logs := &syncBuffer{}
+	e.startManagerWith(e.newStore(), second, logs, change)
+	waitFor(e.t, "the finished campaign's send record summary", func() bool {
+		return strings.Contains(logs.String(), "send records:")
+	})
+
+	delivered := append(append([]int{}, before...), second.sentIDs()...)
+	noRepeats(e.t, delivered)
+	wantSame(e.t, "delivered over both instances", delivered, e.eligible)
+	wantSame(e.t, "recorded", e.recorded(), e.eligible)
+	wantSame(e.t, "gap", e.ids(sendGapSQL, e.campID), nil)
+
+	// The sent count ends equal to the number of recipients, also when the first
+	// instance died before it saved its count.
+	e.waitCampaign("finished", len(e.eligible))
+	if _, sent, toSend := e.campaign(); toSend != len(e.eligible) || sent != len(e.eligible) {
+		e.t.Fatalf("sent=%d to_send=%d, want %d for both", sent, toSend, len(e.eligible))
+	}
+	if line := fmt.Sprintf("send records: %d recorded,", len(e.eligible)); !strings.Contains(logs.String(), line) {
+		e.t.Fatalf("log lacks %q:\n%s", line, logs.String())
+	}
+	return second, logs
+}
+
+// The app is killed in the middle of a campaign and started again (LST-20). The engine
+// reads subscribers ahead of sending. Upstream moved the campaign's checkpoint as it
+// read, so the restarted app skipped the recipients that were read but not sent and
+// still ended the campaign as finished. Now the restarted app continues from what the
+// first one was done with, and nobody is skipped or sent twice.
+func TestRestartSendsEveryRecipientOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// savedCheckpoint waits for the periodic save before the kill. Without it
+		// the restarted app starts from the campaign's beginning and only the send
+		// records tell it who was already sent.
+		savedCheckpoint bool
+	}{
+		{"killed before the checkpoint was saved", false},
+		{"killed after the checkpoint was saved", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newSendsEnv(t, 57)
+
+			// The first instance delivers 13 messages and dies with two more in the
+			// messenger's hands and a batch read ahead. Two workers send, so the 13
+			// are not always the first 13 recipients: a later one can be out while
+			// an earlier one is stuck.
+			first := &gateMessenger{hangAfter: 13}
+			dying := e.dyingInstance(first)
+			e.startManager(dying, first, io.Discard)
+			waitFor(t, "13 deliveries", func() bool { return len(first.sentIDs()) == 13 })
+			waitFor(t, "their records", func() bool { return len(e.recorded()) == 13 })
+			done := doneUpTo(e.eligible, first.sentIDs())
+			if tc.savedCheckpoint {
+				waitFor(t, "the checkpoint to be saved", func() bool { return e.checkpoint() == done })
+			}
+			dying.kill()
+
+			before := first.sentIDs()
+			wantSame(t, "recorded before the restart", e.recorded(), before)
+
+			// The checkpoint is never ahead of what went out, however far the dead
+			// instance had read.
+			if cp := e.checkpoint(); cp > done || (tc.savedCheckpoint && cp != done) {
+				t.Fatalf("checkpoint %d after deliveries to %v", cp, before)
+			}
+
+			second, _ := e.finishOnSecondInstance(before, nil)
+			wantSame(t, "delivered after the restart", second.sentIDs(), minus(e.eligible, before))
+		})
+	}
+}
+
+// The reproduction of LST-16 (cases C and D): the send limit (5 messages per window) is
+// smaller than the read size (1,000), the campaign has 12 recipients, and the app goes
+// down while it waits for the next window with 7 recipients read but not sent. Upstream
+// ended the campaign as finished with 5 of 12 sent.
+func TestSendLimitRestartSendsEveryRecipientOnce(t *testing.T) {
+	limited := func(c *manager.Config) {
+		c.BatchSize = 1000
+		c.SlidingWindow = true
+		c.SlidingWindowRate = 5
+		c.SlidingWindowDuration = 2 * time.Second
 	}
 
-	// The upstream defect: recipients are missing although the campaign is finished.
-	lost := minus(e.eligible, delivered)
-	if len(lost) == 0 {
-		t.Fatal("expected the restart to skip recipients; the engine's checkpoint behaviour has changed, so revisit this test")
+	for _, tc := range []struct {
+		name string
+		stop func(*manager.Manager, *deadStore)
+	}{
+		{"killed", func(_ *manager.Manager, d *deadStore) { d.kill() }},
+		// What SIGTERM does: the app closes the campaign manager and exits.
+		{"closed", func(m *manager.Manager, d *deadStore) { m.Close(); d.kill() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newSendsEnv(t, 12)
+
+			first := &gateMessenger{}
+			dying := e.dyingInstance(first)
+			m := e.startManagerWith(dying, first, io.Discard, limited)
+			waitFor(t, "the 5 deliveries of the first window", func() bool { return len(first.sentIDs()) == 5 })
+			waitFor(t, "their records", func() bool { return len(e.recorded()) == 5 })
+			// It is waiting for the window now.
+			time.Sleep(100 * time.Millisecond)
+			tc.stop(m, dying)
+
+			before := first.sentIDs()
+			wantSame(t, "delivered before the restart", before, e.eligible[:5])
+			if status, _, _ := e.campaign(); status != "running" {
+				t.Fatalf("campaign is %s after the app went down, want running", status)
+			}
+			if cp := e.checkpoint(); cp > e.eligible[4] {
+				t.Fatalf("checkpoint %d is ahead of the last delivery (subscriber %d)", cp, e.eligible[4])
+			}
+
+			second, _ := e.finishOnSecondInstance(before, limited)
+			wantSame(t, "delivered after the restart", second.sentIDs(), e.eligible[5:])
+		})
 	}
-	wantSame(t, "gap", e.ids(sendGapSQL, e.campID), lost)
-	if line := fmt.Sprintf("send records: %d recorded,", len(delivered)); !strings.Contains(logs.String(), line) || !strings.Contains(logs.String(), fmt.Sprintf("%d to send", len(e.eligible))) {
-		t.Fatalf("log lacks %q:\n%s", line, logs.String())
+}
+
+// A campaign is paused after a batch was read but before any message of it went out.
+// Upstream left the read-ahead position in the DB in that case, and the resumed
+// campaign skipped the batch.
+func TestPauseBeforeFirstDeliveryLosesNobody(t *testing.T) {
+	e := newSendsEnv(t, 57)
+	msgr := &gateMessenger{allow: make(chan struct{})}
+	// The two messages that are in the workers' hands at the pause are rejected.
+	msgr.setFail(e.eligible[0], e.eligible[1])
+	logs := &syncBuffer{}
+	m := e.startManager(e.store, msgr, logs)
+
+	waitFor(t, "both workers to be in the middle of a message", func() bool { return msgr.pushes.Load() == 2 })
+	e.setStatus(models.CampaignStatusPaused)
+	m.StopCampaign(e.campID)
+	close(msgr.allow)
+	waitFor(t, "the paused campaign to wind down", func() bool { return !m.HasRunningCampaigns() })
+
+	if got := msgr.sentIDs(); len(got) != 0 {
+		t.Fatalf("delivered %v before the pause, want nothing", got)
 	}
+	if cp := e.checkpoint(); cp != 0 {
+		t.Fatalf("checkpoint %d although nothing was delivered", cp)
+	}
+
+	msgr.setFail()
+	e.setStatus(models.CampaignStatusRunning)
+	waitFor(t, "the finished campaign's send record summary", func() bool {
+		return strings.Contains(logs.String(), "send records:")
+	})
+	delivered := msgr.sentIDs()
+	noRepeats(t, delivered)
+	wantSame(t, "delivered", delivered, e.eligible)
+	wantSame(t, "recorded", e.recorded(), e.eligible)
+	e.waitCampaign("finished", len(e.eligible))
+}
+
+// SIGTERM and a reload close the campaign manager. It stops the running campaign like
+// a pause, lets the messages that are being sent finish, and saves the records, the
+// checkpoint and the sent count. The campaign stays running and the next start sends
+// the rest.
+func TestCloseThenRestartSendsEveryRecipientOnce(t *testing.T) {
+	e := newSendsEnv(t, 57)
+	first := &gateMessenger{allow: make(chan struct{})}
+	dying := e.dyingInstance(first)
+	logs := &syncBuffer{}
+	m := e.startManager(dying, first, logs)
+
+	for i := 0; i < 15; i++ {
+		select {
+		case first.allow <- struct{}{}:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("the campaign did not start sending:\n%s", logs.String())
+		}
+	}
+	waitFor(t, "15 deliveries", func() bool { return len(first.sentIDs()) == 15 })
+	waitFor(t, "both workers to be in the middle of a message", func() bool { return first.pushes.Load() == 17 })
+
+	// The two messages in the messenger's hands finish while the manager closes.
+	closed := make(chan struct{})
+	go func() {
+		m.Close()
+		close(closed)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	first.allow <- struct{}{}
+	first.allow <- struct{}{}
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close() did not return")
+	}
+
+	before := first.sentIDs()
+	wantSame(t, "delivered before closing", before, e.eligible[:17])
+	wantSame(t, "recorded when closed", e.recorded(), before)
+	if cp := e.checkpoint(); cp != e.eligible[16] {
+		t.Fatalf("checkpoint %d when closed, want subscriber %d", cp, e.eligible[16])
+	}
+	if status, sent, _ := e.campaign(); status != "running" || sent != 17 {
+		t.Fatalf("campaign is %s with sent=%d when closed, want running with 17", status, sent)
+	}
+
+	// Nothing more goes out of the closed instance.
+	close(first.allow)
+	time.Sleep(150 * time.Millisecond)
+	wantSame(t, "delivered after closing", first.sentIDs(), before)
+	dying.kill()
+
+	second, _ := e.finishOnSecondInstance(before, nil)
+	wantSame(t, "delivered after the restart", second.sentIDs(), e.eligible[17:])
+	if _, sent, _ := e.campaign(); sent != len(e.eligible) {
+		t.Fatalf("sent=%d when finished, want %d", sent, len(e.eligible))
+	}
+}
+
+// When the messenger keeps failing, the campaign pauses itself. The recipients whose
+// messages failed at the end are tried again when it is resumed, and the ones that
+// went out are not.
+func TestResumeAfterErrorPauseRetriesFailedRecipients(t *testing.T) {
+	e := newSendsEnv(t, 57)
+	msgr := &gateMessenger{}
+	// Everything from the 21st recipient on is rejected.
+	msgr.setFail(e.eligible[20:]...)
+	logs := &syncBuffer{}
+	m := e.startManagerWith(e.store, msgr, logs, func(c *manager.Config) { c.MaxSendErrors = 3 })
+
+	waitFor(t, "the campaign to pause itself", func() bool {
+		status, _, _ := e.campaign()
+		return status == "paused" && !m.HasRunningCampaigns()
+	})
+	wantSame(t, "delivered before the pause", msgr.sentIDs(), e.eligible[:20])
+	if cp := e.checkpoint(); cp != e.eligible[19] {
+		t.Fatalf("checkpoint %d after the pause, want the last delivery, subscriber %d", cp, e.eligible[19])
+	}
+
+	msgr.setFail()
+	e.setStatus(models.CampaignStatusRunning)
+	waitFor(t, "the finished campaign's send record summary", func() bool {
+		return strings.Contains(logs.String(), "send records:")
+	})
+	delivered := msgr.sentIDs()
+	noRepeats(t, delivered)
+	wantSame(t, "delivered", delivered, e.eligible)
+	wantSame(t, "recorded", e.recorded(), e.eligible)
+	e.waitCampaign("finished", len(e.eligible))
+}
+
+// A message that the messenger accepted in the last moment before a kill may have no
+// record yet. The restarted app cannot know about it and sends it again: after a kill
+// nobody is skipped, and only such recipients can get the campaign twice.
+func TestKillWithUnwrittenRecordsRepeatsOnlyThose(t *testing.T) {
+	e := newSendsEnv(t, 57)
+	first := &gateMessenger{hangAfter: 13}
+	dying := e.dyingInstance(first)
+	e.startManager(dying, first, io.Discard)
+	waitFor(t, "13 deliveries", func() bool { return len(first.sentIDs()) == 13 })
+	waitFor(t, "their records", func() bool { return len(e.recorded()) == 13 })
+	dying.kill()
+
+	// The records of the last three deliveries did not reach the database.
+	before := first.sentIDs()
+	unwritten := before[10:]
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id = ANY($2)`, e.campID, pq.Array(unwritten))
+
+	second := &gateMessenger{}
+	logs := &syncBuffer{}
+	e.startManager(e.newStore(), second, logs)
+	waitFor(t, "the finished campaign's send record summary", func() bool {
+		return strings.Contains(logs.String(), "send records:")
+	})
+	want := append(minus(e.eligible, before), unwritten...)
+	sort.Ints(want)
+	wantSame(t, "delivered after the restart", second.sentIDs(), want)
+	wantSame(t, "recorded", e.recorded(), e.eligible)
+
+	// The sent count covers every recipient. It is above their number only by repeats
+	// whose first message had already been counted when the app died.
+	e.waitCampaign("finished", len(e.eligible))
+	if _, sent, _ := e.campaign(); sent < len(e.eligible) || sent > len(e.eligible)+len(unwritten) {
+		t.Fatalf("sent=%d, want %d to %d", sent, len(e.eligible), len(e.eligible)+len(unwritten))
+	}
+}
+
+// Two app instances run at once, as the old and the new one do during a redeploy. Only
+// the one that holds the campaign sending lock processes campaigns. The other starts
+// when the first is gone and continues the campaign.
+func TestOnlyOneInstanceSendsCampaigns(t *testing.T) {
+	e := newSendsEnv(t, 57)
+
+	first := &gateMessenger{allow: make(chan struct{})}
+	firstStore := e.newStore()
+	firstLogs := &syncBuffer{}
+	m1 := e.startManager(firstStore, first, firstLogs)
+	for i := 0; i < 15; i++ {
+		select {
+		case first.allow <- struct{}{}:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("the campaign did not start sending:\n%s", firstLogs.String())
+		}
+	}
+	waitFor(t, "15 deliveries", func() bool { return len(first.sentIDs()) == 15 })
+
+	// The second instance comes up while the first is in the middle of the campaign.
+	second := &gateMessenger{}
+	secondStore := e.newStore()
+	secondLogs := &syncBuffer{}
+	m2 := e.startManager(secondStore, second, secondLogs)
+	waitFor(t, "the second instance to notice the first", func() bool {
+		return strings.Contains(secondLogs.String(), "another instance is sending campaigns")
+	})
+	time.Sleep(200 * time.Millisecond)
+	if held, err := secondStore.HoldCampaignLock(); held || err != nil {
+		t.Fatalf("second instance: lock held=%v err=%v while the first holds it", held, err)
+	}
+	if got := second.sentIDs(); len(got) != 0 || m2.HasRunningCampaigns() {
+		t.Fatalf("the second instance sent %v while the first was sending", got)
+	}
+
+	// The first instance shuts down, with its two messages in flight going out.
+	closed := make(chan struct{})
+	go func() {
+		m1.Close()
+		close(closed)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(first.allow)
+	<-closed
+	before := first.sentIDs()
+
+	waitFor(t, "the second instance to finish the campaign", func() bool {
+		return strings.Contains(secondLogs.String(), "send records:")
+	})
+	if !strings.Contains(secondLogs.String(), "this instance sends campaigns now") {
+		t.Fatalf("the second instance did not log taking over:\n%s", secondLogs.String())
+	}
+	delivered := append(append([]int{}, before...), second.sentIDs()...)
+	noRepeats(t, delivered)
+	wantSame(t, "delivered over both instances", delivered, e.eligible)
+	wantSame(t, "recorded", e.recorded(), e.eligible)
+	e.waitCampaign("finished", len(e.eligible))
+}
+
+// The lock lives on one pooled connection for as long as the app runs. The pool's
+// connection lifetime limit (db.max_lifetime, 300s by default) must not end it.
+func TestCampaignLockOutlivesConnectionLifetime(t *testing.T) {
+	e := newSendsEnv(t, 1)
+
+	db, err := sqlx.Connect("postgres", withSearchPath(t, os.Getenv("AXM_TEST_DB_URL"), e.schema+",public"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(4)
+	db.SetConnMaxLifetime(50 * time.Millisecond)
+
+	holder := newManagerStore(e.q, e.core, nil, db)
+	other := e.newStore()
+	if held, err := holder.HoldCampaignLock(); !held || err != nil {
+		t.Fatalf("held=%v err=%v", held, err)
+	}
+	for i := 0; i < 6; i++ {
+		time.Sleep(60 * time.Millisecond)
+		// Other queries come and go on the pool meanwhile.
+		var one int
+		if err := db.Get(&one, `SELECT 1`); err != nil {
+			t.Fatal(err)
+		}
+		if held, err := holder.HoldCampaignLock(); !held || err != nil {
+			t.Fatalf("after %d checks: held=%v err=%v", i, held, err)
+		}
+		if held, err := other.HoldCampaignLock(); held || err != nil {
+			t.Fatalf("after %d checks: another instance got the lock (held=%v err=%v)", i, held, err)
+		}
+	}
+
+	// Releasing ends the session, and with it the lock.
+	var sessions int
+	e.get(&sessions, `SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 4282445 AND objid = hashtext(current_schema()::TEXT)::OID`)
+	if sessions != 1 {
+		t.Fatalf("%d sessions hold the lock, want 1", sessions)
+	}
+	holder.ReleaseCampaignLock()
+	if held, err := other.HoldCampaignLock(); !held || err != nil {
+		t.Fatalf("after release: held=%v err=%v", held, err)
+	}
+	other.ReleaseCampaignLock()
+	e.get(&sessions, `SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 4282445 AND objid = hashtext(current_schema()::TEXT)::OID`)
+	if sessions != 0 {
+		t.Fatalf("%d sessions hold the lock after both released it", sessions)
+	}
+
+	// Releasing again, or without holding it, does nothing.
+	other.ReleaseCampaignLock()
+}
+
+// An instance that loses the lock (its connection ended) stops its campaigns, and
+// continues them when it holds the lock again.
+func TestLostCampaignLockStopsAndContinues(t *testing.T) {
+	e := newSendsEnv(t, 57)
+	msgr := &gateMessenger{allow: make(chan struct{})}
+	st := e.newStore()
+	logs := &syncBuffer{}
+	e.startManager(st, msgr, logs)
+	for i := 0; i < 15; i++ {
+		select {
+		case msgr.allow <- struct{}{}:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("the campaign did not start sending:\n%s", logs.String())
+		}
+	}
+	waitFor(t, "15 deliveries", func() bool { return len(msgr.sentIDs()) == 15 })
+
+	// Postgres ends the session that holds the lock.
+	e.db.MustExec(`SELECT pg_terminate_backend(l.pid) FROM pg_locks l
+		WHERE l.locktype = 'advisory' AND l.classid = 4282445 AND l.objid = hashtext(current_schema()::TEXT)::OID`)
+	waitFor(t, "the instance to notice", func() bool {
+		return strings.Contains(logs.String(), "lost the campaign sending lock")
+	})
+	close(msgr.allow)
+
+	waitFor(t, "the finished campaign's send record summary", func() bool {
+		return strings.Contains(logs.String(), "send records:")
+	})
+	delivered := msgr.sentIDs()
+	noRepeats(t, delivered)
+	wantSame(t, "delivered", delivered, e.eligible)
+	wantSame(t, "recorded", e.recorded(), e.eligible)
+	e.waitCampaign("finished", len(e.eligible))
+}
+
+// A campaign on a dynamic list reads its recipients with another query. It must
+// continue after a kill the same way.
+func TestDynamicListCampaignRestartSendsEveryRecipientOnce(t *testing.T) {
+	e := newSendsEnv(t, 57)
+
+	// Every other recipient of the regular list matches the dynamic list's rule.
+	var want []int
+	for i, id := range e.eligible {
+		if i%2 == 0 {
+			e.db.MustExec(`UPDATE subscribers SET attribs = '{"plan": "pro"}' WHERE id = $1`, id)
+			want = append(want, id)
+		}
+	}
+	filter := fmt.Sprintf(`{"version":1,"base":{"type":"lists","lists":[%d]},"match":"all","conditions":[{"key":"plan","op":"eq","value":"pro"}]}`, e.listID)
+	var dynID int
+	e.get(&dynID, `INSERT INTO lists (uuid, name, type, optin, axm_filter) VALUES (gen_random_uuid(), 'Synthetic dynamic', 'private', 'single', $1::JSONB) RETURNING id`, filter)
+	e.db.MustExec(`UPDATE campaign_lists SET list_id = $2 WHERE campaign_id = $1`, e.campID, dynID)
+	e.eligible = want
+
+	first := &gateMessenger{hangAfter: 13}
+	dying := e.dyingInstance(first)
+	e.startManager(dying, first, io.Discard)
+	waitFor(t, "13 deliveries", func() bool { return len(first.sentIDs()) == 13 })
+	waitFor(t, "their records", func() bool { return len(e.recorded()) == 13 })
+	dying.kill()
+	before := first.sentIDs()
+
+	second, _ := e.finishOnSecondInstance(before, nil)
+	wantSame(t, "delivered after the restart", second.sentIDs(), minus(e.eligible, before))
 }
 
 // When records cannot be written, the campaign still goes out in full and finishes.

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"maps"
@@ -49,7 +50,12 @@ const (
 // that provides subscriber and campaign records.
 type Store interface {
 	NextCampaigns(currentIDs []int64, sentCounts []int64) ([]*models.Campaign, error)
-	NextSubscribers(campID, limit int) ([]models.Subscriber, error)
+
+	// NextSubscribers returns the next batch of a running campaign's subscribers
+	// after the subscriber ID lastSubID, in ascending ID order. AXM (LST-20): the
+	// caller keeps the read position. Upstream kept it in the DB and moved it on
+	// every read.
+	NextSubscribers(campID, lastSubID, limit int) ([]models.Subscriber, error)
 	GetCampaign(campID int) (*models.Campaign, error)
 	GetAttachment(mediaID int) (models.Attachment, error)
 	GetInlineAttachmentByFilename(filename string) (models.Attachment, string, error)
@@ -64,6 +70,19 @@ type Store interface {
 
 	// CountCampaignSends returns the number of send records of a campaign.
 	CountCampaignSends(campID int) (int, error)
+
+	// GetCampaignSentIDs returns the subscribers above the ID lastSubID that have a
+	// send record for a campaign (AXM, LST-20).
+	GetCampaignSentIDs(campID, lastSubID int) ([]int, error)
+
+	// HoldCampaignLock reports whether this app instance may send campaigns. It takes
+	// the lock if it is free and checks that a lock taken earlier is still held. Only
+	// one instance holds it at a time, and it is released when the instance goes away
+	// (AXM, LST-20).
+	HoldCampaignLock() (bool, error)
+
+	// ReleaseCampaignLock gives the lock up.
+	ReleaseCampaignLock()
 }
 
 // Messenger is an interface for a generic messaging backend,
@@ -115,6 +134,16 @@ type Manager struct {
 
 	// Records who was sent which campaign. Nil in a Manager that was not built by New().
 	sends *sendLog
+
+	// AXM (LST-20). closing is set once Close() is called: no campaign message is
+	// handed to a messenger after that. inflight counts the campaign messages that
+	// are with a messenger right now. lockHeld and lockWaiting belong to the
+	// scanCampaigns goroutine.
+	closing     atomic.Bool
+	inflight    atomic.Int64
+	lockHeld    bool
+	lockWaiting bool
+	saveEvery   time.Duration
 
 	tplFuncs template.FuncMap
 }
@@ -207,6 +236,7 @@ func New(cfg Config, store Store, i *i18n.I18n, l *log.Logger) *Manager {
 		msgQ:         make(chan models.Message, cfg.Concurrency*cfg.MessageRate*2),
 		slidingStart: time.Now(),
 		sends:        newSendLog(store, l),
+		saveEvery:    progressSaveInterval,
 	}
 	m.tplFuncs = m.makeGnericFuncMap()
 
@@ -307,6 +337,11 @@ func (m *Manager) Run() {
 		go m.sends.run()
 	}
 
+	// AXM (LST-20): keep the checkpoints of the running campaigns saved.
+	if m.saveEvery > 0 {
+		go m.saveProgress(m.saveEvery)
+	}
+
 	// Spawn N message workers.
 	for i := 0; i < m.cfg.Concurrency; i++ {
 		go m.worker()
@@ -315,6 +350,16 @@ func (m *Manager) Run() {
 	// Indefinitely wait on the pipe queue to fetch the next set of subscribers
 	// for any active campaigns.
 	for p := range m.nextPipes {
+		// AXM (LST-20): the app is going down, or the pipe was stopped (too many
+		// errors, a lost lock). Read nothing more and let the pipe go. Upstream kept
+		// reading a stopped campaign that was still 'running' in the DB to its end,
+		// dropping every message.
+		if m.closing.Load() || p.stopped.Load() {
+			p.Stop(false)
+			p.wg.Done()
+			continue
+		}
+
 		has, err := p.NextSubscribers()
 		if err != nil {
 			m.log.Printf("error processing campaign batch (%s): %v", p.camp.Name, err)
@@ -435,14 +480,117 @@ func (m *Manager) StopCampaign(id int) {
 }
 
 // Close closes and exits the campaign manager.
+//
+// AXM (LST-20): it first stops the running campaigns the way a pause does, waits for
+// the messages that are with a messenger, and saves the send records, the checkpoints
+// and the sent counts, so that the next start continues exactly where this one stopped.
+// The campaigns stay 'running' in the DB.
 func (m *Manager) Close() {
-	close(m.nextPipes)
+	m.closing.Store(true)
+	pipes := m.stopPipes()
+
+	deadline := time.Now().Add(closeDrainWait)
+	for m.inflight.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := m.inflight.Load(); n > 0 {
+		m.log.Printf("%d campaign messages were still being sent when closing. they may be sent again on the next start", n)
+	}
+
+	// AXM (LST-20): nextPipes is not closed any more. The reader loop in Run() puts a
+	// pipe back on it after every batch and would panic on a closed channel in the
+	// middle of this shutdown. The loop stops reading on the closing mark instead.
 	close(m.msgQ)
 
 	// Write the send records that are still queued. The caller closes the DB next.
 	if m.sends != nil && !m.sends.flush(1500*time.Millisecond) {
 		m.log.Printf("error recording campaign sends: queued send records were not written before closing")
 	}
+
+	for _, p := range pipes {
+		p.saveProgress()
+	}
+	if len(pipes) > 0 {
+		m.log.Printf("stopped %d running campaigns for closing. they continue on the next start", len(pipes))
+	}
+
+	if m.store != nil {
+		m.store.ReleaseCampaignLock()
+	}
+}
+
+// stopPipes marks every campaign that is being processed as stopped, like a pause does,
+// and returns them (AXM, LST-20). Queued messages of a stopped campaign are dropped,
+// which leaves them above the checkpoint, and its cleanup() does not finish the campaign.
+func (m *Manager) stopPipes() []*pipe {
+	m.pipesMut.RLock()
+	defer m.pipesMut.RUnlock()
+
+	out := make([]*pipe, 0, len(m.pipes))
+	for _, p := range m.pipes {
+		p.Stop(false)
+		out = append(out, p)
+	}
+	return out
+}
+
+// saveProgress is a blocking function that saves the checkpoint and the sent count of
+// every campaign that is being processed, at an interval (AXM, LST-20). After the app
+// is killed, a campaign continues from the checkpoint that was saved last, and the
+// send records above it tell who was already sent.
+func (m *Manager) saveProgress(every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+
+	for range t.C {
+		if m.closing.Load() {
+			return
+		}
+
+		m.pipesMut.RLock()
+		pipes := make([]*pipe, 0, len(m.pipes))
+		for _, p := range m.pipes {
+			pipes = append(pipes, p)
+		}
+		m.pipesMut.RUnlock()
+
+		for _, p := range pipes {
+			p.saveProgress()
+		}
+	}
+}
+
+// holdCampaignLock reports whether this instance may send campaigns now (AXM, LST-20).
+// A campaign continues from its saved checkpoint, so two instances that both process
+// campaigns, like the old and the new one during a redeploy, would send every message
+// twice. The store's lock lets one instance in. When the lock is lost, the campaigns
+// that are being processed here are stopped and continue once it is held again.
+func (m *Manager) holdCampaignLock() bool {
+	held, err := m.store.HoldCampaignLock()
+	if held {
+		if m.lockWaiting {
+			m.log.Printf("this instance sends campaigns now")
+		}
+		m.lockHeld, m.lockWaiting = true, false
+		return true
+	}
+
+	if m.lockHeld {
+		m.lockHeld = false
+		n := len(m.stopPipes())
+		m.log.Printf("lost the campaign sending lock (%v). stopped %d running campaigns. they continue when the lock is held again", err, n)
+		return false
+	}
+
+	if !m.lockWaiting {
+		m.lockWaiting = true
+		if err != nil {
+			m.log.Printf("error taking the campaign sending lock: %v. no campaign is sent until it is held", err)
+		} else {
+			m.log.Printf("another instance is sending campaigns. this one starts when that one stops")
+		}
+	}
+	return false
 }
 
 // scanCampaigns is a blocking function that periodically scans the data source
@@ -454,6 +602,15 @@ func (m *Manager) scanCampaigns(tick time.Duration) {
 
 	// Periodically scan the data source for campaigns to process.
 	for range t.C {
+		// AXM (LST-20): nothing is started while closing, or while another
+		// instance is the one sending campaigns.
+		if m.closing.Load() {
+			return
+		}
+		if !m.holdCampaignLock() {
+			continue
+		}
+
 		ids, counts := m.getCurrentCampaigns()
 		campaigns, err := m.store.NextCampaigns(ids, counts)
 		if err != nil {
@@ -513,6 +670,17 @@ func (m *Manager) worker() {
 			}
 			numMsg++
 
+			// AXM (LST-20): from here on the message counts as being with the
+			// messenger, and Close() waits for it. The stop mark is looked at
+			// once more after counting, so that a message is either dropped
+			// here or seen by Close().
+			m.inflight.Add(1)
+			if msg.pipe != nil && msg.pipe.stopped.Load() {
+				m.inflight.Add(-1)
+				msg.pipe.wg.Done()
+				continue
+			}
+
 			// Outgoing message.
 			out := models.Message{
 				From:        msg.from,
@@ -569,6 +737,16 @@ func (m *Manager) worker() {
 					m.sends.add(msg.Campaign.ID, msg.Subscriber.ID)
 				}
 
+				// AXM (LST-20): settle the message for the checkpoint and count
+				// it before it is marked as done, so that the campaign's cleanup
+				// saves both. Upstream kept the highest subscriber ID that was
+				// sent, with a load and a store that two workers could interleave,
+				// and counted the message after marking it as done.
+				msg.pipe.prog.done(msg.Subscriber.ID, err == nil)
+				if err == nil {
+					msg.pipe.sent.Add(1)
+				}
+
 				// Mark the message as done.
 				msg.pipe.wg.Done()
 
@@ -577,14 +755,10 @@ func (m *Manager) worker() {
 					// and stops the campaign if the error count exceeds the threshold.
 					msg.pipe.OnError()
 				} else {
-					id := uint64(msg.Subscriber.ID)
-					if id > msg.pipe.lastID.Load() {
-						msg.pipe.lastID.Store(uint64(msg.Subscriber.ID))
-					}
 					msg.pipe.rate.Incr(1)
-					msg.pipe.sent.Add(1)
 				}
 			}
+			m.inflight.Add(-1)
 
 		// Arbitrary message.
 		case msg, ok := <-m.msgQ:
@@ -616,8 +790,9 @@ func (m *Manager) getCurrentCampaigns() ([]int64, []int64) {
 
 		// Get the sent counts for campaigns and reset them to 0
 		// as in the database, they're stored cumulatively (sent += $newSent).
-		counts = append(counts, p.sent.Load())
-		p.sent.Store(0)
+		// AXM (LST-20): in one step. The progress saver takes the count the same
+		// way, and a separate load and store would let both write it.
+		counts = append(counts, p.sent.Swap(0))
 	}
 
 	return ids, counts

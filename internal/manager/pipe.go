@@ -15,10 +15,21 @@ type pipe struct {
 	rate       *ratecounter.RateCounter
 	wg         *sync.WaitGroup
 	sent       atomic.Int64
-	lastID     atomic.Uint64
 	errors     atomic.Uint64
 	stopped    atomic.Bool
 	withErrors atomic.Bool
+
+	// AXM (LST-20). readID is the subscriber ID that this run has read up to. Only the
+	// reader loop in Run() touches it. prog keeps the checkpoint, which trails readID
+	// by the messages that are queued or being sent. alreadySent holds the subscribers
+	// above the checkpoint that an earlier run already sent the campaign to.
+	readID      int
+	prog        *progress
+	alreadySent map[int]struct{}
+
+	// saved is the checkpoint that was last written to the store.
+	saveMut sync.Mutex
+	saved   int
 
 	m *Manager
 }
@@ -46,12 +57,24 @@ func (m *Manager) newPipe(c *models.Campaign) (*pipe, error) {
 		return nil, err
 	}
 
+	// AXM (LST-20): the campaign continues after its checkpoint. Find out who above
+	// the checkpoint already got it.
+	alreadySent, err := m.sentAfterCheckpoint(c)
+	if err != nil {
+		return nil, err
+	}
+
 	// Add the campaign to the active map.
 	p := &pipe{
 		camp: c,
 		rate: ratecounter.NewRateCounter(time.Minute),
 		wg:   &sync.WaitGroup{},
 		m:    m,
+
+		readID:      c.LastSubscriberID,
+		prog:        newProgress(c.LastSubscriberID),
+		alreadySent: alreadySent,
+		saved:       c.LastSubscriberID,
 	}
 
 	// Increment the waitgroup so that Wait() blocks immediately. This is necessary
@@ -70,6 +93,12 @@ func (m *Manager) newPipe(c *models.Campaign) (*pipe, error) {
 
 	m.pipesMut.Lock()
 	m.pipes[c.ID] = p
+
+	// AXM (LST-20): Close() has stopped the pipes that existed when it was called.
+	// One that is created after that starts out stopped.
+	if m.closing.Load() {
+		p.Stop(false)
+	}
 	m.pipesMut.Unlock()
 	return p, nil
 }
@@ -80,7 +109,9 @@ func (m *Manager) newPipe(c *models.Campaign) (*pipe, error) {
 // have been processed, or that a campaign has been paused or cancelled.
 func (p *pipe) NextSubscribers() (bool, error) {
 	// Fetch the next batch of subscribers from a 'running' campaign.
-	subs, err := p.m.store.NextSubscribers(p.camp.ID, p.m.cfg.BatchSize)
+	// AXM (LST-20): after the position this run has read up to. The fetch no longer
+	// moves the campaign's checkpoint in the DB.
+	subs, err := p.m.store.NextSubscribers(p.camp.ID, p.readID, p.m.cfg.BatchSize)
 	if err != nil {
 		return false, fmt.Errorf("error fetching campaign subscribers (%s): %v", p.camp.Name, err)
 	}
@@ -96,8 +127,16 @@ func (p *pipe) NextSubscribers() (bool, error) {
 		p.m.cfg.SlidingWindowRate > 0 &&
 		p.m.cfg.SlidingWindowDuration.Seconds() > 1
 
+	// AXM (LST-20): the batch is in ascending subscriber ID order.
+	p.readID = subs[len(subs)-1].ID
+
 	// Push messages.
 	for _, s := range subs {
+		// AXM (LST-20): an earlier run of the campaign already sent this subscriber.
+		if _, ok := p.alreadySent[s.ID]; ok {
+			continue
+		}
+
 		msg, err := p.newMessage(s)
 		if err != nil {
 			p.m.log.Printf("error rendering message (%s) (%s): %v", p.camp.Name, s.Email, err)
@@ -183,7 +222,85 @@ func (p *pipe) newMessage(s models.Subscriber) (CampaignMessage, error) {
 	msg.pipe = p
 	p.wg.Add(1)
 
+	// AXM (LST-20): the checkpoint waits for this message from here on.
+	p.prog.queued(s.ID)
+
 	return msg, nil
+}
+
+// sentAfterCheckpoint returns the subscribers above a campaign's checkpoint who already
+// have a send record for it (AXM, LST-20). When a campaign is picked up again after a
+// restart, a pause or a stop, it reads from the checkpoint, and messages that went out
+// ahead of the checkpoint must not go out twice. An error means it is not known who
+// was sent, and the campaign must not start.
+func (m *Manager) sentAfterCheckpoint(c *models.Campaign) (map[int]struct{}, error) {
+	if m.sends == nil {
+		return nil, nil
+	}
+
+	// The records of an earlier run in this process may still be queued.
+	if !m.sends.flush(sentIDsFlushWait) {
+		return nil, fmt.Errorf("send records are still being written. campaign %s starts once they are", c.Name)
+	}
+
+	ids, err := m.store.GetCampaignSentIDs(c.ID, c.LastSubscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("error reading send records of campaign %s: %v", c.Name, err)
+	}
+
+	// An app that was killed did not save the count of its last moment, and the
+	// campaign would end with fewer "sent" than recipients although everyone got it.
+	// The records are per person, so raise the count to their number. It is never
+	// lowered: a campaign can have fewer records than messages (records that could
+	// not be written, a campaign that began before records existed).
+	if n, err := m.store.CountCampaignSends(c.ID); err == nil && n > c.Sent {
+		if err := m.store.UpdateCampaignCounts(c.ID, 0, n-c.Sent, 0); err != nil {
+			m.log.Printf("error updating campaign counts (%s): %v", c.Name, err)
+		} else {
+			m.log.Printf("campaign (%s) sent count raised from %d to its %d send records", c.Name, c.Sent, n)
+		}
+	}
+
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	out := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		out[id] = struct{}{}
+	}
+	m.log.Printf("campaign (%s) continues after subscriber %d. %d subscribers above it were already sent and are left out",
+		c.Name, c.LastSubscriberID, len(out))
+	return out, nil
+}
+
+// saveProgress writes the campaign's checkpoint and the number of messages sent since
+// the last save to the store (AXM, LST-20). The periodic saver, cleanup() and
+// Manager.Close() all go through it, so no count is written twice and the checkpoint
+// in the store never moves back.
+func (p *pipe) saveProgress() {
+	p.saveMut.Lock()
+	defer p.saveMut.Unlock()
+
+	var (
+		checkpoint = p.prog.get()
+		sent       = p.sent.Swap(0)
+	)
+	if sent == 0 && checkpoint == p.saved {
+		return
+	}
+
+	// The store leaves last_subscriber_id alone when it is given 0.
+	lastID := 0
+	if checkpoint != p.saved {
+		lastID = checkpoint
+	}
+	if err := p.m.store.UpdateCampaignCounts(p.camp.ID, 0, int(sent), lastID); err != nil {
+		p.sent.Add(sent)
+		p.m.log.Printf("error updating campaign counts (%s): %v", p.camp.Name, err)
+		return
+	}
+	p.saved = checkpoint
 }
 
 // logSendRecords logs, for a campaign that just finished, how many send records it has
@@ -220,9 +337,10 @@ func (p *pipe) cleanup() {
 	}()
 
 	// Update campaign's 'sent count.
-	if err := p.m.store.UpdateCampaignCounts(p.camp.ID, 0, int(p.sent.Load()), int(p.lastID.Load())); err != nil {
-		p.m.log.Printf("error updating campaign counts (%s): %v", p.camp.Name, err)
-	}
+	// AXM (LST-20): and its checkpoint, which only covers subscribers the campaign is
+	// done with. Upstream wrote the highest subscriber ID that was sent, and nothing
+	// when no message had gone out, which left the read-ahead position in the DB.
+	p.saveProgress()
 
 	// The campaign was auto-paused due to errors.
 	if p.withErrors.Load() {
