@@ -292,6 +292,7 @@ export default Vue.extend({
       this.csvWorker = null;
       this.csvBytes = null;
       this.csvSourceRows = null;
+      this.csvKeysSent = '';
     },
 
     async parseCSV(initial = false, manualDelimiter = false) {
@@ -356,7 +357,9 @@ export default Vue.extend({
               parsed: true,
             });
             this.form.delim = data.delimiter;
-            this.convertCSV();
+            // The names in use may have arrived while the file was being read.
+            if (this.csvKeysSent !== JSON.stringify(this.existingKeys)) this.suggestAgain();
+            else this.convertCSV();
           } else if (data.type === 'convert') {
             this.csvBytes = data.bytes;
             this.csvSourceRows = data.sourceRows;
@@ -384,6 +387,7 @@ export default Vue.extend({
           });
           return;
         }
+        this.csvKeysSent = JSON.stringify(this.existingKeys);
         this.csvWorker.postMessage({
           id,
           type: 'parse',
@@ -483,15 +487,20 @@ export default Vue.extend({
         Object.keys(subscriber.attribs || {}).forEach((key) => keys.add(key));
       }));
       this.existingKeys = [...keys].sort();
-      if (!this.csv.parsed) return;
-      // A name already in use may fit a column better than the one made up without it.
-      if (this.csvWorker && !this.csv.limit) {
-        this.csvWorker.postMessage({
-          type: 'suggest', memory: this.memory(), standard: this.standardAttribs, keys: this.existingKeys,
-        });
-      } else {
+      if (this.csv.parsed) this.suggestAgain();
+    },
+
+    // A name already in use may fit a column better than the one made up without it. The
+    // Worker suggests again with the current names; the reply keeps the columns the user set.
+    suggestAgain() {
+      if (!this.csvWorker || this.csv.limit) {
         this.convertCSV();
+        return;
       }
+      this.csvKeysSent = JSON.stringify(this.existingKeys);
+      this.csvWorker.postMessage({
+        type: 'suggest', memory: this.memory(), standard: this.standardAttribs, keys: this.existingKeys,
+      });
     },
 
     clearFile() {
