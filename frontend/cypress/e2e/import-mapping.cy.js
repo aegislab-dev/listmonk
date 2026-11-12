@@ -90,7 +90,7 @@ describe('CSV column mapping with the real Worker and import API', () => {
     importRows(2);
     subscriber('csv-cp949-first@example.invalid').then((sub) => {
       expect(sub.name).to.eq('똠 가상 하나');
-      expect(sub.attribs).to.deep.eq({ company_name: '가상 회사', tags: ['개발', 'AI', '마케팅'], member_code: '00123' });
+      expect(sub.attribs).to.deep.eq({ company: '가상 회사', tags: ['개발', 'AI', '마케팅'], member_code: '00123' });
     });
     cy.window().then((win) => {
       const stored = win.localStorage.getItem(storageKey);
@@ -134,7 +134,8 @@ describe('CSV column mapping with the real Worker and import API', () => {
     cy.get('[data-cy=map-key-4]').focus().type('{selectall}new_key');
     cy.get('[data-cy=map-key-4]').should('have.value', 'new_key');
     ready(2);
-    setKey(4, 'company_name');
+    // The 회사명 column already has the standard name company.
+    setKey(4, 'company');
     cy.get('[data-cy=map-row-4]').should('have.class', 'is-error');
     cy.get('[data-cy=map-state-4]').should('contain', 'Another column uses this name');
     cy.get('[data-cy=map-fix-4]').should('not.exist');
@@ -407,8 +408,149 @@ describe('CSV column mapping with the real Worker and import API', () => {
     cy.get('[data-cy=map-row-0] .map-sample').should('have.length', 3);
     cy.get('[data-cy=map-preview] tbody tr').should('have.length', 5);
     importRows(50000);
-    subscriber('bulk-49999@example.invalid').its('attribs.company_name').should('eq', '00123');
+    subscriber('bulk-49999@example.invalid').its('attribs.company').should('eq', '00123');
   });
+  it('suggests the standard names and stores country codes and follower numbers', () => {
+    cy.request('/api/config').then(({ body }) => {
+      expect(body.data.axm_standard_attribs.map(({ key, kind }) => `${key}:${kind}`)).to.deep.eq(
+        ['country:country', 'follower:integer', 'company:text', 'title:text', 'industry:text'],
+      );
+    });
+    inlineFile([
+      '이메일,이름,지역,팔로워,회사명,직함,업종',
+      `std-a-${listId}@example.invalid,가상 하나,United States,"14,900", (주)가상 ,대표,뷰티`,
+      `std-b-${listId}@example.invalid,가상 둘,미국,10K,가상 상사,매니저,식품`,
+      `std-c-${listId}@example.invalid,가상 셋,PH,1.2M,,,`,
+      `std-d-${listId}@example.invalid,가상 넷,uk,1만,,,`,
+      `std-e-${listId}@example.invalid,가상 다섯,-,3.5천,,,`,
+      `std-f-${listId}@example.invalid,가상 여섯,EU,약 2만,,,`,
+      `std-g-${listId}@example.invalid,가상 일곱,Philippines/UAE,12.500,,,`,
+    ].join('\n'));
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    ['country', 'follower', 'company', 'title', 'industry'].forEach((key, n) => {
+      cy.get(`[data-cy=map-key-${n + 2}]`).should('have.value', key);
+      cy.get(`[data-cy=map-std-${n + 2}]`).should('contain', 'Standard');
+    });
+    cy.get('[data-cy=map-std-2]').should('contain', 'Country').and('contain', 'two-letter country code');
+    cy.get('[data-cy=map-std-3]').should('contain', 'Followers').and('contain', 'number');
+    // The sample values show what will be stored.
+    cy.get('[data-cy=map-row-2] .map-sample').first().should('contain', 'United States').and('contain', 'US');
+    cy.get('[data-cy=map-row-3] .map-sample').eq(1).should('contain', '10K').and('contain', '10000');
+    // Values that are not a country or a number hold the upload back, in their own rows.
+    cy.get('[data-cy=map-count-error]').should('contain', '2');
+    submit().should('be.disabled');
+    cy.get('[data-cy=map-row-2]').should('have.class', 'is-error');
+    cy.get('[data-cy=map-state-2]').should('contain', '2 values are not a country');
+    cy.get('[data-cy=map-unreadable-2]').should('contain', 'EU').and('contain', 'Philippines/UAE');
+    cy.get('[data-cy=map-unreadable-3]').should('contain', '약 2만').and('contain', '12.500');
+    cy.get('[data-cy=map-values-country]').should('contain', '3 changed').and('contain', '1 kept').and('contain', '1 taken as empty')
+      .and('contain', '2 not read')
+      .and('contain', 'United States → US')
+      .and('contain', 'row 7 EU');
+    cy.get('[data-cy=map-preview]').should('contain', 'not read');
+    cy.get('[data-cy=map-blank-2]').click();
+    submit().should('be.disabled');
+    cy.get('[data-cy=map-blank-3]').click();
+    cy.get('[data-cy=map-count-error]').should('not.exist');
+    cy.get('[data-cy=map-row-2]').should('have.class', 'is-warning');
+    cy.get('[data-cy=map-state-2]').should('contain', 'left out');
+    // The decision can be taken back.
+    cy.get('[data-cy=map-unblank-3]').click();
+    submit().should('be.disabled');
+    cy.get('[data-cy=map-blank-3]').click();
+    cy.get('[data-cy=map-preview]').should('contain', 'left out').and('contain', '← United States');
+    cy.get('[data-cy=map-preview] tbody tr').should('have.length', 7);
+    cy.get('[data-cy=map-std-help]').should('not.have.attr', 'open');
+    cy.get('[data-cy=map-std-help] summary').click();
+    cy.get('[data-cy=map-std-help] tbody tr').should('have.length', 5).first().should('contain', 'country').and('contain', 'region');
+    importRows(7);
+    subscriber(`std-a-${listId}@example.invalid`).its('attribs').should('deep.eq', {
+      country: 'US', follower: 14900, company: '(주)가상', title: '대표', industry: '뷰티',
+    });
+    subscriber(`std-b-${listId}@example.invalid`).its('attribs').should('deep.eq', {
+      country: 'US', follower: 10000, company: '가상 상사', title: '매니저', industry: '식품',
+    });
+    subscriber(`std-c-${listId}@example.invalid`).its('attribs').should('deep.eq', { country: 'PH', follower: 1200000 });
+    subscriber(`std-d-${listId}@example.invalid`).its('attribs').should('deep.eq', { country: 'GB', follower: 10000 });
+    subscriber(`std-e-${listId}@example.invalid`).its('attribs').should('deep.eq', { follower: 3500 });
+    // Unreadable values were left out, not stored under the standard names.
+    subscriber(`std-f-${listId}@example.invalid`).then((sub) => expect(sub.attribs || {}).to.deep.eq({}));
+    subscriber(`std-g-${listId}@example.invalid`).then((sub) => expect(sub.attribs || {}).to.deep.eq({}));
+    // The stored number is read as a number by conditions.
+    cy.request({
+      url: '/api/subscribers',
+      qs: { list_id: listId, attrib_filter: JSON.stringify([{ key: 'follower', op: 'gte', value: '1000000' }, { key: 'country', op: 'eq', value: 'PH' }]) },
+    }).then(({ body }) => expect(body.data.results.map(({ email }) => email)).to.deep.eq([`std-c-${listId}@example.invalid`]));
+  });
+
+  it('keeps a column of Korean regions out of country until it gets another name', () => {
+    inlineFile(`이메일,지역\nkr-a-${listId}@example.invalid,서울\nkr-b-${listId}@example.invalid,경기`);
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-key-1]').should('have.value', 'country');
+    cy.get('[data-cy=map-state-1]').should('contain', '2 values are not a country').and('contain', 'save the column under another name');
+    cy.get('[data-cy=map-row-1] .map-sample.is-unreadable').should('have.length', 2);
+    submit().should('be.disabled');
+    cy.get('[data-cy=map-rename-1]').click();
+    cy.focused().should('have.attr', 'data-cy', 'map-key-1').type('region');
+    // A name that reads like a standard one is pointed out, not refused.
+    cy.get('[data-cy=map-twin-1]').should('contain', 'country');
+    cy.get('[data-cy=map-row-1]').should('not.have.class', 'is-error');
+    ready(2);
+    cy.get('[data-cy=map-twin-use-1]').click();
+    cy.get('[data-cy=map-key-1]').should('have.value', 'country');
+    submit().should('be.disabled');
+    setKey(1, 'region_kr');
+    cy.get('[data-cy=map-twin-1]').should('not.exist');
+    cy.get('[data-cy=map-values]').should('not.exist');
+    importRows(2);
+    subscriber(`kr-a-${listId}@example.invalid`).its('attribs').should('deep.eq', { region_kr: '서울' });
+  });
+
+  it('prefers names in use, also when they arrive after the file, and updates made-up names it remembered', () => {
+    cy.request('POST', '/api/subscribers', {
+      email: `names-${listId}@example.invalid`, name: '가상 이름 샘플', status: 'enabled', lists: [listId],
+      attribs: { tiktokerurl: 'u', 성별: '여', region: 'US' },
+    });
+    cy.window().then((win) => win.localStorage.setItem(storageKey, JSON.stringify({
+      columns: {
+        지역: { role: 'attribute', key: 'region' },
+        팔로워: { role: 'attribute', key: 'palrowo' },
+        업종: { role: 'attribute', key: 'sector_kr' },
+      },
+      keys: ['region', 'palrowo'],
+    })));
+    // The names in use come back late: after the file has been read.
+    cy.intercept('GET', '/api/subscribers?*list_id=*', (req) => req.on('response', (res) => res.setDelay(1500))).as('lateKeys');
+    inlineFile('이메일,TikTokerURL,성별,지역,팔로워,업종,Followers\nlate@example.invalid,u,여,US,100,뷰티,5');
+    cy.get('[data-cy=map-list] .map-row').should('have.length', 7);
+    cy.wait('@lateKeys');
+    cy.get('[data-cy=map-key-1]').should('have.value', 'tiktokerurl');
+    cy.get('[data-cy=map-key-2]').should('have.value', '성별');
+    // region is in use too, but the standard name comes first; the remembered made-up names give way.
+    cy.get('[data-cy=map-key-3]').should('have.value', 'country');
+    cy.get('[data-cy=map-key-4]').should('have.value', 'follower');
+    // A name chosen on purpose stays, and the second follower column gets a name of its own.
+    cy.get('[data-cy=map-key-5]').should('have.value', 'sector_kr');
+    cy.get('[data-cy=map-key-6]').should('have.value', 'followers');
+    cy.get('[data-cy=map-twin-6]').should('not.exist');
+    ready(1);
+    // A column the user set is not replaced when the names arrive again.
+    setKey(1, 'profile_url');
+    cy.get('.list-selector .tag .delete').click();
+    cy.get('.list-selector input').type(listName);
+    cy.contains('.list-selector .autocomplete a', listName).click();
+    cy.wait('@lateKeys');
+    cy.get('[data-cy=map-key-1]').should('have.value', 'profile_url');
+    cy.get('[data-cy=map-key-2]').should('have.value', '성별');
+    // The name list offers the standard names first.
+    cy.get('[data-cy=map-key-6]').clear();
+    cy.get('[data-cy=map-key-6]').blur().focus();
+    cy.get('[data-cy=map-row-6] .dropdown-item').then(($items) => {
+      expect([...$items].slice(0, 5).map((el) => el.textContent.trim().split(/\s+/)[0])).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
+    });
+    cy.get('[data-cy=map-row-6] .dropdown-item').first().should('contain', 'Country').and('contain', 'Standard');
+  });
+
   it('still sends an explicitly chosen original CSV and reports the server header failure', () => {
     cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from('email,name\nlegacy-failure@example.invalid,가상 구분자'), fileName: 'synthetic.csv', mimeType: 'text/csv' }, { force: true });
     cy.get('[data-cy=map-mode-raw] input').should('be.checked');

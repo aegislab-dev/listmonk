@@ -288,6 +288,36 @@ describe('dynamic lists', () => {
     cy.location('pathname').should('eq', '/admin/lists');
   });
 
+  it('offers the standard attributes first and points at the country code for a country name', () => {
+    cy.get('[data-cy=btn-new]').click();
+    cy.get('[data-cy=list-composition]').select('dynamic');
+    cy.get('[data-cy=dynamic-key-0]').focus();
+    // Listed whether or not a recent subscriber has them.
+    cy.get('[data-cy=dynamic-condition-0] .dropdown-item').should('have.length.at.least', 5).then(($items) => {
+      expect([...$items].slice(0, 5).map((el) => el.textContent.trim().split(/\s+/)[0])).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
+    });
+    cy.get('[data-cy=dynamic-condition-0] .dropdown-item').eq(1).should('contain', 'Followers').and('contain', 'Standard');
+    cy.get('[data-cy=dynamic-key-0]').type('country');
+    cy.get('[data-cy=dynamic-country-hint-0]').should('not.exist');
+    cy.get('[data-cy=dynamic-value-0]').type('미국');
+    cy.get('[data-cy=dynamic-country-hint-0]').should('contain', 'two-letter country codes');
+    cy.get('[data-cy=dynamic-country-use-0]').should('contain', 'US').click();
+    cy.get('[data-cy=dynamic-value-0]').should('have.value', 'US');
+    cy.get('[data-cy=dynamic-country-hint-0]').should('not.exist');
+    cy.get('[data-cy=dynamic-value-0]').clear();
+    cy.get('[data-cy=dynamic-value-0]').type('Seoul');
+    cy.get('[data-cy=dynamic-country-hint-0]').should('contain', 'e.g. US');
+    cy.get('[data-cy=dynamic-country-use-0]').should('not.exist');
+    // Only an exact comparison needs the code, and only the country attribute has one.
+    cy.get('[data-cy=dynamic-op-0]').select('contains');
+    cy.get('[data-cy=dynamic-country-hint-0]').should('not.exist');
+    cy.get('[data-cy=dynamic-op-0]').select('eq');
+    cy.get('[data-cy=dynamic-country-hint-0]').should('exist');
+    cy.get('[data-cy=dynamic-key-0]').clear();
+    cy.get('[data-cy=dynamic-key-0]').type('company');
+    cy.get('[data-cy=dynamic-country-hint-0]').should('not.exist');
+  });
+
   it('keeps the dynamic filter usable at 390px without horizontal overflow', () => {
     cy.viewport(390, 844);
     cy.get('[data-cy=btn-new]').click();
