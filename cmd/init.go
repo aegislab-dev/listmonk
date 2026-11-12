@@ -1062,6 +1062,23 @@ func initCron(co *core.Core, db *sqlx.DB) {
 		}
 	}
 
+	// AXM: delete campaign send records that are past the retention period, once
+	// shortly after boot and then every day. The boot run covers instances that are
+	// redeployed before the daily time comes around.
+	purge := func() {
+		n, err := co.PurgeOldCampaignSends()
+		if err != nil {
+			lo.Printf("error deleting old campaign send records: %v", err)
+		}
+		if n > 0 {
+			lo.Printf("deleted %d campaign send records older than %d months", n, core.SendRetentionMonths)
+		}
+	}
+	if _, err := c.Add("30 18 * * *", purge); err != nil {
+		lo.Printf("error initializing campaign send records cleanup cron: %v", err)
+	}
+	time.AfterFunc(time.Minute, purge)
+
 	if len(c.Entries()) > 0 {
 		c.Start()
 	}
