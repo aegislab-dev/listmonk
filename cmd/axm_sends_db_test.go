@@ -918,11 +918,11 @@ func TestSendRecordMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mig, err := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm.5.go"))
+	mig, err := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm.6.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	const start, end = "-- AXM campaign send records. Keep this block identical to V6_2_1_axm_5.", "-- End of AXM campaign send records."
+	const start, end = "-- AXM campaign send records. Keep this block identical to V6_2_1_axm_6.", "-- End of AXM campaign send records."
 	i, j := strings.Index(string(schema), start), strings.Index(string(schema), end)
 	if i < 0 || j < i {
 		t.Fatal("schema.sql lacks the send records block")
@@ -953,12 +953,12 @@ func TestSendRecordMigration(t *testing.T) {
 	// An upgrade from a database without the table, run twice, ends in the same shape
 	// and keeps existing records.
 	e.db.MustExec(`DROP TABLE axm_campaign_sends`)
-	if err := migrations.V6_2_1_axm_5(e.db, nil, nil, nil); err != nil {
+	if err := migrations.V6_2_1_axm_6(e.db, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	sub := e.addSub("enabled", "unconfirmed")
 	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, sub)
-	if err := migrations.V6_2_1_axm_5(e.db, nil, nil, nil); err != nil {
+	if err := migrations.V6_2_1_axm_6(e.db, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if upgraded := shape(); !reflect.DeepEqual(installed, upgraded) {
@@ -987,7 +987,7 @@ func TestSendRecordMigration(t *testing.T) {
 // The migration is registered last and the list stays in semver order.
 func TestSendRecordMigrationRegistered(t *testing.T) {
 	last := migList[len(migList)-1]
-	if last.version != "v6.2.1-axm.5" {
+	if last.version != "v6.2.1-axm.6" {
 		t.Fatalf("last migration is %s", last.version)
 	}
 	for i := 1; i < len(migList); i++ {

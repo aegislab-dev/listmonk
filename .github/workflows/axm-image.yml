@@ -226,7 +226,7 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.5
+          test "$migration" = v6.2.1-axm.6
           sends=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_campaign_sends')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_campaign_sends')::text")
           test "$sends" = 13:3
           number=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT axm_to_number('\" 100,000 \"'::jsonb)::text || ':' || (axm_to_number('\"100,000원\"'::jsonb) IS NULL)::text")

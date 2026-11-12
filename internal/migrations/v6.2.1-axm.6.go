@@ -8,12 +8,12 @@ import (
 	"github.com/knadh/stuffbin"
 )
 
-// V6_2_1_axm_5 adds the campaign send records table (who was sent which campaign and when,
+// V6_2_1_axm_6 adds the campaign send records table (who was sent which campaign and when,
 // with the opens and clicks that came back). It only adds a table and its indexes.
 // The table has no sequence. A backup role with per-object grants needs
 // GRANT SELECT ON axm_campaign_sends after this runs (see FORK.md).
-func V6_2_1_axm_5(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger) error {
-	_, err := db.Exec(`-- AXM campaign send records. Keep this block identical to V6_2_1_axm_5.
+func V6_2_1_axm_6(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger) error {
+	_, err := db.Exec(`-- AXM campaign send records. Keep this block identical to V6_2_1_axm_6.
 -- One row per campaign message that a messenger accepted: who got which campaign and when,
 -- and what came back for it. A row is written only after a successful send, so a missing
 -- row means the message did not go out (or its record was lost), never the reverse.

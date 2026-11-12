@@ -599,7 +599,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sender_token ON sender_addresses(token_has
 -- would otherwise leave this table behind with its rows and without its foreign keys.
 DROP TABLE IF EXISTS axm_campaign_sends CASCADE;
 
--- AXM campaign send records. Keep this block identical to V6_2_1_axm_5.
+-- AXM campaign send records. Keep this block identical to V6_2_1_axm_6.
 -- One row per campaign message that a messenger accepted: who got which campaign and when,
 -- and what came back for it. A row is written only after a successful send, so a missing
 -- row means the message did not go out (or its record was lost), never the reverse.
