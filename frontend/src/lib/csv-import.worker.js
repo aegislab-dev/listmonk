@@ -1,15 +1,14 @@
 /* global globalThis */
 import {
-  decodeCSV, parseCSV, suggestMapping, validateMapping, convertCSV, maskSample,
+  decodeCSV, parseCSV, suggestMapping, validateMapping, convertCSV,
   inspectCSVHeader, inspectOriginalCSV,
 } from './csv-import';
 
-// Subscriber cells stay here. Only masked samples, review results and the final
-// upload bytes cross the Worker boundary. Discarding the file terminates us.
+// Subscriber cells stay here. Only the first rows' samples, review results and
+// the final upload bytes cross the Worker boundary. Discarding the file terminates us.
 let parsed;
-function samples(mapping) {
-  return parsed.columns.map((_, index) => parsed.rows.slice(0, 3)
-    .map(({ cells }) => maskSample(cells[index], mapping[index]?.role === 'email')));
+function samples() {
+  return parsed.columns.map((_, index) => parsed.rows.slice(0, 3).map(({ cells }) => cells[index]));
 }
 
 globalThis.onmessage = async ({ data }) => {
@@ -36,13 +35,12 @@ globalThis.onmessage = async ({ data }) => {
         standard: parsed.standard,
         headerHint: parsed.headerHint,
         mapping,
-        samples: samples(mapping),
-        sampleRowNumbers: parsed.rows.slice(0, 3).map(({ row }) => row),
+        samples: samples(),
       });
     } else if (type === 'convert' && parsed) {
       const validation = validateMapping(data.mapping, data.keys);
       const review = {
-        id, type, validation, samples: samples(data.mapping),
+        id, type, validation,
       };
       if (validation.length) {
         globalThis.postMessage(review);
