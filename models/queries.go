@@ -14,6 +14,8 @@ type Queries struct {
 	AxmGetDynamicListIDs           *sqlx.Stmt `query:"axm-get-dynamic-list-ids"`
 	AxmDynamicListCounts           *sqlx.Stmt `query:"axm-dynamic-list-counts"`
 	AxmPreviewDynamicFilter        *sqlx.Stmt `query:"axm-preview-dynamic-filter"`
+	AxmPreviewDynamicSample        *sqlx.Stmt `query:"axm-preview-dynamic-sample"`
+	AxmPreviewDynamicExcluded      *sqlx.Stmt `query:"axm-preview-dynamic-excluded"`
 	NextCampaignSubscribersDynamic *sqlx.Stmt `query:"next-campaign-subscribers-dynamic"`
 	ListSenderAddresses            *sqlx.Stmt `query:"list-sender-addresses"`
 	GetSenderAddress               *sqlx.Stmt `query:"get-sender-address"`

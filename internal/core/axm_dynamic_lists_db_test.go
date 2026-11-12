@@ -310,9 +310,24 @@ func TestDynamicDBNumericPaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			count, notNumber, err := c.PreviewDynamicFilter(f, 0)
-			if err != nil || count != len(tc.want) || notNumber != tc.notNumber {
-				t.Fatalf("preview %d/%d want %d/%d (%v)", count, notNumber, len(tc.want), tc.notNumber, err)
+			p, err := c.PreviewDynamicFilter(f, 0, 3)
+			if err != nil || p.Count != len(tc.want) || p.NotNumber != tc.notNumber {
+				t.Fatalf("preview %+v want %d/%d (%v)", p, len(tc.want), tc.notNumber, err)
+			}
+			// The sample is the first members by ID with only the condition's attribute.
+			if len(p.Sample) != min(3, len(tc.want)) {
+				t.Fatalf("sample %+v", p.Sample)
+			}
+			for i, s := range p.Sample {
+				var want string
+				db.Get(&want, `SELECT (attribs->'amount')::text FROM subscribers WHERE id=$1`, tc.want[i])
+				if s.ID != tc.want[i] || s.Name != "Synthetic" || !strings.HasSuffix(s.Email, "@example.invalid") ||
+					len(s.Attribs) != 1 || string(s.Attribs["amount"]) != want {
+					t.Fatalf("sample row %d: %+v want %d %s", i, s, tc.want[i], want)
+				}
+			}
+			if none, err := c.PreviewDynamicFilter(f, 0, 0); err != nil || none.Sample != nil || none.Count != p.Count {
+				t.Fatalf("preview without sample: %+v (%v)", none, err)
 			}
 			saved, _ := json.Marshal(f)
 			dynamic := testList(db, string(saved), "single")
@@ -362,6 +377,63 @@ func TestDynamicDBNumericPaths(t *testing.T) {
 			wantIDs(t, actual, tc.want)
 			db.MustExec(`UPDATE campaigns SET status='finished' WHERE id=$1`, camp)
 		})
+	}
+}
+
+// The excluded counts explain the whole gap between matching subscribers of the base and members.
+func TestDynamicDBPreviewExcluded(t *testing.T) {
+	db, q, _ := dynamicTestDB(t)
+	c := testCore(t, db, q)
+	single := testList(db, nil, "single")
+	double := testList(db, nil, "double")
+	other := testList(db, nil, "single")
+	filter := testFilter("lists", []int{single, double})
+	dynamic := testList(db, filter, "single")
+	f, _ := ValidateDynamicFilter([]byte(filter))
+	sub := func(attrs, status string, rows ...any) int {
+		id := testSub(db, attrs, status)
+		for i := 0; i < len(rows); i += 2 {
+			db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,$3)`, id, rows[i], rows[i+1])
+		}
+		return id
+	}
+	pro := `{"plan":"pro","secret":"hidden"}`
+	member := sub(pro, "enabled", single, "unconfirmed")
+	sub(pro, "enabled", double, "confirmed", single, "unsubscribed") // member through the double list
+	sub(pro, "blocklisted", single, "confirmed")                     // blocklisted
+	sub(pro, "blocklisted", single, "unsubscribed")                  // blocklisted counts once
+	sub(pro, "enabled", single, "unsubscribed")                      // unsubscribed from the base
+	sub(pro, "enabled", double, "unconfirmed")                       // unconfirmed double opt-in
+	sub(pro, "enabled", single, "unsubscribed", double, "unconfirmed")
+	optedOut := sub(pro, "enabled", single, "confirmed")
+	db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'unsubscribed')`, optedOut, dynamic)
+	sub(pro, "enabled", other, "confirmed")                   // never in a base list: not counted
+	sub(pro, "enabled")                                       // no subscription at all: not counted
+	sub(`{"plan":"free"}`, "enabled", single, "unsubscribed") // does not match the conditions
+
+	p, err := c.PreviewDynamicFilter(f, dynamic, 10)
+	if err != nil || p.Count != 2 || p.Excluded != (DynamicExcluded{Blocklisted: 2, Unsubscribed: 3, OptedOut: 1}) {
+		t.Fatalf("saved list: %+v (%v)", p, err)
+	}
+	if len(p.Sample) != 2 || p.Sample[0].ID != member || string(p.Sample[0].Attribs["plan"]) != `"pro"` || len(p.Sample[0].Attribs) != 1 {
+		t.Fatalf("sample must hold only condition attributes: %+v", p.Sample)
+	}
+	// Before saving there is no list to have unsubscribed from.
+	p, err = c.PreviewDynamicFilter(f, 0, 10)
+	if err != nil || p.Count != 3 || p.Excluded != (DynamicExcluded{Blocklisted: 2, Unsubscribed: 3}) {
+		t.Fatalf("new list: %+v (%v)", p, err)
+	}
+	// With every subscriber as the base, the other list's subscription is a valid base too.
+	all, _ := ValidateDynamicFilter([]byte(testFilter("all", nil)))
+	p, err = c.PreviewDynamicFilter(all, 0, 10)
+	if err != nil || p.Count != 4 || p.Excluded != (DynamicExcluded{Blocklisted: 2, Unsubscribed: 3}) {
+		t.Fatalf("all base: %+v (%v)", p, err)
+	}
+	var candidates int
+	db.Get(&candidates, `SELECT COUNT(*) FROM subscribers s WHERE axm_filter_match(s.attribs, $1::jsonb)
+		AND EXISTS (SELECT 1 FROM subscriber_lists sl JOIN lists l ON l.id = sl.list_id WHERE sl.subscriber_id = s.id AND l.axm_filter IS NULL)`, testFilter("all", nil))
+	if candidates != p.Count+p.Excluded.Blocklisted+p.Excluded.Unsubscribed+p.Excluded.OptedOut {
+		t.Fatalf("excluded counts do not explain the gap: %d candidates, %+v", candidates, p)
 	}
 }
 

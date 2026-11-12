@@ -8,6 +8,46 @@ FROM lists l WHERE l.id = ANY($1::INT[]) AND l.axm_filter IS NOT NULL;
 -- name: axm-preview-dynamic-filter
 SELECT COUNT(*) FROM axm_filter_members($1::JSONB, $2::INT);
 
+-- name: axm-preview-dynamic-sample
+-- The first members by ID, read through the same function as every other member query.
+SELECT s.id, s.email, s.name, s.attribs FROM axm_filter_members($1::JSONB, $2::INT, 0, 2147483647, $3::INT) m
+JOIN subscribers s ON s.id = m.subscriber_id ORDER BY s.id;
+
+-- name: axm-preview-dynamic-excluded
+-- Explains who the conditions match but the list leaves out. It counts, in this order,
+-- blocklisted subscribers, those with no valid subscription to a base list (unsubscribed, or
+-- unconfirmed on a double opt-in list), and those who unsubscribed from this dynamic list.
+-- The three add up to the matching subscribers of the base minus axm_filter_members().
+WITH c AS (
+    SELECT s.status = 'blocklisted' AS blocked,
+        EXISTS (
+            SELECT 1 FROM subscriber_lists sl JOIN lists l ON l.id = sl.list_id
+            WHERE sl.subscriber_id = s.id AND l.axm_filter IS NULL
+                AND ($1::JSONB->'base'->>'type' = 'all' OR
+                    ($1::JSONB->'base'->>'type' = 'lists' AND
+                        COALESCE($1::JSONB->'base'->'lists', '[]'::JSONB) @> to_jsonb(l.id)))
+                AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed'
+                    ELSE sl.status != 'unsubscribed' END
+        ) AS valid,
+        $2::INT IS NOT NULL AND EXISTS (
+            SELECT 1 FROM subscriber_lists ex WHERE ex.subscriber_id = s.id
+                AND ex.list_id = $2::INT AND ex.status = 'unsubscribed'
+        ) AS opted_out
+    FROM subscribers s
+    WHERE axm_filter_match(s.attribs, $1::JSONB)
+        AND EXISTS (
+            SELECT 1 FROM subscriber_lists sl JOIN lists l ON l.id = sl.list_id
+            WHERE sl.subscriber_id = s.id AND l.axm_filter IS NULL
+                AND ($1::JSONB->'base'->>'type' = 'all' OR
+                    ($1::JSONB->'base'->>'type' = 'lists' AND
+                        COALESCE($1::JSONB->'base'->'lists', '[]'::JSONB) @> to_jsonb(l.id)))
+        )
+)
+SELECT COUNT(*) FILTER (WHERE blocked) AS blocklisted,
+    COUNT(*) FILTER (WHERE NOT blocked AND NOT valid) AS unsubscribed,
+    COUNT(*) FILTER (WHERE NOT blocked AND valid AND opted_out) AS opted_out
+FROM c;
+
 -- name: next-campaign-subscribers-dynamic
 WITH campLists AS (
     SELECT l.id AS list_id, l.optin, l.axm_filter FROM lists l

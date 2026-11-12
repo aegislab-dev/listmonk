@@ -81,6 +81,38 @@ export function formToFilter(form) {
   };
 }
 
+const summaryReady = (c) => c.key.trim() && (c.op === 'empty' || (isNumberOp(c.op)
+  ? parseNumberText(c.value) !== null && (c.op !== 'between' || parseNumberText(c.value2) !== null)
+  : (c.value || '').trim()));
+
+// Describes in one sentence who the form selects, from the conditions filled in so far.
+// t(key, params) and te(key) are the i18n translate and exists functions; lists maps the
+// base list IDs to names. Languages that conjugate (Korean) put {be}/{do} endings in their
+// condition messages; the endings are optional keys, so other languages just join clauses.
+export function summarizeFilter(form, lists, t, te) {
+  const prefix = 'lists.dynamic.summary';
+  const done = form.conditions.filter(summaryReady);
+  const names = (form.base.lists || []).map((id) => lists[id]).filter(Boolean);
+  if (!done.length || (form.base.type === 'lists' && !names.length)) return '';
+  const mode = form.match === 'any' ? 'any' : 'all';
+  const ending = (family, last) => {
+    const key = `${prefix}.${family}.${last ? 'last' : mode}`;
+    return te(key) ? t(key) : '';
+  };
+  const show = (c, value) => (isNumberOp(c.op) ? formatNumberText(value) : (value || '').trim());
+  const clauses = done.map((c, i) => t(`${prefix}.${c.op}`, {
+    key: c.key.trim(),
+    value: show(c, c.value),
+    value2: show(c, c.value2),
+    be: ending('be', i === done.length - 1),
+    do: ending('do', i === done.length - 1),
+  }));
+  return t(`${prefix}.sentence.${mode === 'any' && done.length > 1 ? 'any' : 'all'}`, {
+    base: form.base.type === 'lists' ? t(`${prefix}.baseLists`, { lists: names.join(', ') }) : t(`${prefix}.baseAll`),
+    conditions: clauses.join(t(`${prefix}.join.${mode}`)),
+  });
+}
+
 export function validateDynamicForm(form) {
   if (!['all', 'lists'].includes(form.base.type) || !['all', 'any'].includes(form.match)) return 'invalid';
   if (form.base.type === 'lists' && (!(form.base.lists || []).length

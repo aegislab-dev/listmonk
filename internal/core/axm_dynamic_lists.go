@@ -220,31 +220,98 @@ func (f DynamicFilter) notNumberFilter() *DynamicFilter {
 	return &out
 }
 
-// PreviewDynamicFilter counts the members of a filter. notNumber is how many subscribers of
-// the base the numeric conditions skip because their value is not a number.
-func (c *Core) PreviewDynamicFilter(f DynamicFilter, listID int) (count, notNumber int, err error) {
-	var id any
+// DynamicPreview shows how a filter selects subscribers before it is saved.
+type DynamicPreview struct {
+	Count int `json:"count"`
+	// NotNumber counts subscribers of the base that number conditions skip because their
+	// value is present but is not a number.
+	NotNumber int             `json:"not_number"`
+	Excluded  DynamicExcluded `json:"excluded"`
+	// Sample is nil when the caller may not read subscribers.
+	Sample []DynamicSample `json:"sample"`
+}
+
+// DynamicExcluded counts subscribers the conditions match but the list leaves out.
+type DynamicExcluded struct {
+	Blocklisted  int `db:"blocklisted" json:"blocklisted"`
+	Unsubscribed int `db:"unsubscribed" json:"unsubscribed"`
+	OptedOut     int `db:"opted_out" json:"opted_out"`
+}
+
+// DynamicSample is a member with only the attributes the conditions use.
+type DynamicSample struct {
+	ID      int                        `json:"id"`
+	Email   string                     `json:"email"`
+	Name    string                     `json:"name"`
+	Attribs map[string]json.RawMessage `json:"attribs"`
+}
+
+// PreviewDynamicFilter counts the members of a filter, explains the excluded ones and, when
+// sampleSize is positive, returns the first members by ID. Every number goes through
+// axm_filter_match(), so the preview follows the rule that list counts and campaigns use.
+func (c *Core) PreviewDynamicFilter(f DynamicFilter, listID, sampleSize int) (DynamicPreview, error) {
+	var (
+		out DynamicPreview
+		id  any
+	)
 	if listID > 0 {
 		id = listID
 	}
-	run := func(f DynamicFilter, n *int) error {
-		raw, err := json.Marshal(f)
-		if err != nil {
-			return err
-		}
-		return c.q.AxmPreviewDynamicFilter.Get(n, string(raw), id)
+	raw, err := json.Marshal(f)
+	if err != nil {
+		return out, err
 	}
-	diag := make(chan error, 1)
+	jobs := []func() error{
+		func() error { return c.q.AxmPreviewDynamicFilter.Get(&out.Count, string(raw), id) },
+		func() error { return c.q.AxmPreviewDynamicExcluded.Get(&out.Excluded, string(raw), id) },
+	}
 	if nf := f.notNumberFilter(); nf != nil {
-		go func() { diag <- run(*nf, &notNumber) }()
-	} else {
-		diag <- nil
+		jobs = append(jobs, func() error {
+			raw, err := json.Marshal(nf)
+			if err != nil {
+				return err
+			}
+			return c.q.AxmPreviewDynamicFilter.Get(&out.NotNumber, string(raw), id)
+		})
 	}
-	err = run(f, &count)
-	if derr := <-diag; err == nil {
-		err = derr
+	if sampleSize > 0 {
+		jobs = append(jobs, func() error {
+			var rows []struct {
+				ID      int            `db:"id"`
+				Email   string         `db:"email"`
+				Name    string         `db:"name"`
+				Attribs types.JSONText `db:"attribs"`
+			}
+			if err := c.q.AxmPreviewDynamicSample.Select(&rows, string(raw), id, sampleSize); err != nil {
+				return err
+			}
+			out.Sample = make([]DynamicSample, 0, len(rows))
+			for _, r := range rows {
+				all := map[string]json.RawMessage{}
+				// Attributes that are not a JSON object simply have no values to show.
+				_ = json.Unmarshal(r.Attribs, &all)
+				shown := map[string]json.RawMessage{}
+				for _, cond := range f.Conditions {
+					if v, ok := all[cond.Key]; ok {
+						shown[cond.Key] = v
+					}
+				}
+				out.Sample = append(out.Sample, DynamicSample{ID: r.ID, Email: r.Email, Name: r.Name, Attribs: shown})
+			}
+			return nil
+		})
 	}
-	return count, notNumber, err
+	// The queries are independent reads; each job writes its own field.
+	errs := make(chan error, len(jobs))
+	for _, job := range jobs {
+		go func() { errs <- job() }()
+	}
+	for range jobs {
+		if e := <-errs; e != nil && err == nil {
+			err = e
+		}
+	}
+	return out, err
 }
 
 func dynamicListQuery(ids, dynamicIDs []int, query string) ([]int, string) {

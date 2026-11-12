@@ -78,13 +78,53 @@
     </div>
     <p class="help">{{ $t('lists.dynamic.sampleHelp') }}</p>
     <p v-if="hasNumberCondition" class="help" data-cy="dynamic-number-help">{{ $t('lists.dynamic.numberHelp') }}</p>
+    <div class="dynamic-summary" data-cy="dynamic-summary" aria-live="polite">
+      <strong>{{ $t('lists.dynamic.summaryLabel') }}</strong>
+      <p v-if="summary">{{ summary }}</p>
+      <p v-else class="has-text-grey">{{ $t('lists.dynamic.summaryEmpty') }}</p>
+    </div>
     <div class="dynamic-preview" aria-live="polite">
       <b-button @click="preview" :loading="counting" data-cy="dynamic-preview">{{ $t('lists.dynamic.checkCount') }}</b-button>
       <strong v-if="count !== null" data-cy="dynamic-count">{{ $t('lists.dynamic.currentCount', { num: $utils.formatNumber(count) }) }}</strong>
       <span v-else class="has-text-grey">{{ $t('lists.dynamic.countHelp') }}</span>
-      <p v-if="count !== null && notNumber > 0" class="not-number" data-cy="dynamic-not-number">
+    </div>
+    <div v-if="count !== null" class="dynamic-result">
+      <p v-if="excludedText" class="excluded" data-cy="dynamic-excluded">{{ excludedText }}</p>
+      <p v-if="notNumber > 0" class="not-number" data-cy="dynamic-not-number">
         {{ $t('lists.dynamic.notNumber', { num: $utils.formatNumber(notNumber) }) }}
       </p>
+      <p v-if="sample === null" class="help" data-cy="dynamic-sample-denied">{{ $t('lists.dynamic.sampleDenied') }}</p>
+      <div v-else-if="sample.length" class="dynamic-sample" data-cy="dynamic-sample">
+        <p class="sample-title">{{ $t('lists.dynamic.sampleTitle', { num: sample.length }) }}</p>
+        <div class="sample-scroll">
+          <table class="table is-narrow is-fullwidth">
+            <thead>
+              <tr>
+                <th>{{ $t('subscribers.email') }}</th>
+                <th>{{ $t('globals.fields.name') }}</th>
+                <th v-for="key in sampleKeys" :key="key">{{ key }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in sample" :key="row.id">
+                <td>{{ row.email }}</td>
+                <td>{{ row.name }}</td>
+                <td v-for="key in sampleKeys" :key="key">
+                  <span v-if="attribText(row, key) === null" class="has-text-grey">{{ $t('lists.dynamic.sampleNoValue') }}</span>
+                  <template v-else>{{ attribText(row, key) }}</template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sample-more">
+          <span v-if="count > sample.length">{{ $t('lists.dynamic.sampleMore', { num: $utils.formatNumber(count - sample.length) }) }} · </span>
+          <router-link v-if="isSaved" :to="`/subscribers/lists/${listId}`" data-cy="dynamic-sample-all">
+            {{ $t('lists.dynamic.sampleViewAll') }}
+          </router-link>
+          <span v-else class="has-text-grey">{{ $t('lists.dynamic.sampleSaveHint') }}</span>
+        </p>
+      </div>
     </div>
     <p v-if="error" role="alert" class="help is-danger" data-cy="dynamic-error">{{ error }}</p>
     <p class="help consent-help">{{ $t('lists.dynamic.unsubscribeHelp') }}</p>
@@ -95,8 +135,8 @@
 import { mapState } from 'vuex';
 import ListSelector from './ListSelector.vue';
 import {
-  filterToForm, formatNumberText, formToFilter, isNumberOp, koreanNumberText, NUMBER_OPS, parseNumberText, TEXT_OPS,
-  validateDynamicForm,
+  filterToForm, formatNumberText, formToFilter, isNumberOp, koreanNumberText, NUMBER_OPS, parseNumberText, summarizeFilter,
+  TEXT_OPS, validateDynamicForm,
 } from '../dynamic-list';
 
 export default {
@@ -113,6 +153,12 @@ export default {
       // Number inputs the user has left, keyed by row key and field; errors show only for these.
       touched: {},
       notNumber: 0,
+      excluded: {},
+      // Members shown with the count; null when the user may not read subscribers.
+      sample: [],
+      sampleKeys: [],
+      // The filter as saved, to offer the full member list only while nothing has changed.
+      savedFilter: this.listId ? JSON.stringify(formToFilter(filterToForm(this.value))) : '',
       rowKeys: this.value.conditions.map((c, i) => i),
       nextKey: this.value.conditions.length,
       count: null,
@@ -129,6 +175,17 @@ export default {
     ordinaryLists() { return (this.lists.results || []).filter((l) => !l.axmFilter); },
     selectedBase() { return this.ordinaryLists.filter((l) => (this.form.base.lists || []).includes(l.id)); },
     hasNumberCondition() { return this.form.conditions.some((c) => isNumberOp(c.op)); },
+    summary() {
+      const names = Object.fromEntries(this.ordinaryLists.map((l) => [l.id, l.name]));
+      return summarizeFilter(this.form, names, (key, params) => this.$t(key, params), (key) => this.$te(key));
+    },
+    excludedText() {
+      const items = [['unsubscribed', 'excludedUnsubscribed'], ['blocklisted', 'excludedBlocklisted'], ['optedOut', 'excludedOptedOut']]
+        .filter(([field]) => this.excluded[field] > 0)
+        .map(([field, key]) => this.$t(`lists.dynamic.${key}`, { num: this.$utils.formatNumber(this.excluded[field]) }));
+      return items.length ? this.$t('lists.dynamic.excluded', { items: items.join(' · ') }) : '';
+    },
+    isSaved() { return !!this.savedFilter && this.savedFilter === JSON.stringify(formToFilter(this.form)); },
   },
   watch: {
     form: {
@@ -177,6 +234,12 @@ export default {
         && !(Number(parseNumberText(c.value)) < Number(parseNumberText(text)))) return this.$t('lists.dynamic.rangeInvalid');
       return '';
     },
+    // The value of a condition's item for a sampled member; null when the member has none.
+    attribText(row, key) {
+      const v = (row.attribs || {})[key];
+      if (v === undefined || v === null || v === '') return null;
+      return typeof v === 'string' ? v : JSON.stringify(v);
+    },
     // Korean reads large numbers in units of 10,000, which catches a missing or extra zero.
     numberHint(text) { return this.$i18n.locale === 'ko' ? koreanNumberText(text) : ''; },
     addCondition() {
@@ -220,6 +283,9 @@ export default {
         if (revision === this.revision) {
           this.count = data.count;
           this.notNumber = data.notNumber || 0;
+          this.excluded = data.excluded || {};
+          this.sample = data.sample || null;
+          this.sampleKeys = [...new Set(this.form.conditions.map((c) => c.key.trim()).filter(Boolean))];
         }
       } catch (e) {
         if (revision === this.revision) this.error = e.response?.data?.message || this.$t('lists.dynamic.previewError');
@@ -250,9 +316,20 @@ export default {
 .number-input .control { flex: 1; min-width: 0; }
 .number-suffix { flex: none; color: #444; }
 .number-hint { color: #666; }
-.not-number { flex-basis: 100%; margin: 0; padding: 8px 12px; border-left: 3px solid #d9a100; background: #fff8e1; color: #5c4400; font-size: .85rem; }
+.dynamic-summary { border-top: 1px solid #dce3e8; margin-top: 20px; padding-top: 16px; }
+.dynamic-summary p { margin: 4px 0 0; }
+.dynamic-preview { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.dynamic-result { margin-top: 12px; }
+.dynamic-result > * + * { margin-top: 10px; }
+.excluded { margin: 0; color: #444; font-size: .9rem; }
+.dynamic-sample { background: #fff; border: 1px solid #dce3e8; border-radius: 5px; padding: 12px; }
+.sample-title { margin: 0 0 8px; font-weight: 600; font-size: .9rem; }
+.sample-scroll { overflow-x: auto; }
+.sample-scroll table { margin: 0; font-size: .85rem; background: transparent; }
+.sample-scroll th, .sample-scroll td { white-space: nowrap; }
+.sample-more { margin: 8px 0 0; font-size: .85rem; }
+.not-number { margin: 0; padding: 8px 12px; border-left: 3px solid #d9a100; background: #fff8e1; color: #5c4400; font-size: .85rem; }
 .dynamic-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
-.dynamic-preview { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; border-top: 1px solid #dce3e8; margin-top: 20px; padding-top: 16px; }
 .consent-help { margin-top: 12px; }
 @media screen and (max-width: 600px) {
   .dynamic-filter { padding: 14px; }

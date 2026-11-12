@@ -1,8 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
-  filterToForm, formatNumberText, formToFilter, koreanNumberText, newDynamicFilter, parseNumberText, validateDynamicForm,
+  filterToForm, formatNumberText, formToFilter, koreanNumberText, newDynamicFilter, parseNumberText, summarizeFilter,
+  validateDynamicForm,
 } from '../src/dynamic-list.js';
+
+// The real language files, so the sentences below are the ones the screen shows.
+const language = (lang) => {
+  const messages = JSON.parse(readFileSync(new URL(`../../i18n/${lang}.json`, import.meta.url), 'utf8'));
+  const t = (key, params = {}) => {
+    assert.ok(key in messages, `missing ${lang} message ${key}`);
+    return messages[key].replace(/\{(\w+)\}/g, (_, name) => params[name] ?? '');
+  };
+  return [t, (key) => key in messages];
+};
 
 const valid = () => ({
   version: 1,
@@ -157,4 +169,68 @@ test('validates number conditions and the between range', () => {
   // Text conditions keep accepting any text, including numbers with units.
   f.conditions = [{ key: 'amount', op: 'eq', value: '100,000원' }];
   assert.equal(validateDynamicForm(f), '');
+});
+
+test('summarizes the base and conditions as one Korean sentence', () => {
+  const [t, te] = language('ko');
+  const say = (form, lists = {}) => summarizeFilter(form, lists, t, te);
+  const form = filterToForm({
+    version: 1,
+    base: { type: 'all' },
+    match: 'all',
+    conditions: [{ key: 'grade', op: 'eq', value: 'gold' }, { key: 'purchase_amount', op: 'gte', value: '100000' }],
+  });
+  assert.equal(say(form), "전체 구독자 중 유효한 구독이 있고, grade 값이 'gold'이고, purchase_amount 값이 100,000 이상인 사람");
+  form.match = 'any';
+  assert.equal(say(form), "전체 구독자 중 유효한 구독이 있고, grade 값이 'gold'이거나, purchase_amount 값이 100,000 이상인 사람 (조건 중 하나만 맞아도 포함)");
+
+  const each = {
+    eq: [{ value: 'gold' }, "x 값이 'gold'인"],
+    contains: [{ value: 'go' }, "x 값에 'go' 글자가 들어 있는"],
+    empty: [{}, 'x 값이 비어 있는'],
+    has: [{ value: 'vip' }, "x 태그에 'vip' 태그가 있는"],
+    gte: [{ value: '100000' }, 'x 값이 100,000 이상인'],
+    gt: [{ value: '1' }, 'x 값이 1 초과인'],
+    lte: [{ value: '2.5' }, 'x 값이 2.5 이하인'],
+    lt: [{ value: '100,000' }, 'x 값이 100,000 미만인'],
+    between: [{ value: '50000', value2: '100000' }, 'x 값이 50,000 이상 100,000 미만인'],
+  };
+  Object.entries(each).forEach(([op, [values, clause]]) => {
+    form.match = 'all';
+    form.conditions = [{ key: ' x ', op, ...values }];
+    assert.equal(say(form), `전체 구독자 중 유효한 구독이 있고, ${clause} 사람`, op);
+  });
+  form.conditions = [{ key: 'a', op: 'empty' }, { key: 'b', op: 'contains', value: 'x' }, { key: 'c', op: 'eq', value: 'y' }];
+  assert.equal(say(form), "전체 구독자 중 유효한 구독이 있고, a 값이 비어 있고, b 값에 'x' 글자가 들어 있고, c 값이 'y'인 사람");
+  form.match = 'any';
+  assert.equal(say(form), "전체 구독자 중 유효한 구독이 있고, a 값이 비어 있거나, b 값에 'x' 글자가 들어 있거나, c 값이 'y'인 사람 (조건 중 하나만 맞아도 포함)");
+
+  // Base lists are named; rows still being typed are left out; nothing usable gives no sentence.
+  form.match = 'all';
+  form.base = { type: 'lists', lists: [3, 9] };
+  form.conditions = [{ key: 'grade', op: 'eq', value: 'gold' }, { key: '', op: 'eq', value: 'x' },
+    { key: 'amount', op: 'gte', value: '100,000원' }, { key: 'amount', op: 'between', value: '1', value2: '' }];
+  assert.equal(say(form, { 3: '뉴스레터', 9: 'VIP' }), "뉴스레터, VIP 리스트에 유효한 구독이 있고, grade 값이 'gold'인 사람");
+  assert.equal(say(form, {}), '');
+  form.base = { type: 'all' };
+  form.conditions = [{ key: 'grade', op: 'eq', value: ' ' }];
+  assert.equal(say(form), '');
+});
+
+test('summarizes in English without Korean endings', () => {
+  const [t, te] = language('en');
+  const form = filterToForm({
+    version: 1,
+    base: { type: 'lists', lists: [3] },
+    match: 'all',
+    conditions: [{ key: 'grade', op: 'eq', value: 'gold' }, { key: 'amount', op: 'between', value: '50000', value2: '100000' },
+      { key: 'tags', op: 'has', value: 'vip' }, { key: 'note', op: 'empty' }],
+  });
+  assert.equal(summarizeFilter(form, { 3: 'News' }, t, te), "Subscribers with a valid subscription to News whose grade is 'gold'"
+    + " and amount is 50,000 or more and less than 100,000 and tags has the tag 'vip' and note is empty.");
+  form.match = 'any';
+  form.base = { type: 'all' };
+  form.conditions = [{ key: 'a', op: 'lt', value: '5' }, { key: 'b', op: 'contains', value: 'x' }];
+  assert.equal(summarizeFilter(form, {}, t, te), "All subscribers with a valid subscription whose a is less than 5 or b contains 'x'"
+    + ' (any one condition is enough).');
 });

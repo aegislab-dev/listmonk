@@ -114,7 +114,10 @@ export const getDashboardCharts = () => http.get(
 );
 
 // Lists.
-export const previewDynamicList = (data) => http.post('/api/lists/dynamic/preview', data, { disableToast: true });
+export const previewDynamicList = (data) => http.post('/api/lists/dynamic/preview', data, {
+  disableToast: true,
+  camelCase: (keyPath) => !keyPath.startsWith('.sample.*.attribs'),
+});
 
 export const getLists = (params) => http.get(
   '/api/lists',

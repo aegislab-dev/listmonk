@@ -35,7 +35,19 @@ func (a *App) checkDynamicBasePerm(c echo.Context, f core.DynamicFilter) error {
 	return user.HasListPerm(auth.PermTypeGet, f.Base.Lists...)
 }
 
-// PreviewDynamicList returns only a count and requires manage access to its destination.
+// dynamicSampleSize is how many members a preview lists.
+const dynamicSampleSize = 10
+
+// canSampleDynamic applies the subscriber read rule of GET /api/subscribers to a preview:
+// subscribers:get_all reads anyone, and subscribers:get reads the subscribers of lists the
+// user may get. checkDynamicBasePerm has already required get access to every base list.
+func canSampleDynamic(user auth.User, f core.DynamicFilter) bool {
+	return user.HasPerm(auth.PermSubscribersGetAll) ||
+		(f.Base.Type == "lists" && user.HasPerm(auth.PermSubscribersGet))
+}
+
+// PreviewDynamicList requires manage access to its destination. It returns counts, and a
+// sample of members only to users who may read those subscribers.
 func (a *App) PreviewDynamicList(c echo.Context) error {
 	var req struct {
 		Filter json.RawMessage `json:"filter"`
@@ -72,12 +84,16 @@ func (a *App) PreviewDynamicList(c echo.Context) error {
 	if err := a.core.ValidateDynamicBase(f); err != nil {
 		return err
 	}
-	n, notNumber, err := a.core.PreviewDynamicFilter(f, req.ListID)
+	sampleSize := 0
+	if canSampleDynamic(user, f) {
+		sampleSize = dynamicSampleSize
+	}
+	out, err := a.core.PreviewDynamicFilter(f, req.ListID, sampleSize)
 	if err != nil {
 		a.log.Printf("dynamic list preview: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("lists.dynamic.previewError"))
 	}
-	return c.JSON(http.StatusOK, okResp{map[string]int{"count": n, "not_number": notNumber}})
+	return c.JSON(http.StatusOK, okResp{out})
 }
 
 func (a *App) rejectDynamicTargets(ids []int) error {
