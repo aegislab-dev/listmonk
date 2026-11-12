@@ -16,6 +16,13 @@ const (
 
 	// sendLogBatchSize is the most records written in one statement.
 	sendLogBatchSize = 500
+
+	// sendLogMinGap is the shortest time between the starts of two writes. One
+	// database round trip per message was measured to cost about 5% of the sending
+	// speed at several thousand messages a second, so records that arrive faster
+	// than this are collected and written together. A record that arrives after a
+	// quiet moment, as every record does at ordinary sending rates, is written at once.
+	sendLogMinGap = 20 * time.Millisecond
 )
 
 // sendLogRetryWaits are the pauses before each retry of a failed write. After the last
@@ -26,9 +33,10 @@ var sendLogRetryWaits = []time.Duration{time.Second, 3 * time.Second, 10 * time.
 //
 // Recording never slows down or stops sending. Workers hand a record to a buffered
 // queue without waiting, and a single writer goroutine saves whatever has piled up in
-// one statement: one row at a time when sending is slow, batches when it is fast. If the
-// store keeps failing, the batch is dropped after a few retries, and if the queue is
-// full, new records are dropped. Both are logged with counts.
+// one statement: one row at a time when sending is slow, batches (at most one every
+// sendLogMinGap) when it is fast. If the store keeps failing, the batch is dropped after
+// a few retries, and if the queue is full, new records are dropped. Both are logged
+// with counts.
 //
 // A record is queued only after the messenger accepted the message, so the records can
 // lack a message that went out (process killed before the write, or a dropped batch)
@@ -39,8 +47,13 @@ type sendLog struct {
 	q     chan sendLogItem
 	waits []time.Duration
 
+	// minGap is sendLogMinGap, except in tests.
+	minGap time.Duration
+
 	// dropped counts the records lost to a full queue or to failed writes.
-	dropped atomic.Int64
+	// overflowed counts only those lost to a full queue, to pace that log line.
+	dropped    atomic.Int64
+	overflowed atomic.Int64
 }
 
 // sendLogItem is a record, or when flush is set, a request to be told once
@@ -52,10 +65,11 @@ type sendLogItem struct {
 
 func newSendLog(store Store, l *log.Logger) *sendLog {
 	return &sendLog{
-		store: store,
-		log:   l,
-		q:     make(chan sendLogItem, sendLogQueueSize),
-		waits: sendLogRetryWaits,
+		store:  store,
+		log:    l,
+		q:      make(chan sendLogItem, sendLogQueueSize),
+		waits:  sendLogRetryWaits,
+		minGap: sendLogMinGap,
 	}
 }
 
@@ -67,8 +81,9 @@ func (s *sendLog) add(campID, subID int) {
 	case s.q <- it:
 	default:
 		// Log the first drop and then every thousandth, not one line per message.
-		if n := s.dropped.Add(1); n == 1 || n%1000 == 0 {
-			s.log.Printf("error recording campaign sends: queue is full. %d send records dropped so far. sending continues", n)
+		total := s.dropped.Add(1)
+		if n := s.overflowed.Add(1); n == 1 || n%1000 == 0 {
+			s.log.Printf("error recording campaign sends: queue is full. %d send records dropped so far. sending continues", total)
 		}
 	}
 }
@@ -78,6 +93,9 @@ func (s *sendLog) run() {
 	var (
 		batch   = make([]models.CampaignSend, 0, sendLogBatchSize)
 		waiting []chan struct{}
+
+		// The earliest time the next write may start, unless a flush asks for it.
+		notBefore time.Time
 	)
 
 	take := func(it sendLogItem) {
@@ -92,20 +110,37 @@ func (s *sendLog) run() {
 		batch, waiting = batch[:0], waiting[:0]
 		take(it)
 
-		// Take whatever else is already waiting, without waiting for more.
-	drain:
-		for len(batch) < sendLogBatchSize {
+		// Take whatever else is already waiting. If the previous write started less
+		// than minGap ago, keep collecting until that time has passed. A flush request
+		// or a full batch ends the collecting at once.
+	collect:
+		for len(batch) < sendLogBatchSize && len(waiting) == 0 {
 			select {
 			case it, ok := <-s.q:
 				if !ok {
-					break drain
+					break collect
 				}
 				take(it)
+				continue
 			default:
-				break drain
+			}
+
+			wait := time.Until(notBefore)
+			if wait <= 0 {
+				break collect
+			}
+			select {
+			case it, ok := <-s.q:
+				if !ok {
+					break collect
+				}
+				take(it)
+			case <-time.After(wait):
+				break collect
 			}
 		}
 
+		notBefore = time.Now().Add(s.minGap)
 		s.write(batch)
 		for _, ch := range waiting {
 			close(ch)

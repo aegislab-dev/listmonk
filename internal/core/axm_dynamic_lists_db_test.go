@@ -33,7 +33,9 @@ func dynamicTestDB(t *testing.T) (*sqlx.DB, map[string]string, string) {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(4)
-	db.MustExec("CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public; ALTER EXTENSION pgcrypto SET SCHEMA public")
+	// The cmd package's DB tests set up the same database at the same time. The lock (one
+	// implicit transaction for the whole string) keeps the two from creating the extension at once.
+	db.MustExec("SELECT pg_advisory_xact_lock(741919); CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public; ALTER EXTENSION pgcrypto SET SCHEMA public")
 	name := fmt.Sprintf("axm_test_%d", time.Now().UnixNano())
 	db.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(name))
 	db.Close()

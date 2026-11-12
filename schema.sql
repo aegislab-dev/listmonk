@@ -595,6 +595,10 @@ CREATE TABLE IF NOT EXISTS sender_addresses (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sender_token ON sender_addresses(token_hash) WHERE token_hash IS NOT NULL;
 
+-- A fresh install starts without send records. Dropping subscribers and campaigns above
+-- would otherwise leave this table behind with its rows and without its foreign keys.
+DROP TABLE IF EXISTS axm_campaign_sends CASCADE;
+
 -- AXM campaign send records. Keep this block identical to V6_2_1_axm_5.
 -- One row per campaign message that a messenger accepted: who got which campaign and when,
 -- and what came back for it. A row is written only after a successful send, so a missing
@@ -624,6 +628,8 @@ CREATE TABLE IF NOT EXISTS axm_campaign_sends (
 );
 -- Per-subscriber history, and the lookup that deleting a subscriber cascades through.
 CREATE INDEX IF NOT EXISTS idx_axm_sends_sub ON axm_campaign_sends(subscriber_id, sent_at DESC);
--- Time ranges (recent sends, retention). Rows arrive in sent_at order, so BRIN stays tiny.
+-- Time ranges (recent sends, retention). Rows are inserted in sent_at order, so a BRIN
+-- index is a few pages. It stays selective for recent ranges. For old ranges it loses
+-- selectivity as pages are reused, at worst down to a full scan for the daily retention job.
 CREATE INDEX IF NOT EXISTS idx_axm_sends_sent_at ON axm_campaign_sends USING BRIN (sent_at);
 -- End of AXM campaign send records.

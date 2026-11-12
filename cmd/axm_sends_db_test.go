@@ -133,7 +133,9 @@ func newSendsEnv(t *testing.T, n int) *sendsEnv {
 		t.Fatal(err)
 	}
 	name := fmt.Sprintf("axm_sends_%d", time.Now().UnixNano())
-	db.MustExec("CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public")
+	// internal/core's DB tests set up the same database at the same time. The lock (one
+	// implicit transaction for the whole string) keeps the two from creating the extension at once.
+	db.MustExec("SELECT pg_advisory_xact_lock(741919); CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public")
 	db.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(name))
 	db.Close()
 
@@ -197,6 +199,22 @@ func newSendsEnv(t *testing.T, n int) *sendsEnv {
 	e.addSub("enabled", "unsubscribed")
 	e.campID, e.campUUID = e.addCampaign("running")
 	return e
+}
+
+// reinstall runs schema.sql again on the test schema, as a plain install does. It uses
+// a connection that can only see the test schema, because schema.sql starts with DROPs.
+func (e *sendsEnv) reinstall() {
+	e.t.Helper()
+	db, err := sqlx.Connect("postgres", withSearchPath(e.t, os.Getenv("AXM_TEST_DB_URL"), e.schema))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer db.Close()
+	raw, err := os.ReadFile(filepath.Join(repoRoot(e.t), "schema.sql"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	db.MustExec(string(raw))
 }
 
 func (e *sendsEnv) get(dest any, query string, args ...any) {
@@ -438,14 +456,23 @@ func TestSendRecordsPauseResume(t *testing.T) {
 		}
 	}
 	waitFor(t, "15 deliveries", func() bool { return len(msgr.sentIDs()) == 15 })
+	waitFor(t, "both workers to be in the middle of a message", func() bool { return msgr.pushes.Load() == 17 })
 	e.setStatus(models.CampaignStatusPaused)
 	m.StopCampaign(e.campID)
+
+	// The two messages in flight still go out. Let them finish one after the other:
+	// the engine's checkpoint update is not atomic across workers, and two messages
+	// finishing in the same instant could leave it one subscriber low.
+	msgr.allow <- struct{}{}
+	waitFor(t, "the 16th delivery", func() bool { return len(msgr.sentIDs()) == 16 })
+	msgr.allow <- struct{}{}
+	waitFor(t, "the 17th delivery", func() bool { return len(msgr.sentIDs()) == 17 })
 	close(msgr.allow)
 	waitFor(t, "the paused campaign to wind down", func() bool { return !m.HasRunningCampaigns() })
 
 	paused := msgr.sentIDs()
-	if len(paused) < 15 || len(paused) >= len(e.eligible) {
-		t.Fatalf("%d messages went out before the pause took effect", len(paused))
+	if len(paused) != 17 {
+		t.Fatalf("%d messages went out before the pause took effect, want the 15 let through and the 2 in flight", len(paused))
 	}
 	waitFor(t, "records of the messages sent before the pause", func() bool { return len(e.recorded()) == len(paused) })
 	wantSame(t, "recorded at pause", e.recorded(), paused)
@@ -729,13 +756,14 @@ func TestSendRecordRetention(t *testing.T) {
 	e.db.MustExec(`INSERT INTO campaigns (uuid, name, subject, from_email, body, messenger, status)
 		SELECT gen_random_uuid(), 'Old ' || g, 'Subject', 'sender@example.invalid', 'Body', 'email', 'finished' FROM generate_series(1, 31) g`)
 	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at, opened_at, open_count, open_kind, open_kinds)
-		SELECT c.id, s.id, NOW() - INTERVAL '12 months' - (c.n || ' days')::INTERVAL, NOW() - INTERVAL '12 months', 1, 1, 2
+		SELECT c.id, s.id, NOW() - INTERVAL '12 months' - ((c.n + 2) || ' days')::INTERVAL, NOW() - INTERVAL '12 months', 1, 1, 2
 		FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS n FROM campaigns WHERE name LIKE 'Old %') c
 		CROSS JOIN subscribers s WHERE c.n <= 30`)
-	// Records inside the period stay, including one that is a day short of 12 months.
+	// Records inside the period stay, including ones that are three days short of 12 months.
+	// (Three days, not one: Go and Postgres count "12 months before 29 February" a day apart.)
 	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at)
 		SELECT (SELECT MAX(id) FROM campaigns), s.id,
-			CASE WHEN s.id % 2 = 0 THEN NOW() - INTERVAL '12 months' + INTERVAL '1 day' ELSE NOW() - INTERVAL '3 days' END
+			CASE WHEN s.id % 2 = 0 THEN NOW() - INTERVAL '12 months' + INTERVAL '3 days' ELSE NOW() - INTERVAL '3 days' END
 		FROM subscribers s`)
 
 	n, err := e.core.PurgeOldCampaignSends()
@@ -937,6 +965,15 @@ func TestSendRecordMigration(t *testing.T) {
 		t.Fatalf("install and upgrade differ:\n%s\n---\n%s", strings.Join(installed, "\n"), strings.Join(upgraded, "\n"))
 	}
 	wantSame(t, "records kept by a repeated migration", e.recorded(), []int{sub})
+
+	// A plain install on a database that already has the schema wipes the send records
+	// like every other table, and puts the table back with its foreign keys.
+	e.reinstall()
+	var left int
+	e.get(&left, `SELECT COUNT(*) FROM axm_campaign_sends`)
+	if reinstalled := shape(); left != 0 || !reflect.DeepEqual(installed, reinstalled) {
+		t.Fatalf("after a second install: %d records left, shape:\n%s", left, strings.Join(reinstalled, "\n"))
+	}
 
 	// The table has no sequence of its own, so a backup role needs one grant only.
 	var seqs int

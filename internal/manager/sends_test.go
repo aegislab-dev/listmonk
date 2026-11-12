@@ -22,12 +22,21 @@ type sendStore struct {
 	batches [][]models.CampaignSend
 	fail    int           // Fail this many calls first. -1 fails every call.
 	block   chan struct{} // When set, every call waits here.
+	hold    chan struct{} // Like block, but may be set while the writer runs.
+	entered int           // Calls that have reached the store, including waiting ones.
 	calls   int
 }
 
 func (s *sendStore) RecordCampaignSends(sends []models.CampaignSend) error {
 	if s.block != nil {
 		<-s.block
+	}
+	s.mu.Lock()
+	hold := s.hold
+	s.entered++
+	s.mu.Unlock()
+	if hold != nil {
+		<-hold
 	}
 
 	s.mu.Lock()
@@ -108,6 +117,57 @@ func TestSendLogWritesEveryRecordInBatches(t *testing.T) {
 	}
 }
 
+// Records that come in quickly are written together, at most one write per gap.
+// A record that comes after a quiet moment does not wait for the gap.
+func TestSendLogPacesWrites(t *testing.T) {
+	store := &sendStore{}
+	s := testSendLog(store, io.Discard)
+	s.minGap = 300 * time.Millisecond
+	go s.run()
+
+	// A burst spread over about 100 ms. Without pacing this is close to one write
+	// per record. With it: the first record at once, the rest together after the gap.
+	for i := 1; i <= 200; i++ {
+		s.add(1, i)
+		time.Sleep(500 * time.Microsecond)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(store.subIDs()) < 200 {
+		if time.Now().After(deadline) {
+			t.Fatalf("recorded %d of 200", len(store.subIDs()))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	store.mu.Lock()
+	calls := store.calls
+	store.mu.Unlock()
+	if calls > 4 {
+		t.Fatalf("a burst of 200 records took %d writes", calls)
+	}
+
+	// After a quiet moment longer than the gap, a single record is written right away.
+	time.Sleep(400 * time.Millisecond)
+	start := time.Now()
+	s.add(1, 201)
+	for len(store.subIDs()) < 201 {
+		if time.Since(start) > 150*time.Millisecond {
+			t.Fatalf("a record after a quiet moment was still unwritten after %v", time.Since(start))
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// A flush does not wait for the gap either.
+	s.add(1, 202)
+	s.add(1, 203)
+	start = time.Now()
+	if !s.flush(5*time.Second) || len(store.subIDs()) != 203 {
+		t.Fatalf("flush left records unwritten: %d", len(store.subIDs()))
+	}
+	if d := time.Since(start); d > 150*time.Millisecond {
+		t.Fatalf("flush waited %v for the gap", d)
+	}
+}
+
 func TestSendLogRetriesThenDrops(t *testing.T) {
 	var logs bytes.Buffer
 	store := &sendStore{fail: 2}
@@ -122,18 +182,38 @@ func TestSendLogRetriesThenDrops(t *testing.T) {
 	}
 
 	// A store that keeps failing loses the batch, says so, and does not get stuck.
+	// The writer is held inside the store with a first record so that the next two
+	// are certain to be waiting together and go out as one batch.
+	hold := make(chan struct{})
 	store.mu.Lock()
 	store.fail = -1
+	store.hold = hold
+	before := store.entered
 	store.mu.Unlock()
+	s.add(9, 1)
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		store.mu.Lock()
+		inStore := store.entered > before
+		store.mu.Unlock()
+		if inStore {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the writer did not take the first record to the store")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	s.add(3, 10)
 	s.add(2, 11)
+	close(hold)
 	if !s.flush(5 * time.Second) {
 		t.Fatal("flush timed out on a failing store")
 	}
-	if s.dropped.Load() != 2 {
-		t.Fatalf("dropped %d, want 2", s.dropped.Load())
+	if s.dropped.Load() != 3 {
+		t.Fatalf("dropped %d, want 3", s.dropped.Load())
 	}
-	if got := logs.String(); !strings.Contains(got, "dropped 2 send records of campaigns [2 3]") || !strings.Contains(got, "test record failure") {
+	if got := logs.String(); !strings.Contains(got, "dropped 1 send records of campaigns [9]") ||
+		!strings.Contains(got, "dropped 2 send records of campaigns [2 3] (3 dropped so far)") || !strings.Contains(got, "test record failure") {
 		t.Fatalf("unexpected log %q", got)
 	}
 
@@ -162,7 +242,7 @@ func TestSendLogNeverBlocksSending(t *testing.T) {
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("add() waited on a stalled store: %v for %d records", d, n)
 	}
-	if s.dropped.Load() == 0 || !strings.Contains(logs.String(), "queue is full") {
+	if s.dropped.Load() == 0 || s.dropped.Load() != s.overflowed.Load() || !strings.Contains(logs.String(), "queue is full") {
 		t.Fatalf("overflow was not counted or logged: dropped=%d log=%q", s.dropped.Load(), logs.String())
 	}
 	if s.flush(50 * time.Millisecond) {

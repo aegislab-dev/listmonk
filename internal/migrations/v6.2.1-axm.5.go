@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS axm_campaign_sends (
 );
 -- Per-subscriber history, and the lookup that deleting a subscriber cascades through.
 CREATE INDEX IF NOT EXISTS idx_axm_sends_sub ON axm_campaign_sends(subscriber_id, sent_at DESC);
--- Time ranges (recent sends, retention). Rows arrive in sent_at order, so BRIN stays tiny.
+-- Time ranges (recent sends, retention). Rows are inserted in sent_at order, so a BRIN
+-- index is a few pages. It stays selective for recent ranges. For old ranges it loses
+-- selectivity as pages are reused, at worst down to a full scan for the daily retention job.
 CREATE INDEX IF NOT EXISTS idx_axm_sends_sent_at ON axm_campaign_sends USING BRIN (sent_at);
 -- End of AXM campaign send records.`)
 	return err
