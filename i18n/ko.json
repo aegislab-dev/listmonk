@@ -982,7 +982,7 @@
     "subscribers.columns.title": "표에 보일 열",
     "subscribers.columns.base": "기본 열",
     "subscribers.columns.attribs": "추가 정보 항목",
-    "subscribers.columns.autoNote": "아직 고르지 않아서, 이 페이지에서 값이 가장 많이 채워진 항목을 먼저 보여 줍니다.",
+    "subscribers.columns.autoNote": "아직 고르지 않아서 자동으로 고른 열입니다. country·follower가 있으면 그 둘을, 없으면 이 페이지에서 값이 가장 많이 채워진 항목 3개를 보여 줍니다.",
     "subscribers.columns.filled": "{num}명",
     "subscribers.columns.found": "지금 보이는 구독자 {num}명에서 찾은 항목이고, 숫자는 그중 값이 있는 구독자 수입니다. 다른 페이지에만 있는 항목은 아래에 직접 입력하세요.",
     "subscribers.columns.none": "지금 보이는 구독자에게는 추가 정보가 없습니다.",
@@ -1009,5 +1009,6 @@
     "subscribers.columns.chip.lt": "{key} {value} 미만",
     "subscribers.columns.exportNote": "표에 보이는 추가 정보 열({columns})도 각각 열로 들어갑니다.",
     "subscribers.columns.sortBy": "정렬 기준",
-    "subscribers.columns.wideHint": "고른 열이 화면보다 넓어 표가 옆으로 넘어갑니다. 표를 옆으로 밀거나 Shift를 누른 채 휠을 돌려 보세요. 열 고르기에서 열을 줄여도 됩니다."
+    "subscribers.columns.wideHint": "고른 열이 화면보다 넓어 표가 옆으로 넘어갑니다. 표를 옆으로 밀거나 Shift를 누른 채 휠을 돌려 보세요. 열 고르기에서 열을 줄여도 됩니다.",
+    "subscribers.columns.filterValue": "비교할 값 (예: PH)"
 }

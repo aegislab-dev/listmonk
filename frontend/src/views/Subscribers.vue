@@ -91,7 +91,7 @@
       <form v-if="filterForm" class="attrib-filter-form" @submit.prevent="applyFilter" data-cy="attrib-filter-form">
         <b-field :label="$t('lists.dynamic.key')" label-for="attrib-filter-key">
           <b-autocomplete v-model="filterForm.key" :data="filterKeyOptions" maxlength="64" :open-on-focus="true"
-            :keep-first="false" id="attrib-filter-key" ref="filterKey" :placeholder="$t('lists.dynamic.keyPlaceholder')"
+            :keep-first="false" id="attrib-filter-key" ref="filterKey" :placeholder="$t('subscribers.columns.customPlaceholder')"
             data-cy="attrib-filter-key" />
         </b-field>
         <b-field :label="$t('lists.dynamic.operator')" label-for="attrib-filter-op">
@@ -110,7 +110,7 @@
           <b-input v-if="filterForm.op !== 'empty'" v-model="filterForm.value" id="attrib-filter-value" ref="filterValue"
             :maxlength="isNumberOp(filterForm.op) ? 64 : 200" :has-counter="false"
             :inputmode="isNumberOp(filterForm.op) ? 'decimal' : 'text'" autocomplete="off"
-            :placeholder="$t(isNumberOp(filterForm.op) ? 'lists.dynamic.numberPlaceholder' : 'lists.dynamic.valuePlaceholder')"
+            :placeholder="$t(isNumberOp(filterForm.op) ? 'lists.dynamic.numberPlaceholder' : 'subscribers.columns.filterValue')"
             @input="filterError = ''" data-cy="attrib-filter-value" />
           <span v-else class="attrib-filter-novalue">{{ $t('lists.dynamic.noValue') }}</span>
         </b-field>

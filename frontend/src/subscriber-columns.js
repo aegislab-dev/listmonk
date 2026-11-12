@@ -7,6 +7,9 @@ import {
 
 export const MAX_ATTRIB_COLUMNS = 8;
 export const SUGGESTED_COLUMNS = 3;
+// The standard attribute names (imports are being normalized to them). When a list has
+// them, they are the columns shown before the user picks any.
+export const STANDARD_COLUMNS = ['country', 'follower'];
 export const MAX_CONDITIONS = 20;
 // Base columns that can be hidden. E-mail and name always stay.
 export const BASE_COLUMNS = ['lists', 'created_at', 'updated_at'];
@@ -47,10 +50,14 @@ export function attribStats(subscribers) {
   return [...filled].map(([key, count]) => ({ key, filled: count }));
 }
 
-// The columns shown before the user has picked any: the keys most subscribers of the page
-// have a value for. Ties keep the first-seen order (Array.prototype.sort is stable).
+// The columns shown before the user has picked any: the standard attributes that subscribers
+// of the page have a value for or, when the page has none of them, the keys most of its
+// subscribers have a value for. Ties keep the first-seen order (Array.prototype.sort is stable).
 export function suggestColumns(stats, max = SUGGESTED_COLUMNS) {
-  return stats.filter((s) => s.filled > 0).sort((a, b) => b.filled - a.filled).slice(0, max).map((s) => s.key);
+  const filled = stats.filter((s) => s.filled > 0);
+  const standard = STANDARD_COLUMNS.filter((key) => filled.some((s) => s.key === key));
+  if (standard.length) return standard;
+  return filled.sort((a, b) => b.filled - a.filled).slice(0, max).map((s) => s.key);
 }
 
 const validKey = (key) => typeof key === 'string' && key.trim() === key && [...key].length >= 1

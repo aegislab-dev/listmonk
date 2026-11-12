@@ -976,7 +976,7 @@
     "subscribers.columns.title": "Columns in the table",
     "subscribers.columns.base": "Basic columns",
     "subscribers.columns.attribs": "Attributes",
-    "subscribers.columns.autoNote": "You have not picked columns yet, so the attributes most subscribers on this page have a value for are shown first.",
+    "subscribers.columns.autoNote": "You have not picked columns yet, so these were chosen for you: country and follower when the list has them, otherwise the three attributes most subscribers on this page have a value for.",
     "subscribers.columns.filled": "{num}",
     "subscribers.columns.found": "Attributes found in the {num} subscribers on this page, with how many of them have a value. Type the name below for an attribute that only other pages have.",
     "subscribers.columns.none": "The subscribers on this page have no attributes.",
@@ -1003,5 +1003,6 @@
     "subscribers.columns.chip.lt": "{key} < {value}",
     "subscribers.columns.exportNote": "The attribute columns shown in the table ({columns}) are added as columns of their own.",
     "subscribers.columns.sortBy": "Sort by",
-    "subscribers.columns.wideHint": "The picked columns are wider than the screen, so the table scrolls sideways: swipe it or hold Shift while scrolling. You can also pick fewer columns."
+    "subscribers.columns.wideHint": "The picked columns are wider than the screen, so the table scrolls sideways: swipe it or hold Shift while scrolling. You can also pick fewer columns.",
+    "subscribers.columns.filterValue": "Value to compare (e.g. PH)"
 }
