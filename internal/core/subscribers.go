@@ -110,11 +110,15 @@ func (c *Core) QuerySubscribers(searchStr, queryExp string, listIDs []int, subSt
 		return nil, 0, resolveErr
 	}
 	// Sort params.
-	if !strSliceContains(orderBy, subQuerySortFields) {
-		orderBy = "subscribers.id"
-	}
 	if order != SortAsc && order != SortDesc {
 		order = SortDesc
+	}
+	orderExp, byAttrib := attribSortExp(orderBy, order)
+	if !byAttrib {
+		if !strSliceContains(orderBy, subQuerySortFields) {
+			orderBy = "subscribers.id"
+		}
+		orderExp = orderBy + " " + order
 	}
 
 	// Required for pq.Array()
@@ -129,8 +133,8 @@ func (c *Core) QuerySubscribers(searchStr, queryExp string, listIDs []int, subSt
 	}
 
 	// stmt is the raw SQL query.
-	stmt := strings.ReplaceAll(c.q.QuerySubscribers, "%query%", cond)
-	stmt = strings.ReplaceAll(stmt, "%order%", orderBy+" "+order)
+	// One pass: text put in for one placeholder is never scanned for the other.
+	stmt := strings.NewReplacer("%query%", cond, "%order%", orderExp).Replace(c.q.QuerySubscribers)
 
 	// Validate the tables used in the query.
 	if err := validateQueryTables(c.db, stmt, allowedSubQueryTables, pq.Array(listIDs), subStatus, searchStr, offset, limit); err != nil {
