@@ -127,10 +127,13 @@ func TestSendLogPacesWrites(t *testing.T) {
 
 	// A burst spread over about 100 ms. Without pacing this is close to one write
 	// per record. With it: the first record at once, the rest together after the gap.
+	burst := time.Now()
 	for i := 1; i <= 200; i++ {
 		s.add(1, i)
 		time.Sleep(500 * time.Microsecond)
 	}
+	// On a slow machine the burst can outlast a gap. Allow one write per gap it spans.
+	allowed := 2 + int(time.Since(burst)/s.minGap)
 	deadline := time.Now().Add(5 * time.Second)
 	for len(store.subIDs()) < 200 {
 		if time.Now().After(deadline) {
@@ -141,8 +144,8 @@ func TestSendLogPacesWrites(t *testing.T) {
 	store.mu.Lock()
 	calls := store.calls
 	store.mu.Unlock()
-	if calls > 4 {
-		t.Fatalf("a burst of 200 records took %d writes", calls)
+	if calls > allowed {
+		t.Fatalf("a burst of 200 records took %d writes, want at most %d", calls, allowed)
 	}
 
 	// After a quiet moment longer than the gap, a single record is written right away.
