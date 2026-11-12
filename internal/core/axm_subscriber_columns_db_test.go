@@ -153,6 +153,9 @@ func TestSubscriberColumnsDBFilter(t *testing.T) {
 	wantIDs(t, query(`[{"key":"country","op":"empty"}]`, ""), []int{ids[3]})
 	wantIDs(t, query(`[{"key":"country","op":"contains","value":"% off'"}]`, ""), []int{ids[5]})
 	wantIDs(t, query(`[{"key":"country","op":"eq","value":"50% off' OR 1=1 --"}]`, ""), []int{ids[5]})
+	// Text that looks like a bind parameter or a placeholder is compared as text.
+	wantIDs(t, query(`[{"key":"country","op":"eq","value":"$1"}]`, ""), []int{})
+	wantIDs(t, query(`[{"key":"%query%","op":"empty"},{"key":"%order%","op":"empty"}]`, ""), ids)
 	// With the user's own SQL query, both must hold.
 	wantIDs(t, query(`[{"key":"country","op":"eq","value":"PH"}]`, "subscribers.attribs->>'follower' = '1200' OR subscribers.attribs->>'follower' = '900000'"), []int{ids[1]})
 	// Sorting a filtered list.
@@ -165,14 +168,25 @@ func TestSubscriberColumnsDBFilter(t *testing.T) {
 
 	// Export applies the same conditions.
 	exp, _ = AttribFilterExp([]byte(`[{"key":"country","op":"eq","value":"PH"}]`))
-	next, err := c.ExportSubscribers("", exp, nil, []int{list}, "", 100)
+	next, err := c.ExportSubscribers("", exp, nil, []int{list}, "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch, err := next()
-	if err != nil || len(batch) != 3 {
-		t.Fatal(len(batch), err)
+	// Batches of two: the conditions hold on every batch.
+	exported := []int{}
+	for {
+		batch, err := next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, s := range batch {
+			exported = append(exported, s.ID)
+		}
 	}
+	wantIDs(t, exported, []int{ids[0], ids[1], ids[4]})
 
 	// "Select all" actions with a condition touch only the subscribers the table showed.
 	exp, _ = AttribFilterExp([]byte(`[{"key":"country","op":"eq","value":"PH"},{"key":"follower","op":"gte","value":"500000"}]`))
@@ -186,10 +200,27 @@ func TestSubscriberColumnsDBFilter(t *testing.T) {
 	}
 	wantIDs(t, dbIDs(t, db, `SELECT id FROM subscribers ORDER BY id`), []int{ids[0], ids[2], ids[3], ids[4], ids[5], outside})
 	exp, _ = AttribFilterExp([]byte(`[{"key":"country","op":"eq","value":"SG"}]`))
+	members := func() []int {
+		return dbIDs(t, db, `SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 AND status != 'unsubscribed' ORDER BY 1`, other)
+	}
 	if err := c.AddSubscriptionsByQuery("", exp, []int{list}, []int{other}, "confirmed", ""); err != nil {
 		t.Fatal(err)
 	}
-	wantIDs(t, dbIDs(t, db, `SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 ORDER BY 1`, other), []int{ids[2], outside})
+	wantIDs(t, members(), []int{ids[2], outside})
+	if err := c.UnsubscribeListsByQuery("", exp, []int{list}, []int{other}, ""); err != nil {
+		t.Fatal(err)
+	}
+	wantIDs(t, members(), []int{outside})
+	if err := c.DeleteSubscriptionsByQuery("", exp, []int{list}, []int{other}, ""); err != nil {
+		t.Fatal(err)
+	}
+	wantIDs(t, dbIDs(t, db, `SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 ORDER BY 1`, other), []int{outside})
+	// A condition that matches nobody changes nothing.
+	exp, _ = AttribFilterExp([]byte(`[{"key":"country","op":"eq","value":"nowhere"}]`))
+	if err := c.DeleteSubscribersByQuery("", exp, []int{list}, ""); err != nil {
+		t.Fatal(err)
+	}
+	wantIDs(t, dbIDs(t, db, `SELECT id FROM subscribers ORDER BY id`), []int{ids[0], ids[2], ids[3], ids[4], ids[5], outside})
 }
 
 func TestSubscriberColumnsDBPresets(t *testing.T) {

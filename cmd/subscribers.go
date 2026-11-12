@@ -111,8 +111,8 @@ func (a *App) QuerySubscribers(c echo.Context) error {
 	}
 
 	// Does the user have the subscribers:sql_query permission?
-	userQuery := formatSQLExp(c.FormValue("query"))
-	if userQuery != "" {
+	query := formatSQLExp(c.FormValue("query"))
+	if query != "" {
 		if !user.HasPerm(auth.PermSubscribersSqlQuery) {
 			return echo.NewHTTPError(http.StatusForbidden,
 				a.i18n.Ts("globals.messages.permissionDenied", "name", auth.PermSubscribersSqlQuery))
@@ -120,8 +120,8 @@ func (a *App) QuerySubscribers(c echo.Context) error {
 	}
 
 	// Attribute conditions picked on the subscribers table. They are data, not SQL, so they
-	// do not need the sql_query permission.
-	query, err := a.withAttribFilter(userQuery, []byte(c.FormValue("attrib_filter")))
+	// do not need the sql_query permission. The response keeps reporting the user's own query.
+	filtered, err := a.withAttribFilter(query, []byte(c.FormValue("attrib_filter")))
 	if err != nil {
 		return err
 	}
@@ -135,7 +135,7 @@ func (a *App) QuerySubscribers(c echo.Context) error {
 	)
 
 	// Query subscribers from the DB.
-	res, total, err := a.core.QuerySubscribers(searchStr, query, listIDs, subStatus, order, orderBy, pg.Offset, pg.Limit)
+	res, total, err := a.core.QuerySubscribers(searchStr, filtered, listIDs, subStatus, order, orderBy, pg.Offset, pg.Limit)
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ func (a *App) QuerySubscribers(c echo.Context) error {
 	}
 
 	out := models.PageResults{
-		Query:   userQuery,
+		Query:   query,
 		Search:  searchStr,
 		Results: res,
 		Total:   total,
