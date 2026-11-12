@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/notifs"
 	"github.com/knadh/listmonk/internal/subimporter"
@@ -35,6 +36,9 @@ type subQueryReq struct {
 	Status             string `json:"status"`
 	SubscriptionStatus string `json:"subscription_status"`
 	All                bool   `json:"all"`
+
+	// AttribFilter holds the attribute conditions of the subscribers table (a JSON array).
+	AttribFilter json.RawMessage `json:"attrib_filter"`
 }
 
 // subOptin contains the data that's passed to the double opt-in e-mail template.
@@ -107,12 +111,19 @@ func (a *App) QuerySubscribers(c echo.Context) error {
 	}
 
 	// Does the user have the subscribers:sql_query permission?
-	query := formatSQLExp(c.FormValue("query"))
-	if query != "" {
+	userQuery := formatSQLExp(c.FormValue("query"))
+	if userQuery != "" {
 		if !user.HasPerm(auth.PermSubscribersSqlQuery) {
 			return echo.NewHTTPError(http.StatusForbidden,
 				a.i18n.Ts("globals.messages.permissionDenied", "name", auth.PermSubscribersSqlQuery))
 		}
+	}
+
+	// Attribute conditions picked on the subscribers table. They are data, not SQL, so they
+	// do not need the sql_query permission.
+	query, err := a.withAttribFilter(userQuery, []byte(c.FormValue("attrib_filter")))
+	if err != nil {
+		return err
 	}
 
 	var (
@@ -134,7 +145,7 @@ func (a *App) QuerySubscribers(c echo.Context) error {
 	}
 
 	out := models.PageResults{
-		Query:   query,
+		Query:   userQuery,
 		Search:  searchStr,
 		Results: res,
 		Total:   total,
@@ -177,6 +188,20 @@ func (a *App) ExportSubscribers(c echo.Context) error {
 		}
 	}
 
+	query, err = a.withAttribFilter(query, []byte(c.FormValue("attrib_filter")))
+	if err != nil {
+		return err
+	}
+
+	// Attribute columns shown on the subscribers table are added as columns of their own
+	// after the fixed ones. The "attributes" column keeps the complete JSON.
+	header := []string{"uuid", "email", "name", "attributes", "status", "created_at", "updated_at"}
+	attribCols, attribHeaders, err := core.ExportAttribColumns(c.QueryParams()["attrib_col"], header)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "attrib_col"))
+	}
+	header = append(header, attribHeaders...)
+
 	// Get the batched export iterator.
 	exp, err := a.core.ExportSubscribers(searchStr, query, subIDs, listIDs, subStatus, a.cfg.DBBatchSize)
 	if err != nil {
@@ -193,7 +218,7 @@ func (a *App) ExportSubscribers(c echo.Context) error {
 	hdr.Set(echo.HeaderContentDisposition, "attachment; filename="+"subscribers.csv")
 	hdr.Set("Content-Transfer-Encoding", "binary")
 	hdr.Set("Cache-Control", "no-cache")
-	wr.Write([]string{"uuid", "email", "name", "attributes", "status", "created_at", "updated_at"})
+	wr.Write(header)
 
 loop:
 	// Iterate in batches until there are no more subscribers to export.
@@ -207,8 +232,17 @@ loop:
 		}
 
 		for _, r := range out {
-			if err = wr.Write([]string{r.UUID, r.Email, r.Name, r.Attribs, r.Status,
-				r.CreatedAt.Time.String(), r.UpdatedAt.Time.String()}); err != nil {
+			row := []string{r.UUID, r.Email, r.Name, r.Attribs, r.Status,
+				r.CreatedAt.Time.String(), r.UpdatedAt.Time.String()}
+			if len(attribCols) > 0 {
+				// Attributes that are not a JSON object leave the columns empty.
+				vals := map[string]json.RawMessage{}
+				_ = json.Unmarshal([]byte(r.Attribs), &vals)
+				for _, k := range attribCols {
+					row = append(row, core.CSVSafeCell(core.AttribText(vals[k])))
+				}
+			}
+			if err = wr.Write(row); err != nil {
 				a.log.Printf("error streaming CSV export: %v", err)
 				break loop
 			}
@@ -580,7 +614,13 @@ func (a *App) DeleteSubscribersByQuery(c echo.Context) error {
 		// If the "all" flag is set, ignore any subquery that may be present.
 		req.Search = ""
 		req.Query = ""
-	} else if req.Search == "" && req.Query == "" {
+		req.AttribFilter = nil
+	}
+	attribExp, err := a.attribFilterExp(req.AttribFilter)
+	if err != nil {
+		return err
+	}
+	if !req.All && req.Search == "" && req.Query == "" && attribExp == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "query"))
 	}
 
@@ -596,7 +636,7 @@ func (a *App) DeleteSubscribersByQuery(c echo.Context) error {
 	listIDs := user.GetPermittedListIDs(req.ListIDs)
 
 	// Delete the subscribers from the DB.
-	if err := a.core.DeleteSubscribersByQuery(req.Search, req.Query, listIDs, req.SubscriptionStatus); err != nil {
+	if err := a.core.DeleteSubscribersByQuery(req.Search, core.AndSQLExp(req.Query, attribExp), listIDs, req.SubscriptionStatus); err != nil {
 		return err
 	}
 
@@ -620,7 +660,13 @@ func (a *App) BlocklistSubscribersByQuery(c echo.Context) error {
 		// If the "all" flag is set, ignore any subquery that may be present.
 		req.Search = ""
 		req.Query = ""
-	} else if req.Search == "" && req.Query == "" {
+		req.AttribFilter = nil
+	}
+	attribExp, err := a.attribFilterExp(req.AttribFilter)
+	if err != nil {
+		return err
+	}
+	if !req.All && req.Search == "" && req.Query == "" && attribExp == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "query"))
 	}
 	// Does the user have the subscribers:sql_query permission?
@@ -635,7 +681,7 @@ func (a *App) BlocklistSubscribersByQuery(c echo.Context) error {
 	listIDs := user.GetPermittedListIDs(req.ListIDs)
 
 	// Update the subscribers in the DB.
-	if err := a.core.BlocklistSubscribersByQuery(req.Search, req.Query, listIDs, req.SubscriptionStatus); err != nil {
+	if err := a.core.BlocklistSubscribersByQuery(req.Search, core.AndSQLExp(req.Query, attribExp), listIDs, req.SubscriptionStatus); err != nil {
 		return err
 	}
 
@@ -672,18 +718,22 @@ func (a *App) ManageSubscriberListsByQuery(c echo.Context) error {
 	sourceListIDs := user.GetPermittedListIDs(req.ListIDs)
 	targetListIDs := user.FilterListsByPerm(auth.PermTypeManage, req.TargetListIDs)
 
+	query, err := a.withAttribFilter(req.Query, req.AttribFilter)
+	if err != nil {
+		return err
+	}
+
 	// Run the action in the DB.
-	var err error
 	switch req.Action {
 	case "add":
 		if err := a.rejectDynamicTargets(targetListIDs); err != nil {
 			return err
 		}
-		err = a.core.AddSubscriptionsByQuery(req.Search, req.Query, sourceListIDs, targetListIDs, req.Status, req.SubscriptionStatus)
+		err = a.core.AddSubscriptionsByQuery(req.Search, query, sourceListIDs, targetListIDs, req.Status, req.SubscriptionStatus)
 	case "remove":
-		err = a.core.DeleteSubscriptionsByQuery(req.Search, req.Query, sourceListIDs, targetListIDs, req.SubscriptionStatus)
+		err = a.core.DeleteSubscriptionsByQuery(req.Search, query, sourceListIDs, targetListIDs, req.SubscriptionStatus)
 	case "unsubscribe":
-		err = a.core.UnsubscribeListsByQuery(req.Search, req.Query, sourceListIDs, targetListIDs, req.SubscriptionStatus)
+		err = a.core.UnsubscribeListsByQuery(req.Search, query, sourceListIDs, targetListIDs, req.SubscriptionStatus)
 	default:
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("subscribers.invalidAction"))
 	}
@@ -843,6 +893,25 @@ func (a *App) filterListQueryByPerm(param string, qp url.Values, user auth.User)
 	}
 
 	return user.GetPermittedListIDs(listIDs), nil
+}
+
+// attribFilterExp reads the subscribers table's attribute conditions as an SQL expression.
+func (a *App) attribFilterExp(raw []byte) (string, error) {
+	exp, err := core.AttribFilterExp(raw)
+	if err != nil {
+		return "", echo.NewHTTPError(http.StatusBadRequest,
+			a.i18n.Ts("globals.messages.invalidFields", "name", "attrib_filter: "+err.Error()))
+	}
+	return exp, nil
+}
+
+// withAttribFilter adds the attribute conditions to an optional SQL expression.
+func (a *App) withAttribFilter(query string, raw []byte) (string, error) {
+	exp, err := a.attribFilterExp(raw)
+	if err != nil {
+		return "", err
+	}
+	return core.AndSQLExp(query, exp), nil
 }
 
 // formatSQLExp does basic sanitisation on arbitrary
