@@ -561,6 +561,14 @@ func (m *Manager) worker() {
 
 			// Increment the send rate or the error counter if there was an error.
 			if msg.pipe != nil {
+				// AXM: record who was sent this campaign. This only queues the
+				// record, so it can neither wait nor fail. It is queued before
+				// the message is marked as done so that the campaign's cleanup
+				// never runs ahead of its last record.
+				if err == nil && m.sends != nil {
+					m.sends.add(msg.Campaign.ID, msg.Subscriber.ID)
+				}
+
 				// Mark the message as done.
 				msg.pipe.wg.Done()
 
@@ -575,12 +583,6 @@ func (m *Manager) worker() {
 					}
 					msg.pipe.rate.Incr(1)
 					msg.pipe.sent.Add(1)
-
-					// Record who was sent this campaign. This only queues the
-					// record and can neither wait nor fail.
-					if m.sends != nil {
-						m.sends.add(msg.Campaign.ID, msg.Subscriber.ID)
-					}
 				}
 			}
 
