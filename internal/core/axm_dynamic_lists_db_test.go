@@ -204,6 +204,239 @@ func TestDynamicDBOperators(t *testing.T) {
 	}
 }
 
+func TestDynamicDBNumericOperators(t *testing.T) {
+	db, _, _ := dynamicTestDB(t)
+	match := func(attrs string, cond map[string]any) (bool, error) {
+		raw, _ := json.Marshal(map[string]any{"version": 1, "match": "all", "conditions": []any{cond}})
+		var got bool
+		err := db.Get(&got, `SELECT axm_filter_match($1::jsonb,$2::jsonb)`, attrs, string(raw))
+		return got, err
+	}
+	// Attribute values read as numbers, compared with 100000.
+	for attrs, n := range map[string]int{
+		`{"x":100000}`: 0, `{"x":1e5}`: 0, `{"x":"100000"}`: 0, `{"x":"100,000"}`: 0, `{"x":" 1e5 "}`: 0,
+		`{"x":"1E+05"}`: 0, `{"x":"+100000.00"}`: 0, `{"x":"\t100,000.\r\n"}`: 0,
+		`{"x":100000.01}`: 1, `{"x":"100,000.01"}`: 1, `{"x":"1,234,567"}`: 1, `{"x":"2e5"}`: 1, `{"x":1e400}`: 1,
+		`{"x":99999}`: -1, `{"x":"99,999.99"}`: -1, `{"x":"-100,000"}`: -1, `{"x":".5"}`: -1, `{"x":0}`: -1, `{"x":"-1e99"}`: -1,
+	} {
+		for op, want := range map[string]bool{"gte": n >= 0, "gt": n > 0, "lte": n <= 0, "lt": n < 0} {
+			got, err := match(attrs, map[string]any{"key": "x", "op": op, "value": "100000"})
+			if err != nil || got != want {
+				t.Fatalf("%s %s: got %v want %v (%v)", attrs, op, got, want, err)
+			}
+		}
+		got, err := match(attrs, map[string]any{"key": "x", "op": "between", "value": "100000", "value2": "100000.01"})
+		if err != nil || got != (n == 0) {
+			t.Fatalf("%s between: got %v (%v)", attrs, got, err)
+		}
+		got, err = match(attrs, map[string]any{"key": "x", "op": "not_number"})
+		if err != nil || got {
+			t.Fatalf("%s not_number: got %v (%v)", attrs, got, err)
+		}
+	}
+	// Anything else matches no numeric condition and never fails the query. Only a present,
+	// non-blank value counts as "not a number" in the preview diagnostic.
+	for attrs, present := range map[string]bool{
+		`{"x":"100,000원"}`: true, `{"x":"₩100,000"}`: true, `{"x":"10만"}`: true, `{"x":"1,00"}`: true, `{"x":"12,34"}`: true,
+		`{"x":"1,2345"}`: true, `{"x":"abc"}`: true, `{"x":"1e999"}`: true, `{"x":"１００"}`: true, `{"x":"1 000"}`: true,
+		`{"x":"NaN"}`: true, `{"x":"Infinity"}`: true, `{"x":"0x10"}`: true, `{"x":"--1"}`: true, `{"x":"1e"}`: true,
+		`{"x":"."}`: true, `{"x":"50%"}`: true, `{"x":"` + strings.Repeat("1", 65) + `"}`: true,
+		`{"x":true}`: true, `{"x":["1"]}`: true, `{"x":{"n":1}}`: true,
+		`{}`: false, `{"x":null}`: false, `{"x":""}`: false, `{"x":" \t"}`: false, `{"x":[]}`: false, `{"X":5}`: false,
+	} {
+		for _, op := range []string{"gte", "gt", "lte", "lt", "between"} {
+			for _, value := range []string{"100000", "-1", "0"} {
+				got, err := match(attrs, map[string]any{"key": "x", "op": op, "value": value, "value2": "200000"})
+				if err != nil || got {
+					t.Fatalf("%s %s %s: got %v (%v)", attrs, op, value, got, err)
+				}
+			}
+		}
+		got, err := match(attrs, map[string]any{"key": "x", "op": "not_number"})
+		if err != nil || got != present {
+			t.Fatalf("%s not_number: got %v want %v (%v)", attrs, got, present, err)
+		}
+	}
+	// A condition value the API would have rejected matches nobody instead of failing.
+	for _, cond := range []map[string]any{
+		{"key": "x", "op": "gte", "value": "many"}, {"key": "x", "op": "lt"}, {"key": "x", "op": "gte", "value": 5},
+		{"key": "x", "op": "between", "value": "1"}, {"key": "x", "op": "between", "value": "1", "value2": "1,00"},
+	} {
+		if got, err := match(`{"x":5}`, cond); err != nil || (got && cond["value"] != 5) {
+			t.Fatalf("%v: got %v (%v)", cond, got, err)
+		}
+	}
+	// Numeric and text conditions combine under both match modes.
+	for match, want := range map[string]bool{"all": false, "any": true} {
+		f := fmt.Sprintf(`{"version":1,"match":%q,"conditions":[{"key":"x","op":"gte","value":"10"},{"key":"plan","op":"eq","value":"pro"}]}`, match)
+		var got bool
+		if err := db.Get(&got, `SELECT axm_filter_match('{"x":"9","plan":"pro"}'::jsonb,$1::jsonb)`, f); err != nil || got != want {
+			t.Fatal(match, got, err)
+		}
+	}
+}
+
+// Preview, recalculated members, subscriber queries and campaign batches read numbers the same way.
+func TestDynamicDBNumericPaths(t *testing.T) {
+	db, q, _ := dynamicTestDB(t)
+	c := testCore(t, db, q)
+	base := testList(db, nil, "single")
+	ids := []int{}
+	for _, attrs := range []string{
+		`{"amount":150000}`, `{"amount":"100,000"}`, `{"amount":" 1e5 "}`, `{"amount":"99999"}`,
+		`{"amount":"100,000원"}`, `{"amount":""}`, `{}`, `{"amount":"abc"}`, `{"amount":"50,000.5"}`,
+	} {
+		id := testSub(db, attrs, "enabled")
+		ids = append(ids, id)
+		db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'confirmed')`, id, base)
+	}
+	str := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		name      string
+		cond      DynamicCondition
+		want      []int
+		notNumber int
+	}{
+		{"at least", DynamicCondition{Key: "amount", Op: "gte", Value: str("100,000")}, []int{ids[0], ids[1], ids[2]}, 2},
+		{"more than", DynamicCondition{Key: "amount", Op: "gt", Value: str("100000")}, []int{ids[0]}, 2},
+		{"at most", DynamicCondition{Key: "amount", Op: "lte", Value: str("1e5")}, []int{ids[1], ids[2], ids[3], ids[8]}, 2},
+		{"less than", DynamicCondition{Key: "amount", Op: "lt", Value: str("100000")}, []int{ids[3], ids[8]}, 2},
+		{"between", DynamicCondition{Key: "amount", Op: "between", Value: str("50000"), Value2: str("100000")}, []int{ids[3], ids[8]}, 2},
+		{"text only", DynamicCondition{Key: "amount", Op: "contains", Value: str("원")}, []int{ids[4]}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, _ := json.Marshal(DynamicFilter{Version: 1, Base: DynamicBase{Type: "lists", Lists: []int{base}}, Match: "all", Conditions: []DynamicCondition{tc.cond}})
+			f, err := ValidateDynamicFilter(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := c.PreviewDynamicFilter(f, 0, 3)
+			if err != nil || p.Count != len(tc.want) || p.NotNumber != tc.notNumber {
+				t.Fatalf("preview %+v want %d/%d (%v)", p, len(tc.want), tc.notNumber, err)
+			}
+			// The sample is the first members by ID with only the condition's attribute.
+			if len(p.Sample) != min(3, len(tc.want)) {
+				t.Fatalf("sample %+v", p.Sample)
+			}
+			for i, s := range p.Sample {
+				var want string
+				db.Get(&want, `SELECT (attribs->'amount')::text FROM subscribers WHERE id=$1`, tc.want[i])
+				if s.ID != tc.want[i] || s.Name != "Synthetic" || !strings.HasSuffix(s.Email, "@example.invalid") ||
+					len(s.Attribs) != 1 || string(s.Attribs["amount"]) != want {
+					t.Fatalf("sample row %d: %+v want %d %s", i, s, tc.want[i], want)
+				}
+			}
+			if none, err := c.PreviewDynamicFilter(f, 0, 0); err != nil || none.Sample != nil || none.Count != p.Count {
+				t.Fatalf("preview without sample: %+v (%v)", none, err)
+			}
+			saved, _ := json.Marshal(f)
+			dynamic := testList(db, string(saved), "single")
+			wantIDs(t, dbIDs(t, db, `SELECT * FROM axm_dynamic_list_members($1)`, dynamic), tc.want)
+			out, n, err := c.QuerySubscribers("", "", []int{dynamic}, "", "asc", "", 0, 100)
+			if err != nil || n != len(tc.want) {
+				t.Fatal(n, err)
+			}
+			actual := []int{}
+			for _, s := range out {
+				actual = append(actual, s.ID)
+			}
+			wantIDs(t, actual, tc.want)
+			l, err := c.GetList(dynamic, "")
+			if err != nil || l.SubscriberCount != len(tc.want) {
+				t.Fatal(l.SubscriberCount, err)
+			}
+			var camp int
+			if err := db.Get(&camp, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger,type,status) VALUES(gen_random_uuid(),'Synthetic','Synthetic','test@example.invalid','body','email','regular','running') RETURNING id`); err != nil {
+				t.Fatal(err)
+			}
+			db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES($1,$2,'Synthetic')`, camp, dynamic)
+			rows, err := db.Queryx(q["next-campaigns"], pq.Array([]int{}), pq.Array([]int{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows.Close()
+			var toSend, max int
+			db.QueryRow(`SELECT to_send,max_subscriber_id FROM campaigns WHERE id=$1`, camp).Scan(&toSend, &max)
+			if toSend != len(tc.want) {
+				t.Fatalf("to_send %d want %d", toSend, len(tc.want))
+			}
+			actual = []int{}
+			for after := 0; ; {
+				var batch []models.Subscriber
+				if err := db.Select(&batch, q["next-campaign-subscribers-dynamic"], camp, "regular", after, max, pq.Array([]int{dynamic}), 2); err != nil {
+					t.Fatal(err)
+				}
+				if len(batch) == 0 {
+					break
+				}
+				for _, s := range batch {
+					actual = append(actual, s.ID)
+					after = s.ID
+				}
+			}
+			wantIDs(t, actual, tc.want)
+			db.MustExec(`UPDATE campaigns SET status='finished' WHERE id=$1`, camp)
+		})
+	}
+}
+
+// The excluded counts explain the whole gap between matching subscribers of the base and members.
+func TestDynamicDBPreviewExcluded(t *testing.T) {
+	db, q, _ := dynamicTestDB(t)
+	c := testCore(t, db, q)
+	single := testList(db, nil, "single")
+	double := testList(db, nil, "double")
+	other := testList(db, nil, "single")
+	filter := testFilter("lists", []int{single, double})
+	dynamic := testList(db, filter, "single")
+	f, _ := ValidateDynamicFilter([]byte(filter))
+	sub := func(attrs, status string, rows ...any) int {
+		id := testSub(db, attrs, status)
+		for i := 0; i < len(rows); i += 2 {
+			db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,$3)`, id, rows[i], rows[i+1])
+		}
+		return id
+	}
+	pro := `{"plan":"pro","secret":"hidden"}`
+	member := sub(pro, "enabled", single, "unconfirmed")
+	sub(pro, "enabled", double, "confirmed", single, "unsubscribed") // member through the double list
+	sub(pro, "blocklisted", single, "confirmed")                     // blocklisted
+	sub(pro, "blocklisted", single, "unsubscribed")                  // blocklisted counts once
+	sub(pro, "enabled", single, "unsubscribed")                      // unsubscribed from the base
+	sub(pro, "enabled", double, "unconfirmed")                       // unconfirmed double opt-in
+	sub(pro, "enabled", single, "unsubscribed", double, "unconfirmed")
+	optedOut := sub(pro, "enabled", single, "confirmed")
+	db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'unsubscribed')`, optedOut, dynamic)
+	sub(pro, "enabled", other, "confirmed")                   // never in a base list: not counted
+	sub(pro, "enabled")                                       // no subscription at all: not counted
+	sub(`{"plan":"free"}`, "enabled", single, "unsubscribed") // does not match the conditions
+
+	p, err := c.PreviewDynamicFilter(f, dynamic, 10)
+	if err != nil || p.Count != 2 || p.Excluded != (DynamicExcluded{Blocklisted: 2, Unsubscribed: 3, OptedOut: 1}) {
+		t.Fatalf("saved list: %+v (%v)", p, err)
+	}
+	if len(p.Sample) != 2 || p.Sample[0].ID != member || string(p.Sample[0].Attribs["plan"]) != `"pro"` || len(p.Sample[0].Attribs) != 1 {
+		t.Fatalf("sample must hold only condition attributes: %+v", p.Sample)
+	}
+	// Before saving there is no list to have unsubscribed from.
+	p, err = c.PreviewDynamicFilter(f, 0, 10)
+	if err != nil || p.Count != 3 || p.Excluded != (DynamicExcluded{Blocklisted: 2, Unsubscribed: 3}) {
+		t.Fatalf("new list: %+v (%v)", p, err)
+	}
+	// With every subscriber as the base, the other list's subscription is a valid base too.
+	all, _ := ValidateDynamicFilter([]byte(testFilter("all", nil)))
+	p, err = c.PreviewDynamicFilter(all, 0, 10)
+	if err != nil || p.Count != 4 || p.Excluded != (DynamicExcluded{Blocklisted: 2, Unsubscribed: 3}) {
+		t.Fatalf("all base: %+v (%v)", p, err)
+	}
+	var candidates int
+	db.Get(&candidates, `SELECT COUNT(*) FROM subscribers s WHERE axm_filter_match(s.attribs, $1::jsonb)
+		AND EXISTS (SELECT 1 FROM subscriber_lists sl JOIN lists l ON l.id = sl.list_id WHERE sl.subscriber_id = s.id AND l.axm_filter IS NULL)`, testFilter("all", nil))
+	if candidates != p.Count+p.Excluded.Blocklisted+p.Excluded.Unsubscribed+p.Excluded.OptedOut {
+		t.Fatalf("excluded counts do not explain the gap: %d candidates, %+v", candidates, p)
+	}
+}
+
 func TestDynamicDBMembershipAndQueries(t *testing.T) {
 	db, q, _ := dynamicTestDB(t)
 	c := testCore(t, db, q)
@@ -448,20 +681,30 @@ func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 
 func TestDynamicDBMigrationParity(t *testing.T) {
 	db, _, schema := dynamicTestDB(t)
-	marker := "-- AXM dynamic lists. Keep this block identical to V6_2_1_axm_3."
 	_, file, _, _ := runtime.Caller(0)
-	raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations/v6.2.1-axm.3.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := strings.Index(schema, marker)
-	end := strings.Index(schema[start:], "-- Verified external reply addresses (AXM).")
-	if end < 0 {
-		t.Fatal("missing sender schema block boundary")
-	}
-	block := schema[start : start+end]
-	if !strings.Contains(string(raw), strings.TrimSpace(block)) {
-		t.Fatal("schema and migration SQL differ")
+	// Each marked schema.sql block must appear verbatim in the migration it names.
+	for _, b := range []struct{ start, end, migration string }{
+		{"-- AXM dynamic list conditions. Keep this block identical to V6_2_1_axm_4.", "-- AXM dynamic list members and guard.", "v6.2.1-axm.4.go"},
+		{"-- AXM dynamic list members and guard. Keep this block identical to V6_2_1_axm_3.", "-- AXM dynamic list planning hints.", "v6.2.1-axm.3.go"},
+		{"-- AXM dynamic list planning hints. Keep this block identical to V6_2_1_axm_4.", "-- Verified external reply addresses (AXM).", "v6.2.1-axm.4.go"},
+	} {
+		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := strings.Index(schema, b.start)
+		if start < 0 {
+			t.Fatal("missing schema block: " + b.start)
+		}
+		end := strings.Index(schema[start:], b.end)
+		if end < 0 {
+			t.Fatal("missing schema block boundary: " + b.end)
+		}
+		// The block's own marker line names the migration; compare what follows it.
+		block := strings.TrimSpace(strings.TrimPrefix(schema[start:start+end], b.start))
+		if block == "" || !strings.Contains(string(raw), block) {
+			t.Fatal("schema and migration SQL differ: " + b.start)
+		}
 	}
 	defs := func() []string {
 		var out []string
@@ -472,10 +715,18 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
+	if len(before) != 5 {
+		t.Fatalf("expected 5 axm functions, got %d", len(before))
+	}
 	// Simulate official schema, then upgrade twice.
-	db.MustExec(`DROP TRIGGER axm_guard_dynamic_subscription ON subscriber_lists; ALTER TABLE lists DROP COLUMN axm_filter CASCADE`)
+	db.MustExec(`DROP TRIGGER axm_guard_dynamic_subscription ON subscriber_lists; ALTER TABLE lists DROP COLUMN axm_filter CASCADE;
+		DROP FUNCTION axm_dynamic_list_members(INT, INT, INT, INT); DROP FUNCTION axm_filter_members(JSONB, INT, INT, INT, INT);
+		DROP FUNCTION axm_filter_match(JSONB, JSONB); DROP FUNCTION axm_to_number(JSONB); DROP FUNCTION axm_guard_dynamic_subscription()`)
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_3(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_4(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

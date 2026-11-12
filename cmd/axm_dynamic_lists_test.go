@@ -48,3 +48,32 @@ func TestDynamicPreviewManagePermissionBeforeCount(t *testing.T) {
 		}
 	}
 }
+
+func TestDynamicSampleFollowsSubscriberReadPermission(t *testing.T) {
+	perms := func(p ...string) auth.User {
+		m := map[string]struct{}{}
+		for _, name := range p {
+			m[name] = struct{}{}
+		}
+		return auth.User{PermissionsMap: m}
+	}
+	all := core.DynamicFilter{Base: core.DynamicBase{Type: "all"}}
+	lists := core.DynamicFilter{Base: core.DynamicBase{Type: "lists", Lists: []int{2}}}
+	for _, tc := range []struct {
+		name   string
+		user   auth.User
+		filter core.DynamicFilter
+		want   bool
+	}{
+		{"no subscriber permission", perms(auth.PermListManageAll, auth.PermListGetAll), all, false},
+		{"manage without read", perms(auth.PermSubscribersManage), lists, false},
+		{"read all", perms(auth.PermSubscribersGetAll), all, true},
+		{"read all with base lists", perms(auth.PermSubscribersGetAll), lists, true},
+		{"list scoped read needs base lists", perms(auth.PermSubscribersGet), all, false},
+		{"list scoped read with base lists", perms(auth.PermSubscribersGet), lists, true},
+	} {
+		if got := canSampleDynamic(tc.user, tc.filter); got != tc.want {
+			t.Fatalf("%s: got %v", tc.name, got)
+		}
+	}
+}
