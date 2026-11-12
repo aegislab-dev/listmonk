@@ -19,9 +19,8 @@ function ready(count) {
 }
 function setKey(index, value) {
   cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
-  cy.get('[data-cy=map-sheet]').scrollTo(index * 220, 0, { ensureScrollable: false });
   cy.get(`[data-cy=map-key-${index}]`).clear();
-  cy.get(`[data-cy=map-key-${index}]`).focus().type(value, { scrollBehavior: false });
+  cy.get(`[data-cy=map-key-${index}]`).focus().type(value);
 }
 function importRows(count, mapped = true) {
   if (mapped) ready(count);
@@ -70,20 +69,24 @@ describe('CSV column mapping with the real Worker and import API', () => {
       expect(request.query.order_by).to.eq('id');
     });
     cy.get('[data-cy=map-panel]').should('contain', 'CP949').and('contain', '똠 가상 하나');
-    cy.get('.map-sheet-letters').should('contain', 'A').and('contain', 'F');
+    cy.get('[data-cy=map-list] .map-row').should('have.length', 6);
     cy.get('[data-cy=map-mode-raw] input').should('be.disabled');
-    submit().should('be.disabled');
+    // A known Korean label gets its attribute name without any input.
+    cy.get('[data-cy=map-key-4]').should('have.value', 'member_no');
+    ready(2);
     setKey(4, 'member_code');
     ready(2);
     cy.get('.map-counts > div strong').then(($counts) => expect([...$counts].map((el) => el.textContent)).to.deep.eq(['2', '4', '1']));
     cy.get('.map-issues p strong').should('have.length', 4).each(($item) => expect($item.text()).to.include('1'));
     cy.get('.map-issues p > span').each(($item, index) => expect($item.text()).to.include(String([6, 5, 4, 7][index])));
-    cy.get('[data-cy=map-column-error-0]').should('exist');
-    cy.get('[data-cy=map-panel]').then(($panel) => {
-      expect($panel.text()).not.to.include('csv-cp949-first@example.invalid');
-      expect($panel.text()).not.to.include('wrong@localhost');
-    });
-    cy.get('.map-sheet tbody tr').should('have.length', 3);
+    // Left-out rows are a note on the email row, not a blocking error.
+    cy.get('[data-cy=map-row-0]').should('have.class', 'is-warning');
+    cy.get('[data-cy=map-state-0]').should('contain', '2');
+    cy.get('[data-cy=map-count-error]').should('not.exist');
+    // Samples, issue examples and the preview show the real values.
+    cy.get('[data-cy=map-row-0] .map-sample').should('have.length', 3).first().should('have.text', 'CSV-CP949-FIRST@EXAMPLE.INVALID');
+    cy.get('[data-cy=map-summary]').should('contain', 'wrong@localhost');
+    cy.get('[data-cy=map-preview]').should('contain', 'csv-cp949-first@example.invalid').and('contain', 'member_code').and('not.contain', '{"');
     importRows(2);
     subscriber('csv-cp949-first@example.invalid').then((sub) => {
       expect(sub.name).to.eq('똠 가상 하나');
@@ -126,14 +129,15 @@ describe('CSV column mapping with the real Worker and import API', () => {
     ready(2);
     cy.get('[data-cy=map-key-4]').clear();
     cy.get('[data-cy=map-key-4]').blur().focus();
-    cy.contains('[data-cy=map-sheet] .dropdown-item', 'company-name').should('be.visible').click();
+    cy.contains('[data-cy=map-list] .dropdown-item', 'company-name').should('be.visible').click();
     cy.get('[data-cy=map-key-4]').should('have.value', 'company-name');
-    cy.get('[data-cy=map-sheet]').scrollTo(880, 0, { ensureScrollable: false });
-    cy.get('[data-cy=map-key-4]').focus().type('{selectall}new_key', { scrollBehavior: false });
+    cy.get('[data-cy=map-key-4]').focus().type('{selectall}new_key');
     cy.get('[data-cy=map-key-4]').should('have.value', 'new_key');
     ready(2);
     setKey(4, 'company_name');
-    cy.get('[data-cy=map-validation]').should('exist');
+    cy.get('[data-cy=map-row-4]').should('have.class', 'is-error');
+    cy.get('[data-cy=map-state-4]').should('contain', 'Another column uses this name');
+    cy.get('[data-cy=map-fix-4]').should('not.exist');
     submit().should('be.disabled');
     setKey(4, '회사명');
     ready(2);
@@ -182,7 +186,7 @@ describe('CSV column mapping with the real Worker and import API', () => {
     submit().should('be.disabled');
     cy.window().then((win) => cy.spy(win.File.prototype, 'arrayBuffer').as('readFile'));
     inlineFile(Cypress.Buffer.alloc(10 * 1024 * 1024 + 1, 65));
-    cy.get('[data-cy=map-error]').should('contain', '10 MiB');
+    cy.get('[data-cy=map-error]').should('contain', '10 MB');
     cy.get('@readFile').should('not.have.been.called');
     submit().should('be.disabled');
     inlineFile(`이메일\n${'too-many@example.invalid\n'.repeat(50001)}`);
@@ -210,13 +214,47 @@ describe('CSV column mapping with the real Worker and import API', () => {
     subscriber('quote-good-b@example.invalid').its('name').should('eq', 'He said "yes"');
   });
 
-  it('labels validation by spreadsheet letter and keeps the in-column note short', () => {
+  it('names attributes from the labels and fixes a mistyped name in its own row', () => {
     inlineFile('이메일,이름,회사명,관심 태그,메모,추가 정보\nletter@example.invalid,가상,회사,AI,메모,00123');
-    cy.get('[data-cy=map-validation]').should('contain', 'Column F:');
-    cy.get('[data-cy=map-column-error-5]').should('have.text', '! Enter an attribute key');
+    // Nothing to fix after choosing the file: unknown Hangul labels are spelled out.
+    ready(1);
+    cy.get('[data-cy=map-key-5]').should('have.value', 'chuga_jeongbo');
+    cy.get('[data-cy=map-state-5]').should('contain', 'automatic name');
+    cy.get('[data-cy=map-state-2]').should('contain', 'Will be imported').and('not.contain', 'automatic');
+    cy.get('[data-cy=map-count-ok]').should('contain', '5');
+    cy.get('[data-cy=map-count-skipped]').should('contain', '1');
+    cy.get('[data-cy=map-count-error]').should('not.exist');
+    cy.get('[data-cy=map-row-4]').should('have.class', 'is-skipped');
+    cy.get('[data-cy=map-role-4] option').then(($options) => expect([...$options].map((o) => o.value)).to.deep.eq(['email', 'name', 'attribute', 'tags', 'discard']));
+    // A name that breaks the rule is reported in its row with a ready-made replacement.
+    setKey(5, '추가 정보');
+    cy.get('[data-cy=map-row-5]').should('have.class', 'is-error');
+    cy.get('[data-cy=map-state-5]').should('contain', 'lowercase letters');
+    cy.get('[data-cy=map-validation]').should('not.exist');
     submit().should('be.disabled');
+    cy.get('[data-cy=map-key-0]').should('not.exist');
+    cy.get('[data-cy=map-count-error]').should('contain', '1').click();
+    cy.focused().should('have.attr', 'data-cy', 'map-key-5');
+    cy.get('[data-cy=map-fix-5]').should('contain', 'chuga_jeongbo').click();
+    cy.get('[data-cy=map-key-5]').should('have.value', 'chuga_jeongbo');
+    ready(1);
+    setKey(5, 'Extra Info');
+    cy.get('[data-cy=map-fix-5]').should('contain', 'extra_info').click();
+    ready(1);
+    cy.get('[data-cy=map-key-5]').clear();
+    cy.get('[data-cy=map-state-5]').should('contain', 'Enter an attribute name');
+    cy.get('[data-cy=map-fix-5]').should('contain', 'chuga_jeongbo');
     setKey(5, 'custom_key');
     ready(1);
+    // Problems that are not about one column stay above the list.
+    cy.get('[data-cy=map-role-1]').select('email');
+    cy.get('[data-cy=map-validation]').should('contain', 'Choose one column to save as the email');
+    cy.get('[data-cy=map-state-0]').should('contain', 'Only one column can be the email');
+    cy.get('[data-cy=map-state-1]').should('contain', 'Only one column can be the email');
+    submit().should('be.disabled');
+    cy.get('[data-cy=map-role-1]').select('name');
+    ready(1);
+    cy.window().then((win) => expect(win.document.documentElement.scrollWidth).to.eq(win.document.documentElement.clientWidth));
   });
 
   it('uploads a standard 60,000-row CSV unchanged while keeping the mapping row limit', () => {
@@ -254,7 +292,7 @@ describe('CSV column mapping with the real Worker and import API', () => {
     cy.get('[data-cy=map-mode-raw] input').should('be.checked').and('not.be.disabled');
     cy.get('@wholeFileRead').should('not.have.been.called');
     cy.get('[data-cy=map-mode-mapping]').click();
-    cy.get('[data-cy=map-error]').should('contain', '10 MiB');
+    cy.get('[data-cy=map-error]').should('contain', '10 MB');
     submit().should('be.disabled');
     cy.get('[data-cy=map-mode-raw]').click();
     importRows(12000, false);
@@ -283,11 +321,10 @@ describe('CSV column mapping with the real Worker and import API', () => {
     inlineFile('noheader-a@example.invalid,가상 하나\nnoheader-b@example.invalid,가상 둘');
     cy.get('[data-cy=map-header]').click();
     cy.get('[data-cy=map-busy]').should('not.exist');
-    cy.get('.map-sheet tbody tr').should('have.length', 2);
-    cy.get('[data-cy=map-sheet]').scrollTo(220, 0, { ensureScrollable: false });
+    cy.get('[data-cy=map-row-0] .map-row-name').should('contain', 'Column 1');
+    cy.get('[data-cy=map-row-0] .map-sample').should('have.length', 2).first().should('have.text', 'noheader-a@example.invalid');
     cy.get('[data-cy=map-role-1]').select('name');
     ready(2);
-    cy.get('.map-sheet tbody tr').first().find('th').should('have.text', '1');
     importRows(2);
     subscriber('noheader-a@example.invalid').its('name').should('eq', '가상 하나');
   });
@@ -343,7 +380,7 @@ describe('CSV column mapping with the real Worker and import API', () => {
   it('terminates the Worker on file removal and does not leave an uploadable result', () => {
     cy.window().then((win) => cy.spy(win.Worker.prototype, 'terminate').as('terminateWorker'));
     chooseFile('import-map-cp949.csv');
-    cy.get('.map-sheet').should('exist');
+    cy.get('[data-cy=map-list]').should('exist');
     cy.contains('.tags .tag', 'import-map-cp949.csv').find('.delete').click();
     cy.get('@terminateWorker').should('have.been.called');
     cy.get('[data-cy=map-panel]').should('not.exist');
@@ -366,7 +403,8 @@ describe('CSV column mapping with the real Worker and import API', () => {
     const text = `이메일,이름,회사명\n${Array.from({ length: 50000 }, (_, i) => `bulk-${i}@example.invalid,가상 ${i},00123`).join('\n')}`;
     inlineFile(text);
     ready(50000);
-    cy.get('.map-sheet tbody tr').should('have.length', 3);
+    cy.get('[data-cy=map-list] .map-row').should('have.length', 3);
+    cy.get('[data-cy=map-row-0] .map-sample').should('have.length', 3);
     cy.get('[data-cy=map-preview] tbody tr').should('have.length', 5);
     importRows(50000);
     subscriber('bulk-49999@example.invalid').its('attribs.company_name').should('eq', '00123');

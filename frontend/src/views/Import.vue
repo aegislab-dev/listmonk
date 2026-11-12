@@ -91,8 +91,9 @@
           </div>
           <import-column-mapper v-if="isCSV" :mode="csv.mode" :encoding="csv.encoding" :encoding-choice="csv.encodingChoice"
             :raw-available="csv.rawReady && (!csv.busy || csv.parsed)"
-            :header="csv.header" :header-hint="csv.headerHint" :columns="displayColumns" :samples="csv.samples"
-            :mapping="csv.mapping" :sample-row-numbers="csv.sampleRowNumbers" :column-errors="columnErrors"
+            :header="csv.header" :header-hint="csv.headerHint" :columns="displayColumns" :source-columns="csv.columns"
+            :samples="csv.samples"
+            :mapping="csv.mapping" :column-errors="columnErrors" :column-warnings="columnWarnings"
             :existing-keys="existingKeys" :validation="mappingMessages" :total="csv.total" :summary="csv.summary"
             :examples="csv.examples" :preview="csv.preview" :error="csv.error" :busy="csv.busy"
             :overwrite="form.mode === 'subscribe' && form.overwriteUserInfo"
@@ -163,9 +164,7 @@ import { mapState } from 'vuex';
 import ListSelector from '../components/ListSelector.vue';
 import LogView from '../components/LogView.vue';
 import ImportColumnMapper from '../components/ImportColumnMapper.vue';
-import {
-  LIMITS, columnLetter, readMemory, rememberMapping, maskSample,
-} from '../lib/csv-import';
+import { LIMITS, readMemory, rememberMapping } from '../lib/csv-import';
 
 function csvState() {
   return {
@@ -177,7 +176,6 @@ function csvState() {
     columns: [],
     mapping: [],
     samples: [],
-    sampleRowNumbers: [],
     total: null,
     delimiter: '',
     headerHint: false,
@@ -340,7 +338,6 @@ export default Vue.extend({
               headerHint: data.headerHint,
               mapping: data.mapping,
               samples: data.samples,
-              sampleRowNumbers: data.sampleRowNumbers,
               parsed: true,
             });
             this.form.delim = data.delimiter;
@@ -352,7 +349,6 @@ export default Vue.extend({
               busy: false,
               ready: !!data.bytes && data.summary.imported > 0,
               validation: data.validation,
-              samples: data.samples,
               summary: data.summary || null,
               examples: data.examples || {},
               preview: data.preview || [],
@@ -636,29 +632,30 @@ export default Vue.extend({
       return this.csv.mode === 'raw' ? this.csv.rawReady : this.csv.parsed && this.csv.ready;
     },
     displayColumns() {
-      return this.csv.columns.map((column, index) => (this.csv.header ? maskSample(column) : this.$t('import.mapUnnamed', { num: index + 1 })));
+      return this.csv.columns.map((column, index) => (this.csv.header && column ? column : this.$t('import.mapUnnamed', { num: index + 1 })));
     },
+    // Problems that belong to one column are shown in that column's row.
     mappingMessages() {
-      return this.csv.validation.map(({ type, index }) => this.$t(`import.mapValidation${type}`, { column: index === undefined ? '' : columnLetter(index) }));
+      return this.csv.validation.filter(({ index }) => index === undefined).map(({ type }) => this.$t(`import.mapValidation${type}`));
     },
     columnErrors() {
       const errors = {};
       this.csv.validation.forEach(({ type, index }) => {
-        const message = this.$t(`import.mapValidation${type}`);
         if (index !== undefined) {
           const detail = type === 'key' && this.csv.mapping[index].key ? 'keyInvalid' : type;
           errors[index] = this.$t(`import.mapColumnError${detail}`);
         } else {
           this.csv.mapping.forEach(({ role }, n) => {
-            if ((type === 'emailColumns' && role === 'email') || (type === 'nameColumns' && role === 'name')) errors[n] = message;
+            if ((type === 'emailColumns' && role === 'email') || (type === 'nameColumns' && role === 'name')) errors[n] = this.$t(`import.mapColumnError${type}`);
           });
         }
       });
-      if (this.csv.summary && !this.csv.validation.length) {
-        const count = this.csv.summary.empty + this.csv.summary.invalid;
-        if (count) errors[this.csv.mapping.findIndex(({ role }) => role === 'email')] = this.$t('import.mapEmailErrors', { count });
-      }
       return errors;
+    },
+    // Rows that will be left out do not block the upload.
+    columnWarnings() {
+      const count = this.csv.summary ? this.csv.summary.empty + this.csv.summary.invalid : 0;
+      return count ? { [this.csv.mapping.findIndex(({ role }) => role === 'email')]: this.$t('import.mapEmailErrors', { count }) } : {};
     },
     countMismatch() {
       return this.sentCount !== null && this.isDone() && this.status.imported !== this.sentCount;

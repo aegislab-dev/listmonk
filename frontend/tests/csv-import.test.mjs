@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Papa from 'papaparse';
 import {
-  LIMITS, STORAGE_KEY, checkInputSize, cleanEmail, validEmail, maskEmail, maskSample,
+  LIMITS, STORAGE_KEY, checkInputSize, cleanEmail, validEmail, suggestKey, isSpelledKey, romanize,
   parseCSV, suggestMapping, validateMapping, convertCSV, readMemory, rememberMapping,
-  inspectOriginalCSV, inspectCSVHeader, columnLetter,
+  inspectOriginalCSV, inspectCSVHeader,
 } from '../src/lib/csv-import.js';
 
 const converted = (text, mapping, keys) => {
@@ -38,11 +38,11 @@ test('duplicate and blank header labels use separate column indexes', () => {
   assert.deepEqual(JSON.parse(unpack(convertCSV(parsed, mapping))[0].attributes), { first: 'A', second: 'B' });
 });
 
-test('suggestions use memory, dictionary, email samples, English snake_case, then a blank key', () => {
+test('suggestions use memory, known labels, email samples, then a name made from the label', () => {
   const parsed = parseCSV('회사명,성함,주소,Customer ID,새로운열,비고,관심사\n가상,가상,a@example.invalid,00123,문자열,버림,AI');
   assert.deepEqual(suggestMapping(parsed, { columns: { 회사명: { role: 'attribute', key: 'legacy' } } }), [
     { role: 'attribute', key: 'legacy' }, { role: 'name', key: '' }, { role: 'email', key: '' },
-    { role: 'attribute', key: 'customer_id' }, { role: 'attribute', key: '' }, { role: 'discard', key: '' }, { role: 'tags', key: 'tags' },
+    { role: 'attribute', key: 'customer_id' }, { role: 'attribute', key: 'saerounyeol' }, { role: 'discard', key: '' }, { role: 'tags', key: 'tags' },
   ]);
 });
 
@@ -52,8 +52,39 @@ test('every email dictionary header suggests email without relying on sample val
   assert.deepEqual(suggestMapping(parsed), headers.map(() => ({ role: 'email', key: '' })));
 });
 
-test('spreadsheet column letters match validation labels beyond Z', () => {
-  assert.deepEqual([0, 4, 5, 25, 26, 51, 52, 701, 702].map(columnLetter), ['A', 'E', 'F', 'Z', 'AA', 'AZ', 'BA', 'ZZ', 'AAA']);
+test('attribute names are made from labels: known terms, spelled-out Hangul and tidied Latin', () => {
+  assert.equal(suggestKey('고객등급'), 'customer_grade');
+  assert.equal(suggestKey(' 고객 등급 '), 'customer_grade');
+  assert.equal(suggestKey('휴대폰 번호'), 'phone');
+  assert.equal(romanize('가입 경로'), 'gaip gyeongro');
+  assert.equal(suggestKey('가입 경로'), 'gaip_gyeongro');
+  assert.equal(suggestKey('값없음'), 'gapeopeum');
+  assert.equal(suggestKey('Customer Grade'), 'customer_grade');
+  assert.equal(suggestKey('externalID-2'), 'external_id_2');
+  assert.equal(suggestKey('2024 매출'), 'item_2024_maechul');
+  assert.equal(suggestKey('###'), '');
+  assert.equal(suggestKey('customer_grade'), 'customer_grade');
+  assert.equal(isSpelledKey('가입 경로', 'gaip_gyeongro'), true);
+  assert.equal(isSpelledKey('고객등급', 'customer_grade'), false);
+  assert.equal(isSpelledKey('가입 경로', 'signup_path'), false);
+  assert.equal(isSpelledKey('Signup Path', 'signup_path'), false);
+  // Every suggestion for a real label is a valid new key.
+  const parsed = parseCSV('이메일,가입 경로,관심 분야,고객 등급,관심 태그,비고,Signup Path\na@example.invalid,박람회,AI,VIP,"AI, 개발",메모,web');
+  const mapping = suggestMapping(parsed);
+  assert.deepEqual(mapping, [
+    { role: 'email', key: '' }, { role: 'attribute', key: 'gaip_gyeongro' }, { role: 'attribute', key: 'gwansim_bunya' },
+    { role: 'attribute', key: 'customer_grade' }, { role: 'tags', key: 'tags' }, { role: 'discard', key: '' }, { role: 'attribute', key: 'signup_path' },
+  ]);
+  assert.deepEqual(validateMapping(mapping), []);
+  // Suggested names never collide: a taken name is spelled out, then numbered.
+  const twins = parseCSV('email,전화번호,휴대폰,직책,직급,회사,회사,메모2,메모2\na@example.invalid,1,2,3,4,5,6,7,8');
+  assert.deepEqual(suggestMapping(twins).map(({ key }) => key), ['', 'phone', 'hyudaepon', 'job_title', 'job_rank', 'company_name', 'hoesa', 'memo2', 'memo2_2']);
+  assert.deepEqual(validateMapping(suggestMapping(twins)), []);
+  assert.equal(isSpelledKey('휴대폰', 'hyudaepon'), true);
+  assert.equal(isSpelledKey('메모2', 'memo2_2'), true);
+  assert.deepEqual(suggestMapping(twins, { columns: { 휴대폰: { role: 'attribute', key: 'phone' } } }).map(({ key }) => key).slice(1, 3), ['jeonhwabeonho', 'phone']);
+  // A label that yields no name falls back to its position.
+  assert.deepEqual(suggestMapping(parseCSV('email,,###\na@example.invalid,x,y')).map(({ key }) => key), ['', 'column_2', 'column_3']);
 });
 
 test('header toggle keeps first data row; standard detection only accepts standard names', () => {
@@ -91,7 +122,7 @@ test('empty attributes omitted; blank names and attributes serialize to empty fi
   assert.equal(rows[1].attributes, '');
 });
 
-test('email cleaning, validation, first duplicate wins, logical source rows and masked issue examples', () => {
+test('email cleaning, validation, first duplicate wins, logical source rows and issue examples', () => {
   assert.equal(cleanEmail('\ufeff\u00a0< AB\u200b@EXAMPLE.INVALID >\u2060'), 'ab@example.invalid');
   for (const email of ['a@localhost', 'a@@example.invalid', '@example.invalid', 'a@.invalid', 'a@example.', 'a b@example.invalid', 'a\x01@example.invalid']) assert.equal(validEmail(email), false, email);
   const parsed = parseCSV('email,name\n AB@EXAMPLE.INVALID ,"first\nname"\nab@example.invalid,second\n,b\nbad@localhost,b\n\nc@example.invalid,C');
@@ -99,11 +130,9 @@ test('email cleaning, validation, first duplicate wins, logical source rows and 
   assert.deepEqual(result.summary, { imported: 2, cleaned: 1, empty: 1, invalid: 1, duplicate: 1, malformed: 0 });
   assert.deepEqual(result.sourceRows, [2, 7]);
   assert.equal(unpack(result)[0].name, 'first\nname');
-  assert.deepEqual(result.examples.duplicate, [{ row: 3, email: 'ab***@ex***.invalid' }]);
-  assert.equal(maskEmail('ab@example.invalid'), 'ab***@ex***.invalid');
-  assert.equal(maskEmail('bad'), '***');
-  assert.equal(maskSample('contact ab@example.invalid please'), 'contact ab***@ex***.invalid please');
-  assert.equal(JSON.stringify(result.preview).includes('ab@example.invalid'), false);
+  assert.deepEqual(result.examples.duplicate, [{ row: 3, email: 'ab@example.invalid' }]);
+  assert.deepEqual(result.examples.invalid, [{ row: 5, email: 'bad@localhost' }]);
+  assert.deepEqual(result.preview[0], { row: 2, email: 'ab@example.invalid', name: 'first\nname', attributes: [] });
 });
 
 test('malformed widths are excluded and keep source row numbers', () => {

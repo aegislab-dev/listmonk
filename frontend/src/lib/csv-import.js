@@ -16,17 +16,6 @@ export function checkInputSize(size) {
   if (size > LIMITS.input) throw new ImportError('inputLimit');
 }
 
-export function columnLetter(index) {
-  let value = index + 1;
-  let label = '';
-  while (value > 0) {
-    value -= 1;
-    label = String.fromCharCode(65 + (value % 26)) + label;
-    value = Math.floor(value / 26);
-  }
-  return label;
-}
-
 export function inspectCSVHeader(text, delimiter = '') {
   if (delimiter && (delimiter.length !== 1 || /["\r\n\0]/.test(delimiter))) throw new ImportError('delimiter');
   const result = Papa.parse(text.replace(/^\uFEFF/, ''), {
@@ -101,19 +90,6 @@ export function validEmail(value) {
   return domain.includes('.') && !domain.startsWith('.') && !domain.endsWith('.');
 }
 
-export function maskEmail(value) {
-  const parts = cleanEmail(value).split('@');
-  if (parts.length !== 2) return '***';
-  const dot = parts[1].lastIndexOf('.');
-  return `${parts[0].slice(0, 2)}***@${parts[1].slice(0, Math.min(2, dot < 0 ? 2 : dot))}***${dot < 0 ? '' : parts[1].slice(dot)}`;
-}
-
-// Also redact addresses inside names/attributes and columns assigned to discard.
-export function maskSample(value, isEmail = false) {
-  if (isEmail) return maskEmail(value);
-  return String(value).replace(/[^\s<>"',;]+/g, (token) => (token.includes('@') ? maskEmail(token) : token));
-}
-
 export function parseCSV(text, { delimiter = '', header = true } = {}) {
   if (text.includes('\0')) throw new ImportError('nul');
   if (delimiter && (delimiter.length !== 1 || /["\r\n\0]/.test(delimiter))) throw new ImportError('delimiter');
@@ -147,43 +123,89 @@ export function parseCSV(text, { delimiter = '', header = true } = {}) {
   };
 }
 
-const DICTIONARY = {
-  이메일: ['email'],
-  메일: ['email'],
-  '메일 주소': ['email'],
-  'e-mail': ['email'],
-  email: ['email'],
-  이름: ['name'],
-  성함: ['name'],
-  성명: ['name'],
-  name: ['name'],
-  회사: ['attribute', 'company_name'],
-  회사명: ['attribute', 'company_name'],
-  부서: ['attribute', 'department'],
-  직책: ['attribute', 'job_title'],
-  직함: ['attribute', 'job_title'],
-  전화: ['attribute', 'phone'],
-  전화번호: ['attribute', 'phone'],
-  연락처: ['attribute', 'phone'],
-  휴대폰: ['attribute', 'phone'],
-  지역: ['attribute', 'region'],
-  태그: ['tags', 'tags'],
-  '관심 태그': ['tags', 'tags'],
-  관심사: ['tags', 'tags'],
-  메모: ['discard'],
-  비고: ['discard'],
+// Common Korean list headers. Spaces are ignored when a label is looked up.
+const FIELDS = { email: ['이메일', '메일', '메일주소', '이메일주소', 'e-mail', 'email'], name: ['이름', '성함', '성명', 'name'], discard: ['메모', '비고'] };
+const KEYS = {
+  company_name: ['회사', '회사명', '기업명', '소속'],
+  department: ['부서', '부서명'],
+  job_title: ['직책', '직함'],
+  job_rank: ['직급', '직위'],
+  phone: ['전화', '전화번호', '연락처', '휴대폰', '휴대폰번호', '휴대전화', '핸드폰'],
+  region: ['지역'],
+  address: ['주소'],
+  postal_code: ['우편번호'],
+  country: ['국가'],
+  city: ['도시'],
+  signup_date: ['가입일', '가입일자', '등록일'],
+  birth_date: ['생년월일', '생일'],
+  gender: ['성별'],
+  age: ['나이', '연령'],
+  industry: ['업종'],
+  website: ['홈페이지', '웹사이트'],
+  customer_grade: ['고객등급'],
+  member_grade: ['회원등급'],
+  grade: ['등급'],
+  member_no: ['회원번호'],
+  customer_no: ['고객번호'],
+  tags: ['태그', '관심태그', '관심사'],
 };
+const KNOWN = new Map(Object.entries(KEYS).flatMap(([key, labels]) => labels.map((label) => [label, key])));
+const compact = (label) => String(label).replace(/\s+/g, '').toLowerCase();
+
+const INITIAL = ['g', 'kk', 'n', 'd', 'tt', 'r', 'm', 'b', 'pp', 's', 'ss', '', 'j', 'jj', 'ch', 'k', 't', 'p', 'h'];
+const MEDIAL = ['a', 'ae', 'ya', 'yae', 'eo', 'e', 'yeo', 'ye', 'o', 'wa', 'wae', 'oe', 'yo', 'u', 'wo', 'we', 'wi', 'yu', 'eu', 'ui', 'i'];
+const FINAL = ['', 'k', 'k', 'k', 'n', 'n', 'n', 't', 'l', 'k', 'm', 'l', 'l', 'l', 'p', 'l', 'm', 'p', 'p', 't', 't', 'ng', 't', 't', 'k', 't', 'p', 't'];
+
+// Spells Hangul syllables in Latin letters (Revised Romanization, per syllable).
+export function romanize(text) {
+  return String(text).replace(/[가-힣]/g, (syllable) => {
+    const code = syllable.charCodeAt(0) - 0xac00;
+    return INITIAL[Math.floor(code / 588)] + MEDIAL[Math.floor(code / 28) % 21] + FINAL[code % 28];
+  });
+}
+
+// Tidies any text into a valid new attribute key, or '' if nothing usable is left.
+function spellKey(text) {
+  const key = romanize(text).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return /^[0-9]/.test(key) ? `item_${key}` : key;
+}
+
+// A valid new attribute key for a label or a mistyped key: a known term first, else spelled out.
+export function suggestKey(text) {
+  return KNOWN.get(compact(text)) || spellKey(text);
+}
+
+// True when the key was spelled out from Hangul rather than taken from KEYS.
+export function isSpelledKey(label, key) {
+  const spelled = spellKey(label);
+  return /[가-힣]/.test(label) && !!spelled && (key === spelled || key.startsWith(`${spelled}_`));
+}
 
 export function suggestMapping(parsed, memory = { columns: {} }) {
+  const remembered = (column) => {
+    const entry = Object.prototype.hasOwnProperty.call(memory.columns || {}, column) && memory.columns[column];
+    return entry && ROLES.includes(entry.role) ? { role: entry.role, key: entry.key || '' } : null;
+  };
+  // Names the user chose before are kept; suggested names must not collide with them or each other.
+  const used = new Set(parsed.columns.map((column) => remembered(column)?.key).filter(Boolean));
+  const unique = (column, index) => {
+    let key = suggestKey(column) || `column_${index + 1}`;
+    if (used.has(key)) key = spellKey(column) || key;
+    const base = key;
+    for (let n = 2; used.has(key); n += 1) key = `${base}_${n}`;
+    used.add(key);
+    return key;
+  };
   return parsed.columns.map((column, index) => {
-    const remembered = Object.prototype.hasOwnProperty.call(memory.columns || {}, column) && memory.columns[column];
-    if (remembered && ROLES.includes(remembered.role)) return { role: remembered.role, key: remembered.key || '' };
-    const known = Object.prototype.hasOwnProperty.call(DICTIONARY, column.toLowerCase()) && DICTIONARY[column.toLowerCase()];
-    if (known) return { role: known[0], key: known[1] || '' };
+    const known = remembered(column);
+    if (known) return known;
+    const label = compact(column);
+    const field = Object.keys(FIELDS).find((role) => FIELDS[role].includes(label));
+    if (field) return { role: field, key: '' };
     const samples = parsed.rows.slice(0, 20).map(({ cells }) => cells[index]).filter((v) => v.trim());
     if (samples.length && samples.filter((v) => validEmail(cleanEmail(v))).length > samples.length / 2) return { role: 'email', key: '' };
-    const key = column.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-    return { role: 'attribute', key: /^[\x20-\x7e]+$/.test(column) && NEW_KEY.test(key) ? key : '' };
+    return { role: KNOWN.get(label) === 'tags' ? 'tags' : 'attribute', key: unique(column, index) };
   });
 }
 
@@ -225,7 +247,7 @@ export function convertCSV(parsed, mapping, existingKeys = []) {
     else if (seen.has(email)) issue = 'duplicate';
     if (issue) {
       summary[issue] += 1;
-      if (examples[issue].length < 5) examples[issue].push({ row, email: maskEmail(email) });
+      if (examples[issue].length < 5) examples[issue].push({ row, email });
       return;
     }
     seen.add(email);
@@ -242,7 +264,7 @@ export function convertCSV(parsed, mapping, existingKeys = []) {
     sourceRows.push(row);
     if (preview.length < 5) {
       preview.push({
-        row, email: maskEmail(email), name: maskSample(name), attributes: maskSample(serialized),
+        row, email, name, attributes: Object.entries(attributes),
       });
     }
   });
