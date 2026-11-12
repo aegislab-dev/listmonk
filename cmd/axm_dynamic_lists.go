@@ -72,12 +72,12 @@ func (a *App) PreviewDynamicList(c echo.Context) error {
 	if err := a.core.ValidateDynamicBase(f); err != nil {
 		return err
 	}
-	n, err := a.core.PreviewDynamicFilter(f, req.ListID)
+	n, notNumber, err := a.core.PreviewDynamicFilter(f, req.ListID)
 	if err != nil {
 		a.log.Printf("dynamic list preview: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("lists.dynamic.previewError"))
 	}
-	return c.JSON(http.StatusOK, okResp{map[string]int{"count": n}})
+	return c.JSON(http.StatusOK, okResp{map[string]int{"count": n, "not_number": notNumber}})
 }
 
 func (a *App) rejectDynamicTargets(ids []int) error {

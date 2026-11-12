@@ -60,6 +60,67 @@ func TestValidateDynamicFilter(t *testing.T) {
 	}
 }
 
+func TestValidateDynamicNumbers(t *testing.T) {
+	filter := func(cond string) []byte {
+		return []byte(`{"version":1,"base":{"type":"all"},"match":"all","conditions":[` + cond + `]}`)
+	}
+	quote := func(v string) string { b, _ := json.Marshal(v); return string(b) }
+	// Condition values follow the DB rule for attribute values and are stored as plain decimals.
+	for raw, want := range map[string]string{
+		"100000": "100000", " 100,000 ": "100000", "1e5": "100000", "1E+05": "100000", "+1,234.50": "1234.5",
+		"-0.50": "-0.5", ".5": "0.5", "5.": "5", "-0": "0", "1e-2": "0.01", "12,345,678": "12345678",
+	} {
+		for _, op := range []string{"gte", "gt", "lte", "lt"} {
+			f, err := ValidateDynamicFilter(filter(`{"key":"amount","op":"` + op + `","value":` + quote(raw) + `}`))
+			if err != nil || *f.Conditions[0].Value != want || f.Conditions[0].Value2 != nil {
+				t.Fatalf("%s %q: %+v, %v", op, raw, f.Conditions, err)
+			}
+		}
+	}
+	for _, raw := range []string{
+		"100,000원", "₩100,000", "10만", "1,00", "12,34", "1,2345", "abc", "1e999", "１００", "1 000", "NaN",
+		"Infinity", "0x10", "--1", "1e", ".", "", "50%", strings.Repeat("1", 65),
+	} {
+		if _, err := ValidateDynamicFilter(filter(`{"key":"amount","op":"gte","value":` + quote(raw) + `}`)); err == nil {
+			t.Fatalf("accepted %q", raw)
+		}
+	}
+	f, err := ValidateDynamicFilter(filter(`{"key":"amount","op":"between","value":" 50,000 ","value2":"1e5"}`))
+	if err != nil || *f.Conditions[0].Value != "50000" || *f.Conditions[0].Value2 != "100000" {
+		t.Fatalf("between: %+v, %v", f.Conditions, err)
+	}
+	for name, cond := range map[string]string{
+		"between without upper": `{"key":"amount","op":"between","value":"1"}`,
+		"between without lower": `{"key":"amount","op":"between","value2":"1"}`,
+		"between equal":         `{"key":"amount","op":"between","value":"100000","value2":"100,000"}`,
+		"between reversed":      `{"key":"amount","op":"between","value":"2","value2":"1"}`,
+		"between text upper":    `{"key":"amount","op":"between","value":"1","value2":"many"}`,
+		"number without value":  `{"key":"amount","op":"lt"}`,
+		"second value on gte":   `{"key":"amount","op":"gte","value":"1","value2":"2"}`,
+		"second value on eq":    `{"key":"amount","op":"eq","value":"1","value2":"2"}`,
+		"second value on empty": `{"key":"amount","op":"empty","value2":"2"}`,
+		"diagnostic operator":   `{"key":"amount","op":"not_number"}`,
+	} {
+		if _, err := ValidateDynamicFilter(filter(cond)); err == nil {
+			t.Fatalf("accepted %s", name)
+		}
+	}
+	// The preview diagnostic covers each numeric key once and nothing else.
+	f, err = ValidateDynamicFilter(filter(`{"key":"amount","op":"gte","value":"1"},{"key":"plan","op":"eq","value":"pro"},` +
+		`{"key":"amount","op":"lt","value":"9"},{"key":"age","op":"between","value":"20","value2":"30"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(f.notNumberFilter())
+	if string(raw) != `{"version":1,"base":{"type":"all"},"match":"any","conditions":[{"key":"amount","op":"not_number"},{"key":"age","op":"not_number"}]}` {
+		t.Fatal(string(raw))
+	}
+	f, _ = ValidateDynamicFilter([]byte(validFilter))
+	if f.notNumberFilter() != nil {
+		t.Fatal("diagnostic filter without numeric conditions")
+	}
+}
+
 func TestDynamicListQueryContainsOnlyIDs(t *testing.T) {
 	for _, payload := range []string{"' ; -- $1", `x\\y`, "회사명"} {
 		f := DynamicFilter{Version: 1, Base: DynamicBase{Type: "all"}, Match: "all", Conditions: []DynamicCondition{{Key: payload, Op: "eq", Value: &payload}}}

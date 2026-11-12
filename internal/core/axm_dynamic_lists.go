@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -32,6 +34,46 @@ type DynamicCondition struct {
 	Key   string  `json:"key"`
 	Op    string  `json:"op"`
 	Value *string `json:"value,omitempty"`
+	// Value2 is the exclusive upper bound of "between".
+	Value2 *string `json:"value2,omitempty"`
+}
+
+// The same two patterns as the axm_to_number() DB function: a plain decimal with an optional
+// two-digit exponent, or a decimal with thousands commas in groups of three.
+var (
+	dynamicPlainNumber   = regexp.MustCompile(`^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]{1,2})?$`)
+	dynamicGroupedNumber = regexp.MustCompile(`^[+-]?[0-9]{1,3}(,[0-9]{3})+(\.[0-9]*)?$`)
+)
+
+// parseDynamicNumber reads a condition value by the rule the DB applies to attribute values
+// and returns it as a plain decimal such as "100000" or "-0.5".
+func parseDynamicNumber(s string) (string, *big.Rat, bool) {
+	s = strings.Trim(s, " \t\n\r")
+	if len(s) > 64 {
+		return "", nil, false
+	}
+	if dynamicGroupedNumber.MatchString(s) {
+		s = strings.ReplaceAll(s, ",", "")
+	} else if !dynamicPlainNumber.MatchString(s) {
+		return "", nil, false
+	}
+	r, ok := new(big.Rat).SetString(s)
+	if !ok {
+		return "", nil, false
+	}
+	if r.IsInt() {
+		return r.Num().String(), r, true
+	}
+	// 64 digits and a two-digit exponent leave at most 163 decimals, so this is exact.
+	return strings.TrimRight(r.FloatString(170), "0"), r, true
+}
+
+func dynamicNumericOp(op string) bool {
+	switch op {
+	case "gte", "gt", "lte", "lt", "between":
+		return true
+	}
+	return false
 }
 
 // ValidateDynamicFilter rejects unknown fields and normalizes the persisted format.
@@ -84,6 +126,9 @@ func ValidateDynamicFilter(raw []byte) (DynamicFilter, error) {
 		if utf8.RuneCountInString(c.Key) < 1 || utf8.RuneCountInString(c.Key) > 64 || strings.IndexFunc(c.Key, unicode.IsControl) >= 0 {
 			return f, fmt.Errorf("invalid attribute key")
 		}
+		if c.Value2 != nil && c.Op != "between" {
+			return f, fmt.Errorf("only between takes a second value")
+		}
 		switch c.Op {
 		case "empty":
 			if c.Value != nil {
@@ -98,6 +143,29 @@ func ValidateDynamicFilter(raw []byte) (DynamicFilter, error) {
 				return f, fmt.Errorf("invalid condition value")
 			}
 			c.Value = &v
+		case "gte", "gt", "lte", "lt", "between":
+			if c.Value == nil {
+				return f, fmt.Errorf("condition requires a value")
+			}
+			v, low, ok := parseDynamicNumber(strings.TrimSpace(*c.Value))
+			if !ok {
+				return f, fmt.Errorf("condition value must be a number")
+			}
+			c.Value = &v
+			if c.Op != "between" {
+				break
+			}
+			if c.Value2 == nil {
+				return f, fmt.Errorf("between requires two values")
+			}
+			v2, high, ok := parseDynamicNumber(strings.TrimSpace(*c.Value2))
+			if !ok {
+				return f, fmt.Errorf("condition value must be a number")
+			}
+			if low.Cmp(high) >= 0 {
+				return f, fmt.Errorf("between requires the first value to be smaller")
+			}
+			c.Value2 = &v2
 		default:
 			return f, fmt.Errorf("invalid condition operator")
 		}
@@ -134,18 +202,49 @@ func (c *Core) DynamicListIDs(ids []int) ([]int, error) {
 	return out, err
 }
 
-func (c *Core) PreviewDynamicFilter(f DynamicFilter, listID int) (int, error) {
-	raw, err := json.Marshal(f)
-	if err != nil {
-		return 0, err
+// notNumberFilter returns a filter over the same base that matches subscribers whose value
+// for a numeric condition is present but is not a number, or nil without numeric conditions.
+// Its operator exists only in the DB function and is never accepted in a saved filter.
+func (f DynamicFilter) notNumberFilter() *DynamicFilter {
+	out := DynamicFilter{Version: 1, Base: f.Base, Match: "any"}
+	seen := map[string]bool{}
+	for _, c := range f.Conditions {
+		if dynamicNumericOp(c.Op) && !seen[c.Key] {
+			seen[c.Key] = true
+			out.Conditions = append(out.Conditions, DynamicCondition{Key: c.Key, Op: "not_number"})
+		}
 	}
+	if len(out.Conditions) == 0 {
+		return nil
+	}
+	return &out
+}
+
+// PreviewDynamicFilter counts the members of a filter. notNumber is how many subscribers of
+// the base the numeric conditions skip because their value is not a number.
+func (c *Core) PreviewDynamicFilter(f DynamicFilter, listID int) (count, notNumber int, err error) {
 	var id any
 	if listID > 0 {
 		id = listID
 	}
-	var n int
-	err = c.q.AxmPreviewDynamicFilter.Get(&n, string(raw), id)
-	return n, err
+	run := func(f DynamicFilter, n *int) error {
+		raw, err := json.Marshal(f)
+		if err != nil {
+			return err
+		}
+		return c.q.AxmPreviewDynamicFilter.Get(n, string(raw), id)
+	}
+	diag := make(chan error, 1)
+	if nf := f.notNumberFilter(); nf != nil {
+		go func() { diag <- run(*nf, &notNumber) }()
+	} else {
+		diag <- nil
+	}
+	err = run(f, &count)
+	if derr := <-diag; err == nil {
+		err = derr
+	}
+	return count, notNumber, err
 }
 
 func dynamicListQuery(ids, dynamicIDs []int, query string) ([]int, string) {
