@@ -302,8 +302,8 @@ describe('subscriber attribute columns', () => {
     cy.visit(`/admin/subscribers/lists/${displayId}`);
     cy.get('[data-cy=btn-attrib-filter]').click();
     cy.get('[data-cy=attrib-filter-key]').focus();
-    cy.get('[data-cy=attrib-filter-form] .dropdown-item').should('have.length.at.least', 5).then(($items) => {
-      expect([...$items].slice(0, 5).map((el) => el.textContent.trim().split(/\s+/)[0])).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
+    cy.get('[data-cy=attrib-filter-form] .dropdown-item .attrib-key-option > span:first-child').should('have.length.at.least', 5).then(($items) => {
+      expect([...$items].slice(0, 5).map((el) => el.textContent)).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
     });
     cy.get('[data-cy=attrib-filter-form] .dropdown-item').eq(2).should('contain', 'Company').and('contain', 'Standard');
     cy.get('[data-cy=attrib-filter-key]').type('country');

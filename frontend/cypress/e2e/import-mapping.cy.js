@@ -129,7 +129,8 @@ describe('CSV column mapping with the real Worker and import API', () => {
     ready(2);
     cy.get('[data-cy=map-key-4]').clear();
     cy.get('[data-cy=map-key-4]').blur().focus();
-    cy.contains('[data-cy=map-list] .dropdown-item', 'company-name').should('be.visible').click();
+    // The names in use follow the five standard names in the list.
+    cy.contains('[data-cy=map-row-4] .dropdown-item', 'company-name').scrollIntoView().should('be.visible').click();
     cy.get('[data-cy=map-key-4]').should('have.value', 'company-name');
     cy.get('[data-cy=map-key-4]').focus().type('{selectall}new_key');
     cy.get('[data-cy=map-key-4]').should('have.value', 'new_key');
@@ -543,10 +544,11 @@ describe('CSV column mapping with the real Worker and import API', () => {
     cy.get('[data-cy=map-key-1]').should('have.value', 'profile_url');
     cy.get('[data-cy=map-key-2]').should('have.value', '성별');
     // The name list offers the standard names first.
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
     cy.get('[data-cy=map-key-6]').clear();
     cy.get('[data-cy=map-key-6]').blur().focus();
-    cy.get('[data-cy=map-row-6] .dropdown-item').then(($items) => {
-      expect([...$items].slice(0, 5).map((el) => el.textContent.trim().split(/\s+/)[0])).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
+    cy.get('[data-cy=map-row-6] .dropdown-item .map-option > span:first-child').then(($items) => {
+      expect([...$items].slice(0, 5).map((el) => el.textContent)).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
     });
     cy.get('[data-cy=map-row-6] .dropdown-item').first().should('contain', 'Country').and('contain', 'Standard');
   });

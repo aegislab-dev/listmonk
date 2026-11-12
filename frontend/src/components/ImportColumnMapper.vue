@@ -50,10 +50,9 @@
             <div class="map-row-source">
               <div class="map-row-name">{{ row.label }}</div>
               <div class="map-row-samples">
+                <!-- No whitespace inside: the chip's text is exactly the cell (and what it becomes). -->
                 <span v-for="(sample, n) in row.samples" :key="n" class="map-sample" :class="{ 'is-unreadable': sample.unreadable }"
-                  :title="sample.to ? `${sample.text} → ${sample.to}` : sample.text">
-                  {{ sample.text }}<template v-if="sample.to"> <i aria-hidden="true">→</i> <b>{{ sample.to }}</b></template>
-                </span>
+                  :title="sample.to ? `${sample.text} → ${sample.to}` : sample.text">{{ sample.text }}<template v-if="sample.to"> <i aria-hidden="true">→</i> <b>{{ sample.to }}</b></template></span>
                 <span v-if="!row.samples.length" class="map-sample-empty">{{ $t('import.mapNoSamples') }}</span>
               </div>
             </div>
@@ -183,8 +182,8 @@
             </thead>
             <tbody>
               <tr v-for="row in preview" :key="row.row">
-                <td class="map-preview-row">{{ row.row }}</td>
-                <td>{{ row.email }}</td>
+                <td class="map-preview-row" :data-label="$t('import.mapPreviewRow')">{{ row.row }}</td>
+                <td class="map-preview-email">{{ row.email }}</td>
                 <td>{{ row.name || '—' }}</td>
                 <td>
                   <span v-for="[key, value] in row.attributes" :key="key" class="map-attr">

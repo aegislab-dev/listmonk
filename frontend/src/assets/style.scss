@@ -1248,10 +1248,18 @@ section.import {
       .map-row-target select, .map-row-target input { font-size: .9rem; }
       .map-row-target input { padding-left: 10px; padding-right: 10px; }
       .map-fix { display: inline-block; margin: 0 0 0 6px; }
+      /* One person per block, so the values that were changed or left out stay on screen. */
+      .map-preview thead { display: none; }
+      .map-preview table, .map-preview tbody, .map-preview tr, .map-preview td { display: block; width: auto; }
+      .map-preview tr { padding: 10px 0; border-bottom: 1px solid $grey-lighter; }
+      .map-preview td { border: 0; padding: 1px 0; overflow-wrap: anywhere; }
+      .map-preview td.map-preview-row::before { content: attr(data-label) " "; }
+      .map-preview td.map-preview-email { font-weight: 600; }
+      .map-preview .map-attr { margin-top: 4px; }
+      .map-preview .map-attr { max-width: 100%; }
       .map-counts { gap: 22px; }
       .map-counts strong { font-size: 1.4rem; }
       .map-review { padding: 16px; }
-      .map-preview table { min-width: 580px; }
     }
   }
   // Keep the existing import form and long CSV example inside narrow viewports.

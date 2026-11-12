@@ -293,8 +293,8 @@ describe('dynamic lists', () => {
     cy.get('[data-cy=list-composition]').select('dynamic');
     cy.get('[data-cy=dynamic-key-0]').focus();
     // Listed whether or not a recent subscriber has them.
-    cy.get('[data-cy=dynamic-condition-0] .dropdown-item').should('have.length.at.least', 5).then(($items) => {
-      expect([...$items].slice(0, 5).map((el) => el.textContent.trim().split(/\s+/)[0])).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
+    cy.get('[data-cy=dynamic-condition-0] .dropdown-item .key-option > span:first-child').should('have.length.at.least', 5).then(($items) => {
+      expect([...$items].slice(0, 5).map((el) => el.textContent)).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
     });
     cy.get('[data-cy=dynamic-condition-0] .dropdown-item').eq(1).should('contain', 'Followers').and('contain', 'Standard');
     cy.get('[data-cy=dynamic-key-0]').type('country');
