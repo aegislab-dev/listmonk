@@ -33,52 +33,52 @@
     <b-message v-if="mode === 'raw'" type="is-info" :closable="false" data-cy="map-raw-info">{{ $t('import.mapRawHelp') }}</b-message>
     <template v-else>
       <template v-if="columns.length">
-      <div class="map-status-bar" data-cy="map-status" aria-live="polite">
-        <strong>{{ $t('import.mapListTitle', { columns: columns.length }) }}</strong>
-        <span class="map-chip is-ok" data-cy="map-count-ok">{{ $t('import.mapCountOk', { count: counts.ok }) }}</span>
-        <span v-if="counts.skipped" class="map-chip is-skipped" data-cy="map-count-skipped">{{ $t('import.mapCountSkipped', { count: counts.skipped }) }}</span>
-        <button v-if="counts.error" type="button" class="map-chip is-error" data-cy="map-count-error" @click="focusFirstError">
-          {{ $t('import.mapCountError', { count: counts.error }) }} ↓
-        </button>
-      </div>
-      <p v-for="(message, n) in validation" :key="n" class="map-global-error" role="alert" data-cy="map-validation">! {{ message }}</p>
-      <div class="map-list-head" aria-hidden="true">
-        <span>{{ $t('import.mapColumn') }}</span><span>{{ $t('import.mapRole') }}</span><span>{{ $t('import.mapState') }}</span>
-      </div>
-      <ul class="map-list" data-cy="map-list">
-        <li v-for="row in rows" :key="row.index" class="map-row" :class="`is-${row.state}`" :data-cy="`map-row-${row.index}`">
-          <div class="map-row-source">
-            <div class="map-row-name">{{ row.label }}</div>
-            <div class="map-row-samples">
-              <span v-for="(sample, n) in row.samples" :key="n" class="map-sample" :title="sample">{{ sample }}</span>
-              <span v-if="!row.samples.length" class="map-sample-empty">{{ $t('import.mapNoSamples') }}</span>
+        <div class="map-status-bar" data-cy="map-status" aria-live="polite">
+          <strong>{{ $t('import.mapListTitle', { columns: columns.length }) }}</strong>
+          <span class="map-chip is-ok" data-cy="map-count-ok">{{ $t('import.mapCountOk', { count: counts.ok }) }}</span>
+          <span v-if="counts.skipped" class="map-chip is-skipped" data-cy="map-count-skipped">{{ $t('import.mapCountSkipped', { count: counts.skipped }) }}</span>
+          <button v-if="counts.error" type="button" class="map-chip is-error" data-cy="map-count-error" @click="focusFirstError">
+            {{ $t('import.mapCountError', { count: counts.error }) }} ↓
+          </button>
+        </div>
+        <p v-for="(message, n) in validation" :key="n" class="map-global-error" role="alert" data-cy="map-validation">! {{ message }}</p>
+        <div class="map-list-head" aria-hidden="true">
+          <span>{{ $t('import.mapColumn') }}</span><span>{{ $t('import.mapRole') }}</span><span>{{ $t('import.mapState') }}</span>
+        </div>
+        <ul class="map-list" data-cy="map-list">
+          <li v-for="row in rows" :key="row.index" class="map-row" :class="`is-${row.state}`" :data-cy="`map-row-${row.index}`">
+            <div class="map-row-source">
+              <div class="map-row-name">{{ row.label }}</div>
+              <div class="map-row-samples">
+                <span v-for="(sample, n) in row.samples" :key="n" class="map-sample" :title="sample">{{ sample }}</span>
+                <span v-if="!row.samples.length" class="map-sample-empty">{{ $t('import.mapNoSamples') }}</span>
+              </div>
             </div>
-          </div>
-          <div class="map-row-target">
-            <b-select :id="`map-role-${row.index}`" :value="mapping[row.index].role"
-              :aria-label="$t('import.mapRoleFor', { column: row.label })" :data-cy="`map-role-${row.index}`"
-              @input="change(row.index, 'role', $event)">
-              <option value="email">{{ $t('import.mapEmail') }}</option>
-              <option value="name">{{ $t('import.mapName') }}</option>
-              <option value="attribute">{{ $t('import.mapAttribute') }}</option>
-              <option value="tags">{{ $t('import.mapTags') }}</option>
-              <option value="discard">{{ $t('import.mapDiscard') }}</option>
-            </b-select>
-            <b-autocomplete v-if="['attribute', 'tags'].includes(mapping[row.index].role)" :id="`map-key-${row.index}`"
-              :value="mapping[row.index].key" :data="keyOptions(mapping[row.index].key)" :open-on-focus="true"
-              :clear-on-select="false" :placeholder="$t('import.mapKeyPlaceholder')" dropdown-position="bottom"
-              :aria-label="$t('import.mapKeyFor', { column: row.label })" :data-cy="`map-key-${row.index}`"
-              :aria-invalid="row.state === 'error'" @input="change(row.index, 'key', $event)" @select="selectKey(row.index, $event)" />
-          </div>
-          <div class="map-row-state" :data-cy="`map-state-${row.index}`">
-            <span>{{ row.text }}</span>
-            <button v-if="row.fix" type="button" class="map-fix" :data-cy="`map-fix-${row.index}`" @click="change(row.index, 'key', row.fix)">
-              {{ $t('import.mapUseKey', { key: row.fix }) }}
-            </button>
-          </div>
-        </li>
-      </ul>
-      <p class="help map-key-help">{{ $t('import.mapKeyHelp') }}</p>
+            <div class="map-row-target">
+              <b-select :id="`map-role-${row.index}`" :value="mapping[row.index].role"
+                :aria-label="$t('import.mapRoleFor', { column: row.label })" :data-cy="`map-role-${row.index}`"
+                @input="change(row.index, 'role', $event)">
+                <option value="email">{{ $t('import.mapEmail') }}</option>
+                <option value="name">{{ $t('import.mapName') }}</option>
+                <option value="attribute">{{ $t('import.mapAttribute') }}</option>
+                <option value="tags">{{ $t('import.mapTags') }}</option>
+                <option value="discard">{{ $t('import.mapDiscard') }}</option>
+              </b-select>
+              <b-autocomplete v-if="['attribute', 'tags'].includes(mapping[row.index].role)" :id="`map-key-${row.index}`"
+                :value="mapping[row.index].key" :data="keyOptions(mapping[row.index].key)" :open-on-focus="true"
+                :clear-on-select="false" :placeholder="$t('import.mapKeyPlaceholder')" dropdown-position="bottom"
+                :aria-label="$t('import.mapKeyFor', { column: row.label })" :data-cy="`map-key-${row.index}`"
+                :aria-invalid="row.state === 'error'" @input="change(row.index, 'key', $event)" @select="selectKey(row.index, $event)" />
+            </div>
+            <div class="map-row-state" :data-cy="`map-state-${row.index}`">
+              <span>{{ row.text }}</span>
+              <button v-if="row.fix" type="button" class="map-fix" :data-cy="`map-fix-${row.index}`" @click="change(row.index, 'key', row.fix)">
+                {{ $t('import.mapUseKey', { key: row.fix }) }}
+              </button>
+            </div>
+          </li>
+        </ul>
+        <p class="help map-key-help">{{ $t('import.mapKeyHelp') }}</p>
       </template>
       <b-message v-if="overwrite" type="is-warning" :closable="false" data-cy="map-overwrite">{{ $t('import.mapOverwrite') }}</b-message>
       <section v-if="summary" class="map-review" data-cy="map-summary" aria-live="polite">

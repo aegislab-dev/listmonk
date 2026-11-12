@@ -128,7 +128,8 @@ const FIELDS = { email: ['이메일', '메일', '메일주소', '이메일주소
 const KEYS = {
   company_name: ['회사', '회사명', '기업명', '소속'],
   department: ['부서', '부서명'],
-  job_title: ['직책', '직함', '직위', '직급'],
+  job_title: ['직책', '직함'],
+  job_rank: ['직급', '직위'],
   phone: ['전화', '전화번호', '연락처', '휴대폰', '휴대폰번호', '휴대전화', '핸드폰'],
   region: ['지역'],
   address: ['주소'],
@@ -163,31 +164,48 @@ export function romanize(text) {
   });
 }
 
-// A valid new attribute key for any label or mistyped key, or '' if none can be made.
-export function suggestKey(text) {
-  const known = KNOWN.get(compact(text));
-  if (known) return known;
+// Tidies any text into a valid new attribute key, or '' if nothing usable is left.
+function spellKey(text) {
   const key = romanize(text).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
   return /^[0-9]/.test(key) ? `item_${key}` : key;
 }
 
+// A valid new attribute key for a label or a mistyped key: a known term first, else spelled out.
+export function suggestKey(text) {
+  return KNOWN.get(compact(text)) || spellKey(text);
+}
+
 // True when the key was spelled out from Hangul rather than taken from KEYS.
 export function isSpelledKey(label, key) {
-  return /[가-힣]/.test(label) && !KNOWN.has(compact(label)) && key === suggestKey(label);
+  const spelled = spellKey(label);
+  return /[가-힣]/.test(label) && !!spelled && (key === spelled || key.startsWith(`${spelled}_`));
 }
 
 export function suggestMapping(parsed, memory = { columns: {} }) {
+  const remembered = (column) => {
+    const entry = Object.prototype.hasOwnProperty.call(memory.columns || {}, column) && memory.columns[column];
+    return entry && ROLES.includes(entry.role) ? { role: entry.role, key: entry.key || '' } : null;
+  };
+  // Names the user chose before are kept; suggested names must not collide with them or each other.
+  const used = new Set(parsed.columns.map((column) => remembered(column)?.key).filter(Boolean));
+  const unique = (column, index) => {
+    let key = suggestKey(column) || `column_${index + 1}`;
+    if (used.has(key)) key = spellKey(column) || key;
+    const base = key;
+    for (let n = 2; used.has(key); n += 1) key = `${base}_${n}`;
+    used.add(key);
+    return key;
+  };
   return parsed.columns.map((column, index) => {
-    const remembered = Object.prototype.hasOwnProperty.call(memory.columns || {}, column) && memory.columns[column];
-    if (remembered && ROLES.includes(remembered.role)) return { role: remembered.role, key: remembered.key || '' };
+    const known = remembered(column);
+    if (known) return known;
     const label = compact(column);
     const field = Object.keys(FIELDS).find((role) => FIELDS[role].includes(label));
     if (field) return { role: field, key: '' };
-    if (KNOWN.get(label) === 'tags') return { role: 'tags', key: 'tags' };
     const samples = parsed.rows.slice(0, 20).map(({ cells }) => cells[index]).filter((v) => v.trim());
     if (samples.length && samples.filter((v) => validEmail(cleanEmail(v))).length > samples.length / 2) return { role: 'email', key: '' };
-    return { role: 'attribute', key: suggestKey(column) || `column_${index + 1}` };
+    return { role: KNOWN.get(label) === 'tags' ? 'tags' : 'attribute', key: unique(column, index) };
   });
 }
 

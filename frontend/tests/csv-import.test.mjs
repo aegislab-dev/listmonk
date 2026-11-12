@@ -76,6 +76,13 @@ test('attribute names are made from labels: known terms, spelled-out Hangul and 
     { role: 'attribute', key: 'customer_grade' }, { role: 'tags', key: 'tags' }, { role: 'discard', key: '' }, { role: 'attribute', key: 'signup_path' },
   ]);
   assert.deepEqual(validateMapping(mapping), []);
+  // Suggested names never collide: a taken name is spelled out, then numbered.
+  const twins = parseCSV('email,전화번호,휴대폰,직책,직급,회사,회사,메모2,메모2\na@example.invalid,1,2,3,4,5,6,7,8');
+  assert.deepEqual(suggestMapping(twins).map(({ key }) => key), ['', 'phone', 'hyudaepon', 'job_title', 'job_rank', 'company_name', 'hoesa', 'memo2', 'memo2_2']);
+  assert.deepEqual(validateMapping(suggestMapping(twins)), []);
+  assert.equal(isSpelledKey('휴대폰', 'hyudaepon'), true);
+  assert.equal(isSpelledKey('메모2', 'memo2_2'), true);
+  assert.deepEqual(suggestMapping(twins, { columns: { 휴대폰: { role: 'attribute', key: 'phone' } } }).map(({ key }) => key).slice(1, 3), ['jeonhwabeonho', 'phone']);
   // A label that yields no name falls back to its position.
   assert.deepEqual(suggestMapping(parseCSV('email,,###\na@example.invalid,x,y')).map(({ key }) => key), ['', 'column_2', 'column_3']);
 });
