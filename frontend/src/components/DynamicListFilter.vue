@@ -107,9 +107,9 @@
             </thead>
             <tbody>
               <tr v-for="row in sample" :key="row.id">
-                <td>{{ row.email }}</td>
+                <td class="sample-email">{{ row.email }}</td>
                 <td>{{ row.name }}</td>
-                <td v-for="key in sampleKeys" :key="key">
+                <td v-for="key in sampleKeys" :key="key" class="sample-attrib" :data-label="key">
                   <span v-if="attribText(row, key) === null" class="has-text-grey">{{ $t('lists.dynamic.sampleNoValue') }}</span>
                   <template v-else>{{ attribText(row, key) }}</template>
                 </td>
@@ -337,5 +337,12 @@ export default {
   .condition-number { padding: 0; grid-column: 1 / -1; }
   .dynamic-condition .field, .condition-value { grid-column: 1; }
   .condition-remove { grid-column: 2; grid-row: 2; }
+  /* One member per block, so the values the conditions read stay on screen. */
+  .sample-scroll thead { display: none; }
+  .sample-scroll tr { display: block; padding: 8px 0; border-bottom: 1px solid #e6ebef; }
+  .sample-scroll tr:last-child { border-bottom: 0; }
+  .sample-scroll td { display: block; border: 0; padding: 1px 0; white-space: normal; overflow-wrap: anywhere; }
+  .sample-email { font-weight: 600; }
+  .sample-attrib::before { content: attr(data-label) ": "; color: #666; }
 }
 </style>
