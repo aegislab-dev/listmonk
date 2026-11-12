@@ -9,6 +9,7 @@ import (
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/captcha"
+	"github.com/knadh/listmonk/internal/core"
 	"github.com/labstack/echo/v4"
 	null "gopkg.in/volatiletech/null.v6"
 )
@@ -41,6 +42,10 @@ type serverConfig struct {
 	NeedsRestart  bool            `json:"needs_restart"`
 	HasLegacyUser bool            `json:"has_legacy_user"`
 	Version       string          `json:"version"`
+
+	// The column presets of the subscribers table and the default one.
+	AxmColumnPresets       []core.ColumnPreset `json:"axm_column_presets"`
+	AxmDefaultColumnPreset string              `json:"axm_default_column_preset"`
 }
 
 // GetServerConfig returns general server config.
@@ -55,6 +60,9 @@ func (a *App) GetServerConfig(c echo.Context) error {
 		Lang:           a.cfg.Lang,
 		Permissions:    a.cfg.PermissionsRaw,
 		HasLegacyUser:  a.cfg.HasLegacyUser,
+
+		AxmColumnPresets:       core.ColumnPresets,
+		AxmDefaultColumnPreset: core.DefaultColumnPreset,
 		Privacy: struct {
 			DisableTracking    bool `json:"disable_tracking"`
 			IndividualTracking bool `json:"individual_tracking"`

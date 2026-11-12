@@ -117,60 +117,69 @@ func ValidateDynamicFilter(raw []byte) (DynamicFilter, error) {
 	default:
 		return f, fmt.Errorf("invalid base type")
 	}
-	if len(f.Conditions) < 1 || len(f.Conditions) > 20 {
-		return f, fmt.Errorf("provide 1–20 conditions")
+	if err := validateDynamicConditions(f.Conditions); err != nil {
+		return f, err
 	}
-	for i := range f.Conditions {
-		c := &f.Conditions[i]
+	return f, nil
+}
+
+// validateDynamicConditions checks and normalizes conditions in place. Saved dynamic lists and
+// the subscribers table filter share it, so both accept exactly the same conditions.
+func validateDynamicConditions(conds []DynamicCondition) error {
+	if len(conds) < 1 || len(conds) > 20 {
+		return fmt.Errorf("provide 1–20 conditions")
+	}
+	for i := range conds {
+		c := &conds[i]
 		c.Key = strings.TrimSpace(c.Key)
 		if utf8.RuneCountInString(c.Key) < 1 || utf8.RuneCountInString(c.Key) > 64 || strings.IndexFunc(c.Key, unicode.IsControl) >= 0 {
-			return f, fmt.Errorf("invalid attribute key")
+			return fmt.Errorf("invalid attribute key")
 		}
 		if c.Value2 != nil && c.Op != "between" {
-			return f, fmt.Errorf("only between takes a second value")
+			return fmt.Errorf("only between takes a second value")
 		}
 		switch c.Op {
 		case "empty":
 			if c.Value != nil {
-				return f, fmt.Errorf("empty condition must not specify a value")
+				return fmt.Errorf("empty condition must not specify a value")
 			}
 		case "eq", "contains", "has":
 			if c.Value == nil {
-				return f, fmt.Errorf("condition requires a value")
+				return fmt.Errorf("condition requires a value")
 			}
 			v := strings.TrimSpace(*c.Value)
 			if utf8.RuneCountInString(v) < 1 || utf8.RuneCountInString(v) > 200 || strings.ContainsRune(v, 0) {
-				return f, fmt.Errorf("invalid condition value")
+				return fmt.Errorf("invalid condition value")
 			}
 			c.Value = &v
 		case "gte", "gt", "lte", "lt", "between":
 			if c.Value == nil {
-				return f, fmt.Errorf("condition requires a value")
+				return fmt.Errorf("condition requires a value")
 			}
 			v, low, ok := parseDynamicNumber(strings.TrimSpace(*c.Value))
 			if !ok {
-				return f, fmt.Errorf("condition value must be a number")
+				return fmt.Errorf("condition value must be a number")
 			}
 			c.Value = &v
 			if c.Op != "between" {
 				break
 			}
 			if c.Value2 == nil {
-				return f, fmt.Errorf("between requires two values")
+				return fmt.Errorf("between requires two values")
 			}
 			v2, high, ok := parseDynamicNumber(strings.TrimSpace(*c.Value2))
 			if !ok {
-				return f, fmt.Errorf("condition value must be a number")
+				return fmt.Errorf("condition value must be a number")
 			}
 			if low.Cmp(high) >= 0 {
-				return f, fmt.Errorf("between requires the first value to be smaller")
+				return fmt.Errorf("between requires the first value to be smaller")
 			}
 			c.Value2 = &v2
 		default:
-			return f, fmt.Errorf("invalid condition operator")
+			return fmt.Errorf("invalid condition operator")
 		}
 	}
-	return f, nil
+	return nil
 }
 
 // ValidateDynamicBase checks live list existence and rejects nested dynamic lists.

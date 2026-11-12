@@ -9,6 +9,7 @@ import (
 	"github.com/gofrs/uuid/v5"
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/utils"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/stuffbin"
@@ -144,7 +145,7 @@ func installLists(q *models.Queries) (int, int) {
 		models.ListOptinSingle,
 		models.ListStatusActive,
 		pq.StringArray{"test"},
-		"", nil,
+		"", nil, core.DefaultColumnPreset,
 	); err != nil {
 		lo.Fatalf("error creating list: %v", err)
 	}
@@ -155,7 +156,7 @@ func installLists(q *models.Queries) (int, int) {
 		models.ListOptinDouble,
 		models.ListStatusActive,
 		pq.StringArray{"test"},
-		"", nil,
+		"", nil, core.DefaultColumnPreset,
 	); err != nil {
 		lo.Fatalf("error creating list: %v", err)
 	}

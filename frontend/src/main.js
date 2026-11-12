@@ -77,6 +77,12 @@ async function initConfig(app) {
     return profile.listRole.lists.some((list) => list.id === id && list.permissions.includes(perm));
   };
 
+  // $canManageList(id) tells whether the user may change a list's settings, by the same rule
+  // as the server: lists:manage_all, or list:manage on that list.
+  Vue.prototype.$canManageList = (id) => Vue.prototype.$can('lists:manage_all')
+    || ((profile.listRole && profile.listRole.lists) || [])
+      .some((list) => list.id === id && list.permissions.includes('list:manage'));
+
   // Set the page title after i18n has loaded.
   const to = router.history.current;
   const title = to.meta.title ? `${i18n.tc(to.meta.title, 0)} /` : '';

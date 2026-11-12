@@ -74,16 +74,87 @@
       </div>
     </section><!-- control -->
 
-    <br />
-    <b-table :data="subscribers.results ?? []" :loading="loading.subscribers" @check-all="onTableCheck"
+    <section v-if="attribFilters.length || filterForm" class="attrib-filters" data-cy="attrib-filters">
+      <div v-if="attribFilters.length" class="attrib-chips">
+        <span class="attrib-chips-label">{{ $t('subscribers.columns.filterTitle') }}</span>
+        <span v-for="(f, i) in attribFilters" :key="`${f.key}-${f.op}-${i}`" class="tag is-medium attrib-chip"
+          :data-cy="`attrib-chip-${i}`">
+          {{ chipText(f) }}
+          <button type="button" class="delete is-small" :aria-label="$t('subscribers.columns.filterRemove', { label: chipText(f) })"
+            @click="removeFilter(i)" />
+        </span>
+        <a v-if="attribFilters.length > 1" href="#" class="attrib-chips-clear" @click.prevent="clearFilters"
+          data-cy="attrib-filter-clear">
+          {{ $t('globals.buttons.clearAll') }}
+        </a>
+      </div>
+      <form v-if="filterForm" class="attrib-filter-form" @submit.prevent="applyFilter" data-cy="attrib-filter-form">
+        <b-field :label="$t('lists.dynamic.key')" label-for="attrib-filter-key">
+          <b-autocomplete v-model="filterForm.key" :data="filterKeyOptions" maxlength="64" :open-on-focus="true"
+            :keep-first="false" id="attrib-filter-key" ref="filterKey" :placeholder="$t('subscribers.columns.filterKey')"
+            data-cy="attrib-filter-key" />
+        </b-field>
+        <b-field :label="$t('lists.dynamic.operator')" label-for="attrib-filter-op">
+          <b-select v-model="filterForm.op" expanded id="attrib-filter-op" data-cy="attrib-filter-op"
+            @input="filterError = ''">
+            <optgroup :label="$t('lists.dynamic.opsText')">
+              <option v-for="op in filterOps.text" :key="op" :value="op">{{ $t(`lists.dynamic.ops.${op}`) }}</option>
+            </optgroup>
+            <optgroup :label="$t('lists.dynamic.opsNumber')">
+              <option v-for="op in filterOps.number" :key="op" :value="op">{{ $t(`lists.dynamic.ops.${op}`) }}</option>
+            </optgroup>
+          </b-select>
+        </b-field>
+        <b-field :label="$t('lists.dynamic.value')" label-for="attrib-filter-value"
+          :type="filterError ? 'is-danger' : ''" :message="filterError">
+          <b-input v-if="filterForm.op !== 'empty'" v-model="filterForm.value" id="attrib-filter-value" ref="filterValue"
+            :maxlength="isNumberOp(filterForm.op) ? 64 : 200" :has-counter="false"
+            :inputmode="isNumberOp(filterForm.op) ? 'decimal' : 'text'" autocomplete="off"
+            :placeholder="$t(isNumberOp(filterForm.op) ? 'lists.dynamic.numberPlaceholder' : 'subscribers.columns.filterValue')"
+            @input="filterError = ''" data-cy="attrib-filter-value" />
+          <span v-else class="attrib-filter-novalue">{{ $t('lists.dynamic.noValue') }}</span>
+        </b-field>
+        <div class="attrib-filter-buttons">
+          <b-button native-type="submit" type="is-primary" data-cy="attrib-filter-apply">
+            {{ $t('subscribers.columns.filterApply') }}
+          </b-button>
+          <b-button @click="closeFilter" data-cy="attrib-filter-cancel">{{ $t('globals.buttons.cancel') }}</b-button>
+        </div>
+        <p class="help attrib-filter-help">{{ $t('subscribers.columns.filterHelp') }}</p>
+      </form>
+    </section>
+
+    <br v-else />
+    <!-- Says which preset the list has, once there is more than one to tell apart. -->
+    <p v-if="hasPresetChoice" class="column-preset" data-cy="column-preset">
+      <span class="column-preset-label">{{ $t('subscribers.columns.preset') }}</span>
+      <strong>{{ presetName }}</strong>
+      <span v-if="attribColumns.length" class="column-preset-keys">{{ attribColumns.join(' · ') }}</span>
+      <router-link v-if="currentList && $canManageList(currentList.id)" :to="`/lists/${currentList.id}`"
+        data-cy="column-preset-change">
+        {{ $t('subscribers.columns.presetChange') }}
+      </router-link>
+      <span v-else-if="!queryParams.listID" class="column-preset-note">{{ $t('subscribers.columns.presetAll') }}</span>
+    </p>
+    <p v-if="isTableWide" class="help table-wide-hint" data-cy="table-wide-hint">
+      {{ $t('subscribers.columns.wideHint') }}
+    </p>
+    <b-table ref="table" :data="subscribers.results ?? []" :loading="loading.subscribers" @check-all="onTableCheck"
       @check="onTableCheck" :checked-rows.sync="bulk.checked" paginated backend-pagination pagination-position="both"
       @page-change="onPageChange" :current-page="queryParams.page" :per-page="subscribers.perPage"
-      :total="subscribers.total" hoverable checkable backend-sorting @sort="onSort">
+      :total="subscribers.total" hoverable checkable backend-sorting @sort="onSort" class="subscribers-table"
+      :mobile-sort-placeholder="$t('subscribers.columns.sortBy')">
       <template #top-left>
         <div class="actions">
           <a class="a" href="#" @click.prevent="exportSubscribers" data-cy="btn-export-subscribers">
             <b-icon icon="cloud-download-outline" size="is-small" />
             {{ $t('subscribers.export') }}
+          </a>
+          <a class="a" href="#" @click.prevent="openFilter('')" data-cy="btn-attrib-filter">
+            <svg class="axm-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 5h16l-6.2 7.6V19l-3.6-2v-4.4z" />
+            </svg>
+            {{ $t('subscribers.columns.filterAdd') }}
           </a>
           <template v-if="bulk.checked.length > 0">
             <a v-if="!currentList || !currentList.axmFilter" class="a" href="#" @click.prevent="showBulkListForm" data-cy="btn-manage-lists">
@@ -109,7 +180,7 @@
       </template>
 
       <b-table-column v-slot="props" field="email" :label="$t('subscribers.email')" header-class="cy-email" sortable
-        :td-attrs="$utils.tdID">
+        cell-class="sub-email-cell" :td-attrs="$utils.tdID">
         <a :href="`/subscribers/${props.row.id}`" @click.prevent="showEditForm(props.row)"
           :class="{ 'blocklisted': props.row.status === 'blocklisted' }">
           {{ props.row.email }}
@@ -132,7 +203,8 @@
         </b-taglist>
       </b-table-column>
 
-      <b-table-column v-slot="props" field="name" :label="$t('globals.fields.name')" header-class="cy-name" sortable>
+      <b-table-column v-slot="props" field="name" :label="$t('globals.fields.name')" header-class="cy-name" sortable
+        cell-class="sub-name-cell">
         <a :href="`/subscribers/${props.row.id}`" @click.prevent="showEditForm(props.row)"
           :class="{ 'blocklisted': props.row.status === 'blocklisted' }">
           {{ props.row.name }}
@@ -144,13 +216,38 @@
         {{ listCount(props.row.lists) }}
       </b-table-column>
 
+      <b-table-column v-for="key in attribColumns" :key="`attrib-${key}`" :field="`attribs.${key}`" :label="key"
+        header-class="attrib-head" cell-class="attrib-cell" sortable>
+        <template #header="{ column }">
+          <span class="attrib-head-label" :title="$t('subscribers.columns.headTitle', { key })">{{ column.label }}</span>
+          <button type="button" class="attrib-head-filter" :class="{ 'is-active': hasFilter(key) }"
+            :aria-label="$t('subscribers.columns.filterBy', { key })" :title="$t('subscribers.columns.filterBy', { key })"
+            @click.stop="openFilter(key)" :data-cy="`attrib-head-filter-${key}`">
+            <svg class="axm-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 5h16l-6.2 7.6V19l-3.6-2v-4.4z" />
+            </svg>
+          </button>
+        </template>
+        <template #default="props">
+          <span v-if="!attribCell(props.row, key).text" class="attrib-empty" :aria-label="$t('lists.dynamic.sampleNoValue')">&mdash;</span>
+          <span v-else class="attrib-wrap">
+            <span class="attrib-value" :class="{ 'is-open': isCellOpen(props.row, key) }"
+              :title="attribCell(props.row, key).text">{{ attribCell(props.row, key).text }}</span>
+            <a v-if="attribCell(props.row, key).long" href="#" class="attrib-more"
+              @click.prevent="toggleCell(props.row, key)" :aria-expanded="isCellOpen(props.row, key) ? 'true' : 'false'">
+              {{ $t(isCellOpen(props.row, key) ? 'subscribers.columns.less' : 'subscribers.columns.more') }}
+            </a>
+          </span>
+        </template>
+      </b-table-column>
+
       <b-table-column v-slot="props" field="created_at" :label="$t('globals.fields.createdAt')"
-        header-class="cy-created_at" sortable>
+        header-class="cy-created_at" sortable cell-class="sub-date-cell">
         {{ $utils.niceDate(props.row.createdAt) }}
       </b-table-column>
 
       <b-table-column v-slot="props" field="updated_at" :label="$t('globals.fields.updatedAt')"
-        header-class="cy-updated_at" sortable>
+        header-class="cy-updated_at" sortable cell-class="sub-date-cell">
         {{ $utils.niceDate(props.row.updatedAt) }}
       </b-table-column>
 
@@ -202,6 +299,11 @@ import { uris } from '../constants';
 import SubscriberBulkList from './SubscriberBulkList.vue';
 import SubscriberForm from './SubscriberForm.vue';
 import CopyText from '../components/CopyText.vue';
+import { isNumberOp } from '../dynamic-list';
+import {
+  FILTER_OPS, LONG_VALUE, MAX_CONDITIONS, attribKeys, attribText, cleanCondition, conditionError, conditionValueText,
+  newCondition, presetOf,
+} from '../subscriber-columns';
 
 export default Vue.extend({
   components: {
@@ -228,6 +330,18 @@ export default Vue.extend({
 
       queryInput: '',
 
+      // Long values opened in place, keyed by subscriber ID and attribute key.
+      openCells: {},
+      filterOps: FILTER_OPS,
+
+      // Attribute conditions applied to the table, and the condition being typed (or null).
+      attribFilters: [],
+      filterForm: null,
+      filterError: '',
+
+      // True while the table is wider than its box and scrolls sideways.
+      isTableWide: false,
+
       // Query params to filter the getSubscribers() API call.
       queryParams: {
         // Search query expression.
@@ -245,6 +359,74 @@ export default Vue.extend({
   },
 
   methods: {
+    isNumberOp,
+
+    attribCell(row, key) {
+      const text = attribText(row.attribs ? row.attribs[key] : undefined);
+      return { text, long: text.length > LONG_VALUE };
+    },
+
+    isCellOpen(row, key) {
+      return !!this.openCells[`${row.id}:${key}`];
+    },
+
+    toggleCell(row, key) {
+      const id = `${row.id}:${key}`;
+      this.$set(this.openCells, id, !this.openCells[id]);
+    },
+
+    // Tells whether the picked columns overflow the table's box (never on the mobile cards).
+    checkTableWidth() {
+      const wrapper = this.$refs.table && this.$refs.table.$el.querySelector('.table-wrapper');
+      const wide = !!wrapper && wrapper.scrollWidth > wrapper.clientWidth + 1;
+      if (wide !== this.isTableWide) this.isTableWide = wide;
+    },
+
+    hasFilter(key) {
+      return this.attribFilters.some((f) => f.key === key);
+    },
+
+    chipText(f) {
+      return this.$t(`subscribers.columns.chip.${f.op}`, { key: f.key, value: conditionValueText(f) });
+    },
+
+    // Opens the condition form, for one column when the header's filter button was used.
+    openFilter(key) {
+      if (this.attribFilters.length >= MAX_CONDITIONS) return;
+      this.filterForm = newCondition(key);
+      this.filterError = '';
+      this.$nextTick(() => {
+        const ref = key ? this.$refs.filterValue : this.$refs.filterKey;
+        if (ref) ref.focus();
+      });
+    },
+
+    closeFilter() {
+      this.filterForm = null;
+      this.filterError = '';
+    },
+
+    applyFilter() {
+      const err = conditionError(this.filterForm);
+      if (err) {
+        this.filterError = this.$t(`lists.dynamic.${err}`);
+        return;
+      }
+      this.attribFilters = [...this.attribFilters, cleanCondition(this.filterForm)];
+      this.closeFilter();
+      this.querySubscribers({ page: 1 });
+    },
+
+    removeFilter(index) {
+      this.attribFilters = this.attribFilters.filter((_, i) => i !== index);
+      this.querySubscribers({ page: 1 });
+    },
+
+    clearFilters() {
+      this.attribFilters = [];
+      this.querySubscribers({ page: 1 });
+    },
+
     // Count the lists from which a subscriber has not unsubscribed.
     listCount(lists) {
       return lists.reduce((defVal, item) => (defVal + (item.subscriptionStatus !== 'unsubscribed' ? 1 : 0)), 0);
@@ -357,6 +539,9 @@ export default Vue.extend({
         order_by: this.queryParams.orderBy,
         order: this.queryParams.order,
       };
+      if (this.attribFilters.length) {
+        qp.attrib_filter = JSON.stringify(this.attribFilters);
+      }
 
       if (this.queryParams.queryExp) {
         delete qp.search;
@@ -397,6 +582,9 @@ export default Vue.extend({
         // 'All' is selected, blocklist by query.
         fn = () => {
           this.$api.blocklistSubscribersByQuery({
+            // Without any condition, `all=true` says that every subscriber of the list is meant.
+            all: this.noConditions,
+            attrib_filter: this.attribFilters,
             search: this.queryParams.search,
             query: this.queryParams.queryExp,
             list_ids: this.queryParams.listID ? [this.queryParams.listID] : null,
@@ -412,8 +600,15 @@ export default Vue.extend({
       const num = !this.bulk.all && this.bulk.checked.length > 0
         ? this.bulk.checked.length : this.subscribers.total;
 
-      this.$utils.confirm(this.$t('subscribers.confirmExport', { num }), () => {
+      const cols = this.attribColumns;
+      const msg = this.$t('subscribers.confirmExport', { num })
+        + (cols.length ? ` ${this.$t('subscribers.columns.exportNote', { columns: cols.join(', ') })}` : '');
+      this.$utils.confirm(msg, () => {
         const q = new URLSearchParams();
+        cols.forEach((key) => q.append('attrib_col', key));
+        if (this.attribFilters.length) {
+          q.append('attrib_filter', JSON.stringify(this.attribFilters));
+        }
 
         if (this.queryParams.search) {
           q.append('search', this.queryParams.search);
@@ -457,7 +652,8 @@ export default Vue.extend({
           this.$api.deleteSubscribersByQuery({
             // If the query expression is empty, explicitly pass `all=true`
             // so that the backend deletes all records in the DB with an empty query string.
-            all: this.queryParams.queryExp.trim() === '' && this.queryParams.search.trim() === '',
+            all: this.noConditions,
+            attrib_filter: this.attribFilters,
             search: this.queryParams.search,
             query: this.queryParams.queryExp,
             list_ids: this.queryParams.listID ? [this.queryParams.listID] : null,
@@ -480,6 +676,7 @@ export default Vue.extend({
       const data = {
         action,
         query: this.fullQueryExp,
+        attrib_filter: this.attribFilters,
         search: this.queryParams.search,
         list_ids: this.queryParams.listID ? [this.queryParams.listID] : null,
         target_list_ids: lists.map((l) => l.id),
@@ -509,7 +706,43 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['subscribers', 'lists', 'loading']),
+    ...mapState(['subscribers', 'lists', 'loading', 'serverConfig']),
+
+    // True when nothing narrows the list down: no search, no SQL query, no attribute condition.
+    noConditions() {
+      return this.queryParams.queryExp.trim() === '' && this.queryParams.search.trim() === ''
+        && this.attribFilters.length === 0;
+    },
+
+    // The column preset of the list being viewed; the default one without a list.
+    preset() {
+      const id = this.currentList ? this.currentList.axmPreset : '';
+      return presetOf(this.serverConfig.axm_column_presets, id, this.serverConfig.axm_default_column_preset);
+    },
+
+    // Attribute keys shown as columns, in the preset's order.
+    attribColumns() {
+      return this.preset.columns;
+    },
+
+    hasPresetChoice() {
+      return (this.serverConfig.axm_column_presets || []).length > 1;
+    },
+
+    presetName() {
+      return this.preset.id ? this.$t(`lists.preset.${this.preset.id}`) : '';
+    },
+
+    // Keys offered when adding a condition: the preset's columns, then the other keys the
+    // subscribers of this page have.
+    knownKeys() {
+      return [...new Set([...this.attribColumns, ...attribKeys(this.subscribers.results)])];
+    },
+
+    filterKeyOptions() {
+      const typed = ((this.filterForm && this.filterForm.key) || '').toLowerCase();
+      return this.knownKeys.filter((k) => k.toLowerCase().includes(typed));
+    },
 
     numSelectedSubscribers() {
       if (this.bulk.all) {
@@ -528,12 +761,24 @@ export default Vue.extend({
     },
   },
 
+  watch: {
+    'subscribers.results': function onResults() {
+      this.openCells = {};
+    },
+  },
+
   created() {
     this.$root.$on('page.refresh', this.querySubscribers);
+    window.addEventListener('resize', this.checkTableWidth);
+  },
+
+  updated() {
+    this.$nextTick(this.checkTableWidth);
   },
 
   destroyed() {
     this.$root.$off('page.refresh', this.querySubscribers);
+    window.removeEventListener('resize', this.checkTableWidth);
   },
 
   mounted() {

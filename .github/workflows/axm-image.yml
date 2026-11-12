@@ -198,7 +198,7 @@ jobs:
           npm install --global yarn@1.22.22
           cd frontend
           yarn install --frozen-lockfile
-          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/subscriber-columns.cy.js'
 
       - name: Upgrade official v6.2.0 database and smoke test
         env:
@@ -235,6 +235,9 @@ jobs:
           test "$column" = 1
           trigger=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM pg_trigger WHERE tgname = 'axm_guard_dynamic_subscription' AND NOT tgisinternal")
           test "$trigger" = 1
+          # Lists that existed before the upgrade get the default column preset.
+          presets=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) || ':' || count(*) FILTER (WHERE axm_preset = 'creator') FROM lists")
+          test "$presets" = 2:2
           trap 'docker logs axm-upgrade-smoke; docker rm -f axm-upgrade-smoke' EXIT
           docker run -d --name axm-upgrade-smoke --network host "${env_args[@]}" listmonk-axm:ci
           curl --fail --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 http://127.0.0.1:9001/health

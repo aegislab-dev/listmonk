@@ -838,6 +838,11 @@ section.lists {
 }
 
 /* Subscribers page */
+/* The page body may not grow with a wide table: the table scrolls inside its own box. */
+.main:has(> .subscribers) {
+  min-width: 0;
+}
+
 .subscribers {
   .subscribers-controls .buttons {
     margin-top: 15px;
@@ -856,6 +861,215 @@ section.lists {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Icons that the icon font does not have */
+  .axm-icon {
+    width: 1.05em;
+    height: 1.05em;
+    vertical-align: -0.15em;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linejoin: round;
+  }
+
+  /* Attribute columns */
+  th.attrib-head {
+    .attrib-head-label {
+      font-weight: 600;
+    }
+    .attrib-head-filter {
+      border: 0;
+      background: none;
+      padding: 0 2px;
+      margin-left: 4px;
+      cursor: pointer;
+      color: $grey-light;
+      border-radius: 3px;
+      vertical-align: middle;
+
+      &:hover, &:focus-visible, &.is-active {
+        color: $primary;
+      }
+      &:focus-visible {
+        outline: 2px solid $primary;
+      }
+    }
+  }
+  .table-wide-hint {
+    margin: 0 0 .5rem;
+  }
+  td.attrib-cell {
+    max-width: 12rem;
+
+    .attrib-wrap {
+      display: block;
+      min-width: 0;
+    }
+    .attrib-value {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+
+      &.is-open {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+    }
+    .attrib-more {
+      font-size: .8rem;
+    }
+    .attrib-empty {
+      color: $grey-light;
+    }
+  }
+
+  /* The column preset of the list */
+  .column-preset {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .25rem .6rem;
+    margin: 0 0 .75rem;
+    font-size: .9rem;
+
+    .column-preset-label, .column-preset-keys, .column-preset-note {
+      color: $grey;
+    }
+  }
+
+  /* Attribute conditions */
+  .attrib-filters {
+    margin: 1rem 0;
+  }
+  .attrib-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem;
+
+    .attrib-chips-label {
+      font-weight: 600;
+      font-size: .9rem;
+      color: $grey-dark;
+    }
+    .attrib-chip {
+      max-width: 100%;
+      height: auto;
+      min-height: 2em;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+  }
+  .attrib-filter-form {
+    display: grid;
+    grid-template-columns: minmax(10rem, 1fr) minmax(9rem, 12rem) minmax(10rem, 1.2fr) auto;
+    gap: .75rem;
+    align-items: start;
+    margin-top: .75rem;
+    padding: 1rem;
+    border: 1px solid $grey-lightest;
+    border-radius: 6px;
+    background: $white-bis;
+
+    .field {
+      margin-bottom: 0;
+    }
+    .attrib-filter-novalue {
+      display: block;
+      padding-top: .5rem;
+      color: $grey;
+    }
+    .attrib-filter-buttons {
+      display: flex;
+      gap: .5rem;
+      padding-top: 1.9rem;
+    }
+    .attrib-filter-help {
+      grid-column: 1 / -1;
+      margin: 0;
+    }
+  }
+
+  /* The table scrolls sideways inside its own box when the picked columns do not fit. */
+  .subscribers-table {
+    .table-wrapper {
+      overflow-x: auto;
+    }
+    th .th-wrap, td.actions {
+      white-space: nowrap;
+    }
+    /* A date that has to wrap breaks between words, not inside "10월". */
+    td.sub-date-cell {
+      word-break: keep-all;
+      min-width: 6.8em;
+    }
+    /* A name wraps between words, never inside a Korean name. */
+    td.sub-name-cell {
+      word-break: keep-all;
+    }
+    td.actions a {
+      margin: 0 6px;
+    }
+  }
+
+  @media screen and (max-width: 768px) {
+    .attrib-filter-form {
+      grid-template-columns: 1fr;
+
+      .attrib-filter-buttons {
+        padding-top: 0;
+      }
+    }
+
+    /* One card per subscriber: the e-mail on top, then "label: value" lines that wrap
+       inside the card instead of pushing the page wider than the screen. */
+    .subscribers-table .table-wrapper.has-mobile-cards {
+      overflow-x: visible;
+
+      tr:not(.is-empty) td {
+        gap: .75rem;
+        min-width: 0;
+        padding: .45rem .75rem;
+
+        &:before {
+          flex: none;
+          max-width: 45%;
+          overflow-wrap: anywhere;
+        }
+        > *, .attrib-value {
+          min-width: 0;
+          overflow-wrap: anywhere;
+        }
+      }
+      tr:not(.is-empty) td.sub-email-cell {
+        display: block;
+        text-align: left;
+
+        &:before {
+          display: none;
+        }
+        .tags {
+          margin-top: .35rem;
+        }
+      }
+      td.attrib-cell {
+        max-width: none;
+
+        .attrib-value {
+          white-space: normal;
+          display: -webkit-box;
+          -webkit-box-orient: vertical;
+          -webkit-line-clamp: 2;
+
+          &.is-open {
+            display: block;
+          }
+        }
+      }
+    }
   }
 }
 

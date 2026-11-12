@@ -53,7 +53,7 @@ SELECT id, uuid, type FROM lists WHERE
     END);
 
 -- name: create-list
-INSERT INTO lists (uuid, name, type, optin, status, tags, description, axm_filter) VALUES($1, $2, $3, $4, $5, $6, $7, $8::JSONB) RETURNING id;
+INSERT INTO lists (uuid, name, type, optin, status, tags, description, axm_filter, axm_preset) VALUES($1, $2, $3, $4, $5, $6, $7, $8::JSONB, $9) RETURNING id;
 
 -- name: update-list
 WITH l AS (
@@ -65,6 +65,7 @@ WITH l AS (
         tags=$6::VARCHAR(100)[],
         description=(CASE WHEN $7 != '' THEN $7 ELSE description END),
         axm_filter=(CASE WHEN axm_filter IS NOT NULL AND $8::JSONB IS NOT NULL THEN $8::JSONB ELSE axm_filter END),
+        axm_preset=(CASE WHEN $9 != '' THEN $9 ELSE axm_preset END),
         updated_at=NOW()
     WHERE id = $1
     RETURNING id, name
