@@ -1,4 +1,7 @@
 import Papa from 'papaparse';
+import {
+  convertValue, normalizeName, standardByKey, standardFor,
+} from './standard-attribs.js'; // eslint-disable-line import/extensions
 
 export const LIMITS = Object.freeze({ input: 10 * 1024 * 1024, rows: 50000, output: 20 * 1024 * 1024 });
 export const STORAGE_KEY = 'listmonk.axm.importMapping.v1';
@@ -123,24 +126,20 @@ export function parseCSV(text, { delimiter = '', header = true } = {}) {
   };
 }
 
-// Common Korean list headers. Spaces are ignored when a label is looked up.
+// Common Korean list headers. Spaces are ignored when a label is looked up. The standard
+// attributes (country, follower, company, title, industry) are not here: their column names
+// come from the server's dictionary and are matched first.
 const FIELDS = { email: ['이메일', '메일', '메일주소', '이메일주소', 'e-mail', 'email'], name: ['이름', '성함', '성명', 'name'], discard: ['메모', '비고'] };
 const KEYS = {
-  company_name: ['회사', '회사명', '기업명', '소속'],
   department: ['부서', '부서명'],
-  job_title: ['직책', '직함'],
-  job_rank: ['직급', '직위'],
   phone: ['전화', '전화번호', '연락처', '휴대폰', '휴대폰번호', '휴대전화', '핸드폰'],
-  region: ['지역'],
   address: ['주소'],
   postal_code: ['우편번호'],
-  country: ['국가'],
   city: ['도시'],
   signup_date: ['가입일', '가입일자', '등록일'],
   birth_date: ['생년월일', '생일'],
   gender: ['성별'],
   age: ['나이', '연령'],
-  industry: ['업종'],
   website: ['홈페이지', '웹사이트'],
   customer_grade: ['고객등급'],
   member_grade: ['회원등급'],
@@ -171,9 +170,16 @@ function spellKey(text) {
   return /^[0-9]/.test(key) ? `item_${key}` : key;
 }
 
-// A valid new attribute key for a label or a mistyped key: a known term first, else spelled out.
-export function suggestKey(text) {
-  return KNOWN.get(compact(text)) || spellKey(text);
+// A valid new attribute key for a label or a mistyped key: the standard item it means, then
+// a known term, else spelled out. standard is the server's dictionary ([{ key, aliases }]).
+export function suggestKey(text, standard = []) {
+  return standardFor(standard, text)?.key || KNOWN.get(compact(text)) || spellKey(text);
+}
+
+// The standard item a key that is not standard itself stands for ('followers' -> follower).
+export function standardTwin(key, standard = []) {
+  const entry = standardFor(standard, key);
+  return entry && entry.key !== key ? entry.key : '';
 }
 
 // True when the key was spelled out from Hangul rather than taken from KEYS.
@@ -182,15 +188,32 @@ export function isSpelledKey(label, key) {
   return /[가-힣]/.test(label) && !!spelled && (key === spelled || key.startsWith(`${spelled}_`));
 }
 
-export function suggestMapping(parsed, memory = { columns: {} }) {
+// Suggests where each column goes. A column name the standard dictionary knows gets the
+// standard key; any other column gets a key already in use that differs from its name only
+// by letter case, spaces, underscores or hyphens, before a new key is made up.
+export function suggestMapping(parsed, memory = { columns: {} }, { standard = [], existingKeys = [] } = {}) {
   const remembered = (column) => {
     const entry = Object.prototype.hasOwnProperty.call(memory.columns || {}, column) && memory.columns[column];
-    return entry && ROLES.includes(entry.role) ? { role: entry.role, key: entry.key || '' } : null;
+    if (!entry || !ROLES.includes(entry.role)) return null;
+    // A name this screen made up earlier for a standard column (region, job_title, palrowo)
+    // gives way to the standard key. A name the user chose on purpose is kept.
+    const entryOf = standardFor(standard, column);
+    const spelled = spellKey(column);
+    const madeUp = standardFor(standard, entry.key) === entryOf || (spelled && (entry.key === spelled || entry.key.startsWith(`${spelled}_`)));
+    if (entry.role === 'attribute' && entryOf && entry.key !== entryOf.key && madeUp) return null;
+    return { role: entry.role, key: entry.key || '' };
   };
   // Names the user chose before are kept; suggested names must not collide with them or each other.
   const used = new Set(parsed.columns.map((column) => remembered(column)?.key).filter(Boolean));
+  const existing = (column) => {
+    const wanted = normalizeName(column);
+    const same = existingKeys.filter((key) => normalizeName(key) === wanted && !used.has(key));
+    return same.find((key) => key === column) || same[0] || '';
+  };
   const unique = (column, index) => {
-    let key = suggestKey(column) || `column_${index + 1}`;
+    const entry = standardFor(standard, column);
+    let key = (entry && !used.has(entry.key) && entry.key) || existing(column)
+      || KNOWN.get(compact(column)) || spellKey(column) || `column_${index + 1}`;
     if (used.has(key)) key = spellKey(column) || key;
     const base = key;
     for (let n = 2; used.has(key); n += 1) key = `${base}_${n}`;
@@ -224,7 +247,12 @@ export function validateMapping(mapping, existingKeys = []) {
   return errors;
 }
 
-export function convertCSV(parsed, mapping, existingKeys = []) {
+// Builds the upload from the mapping. A column saved under a standard key has its values
+// brought into that item's format (country name -> code, 10K -> 10000 as a JSON number).
+// values reports, per such column, how many cells were kept, changed, left out as blank and
+// could not be read, with examples. Unreadable cells are never stored: the caller uploads
+// only when every column that has them was told to leave them out (mapping[i].blank).
+export function convertCSV(parsed, mapping, existingKeys = [], standard = []) {
   if (mapping.length !== parsed.columns.length || validateMapping(mapping, existingKeys).length) throw new ImportError('mapping');
   const emailIndex = mapping.findIndex(({ role }) => role === 'email');
   const nameIndex = mapping.findIndex(({ role }) => role === 'name');
@@ -235,6 +263,16 @@ export function convertCSV(parsed, mapping, existingKeys = []) {
   const examples = {
     empty: [], invalid: [], duplicate: [], malformed: parsed.issues.slice(0, 5),
   };
+  const values = [];
+  const columnValues = mapping.map(({ role, key }, index) => {
+    const kind = role === 'attribute' ? standardByKey(standard, key)?.kind : '';
+    if (kind !== 'country' && kind !== 'integer') return null;
+    const stats = {
+      index, key, kind, kept: 0, changed: 0, blank: 0, unreadable: 0, conversions: [], examples: [],
+    };
+    values.push(stats);
+    return stats;
+  });
   const output = [];
   const sourceRows = [];
   const preview = [];
@@ -252,9 +290,26 @@ export function convertCSV(parsed, mapping, existingKeys = []) {
     }
     seen.add(email);
     const attributes = Object.create(null);
+    // What the preview shows next to a value: the cell it was read from, or a cell left out.
+    const changed = Object.create(null);
+    const dropped = [];
     mapping.forEach(({ role, key }, index) => {
       const value = cells[index].trim();
       if (!value || (role !== 'attribute' && role !== 'tags')) return;
+      const stats = columnValues[index];
+      if (stats) {
+        const result = convertValue(stats.kind, value);
+        stats[result.status] += 1;
+        if (result.status === 'changed') {
+          changed[key] = value;
+          if (stats.conversions.length < 5 && !stats.conversions.some(({ from }) => from === value)) stats.conversions.push({ from: value, to: String(result.value) });
+        } else if (result.status === 'unreadable') {
+          dropped.push([key, value]);
+          if (stats.examples.length < 5 && !stats.examples.some((example) => example.value === value)) stats.examples.push({ row, value });
+        }
+        if (result.status === 'kept' || result.status === 'changed') attributes[key] = result.value;
+        return;
+      }
       attributes[key] = role === 'tags' ? [...new Set(value.split(',').map((tag) => tag.trim()).filter(Boolean))] : value;
       if (role === 'tags' && !attributes[key].length) delete attributes[key];
     });
@@ -262,9 +317,10 @@ export function convertCSV(parsed, mapping, existingKeys = []) {
     const serialized = Object.keys(attributes).length ? JSON.stringify(attributes) : '';
     output.push([email, name, serialized]);
     sourceRows.push(row);
-    if (preview.length < 5) {
+    // The first rows, and after them the first rows that have a cell left out.
+    if (preview.length < 5 || (dropped.length && preview.filter((shown) => shown.dropped.length).length < 3 && preview.length < 8)) {
       preview.push({
-        row, email, name, attributes: Object.entries(attributes),
+        row, email, name, attributes: Object.entries(attributes), changed: { ...changed }, dropped,
       });
     }
   });
@@ -273,8 +329,13 @@ export function convertCSV(parsed, mapping, existingKeys = []) {
   if (bytes.byteLength > LIMITS.output) throw new ImportError('outputLimit');
   summary.imported = output.length;
   return {
-    bytes, summary, examples, preview, sourceRows,
+    bytes, summary, examples, preview, sourceRows, values,
   };
+}
+
+// The columns whose unreadable cells the user has not yet agreed to leave out.
+export function unresolvedValues(values, mapping) {
+  return values.filter(({ index, unreadable }) => unreadable > 0 && !mapping[index].blank).map(({ index }) => index);
 }
 
 function safeMemory(value) {

@@ -1,15 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import Papa from 'papaparse';
 import {
   LIMITS, STORAGE_KEY, checkInputSize, cleanEmail, validEmail, suggestKey, isSpelledKey, romanize,
   parseCSV, suggestMapping, validateMapping, convertCSV, readMemory, rememberMapping,
-  inspectOriginalCSV, inspectCSVHeader,
+  inspectOriginalCSV, inspectCSVHeader, standardTwin, unresolvedValues,
 } from '../src/lib/csv-import.js';
+
+// The dictionary the server sends in /api/config, read from the file the server embeds.
+const STANDARD = JSON.parse(readFileSync(new URL('../../internal/core/axm_standard_attribs.json', import.meta.url), 'utf8'));
+const suggest = (parsed, memory, existingKeys = []) => suggestMapping(parsed, memory, { standard: STANDARD, existingKeys });
 
 const converted = (text, mapping, keys) => {
   const parsed = parseCSV(text);
-  return convertCSV(parsed, mapping || suggestMapping(parsed), keys);
+  return convertCSV(parsed, mapping || suggest(parsed), keys, STANDARD);
 };
 const unpack = (result) => Papa.parse(new TextDecoder().decode(result.bytes), { header: true }).data;
 
@@ -18,7 +23,7 @@ test('quoted comma, escaped quotes, newline and empty fields round trip through 
   const [row] = unpack(result);
   assert.equal(row.email, 'one@example.invalid');
   assert.equal(row.name, '가상 "한",이름');
-  assert.deepEqual(JSON.parse(row.attributes), { company_name: '첫 줄\n둘째 줄', tags: ['개발', 'AI', '마케팅'], external_id: '00123' });
+  assert.deepEqual(JSON.parse(row.attributes), { company: '첫 줄\n둘째 줄', tags: ['개발', 'AI', '마케팅'], external_id: '00123' });
   assert.equal(result.summary.cleaned, 1);
   assert.equal(new TextDecoder().decode(result.bytes).split('\r\n')[0], 'email,name,attributes');
 });
@@ -78,8 +83,8 @@ test('attribute names are made from labels: known terms, spelled-out Hangul and 
   assert.deepEqual(validateMapping(mapping), []);
   // Suggested names never collide: a taken name is spelled out, then numbered.
   const twins = parseCSV('email,전화번호,휴대폰,직책,직급,회사,회사,메모2,메모2\na@example.invalid,1,2,3,4,5,6,7,8');
-  assert.deepEqual(suggestMapping(twins).map(({ key }) => key), ['', 'phone', 'hyudaepon', 'job_title', 'job_rank', 'company_name', 'hoesa', 'memo2', 'memo2_2']);
-  assert.deepEqual(validateMapping(suggestMapping(twins)), []);
+  assert.deepEqual(suggest(twins).map(({ key }) => key), ['', 'phone', 'hyudaepon', 'title', 'jikgeup', 'company', 'hoesa', 'memo2', 'memo2_2']);
+  assert.deepEqual(validateMapping(suggest(twins)), []);
   assert.equal(isSpelledKey('휴대폰', 'hyudaepon'), true);
   assert.equal(isSpelledKey('메모2', 'memo2_2'), true);
   assert.deepEqual(suggestMapping(twins, { columns: { 휴대폰: { role: 'attribute', key: 'phone' } } }).map(({ key }) => key).slice(1, 3), ['jeonhwabeonho', 'phone']);
@@ -132,7 +137,9 @@ test('email cleaning, validation, first duplicate wins, logical source rows and 
   assert.equal(unpack(result)[0].name, 'first\nname');
   assert.deepEqual(result.examples.duplicate, [{ row: 3, email: 'ab@example.invalid' }]);
   assert.deepEqual(result.examples.invalid, [{ row: 5, email: 'bad@localhost' }]);
-  assert.deepEqual(result.preview[0], { row: 2, email: 'ab@example.invalid', name: 'first\nname', attributes: [] });
+  assert.deepEqual(result.preview[0], {
+    row: 2, email: 'ab@example.invalid', name: 'first\nname', attributes: [], changed: {}, dropped: [],
+  });
 });
 
 test('malformed widths are excluded and keep source row numbers', () => {
@@ -188,11 +195,11 @@ test('optional storage persists only column labels and mappings, sanitizes and c
   let saved;
   const storage = { getItem: () => saved, setItem: (key, value) => { assert.equal(key, STORAGE_KEY); saved = value; } };
   const parsed = parseCSV('이메일,이름,회사\nprivate@example.invalid,가상 이름,비밀 값');
-  rememberMapping(storage, parsed.columns, suggestMapping(parsed));
+  rememberMapping(storage, parsed.columns, suggest(parsed));
   assert.equal(saved.includes('private@example.invalid'), false);
   assert.equal(saved.includes('가상 이름'), false);
   assert.equal(saved.includes('비밀 값'), false);
-  assert.deepEqual(readMemory(storage).keys, ['company_name']);
+  assert.deepEqual(readMemory(storage).keys, ['company']);
   const large = Array.from({ length: 201 }, (_, i) => `key_${i}`);
   rememberMapping(storage, large, large.map((key) => ({ role: 'attribute', key })));
   assert.equal(Object.keys(readMemory(storage).columns).length, 200);
@@ -200,4 +207,138 @@ test('optional storage persists only column labels and mappings, sanitizes and c
   assert.doesNotThrow(() => rememberMapping({ getItem() { throw Error(); }, setItem() { throw Error(); } }, parsed.columns, suggestMapping(parsed)));
   saved = '{broken';
   assert.deepEqual(readMemory(storage).keys, []);
+});
+
+test('column names the standard dictionary knows get the standard key', () => {
+  const names = {
+    country: ['국가', '지역', '나라', '국가코드', '국가 코드', '거주 국가', 'Country', 'Country Code', 'country_code', 'Region', 'nation'],
+    follower: ['팔로워', '팔로워 수', '팔로워수', '팔로어', 'Follower', 'Followers', 'Follower Count', 'follower_count', 'followers_count'],
+    company: ['회사', '회사명', '기업명', '소속', '업체명', '상호', '법인명', 'Company', 'Company Name', 'company_name', 'Organization'],
+    title: ['직함', '직책', '직급', '직위', 'Title', 'Job Title', 'job_title', 'Position'],
+    industry: ['업종', '산업', '산업군', 'Industry', 'sector'],
+  };
+  Object.entries(names).forEach(([key, labels]) => labels.forEach((label) => {
+    assert.equal(suggestKey(label, STANDARD), key, label);
+    const parsed = parseCSV(`email,${label}\na@example.invalid,x`);
+    assert.deepEqual(suggest(parsed)[1], { role: 'attribute', key }, label);
+  }));
+  // Names with another meaning are not collected.
+  for (const label of ['소재지', '주소', '도시', 'city', 'address', '구독자 수', '평균 조회수', '참여율', '브랜드명', '광고주명', '부서', 'department', '카테고리', '업태']) {
+    assert.equal(STANDARD.some(({ key }) => key === suggestKey(label, STANDARD)), false, label);
+  }
+  // The names this screen used to make up for these columns are gone.
+  const old = parseCSV('email,팔로워,지역,회사명,직함,직급\na@example.invalid,1,2,3,4,5');
+  assert.deepEqual(suggest(old).map(({ key }) => key), ['', 'follower', 'country', 'company', 'title', 'jikgeup']);
+  // Without a dictionary nothing is standard and the old rules apply.
+  assert.equal(suggestKey('지역'), 'jiyeok');
+  // A key that reads like a standard item points at it; the item itself and other keys do not.
+  assert.equal(standardTwin('followers', STANDARD), 'follower');
+  assert.equal(standardTwin('company_name', STANDARD), 'company');
+  assert.equal(standardTwin('job_rank', STANDARD), 'title');
+  assert.equal(standardTwin('region', STANDARD), 'country');
+  assert.equal(standardTwin('follower', STANDARD), '');
+  assert.equal(standardTwin('gmv', STANDARD), '');
+});
+
+test('a name already in use wins over a made-up one, a standard key wins over both', () => {
+  const parsed = parseCSV('email,TikTokerURL,성별,Axiom Sales ID,지역,가입 경로\na@example.invalid,u,여,7,US,web');
+  const existing = ['tiktokerurl', '성별', 'axiom sales id', 'region', 'gaip'];
+  assert.deepEqual(suggest(parsed, undefined, existing).map(({ key }) => key), ['', 'tiktokerurl', '성별', 'axiom sales id', 'country', 'gaip_gyeongro']);
+  // Without the names in use the same columns get new names.
+  assert.deepEqual(suggest(parsed).map(({ key }) => key), ['', 'tik_toker_url', 'gender', 'axiom_sales_id', 'country', 'gaip_gyeongro']);
+  // An exact match is preferred among several, and one name is not given to two columns.
+  const twice = parseCSV('email,Plan,plan\na@example.invalid,a,b');
+  assert.deepEqual(suggest(twice, undefined, ['plan', 'Plan']).map(({ key }) => key), ['', 'Plan', 'plan']);
+  assert.deepEqual(suggest(twice, undefined, ['plan']).map(({ key }) => key), ['', 'plan', 'plan_2']);
+  assert.deepEqual(validateMapping(suggest(parsed, undefined, existing), existing), []);
+});
+
+test('remembered made-up names of standard columns give way; names chosen on purpose stay', () => {
+  const parsed = parseCSV('email,지역,팔로워,회사명,직함,직급,업종,Followers\na@example.invalid,1,2,3,4,5,6,7');
+  const memory = { columns: {
+    지역: { role: 'attribute', key: 'region' },
+    팔로워: { role: 'attribute', key: 'palrowo' },
+    회사명: { role: 'attribute', key: 'company_name' },
+    직함: { role: 'discard', key: '' },
+    직급: { role: 'attribute', key: 'job_rank' },
+    업종: { role: 'attribute', key: 'sector_kr' },
+    Followers: { role: 'attribute', key: 'followers' },
+  } };
+  assert.deepEqual(suggest(parsed, memory), [
+    { role: 'email', key: '' }, { role: 'attribute', key: 'country' }, { role: 'attribute', key: 'follower' },
+    { role: 'attribute', key: 'company' }, { role: 'discard', key: '' }, { role: 'attribute', key: 'title' },
+    { role: 'attribute', key: 'sector_kr' }, { role: 'attribute', key: 'followers' },
+  ]);
+});
+
+test('values of country and follower columns are stored in the standard format', () => {
+  const parsed = parseCSV([
+    'email,지역,팔로워,회사명,메모',
+    'a@example.invalid,United States,"14,900", (주)예시 ,x',
+    'b@example.invalid,미국,10K,,x',
+    'c@example.invalid,PH,1.2M,,x',
+    'd@example.invalid,uk,1만,,x',
+    'e@example.invalid,-,3.5천,,x',
+    'f@example.invalid,,52300,,x',
+    'bad,서울,약 1만,,x',
+  ].join('\n'));
+  const result = convertCSV(parsed, suggest(parsed), [], STANDARD);
+  assert.deepEqual(unpack(result).map((row) => (row.attributes ? JSON.parse(row.attributes) : null)), [
+    { country: 'US', follower: 14900, company: '(주)예시' }, { country: 'US', follower: 10000 }, { country: 'PH', follower: 1200000 },
+    { country: 'GB', follower: 10000 }, { follower: 3500 }, { follower: 52300 },
+  ]);
+  // Numbers are JSON numbers, not text.
+  assert.match(unpack(result)[0].attributes, /"follower":14900[,}]/);
+  // Only rows that are imported are counted; the invalid e-mail row is not.
+  assert.deepEqual(result.values.map(({ examples, conversions, ...counts }) => counts), [
+    { index: 1, key: 'country', kind: 'country', kept: 1, changed: 3, blank: 1, unreadable: 0 },
+    { index: 2, key: 'follower', kind: 'integer', kept: 1, changed: 5, blank: 0, unreadable: 0 },
+  ]);
+  assert.deepEqual(result.values[0].conversions, [{ from: 'United States', to: 'US' }, { from: '미국', to: 'US' }, { from: 'uk', to: 'GB' }]);
+  assert.deepEqual(result.preview[0].changed, { country: 'United States', follower: '14,900' });
+  assert.deepEqual(unresolvedValues(result.values, suggest(parsed)), []);
+  // The same columns under other names are stored as written.
+  const plain = suggest(parsed).map((entry) => ({ ...entry, key: { country: 'area', follower: 'fans' }[entry.key] || entry.key }));
+  const kept = convertCSV(parsed, plain, [], STANDARD);
+  assert.deepEqual(JSON.parse(unpack(kept)[1].attributes), { area: '미국', fans: '10K' });
+  assert.deepEqual(kept.values, []);
+  // A tags column is never converted, whatever its name.
+  const tagged = suggest(parsed).map((entry) => (entry.key === 'country' ? { role: 'tags', key: 'country' } : entry));
+  assert.deepEqual(JSON.parse(unpack(convertCSV(parsed, tagged, [], STANDARD))[0].attributes).country, ['United States']);
+});
+
+test('values that cannot be read are reported, never stored, and block the upload until left out', () => {
+  const parsed = parseCSV([
+    'email,지역,팔로워',
+    ...['서울,100', '경기,약 2만', '부산,12.500', '서울,10K+', 'KR,-5', '대전,7', '인천,8', '광주,9'].map((cells, n) => `p${n}@example.invalid,${cells}`),
+  ].join('\n'));
+  const mapping = suggest(parsed);
+  const result = convertCSV(parsed, mapping, [], STANDARD);
+  const [country, follower] = result.values;
+  assert.equal(country.unreadable, 7);
+  assert.equal(country.kept, 1);
+  // At most five different examples, with the row they come from.
+  assert.deepEqual(country.examples, [
+    { row: 2, value: '서울' }, { row: 3, value: '경기' }, { row: 4, value: '부산' }, { row: 7, value: '대전' }, { row: 8, value: '인천' },
+  ]);
+  assert.deepEqual(follower.examples.map(({ value }) => value), ['약 2만', '12.500', '10K+', '-5']);
+  assert.deepEqual(unresolvedValues(result.values, mapping), [1, 2]);
+  assert.deepEqual(unresolvedValues(result.values, [mapping[0], { ...mapping[1], blank: true }, mapping[2]]), [2]);
+  assert.deepEqual(unresolvedValues(result.values, mapping.map((entry) => ({ ...entry, blank: true }))), []);
+  // Unreadable cells are left out of the upload whether or not that was agreed yet.
+  assert.deepEqual(unpack(result).map((row) => (row.attributes ? JSON.parse(row.attributes) : null)), [
+    { follower: 100 }, null, null, null, { country: 'KR' }, { follower: 7 }, { follower: 8 }, { follower: 9 },
+  ]);
+  // The preview shows the first five rows; they already show values that are left out.
+  assert.deepEqual(result.preview.map(({ row }) => row), [2, 3, 4, 5, 6]);
+  assert.deepEqual(result.preview[1].dropped, [['country', '경기'], ['follower', '약 2만']]);
+  assert.deepEqual(result.preview[0].dropped, [['country', '서울']]);
+});
+
+test('the preview adds rows with a value left out when the first five have none', () => {
+  const rows = Array.from({ length: 12 }, (_, n) => `p${n}@example.invalid,${[6, 8, 9, 10].includes(n) ? '서울' : 'US'}`);
+  const parsed = parseCSV(['email,국가', ...rows].join('\n'));
+  const result = convertCSV(parsed, suggest(parsed), [], STANDARD);
+  assert.deepEqual(result.preview.map(({ row }) => row), [2, 3, 4, 5, 6, 8, 10, 11]);
+  assert.deepEqual(result.preview.map(({ dropped }) => dropped.length), [0, 0, 0, 0, 0, 1, 1, 1]);
 });

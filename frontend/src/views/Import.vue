@@ -94,7 +94,8 @@
             :header="csv.header" :header-hint="csv.headerHint" :columns="displayColumns" :source-columns="csv.columns"
             :samples="csv.samples"
             :mapping="csv.mapping" :column-errors="columnErrors" :column-warnings="columnWarnings"
-            :existing-keys="existingKeys" :validation="mappingMessages" :total="csv.total" :summary="csv.summary"
+            :existing-keys="existingKeys" :standard="standardAttribs" :values="csv.values"
+            :validation="mappingMessages" :total="csv.total" :summary="csv.summary"
             :examples="csv.examples" :preview="csv.preview" :error="csv.error" :busy="csv.busy"
             :overwrite="form.mode === 'subscribe' && form.overwriteUserInfo"
             @mapping="updateMapping" @mode="setCSVMode" @encoding="setEncoding" @header="setHeader" />
@@ -176,6 +177,10 @@ function csvState() {
     columns: [],
     mapping: [],
     samples: [],
+    // The columns whose assignment the user changed; suggestions never replace those.
+    touched: [],
+    // Per column saved under a standard item: how its values were converted.
+    values: [],
     total: null,
     delimiter: '',
     headerHint: false,
@@ -305,6 +310,8 @@ export default Vue.extend({
       this.csv.columns = [];
       this.csv.summary = null;
       this.csv.preview = [];
+      this.csv.values = [];
+      this.csv.touched = [];
       this.csv.validation = [];
       try {
         const oversized = file.size > LIMITS.input;
@@ -317,6 +324,14 @@ export default Vue.extend({
           if (worker === this.csvWorker) this.csvFailure('worker');
         };
         this.csvWorker.onmessage = ({ data }) => {
+          if (data.type === 'suggest') {
+            // Only this file's Worker can answer; columns the user set stay as they are.
+            if (worker !== this.csvWorker || !this.csv.parsed || data.mapping.length !== this.csv.mapping.length) return;
+            const next = this.csv.mapping.map((entry, n) => (this.csv.touched.includes(n) ? entry : data.mapping[n]));
+            if (JSON.stringify(next) !== JSON.stringify(this.csv.mapping)) this.csv.mapping = next;
+            this.convertCSV();
+            return;
+          }
           if (data.id !== this.csvRequest) return;
           if (data.type === 'error') {
             this.csvFailure(data.code, data.total);
@@ -352,6 +367,8 @@ export default Vue.extend({
               summary: data.summary || null,
               examples: data.examples || {},
               preview: data.preview || [],
+              // A reply without a conversion (another column is wrong) keeps the last counts.
+              values: data.values || this.csv.values,
             });
           }
         };
@@ -375,6 +392,8 @@ export default Vue.extend({
           delimiter,
           header: this.csv.header,
           memory: this.memory(),
+          standard: this.standardAttribs,
+          keys: this.existingKeys,
         }, [bytes]);
       } catch (error) {
         if (id === this.csvRequest) this.csvFailure(error.code || 'read');
@@ -421,13 +440,17 @@ export default Vue.extend({
       this.csvTimer = setTimeout(() => {
         if (this.csvWorker) {
           this.csvWorker.postMessage({
-            id: this.csvRequest, type: 'convert', mapping: this.csv.mapping, keys: this.existingKeys,
+            id: this.csvRequest, type: 'convert', mapping: this.csv.mapping, keys: this.existingKeys, standard: this.standardAttribs,
           });
         }
       }, 100);
     },
 
     updateMapping(mapping) {
+      mapping.forEach((entry, n) => {
+        const old = this.csv.mapping[n] || {};
+        if ((entry.role !== old.role || entry.key !== old.key) && !this.csv.touched.includes(n)) this.csv.touched.push(n);
+      });
       this.csv.mapping = mapping;
       this.convertCSV();
     },
@@ -460,7 +483,15 @@ export default Vue.extend({
         Object.keys(subscriber.attribs || {}).forEach((key) => keys.add(key));
       }));
       this.existingKeys = [...keys].sort();
-      if (this.csv.parsed) this.convertCSV();
+      if (!this.csv.parsed) return;
+      // A name already in use may fit a column better than the one made up without it.
+      if (this.csvWorker && !this.csv.limit) {
+        this.csvWorker.postMessage({
+          type: 'suggest', memory: this.memory(), standard: this.standardAttribs, keys: this.existingKeys,
+        });
+      } else {
+        this.convertCSV();
+      }
     },
 
     clearFile() {
@@ -621,7 +652,11 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['lists']),
+    ...mapState(['lists', 'serverConfig']),
+    // The standard attribute dictionary: [{ key, kind, aliases }].
+    standardAttribs() {
+      return this.serverConfig.axm_standard_attribs || [];
+    },
     isCSV() {
       return !!this.form.file && /\.csv$/i.test(this.form.file.name);
     },
@@ -641,6 +676,8 @@ export default Vue.extend({
     columnErrors() {
       const errors = {};
       this.csv.validation.forEach(({ type, index }) => {
+        // Values that cannot be read are shown by the mapper itself, with what to do about them.
+        if (type === 'unreadable') return;
         if (index !== undefined) {
           const detail = type === 'key' && this.csv.mapping[index].key ? 'keyInvalid' : type;
           errors[index] = this.$t(`import.mapColumnError${detail}`);

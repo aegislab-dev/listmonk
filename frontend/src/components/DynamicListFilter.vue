@@ -22,7 +22,14 @@
       <b-field :label="$t('lists.dynamic.key')">
         <b-autocomplete v-model="condition.key" :data="keyOptions(condition.key)" maxlength="64"
           :placeholder="$t('lists.dynamic.keyPlaceholder')" :open-on-focus="true" :keep-first="false"
-          @select="key => selectKey(index, key)" :data-cy="`dynamic-key-${index}`" />
+          @select="key => selectKey(index, key)" :data-cy="`dynamic-key-${index}`">
+          <template #default="props">
+            <span class="key-option">
+              <span>{{ props.option }}</span>
+              <span v-if="standardLabel(props.option)" class="key-option-std">{{ standardLabel(props.option) }} · {{ $t('lists.dynamic.standardTag') }}</span>
+            </span>
+          </template>
+        </b-autocomplete>
       </b-field>
       <b-field :label="$t('lists.dynamic.operator')">
         <b-select v-model="condition.op" expanded :data-cy="`dynamic-op-${index}`" @input="changeOp(index)">
@@ -59,10 +66,18 @@
           </div>
         </div>
       </div>
-      <b-field v-else :label="$t('lists.dynamic.value')">
+      <b-field v-else :label="$t('lists.dynamic.value')" :addons="false">
         <b-input v-if="condition.op !== 'empty'" v-model="condition.value" maxlength="200"
           :placeholder="$t('lists.dynamic.valuePlaceholder')" :data-cy="`dynamic-value-${index}`" />
         <span v-else class="empty-value">{{ $t('lists.dynamic.noValue') }}</span>
+        <p v-if="countryHint(condition)" class="help country-hint" :data-cy="`dynamic-country-hint-${index}`">
+          {{ $t('lists.dynamic.countryHint') }}
+          <button v-if="countryHint(condition).code" type="button" class="country-use" :data-cy="`dynamic-country-use-${index}`"
+            @click="condition.value = countryHint(condition).code">
+            {{ $t('lists.dynamic.countryUse', { code: countryHint(condition).code }) }}
+          </button>
+          <template v-else>{{ $t('lists.dynamic.countryExample') }}</template>
+        </p>
       </b-field>
       <b-button type="is-text" icon-left="trash-can-outline" class="condition-remove"
         :aria-label="$t('lists.dynamic.removeCondition', { num: index + 1 })"
@@ -138,6 +153,7 @@ import {
   filterToForm, formatNumberText, formToFilter, isNumberOp, koreanNumberText, NUMBER_OPS, parseNumberText, summarizeFilter,
   TEXT_OPS, validateDynamicForm,
 } from '../dynamic-list';
+import { countryHint, standardByKey, withStandardFirst } from '../lib/standard-attribs';
 
 export default {
   components: { ListSelector },
@@ -171,7 +187,9 @@ export default {
     };
   },
   computed: {
-    ...mapState(['lists']),
+    ...mapState(['lists', 'serverConfig']),
+    // The standard attribute dictionary: its items are offered first, sampled or not.
+    standardAttribs() { return this.serverConfig.axm_standard_attribs || []; },
     ordinaryLists() { return (this.lists.results || []).filter((l) => !l.axmFilter); },
     selectedBase() { return this.ordinaryLists.filter((l) => (this.form.base.lists || []).includes(l.id)); },
     hasNumberCondition() { return this.form.conditions.some((c) => isNumberOp(c.op)); },
@@ -205,7 +223,12 @@ export default {
   },
   methods: {
     setBase(lists) { this.$set(this.form.base, 'lists', lists.map((l) => l.id)); },
-    keyOptions(key) { return this.keys.filter((k) => k.toLowerCase().includes(key.toLowerCase())); },
+    keyOptions(key) {
+      return withStandardFirst(this.standardAttribs, this.keys).filter((k) => k.toLowerCase().includes(key.toLowerCase()));
+    },
+    standardLabel(key) { return standardByKey(this.standardAttribs, key) ? this.$t(`subscribers.standard.${key}`) : ''; },
+    // "같음" compares the stored text exactly, and a country is stored as its code.
+    countryHint(c) { return c.op === 'eq' ? countryHint(this.standardAttribs, c.key, c.value) : null; },
     selectKey(index, key) { if (key) this.form.conditions[index].key = key; },
     isNumberOp,
     numberFields(op) { return op === 'between' ? ['value', 'value2'] : ['value']; },
@@ -309,6 +332,10 @@ export default {
 .condition-number { padding-top: 33px; color: #777; }
 .condition-remove { margin-top: 25px; }
 .empty-value { display: block; padding-top: 6px; color: #666; font-size: .85rem; }
+.key-option { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.key-option-std { border: 1px solid #b9d3f0; border-radius: 3px; background: #f2f7fd; color: #1d5a9e; padding: 0 5px; font-size: .7rem; white-space: nowrap; }
+.country-hint { color: #5c4400; }
+.country-use { border: 0; background: none; padding: 0; color: #0055d4; font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
 .condition-value .label { display: block; margin-bottom: .5em; }
 .number-values { display: grid; gap: 8px; }
 .number-value { min-width: 0; }

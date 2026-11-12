@@ -15,6 +15,7 @@
 </template>
 
 <script>
+import { mapState } from 'vuex';
 import Media from '../views/Media.vue';
 import {
   BASE_ITEMS, buildToken, parseTokens, loadItems,
@@ -38,6 +39,10 @@ export default {
     };
   },
 
+  computed: {
+    ...mapState(['serverConfig']),
+  },
+
   methods: {
     personalization() {
       const keys = ['insert', 'edit', 'search', 'base', 'attributes', 'noResults', 'loading', 'error',
@@ -45,12 +50,16 @@ export default {
         'apply', 'add', 'ifEmpty'];
       const strings = Object.fromEntries(keys.map((key) => [key, this.$t(`campaigns.personalize.${key}`)]));
       const baseItems = BASE_ITEMS.map((item) => ({ ...item, label: this.$t(`campaigns.personalize.${item.id}`) }));
-      const labels = () => window.listmonkPersonalization?.labels || {};
+      // Standard attributes are always in the menu, under their label. A label set by
+      // custom admin JS wins.
+      const standard = (this.serverConfig.axm_standard_attribs || []).map(({ key }) => key);
+      const standardLabels = Object.fromEntries(standard.map((key) => [key, this.$t(`subscribers.standard.${key}`)]));
+      const labels = () => ({ ...standardLabels, ...(window.listmonkPersonalization?.labels || {}) });
       return {
         strings,
         baseItems,
         disabled: this.disabled,
-        loadItems: () => loadItems(this.$api, this.listIds, labels()),
+        loadItems: () => loadItems(this.$api, this.listIds, labels(), standard),
         buildToken,
         parseTokens,
         getLabel: (item) => {
