@@ -81,21 +81,21 @@ export function collectAttribKeys(subscribers) {
   return [...keys].sort();
 }
 
-export async function loadItems(api, listIds, labels = {}) {
+// standardKeys are the keys of the standard attribute dictionary: they are always offered,
+// first, whether or not the sampled subscribers have them.
+export async function loadItems(api, listIds, labels = {}, standardKeys = []) {
   const ids = [...new Set(listIds)];
   const status = { noLists: !ids.length, truncated: ids.length > 5, error: false };
+  const attribItems = (keys) => [...new Set([...standardKeys, ...keys])].map((key) => ({
+    id: `attrib:${key}`, key, label: Object.hasOwn(labels, key) ? labels[key] : key,
+  }));
   try {
     const samples = await Promise.all(ids.slice(0, 5).map((id) => api.getSubscriberAttribSample({
       list_id: id, page: 1, per_page: 50, order_by: 'id', order: 'desc',
     })));
     const keys = collectAttribKeys(samples.flatMap((s) => (s.results || []).slice(0, 50)));
-    return {
-      ...status,
-      items: [...BASE_ITEMS, ...keys.map((key) => ({
-        id: `attrib:${key}`, key, label: Object.hasOwn(labels, key) ? labels[key] : key,
-      }))],
-    };
+    return { ...status, items: [...BASE_ITEMS, ...attribItems(keys)] };
   } catch {
-    return { ...status, items: [...BASE_ITEMS], error: true };
+    return { ...status, items: [...BASE_ITEMS, ...attribItems([])], error: true };
   }
 }

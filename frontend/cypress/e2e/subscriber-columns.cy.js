@@ -293,6 +293,28 @@ describe('subscriber attribute columns', () => {
     listSubscribers(displayId).should('have.length', 5);
   });
 
+  it('offers the standard attributes for a condition and points at the country code', () => {
+    cy.request('/api/config').its('body.data.axm_standard_attribs').should((dictionary) => {
+      expect(dictionary.map(({ key }) => key)).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
+      // Every column a preset shows is a standard attribute.
+      expect(dictionary.find(({ key }) => key === 'follower').kind).to.eq('integer');
+    });
+    cy.visit(`/admin/subscribers/lists/${displayId}`);
+    cy.get('[data-cy=btn-attrib-filter]').click();
+    cy.get('[data-cy=attrib-filter-key]').focus();
+    cy.get('[data-cy=attrib-filter-form] .dropdown-item .attrib-key-option > span:first-child').should('have.length.at.least', 5).then(($items) => {
+      expect([...$items].slice(0, 5).map((el) => el.textContent)).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
+    });
+    cy.get('[data-cy=attrib-filter-form] .dropdown-item').eq(2).should('contain', 'Company').and('contain', 'Standard');
+    cy.get('[data-cy=attrib-filter-key]').type('country');
+    cy.get('[data-cy=attrib-filter-value]').type('Philippines');
+    cy.get('[data-cy=attrib-country-hint]').should('contain', 'two-letter country codes');
+    cy.get('[data-cy=attrib-country-use]').should('contain', 'PH').click();
+    cy.get('[data-cy=attrib-filter-value]').should('have.value', 'PH');
+    cy.get('[data-cy=attrib-country-hint]').should('not.exist');
+    cy.get('[data-cy=attrib-filter-cancel]').click();
+  });
+
   it('fits a 390px screen: one card per subscriber, no sideways overflow', () => {
     cy.viewport(390, 844);
     cy.visit(`/admin/subscribers/lists/${displayId}`);
