@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"github.com/gofrs/uuid/v5"
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/manager"
@@ -166,6 +168,32 @@ func (s *store) RecordBounce(b models.Bounce) (int64, int, error) {
 		b.Meta)
 
 	return res.SubscriberID, res.Num, err
+}
+
+// RecordCampaignSends saves the send records of delivered campaign messages in one
+// statement. The age of every message is taken here, at write time, so that a queued or
+// retried record still gets the time it was sent at.
+func (s *store) RecordCampaignSends(sends []models.CampaignSend) error {
+	var (
+		campIDs = make(pq.Int64Array, len(sends))
+		subIDs  = make(pq.Int64Array, len(sends))
+		ages    = make(pq.Int64Array, len(sends))
+	)
+	for i, r := range sends {
+		campIDs[i] = int64(r.CampaignID)
+		subIDs[i] = int64(r.SubscriberID)
+		ages[i] = max(time.Since(r.SentAt).Milliseconds(), 0)
+	}
+
+	_, err := s.queries.AxmRecordCampaignSends.Exec(campIDs, subIDs, ages)
+	return err
+}
+
+// CountCampaignSends returns the number of send records of a campaign.
+func (s *store) CountCampaignSends(campID int) (int, error) {
+	var n int
+	err := s.queries.AxmCountCampaignSends.Get(&n, campID)
+	return n, err
 }
 
 // BlocklistSubscriber blocklists a subscriber permanently.

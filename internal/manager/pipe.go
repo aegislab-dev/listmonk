@@ -186,6 +186,29 @@ func (p *pipe) newMessage(s models.Subscriber) (CampaignMessage, error) {
 	return msg, nil
 }
 
+// logSendRecords logs, for a campaign that just finished, how many send records it has
+// next to its sent and to-send counts. Fewer records than messages sent means records
+// were lost. Fewer messages sent than there were to send means recipients were skipped,
+// and the records tell which ones.
+func (p *pipe) logSendRecords(c *models.Campaign) {
+	if p.m.sends == nil {
+		return
+	}
+
+	// Let the records of the last messages reach the DB first.
+	if !p.m.sends.flush(5 * time.Second) {
+		p.m.log.Printf("campaign (%s) send records are still being written", c.Name)
+	}
+
+	n, err := p.m.store.CountCampaignSends(c.ID)
+	if err != nil {
+		p.m.log.Printf("error counting send records of campaign (%s): %v", c.Name, err)
+		return
+	}
+
+	p.m.log.Printf("campaign (%s) send records: %d recorded, %d sent, %d to send", c.Name, n, c.Sent, c.ToSend)
+}
+
 // cleanup finishes the campaign and updates the campaign status in the DB
 // and also triggers a notification to the admin. This only triggers once
 // a pipe's wg counter is fully exhausted, draining all messages in its queue.
@@ -235,6 +258,9 @@ func (p *pipe) cleanup() {
 		} else {
 			p.m.log.Printf("campaign (%s) finished", p.camp.Name)
 		}
+
+		// Off this goroutine: cleanup must not take longer because of it.
+		go p.logSendRecords(c)
 	} else {
 		p.m.log.Printf("finish processing campaign (%s)", p.camp.Name)
 	}

@@ -25,6 +25,11 @@ type Queries struct {
 	DeleteSenderAddress            *sqlx.Stmt `query:"delete-sender-address"`
 	SenderAddressInUse             *sqlx.Stmt `query:"sender-address-in-use"`
 	UpdateCampaignFrom             *sqlx.Stmt `query:"update-campaign-from"`
+	AxmRecordCampaignSends         *sqlx.Stmt `query:"axm-record-campaign-sends"`
+	AxmMarkSendOpened              *sqlx.Stmt `query:"axm-mark-send-opened"`
+	AxmMarkSendClicked             *sqlx.Stmt `query:"axm-mark-send-clicked"`
+	AxmCountCampaignSends          *sqlx.Stmt `query:"axm-count-campaign-sends"`
+	AxmDeleteCampaignSends         *sqlx.Stmt `query:"axm-delete-campaign-sends"`
 	GetDashboardCharts             *sqlx.Stmt `query:"get-dashboard-charts"`
 	GetDashboardCounts             *sqlx.Stmt `query:"get-dashboard-counts"`
 
