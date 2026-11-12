@@ -577,6 +577,14 @@ func (a *App) LinkRedirect(c echo.Context) error {
 		return c.Render(e.Code, tplMessage, makeMsgTpl(a.i18n.T("public.errorTitle"), "", e.Error()))
 	}
 
+	// Mark the click on the subscriber's send record. A failure here must not
+	// get in the way of the redirect.
+	if subUUID != "" && subUUID != dummyUUID && campUUID != dummyUUID {
+		if err := a.core.MarkCampaignSendClicked(campUUID, subUUID, classifyAgent(c.Request().Header)); err != nil {
+			a.log.Printf("error marking link click on send record: %v", err)
+		}
+	}
+
 	return c.Redirect(http.StatusTemporaryRedirect, url)
 }
 
@@ -602,6 +610,13 @@ func (a *App) RegisterCampaignView(c echo.Context) error {
 	if campUUID != dummyUUID && subUUID != dummyUUID {
 		if err := a.core.RegisterCampaignView(campUUID, subUUID); err != nil {
 			a.log.Printf("error registering campaign view: %s", err)
+		}
+
+		// Mark the view on the subscriber's send record.
+		if subUUID != "" {
+			if err := a.core.MarkCampaignSendOpened(campUUID, subUUID, classifyAgent(c.Request().Header)); err != nil {
+				a.log.Printf("error marking view on send record: %v", err)
+			}
 		}
 	}
 

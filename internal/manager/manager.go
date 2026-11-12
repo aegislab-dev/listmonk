@@ -58,6 +58,12 @@ type Store interface {
 	CreateLink(url string) (string, error)
 	BlocklistSubscriber(id int64) error
 	DeleteSubscriber(id int64) error
+
+	// RecordCampaignSends saves the records of campaign messages that were sent.
+	RecordCampaignSends(sends []models.CampaignSend) error
+
+	// CountCampaignSends returns the number of send records of a campaign.
+	CountCampaignSends(campID int) (int, error)
 }
 
 // Messenger is an interface for a generic messaging backend,
@@ -106,6 +112,9 @@ type Manager struct {
 	// sending further messages.
 	slidingCount int
 	slidingStart time.Time
+
+	// Records who was sent which campaign. Nil in a Manager that was not built by New().
+	sends *sendLog
 
 	tplFuncs template.FuncMap
 }
@@ -197,6 +206,7 @@ func New(cfg Config, store Store, i *i18n.I18n, l *log.Logger) *Manager {
 		campMsgQ:     make(chan CampaignMessage, cfg.Concurrency*cfg.MessageRate*2),
 		msgQ:         make(chan models.Message, cfg.Concurrency*cfg.MessageRate*2),
 		slidingStart: time.Now(),
+		sends:        newSendLog(store, l),
 	}
 	m.tplFuncs = m.makeGnericFuncMap()
 
@@ -290,6 +300,11 @@ func (m *Manager) Run() {
 		// Periodically scan campaigns and push running campaigns to nextPipes
 		// to fetch subscribers from the campaign.
 		go m.scanCampaigns(m.cfg.ScanInterval)
+	}
+
+	// Start the writer of campaign send records.
+	if m.sends != nil {
+		go m.sends.run()
 	}
 
 	// Spawn N message workers.
@@ -423,6 +438,11 @@ func (m *Manager) StopCampaign(id int) {
 func (m *Manager) Close() {
 	close(m.nextPipes)
 	close(m.msgQ)
+
+	// Write the send records that are still queued. The caller closes the DB next.
+	if m.sends != nil && !m.sends.flush(1500*time.Millisecond) {
+		m.log.Printf("error recording campaign sends: queued send records were not written before closing")
+	}
 }
 
 // scanCampaigns is a blocking function that periodically scans the data source
@@ -541,6 +561,14 @@ func (m *Manager) worker() {
 
 			// Increment the send rate or the error counter if there was an error.
 			if msg.pipe != nil {
+				// AXM: record who was sent this campaign. This only queues the
+				// record, so it can neither wait nor fail. It is queued before
+				// the message is marked as done so that the campaign's cleanup
+				// never runs ahead of its last record.
+				if err == nil && m.sends != nil {
+					m.sends.add(msg.Campaign.ID, msg.Subscriber.ID)
+				}
+
 				// Mark the message as done.
 				msg.pipe.wg.Done()
 
