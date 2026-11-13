@@ -75,6 +75,11 @@ type TxMessage struct {
 }
 
 func (m *TxMessage) Render(sub Subscriber, tpl *Template, funcs txttpl.FuncMap) error {
+	// AXM (LST-22): numbers in subscriber attributes and in the message's data print
+	// as digits, not as 1.234567e+06.
+	sub.Attribs = PlainNumbers(sub.Attribs)
+	m.Data = PlainNumbers(m.Data)
+
 	data := struct {
 		Subscriber Subscriber
 		Tx         *TxMessage
