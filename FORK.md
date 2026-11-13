@@ -466,7 +466,8 @@ upstream이 이 결함을 고치면(같은 열의 뜻이 바뀔 수 있다) 이 
 - **대상 값**: 구독자 추가 정보(`.Subscriber.Attribs`), 캠페인 추가 정보(`.Campaign.Attribs`), 트랜잭션 메일의 데이터(`.Tx.Data`). 안쪽 객체와 배열의 숫자도 포함한다.
 - **대상 경로**: 캠페인 발송, 테스트 발송, 관리 미리보기, 브라우저에서 보기, 공개 아카이브, 템플릿 미리보기, 트랜잭션 메일. 제목·본문·대체 본문·헤더에 모두 적용한다.
 - **그대로인 것**: 비교(`gt .Subscriber.Attribs.follower 1000000.0`), `printf "%.0f"`, sprig의 `int`·`add`·`mul`·`div`·`default`·`toJson`은 전과 같은 결과를 낸다. 정수와 바로 비교하면(`gt .Subscriber.Attribs.follower 1000000`) 전처럼 오류이고, `gt (int .Subscriber.Attribs.follower) 1000000`으로 쓴다. 저장된 값, API 응답, postback 메신저가 보내는 JSON도 그대로다.
-- **함께 바뀌는 것**: 숫자를 글자로 바꾸는 `toString`·`print`·`printf "%v"`·`cat`·`quote`와 링크 주소·속성 안에 넣은 값도 자릿수로 나온다. sprig `typeOf`는 `float64` 대신 `models.Number`를 돌려준다(`kindOf`는 `float64` 그대로).
+- **값의 형을 따지는 sprig 함수도 그대로다.** 템플릿에 적은 숫자(`3.0`)와 함수가 돌려준 숫자는 `float64`이고 추가 정보의 숫자는 `models.Number`라서, 형까지 같아야 같다고 보는 함수는 손대지 않으면 둘을 다른 값으로 본다. `has`·`mustHas`·`without`·`mustWithout`·`uniq`·`mustUniq`·`deepEqual`은 두 형을 같은 숫자로 보게, `typeOf`·`typeIs`·`typeIsLike`는 추가 정보의 숫자를 전처럼 `float64`라고 답하게, `round`는 셋째 값으로 추가 정보의 숫자를 받게 감쌌다(`internal/manager/numbers.go`의 `numberFuncs`). `{{ has 3.0 .Subscriber.Attribs.scores }}`, `{{ deepEqual .Subscriber.Attribs.follower 1234567.0 }}`, `{{ typeIs "float64" .Subscriber.Attribs.follower }}`는 전과 같이 `true`다.
+- **함께 바뀌는 것**: 숫자를 글자로 바꾸는 `toString`·`toStrings`·`print`·`printf "%v"`·`cat`·`join`·`quote`·`squote`와 링크 주소·속성 안에 넣은 값도 자릿수로 나온다. 그 글자를 받아 쓰는 일도 새 표기를 따른다: `sortAlpha`의 순서, 숫자를 키로 준 `dict`의 키, 글자끼리의 비교. `printf "%T"`와 템플릿 오류 문구에 나오는 형 이름은 `float64` 대신 `models.Number`다. 계산 함수가 돌려준 소수(`addf`·`mulf`·`divf`·`round`·`float64`의 결과)는 추가 정보가 아니므로 전처럼 100만부터 지수로 찍힌다(`int`로 감싸거나 `printf "%.0f"`를 쓴다).
 
 ### 하지 않는 것
 
@@ -478,11 +479,13 @@ upstream이 이 결함을 고치면(같은 열의 뜻이 바뀔 수 있다) 이 
 
 ### upstream을 따라갈 때
 
-upstream 파일에 넣은 것은 네 곳의 호출 한 줄씩이고 모두 `AXM (LST-22)` 주석이 붙어 있다: `internal/manager/message.go`의 `NewCampaignMessage`, `models/campaigns.go`의 `CompileTemplate`, `models/messages.go`의 `TxMessage.Render`, `cmd/archive.go`의 `compileArchiveCampaigns`. upstream이 템플릿의 숫자 표기를 고치면 이 변경을 걷어 낸다.
+upstream 파일에 넣은 것은 다섯 곳의 호출 한 줄씩이고 모두 `AXM (LST-22)` 주석이 붙어 있다: `internal/manager/message.go`의 `NewCampaignMessage`, `models/campaigns.go`의 `CompileTemplate`, `models/messages.go`의 `TxMessage.Render`, `cmd/archive.go`의 `compileArchiveCampaigns`, `internal/manager/manager.go`의 `makeGnericFuncMap`(sprig 함수를 감싸는 `numberFuncs` 호출). upstream이 템플릿의 숫자 표기를 고치면 이 변경을 걷어 낸다.
+
+sprig를 올릴 때는 `TestTemplateFuncsTakeNumberLikeFloat64`를 본다. 템플릿 함수를 모두 같은 인자로 두 번(추가 정보 값이 `float64`일 때와 `models.Number`일 때) 불러 결과를 견준다. 두 형을 다르게 다루는 함수가 새로 생기거나, 감싼 함수의 모양이 바뀌어 감싸지지 않으면 실패한다. 그때는 `numberFuncs`에 그 함수를 더한다.
 
 ### 검증
 
-- Go 시험: `models/axm_numbers_test.go`(표기, 안쪽 값, 원본을 바꾸지 않음, JSON 출력 동일, 템플릿 비교·`printf`), `internal/manager/numbers_test.go`(콘텐츠 형식 다섯 가지의 제목·본문·대체 본문·헤더, sprig 함수 24가지), `cmd/axm_numbers_db_test.go`(Postgres에 저장된 값으로 실제 엔진이 보낸 메시지, 아카이브 제목·본문).
+- Go 시험: `models/axm_numbers_test.go`(표기, 안쪽 값, 원본을 바꾸지 않음, JSON 출력 동일, 템플릿 비교·`printf`, 자기 자신을 담은 값), `internal/manager/numbers_test.go`(콘텐츠 형식 다섯 가지의 제목·본문·대체 본문·헤더, 템플릿 식 45가지, 템플릿 함수 전체를 `float64`와 `models.Number`로 불러 견주기), `cmd/axm_numbers_db_test.go`(Postgres에 저장된 값으로 실제 엔진이 보낸 메시지, 아카이브 제목·본문).
 - 실제 이미지와 메일 수신기(Mailpit)로 돌린 결과는 LST-22 보고서에 있다.
 
 ## 표준 추가 정보 사전 (LST-18)

@@ -873,6 +873,9 @@ func (m *Manager) makeGnericFuncMap() template.FuncMap {
 
 	maps.Copy(funcs, sprigFuncs)
 
+	// AXM (LST-22): attribute numbers reach templates as models.Number.
+	numberFuncs(funcs)
+
 	return funcs
 }
 

@@ -216,3 +216,61 @@ func TestTxMessageRenderPlainNumbers(t *testing.T) {
 		t.Fatalf("caller's attribs changed: %T", sub.Attribs["follower"])
 	}
 }
+
+// A template can build a map or a list that contains itself (sprig set, append). The
+// walk must end, and must not walk a shared part once per path to it.
+func TestPlainValueEndsOnValuesThatContainThemselves(t *testing.T) {
+	loop := map[string]any{"n": 1500000.0}
+	loop["self"] = loop
+	out := PlainValue(loop).(map[string]any)
+	if _, ok := out["n"].(Number); !ok {
+		t.Fatalf("n is %T", out["n"])
+	}
+	if _, ok := loop["n"].(float64); !ok {
+		t.Fatal("input changed")
+	}
+
+	// No number at all: comes back as it is.
+	plain := map[string]any{"a": "b"}
+	plain["self"] = []any{plain}
+	if got := PlainValue(plain).(map[string]any); reflect.ValueOf(got).Pointer() != reflect.ValueOf(plain).Pointer() {
+		t.Fatal("a new map came back")
+	}
+
+	list := []any{2000000.0, nil}
+	list[1] = list
+	if _, ok := PlainValue(list).([]any)[0].(Number); !ok {
+		t.Fatal("list number not converted")
+	}
+
+	var j JSON = JSON{"n": 1500000.0}
+	j["self"] = j
+	if _, ok := PlainNumbers(j)["n"].(Number); !ok {
+		t.Fatal("JSON number not converted")
+	}
+
+	// 60 levels, each holding the level below twice: 2^60 paths, 60 maps.
+	level := map[string]any{"n": 3000000.0}
+	for i := 0; i < 60; i++ {
+		level = map[string]any{"a": level, "b": level}
+	}
+	got := PlainValue(level).(map[string]any)
+	for i := 0; i < 60; i++ {
+		// The lowest map holds no map itself and is not remembered: it is copied per use.
+		if i < 59 && reflect.ValueOf(got["a"]).Pointer() != reflect.ValueOf(got["b"]).Pointer() {
+			t.Fatalf("level %d: the shared part was copied twice", i)
+		}
+		got = got["b"].(map[string]any)
+	}
+	if _, ok := got["n"].(Number); !ok {
+		t.Fatalf("deep number is %T", got["n"])
+	}
+
+	// Scalars and other kinds come back as they are.
+	if PlainValue(nil) != nil || PlainValue("a") != "a" || PlainValue(3) != 3 || PlainValue(2.5) != Number(2.5) {
+		t.Fatal("scalar changed")
+	}
+	if got := PlainValue([]string{"a"}).([]string); len(got) != 1 {
+		t.Fatal("typed slice changed")
+	}
+}

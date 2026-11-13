@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"math"
+	"reflect"
 	"strconv"
 )
 
@@ -36,17 +37,55 @@ func (n Number) MarshalJSON() ([]byte, error) {
 // as a Number. m itself is not changed: the parts that hold a float64 are copied and the
 // rest is shared. A map with no float64 comes back as it is.
 func PlainNumbers[M ~map[string]any](m M) M {
-	out, changed := plainMap(m)
+	var p plainer
+	out, changed := p.mapOf(m)
 	if !changed {
 		return m
 	}
 	return M(out)
 }
 
-func plainMap(m map[string]any) (map[string]any, bool) {
-	var out map[string]any
+// PlainValue is PlainNumbers for a value of any kind: a float64, or a map or an array
+// that holds one, comes back with Number in its place. Anything else comes back as it is.
+func PlainValue(v any) any {
+	var p plainer
+	out, _ := p.value(v)
+	return out
+}
+
+// plainer walks one value. It remembers the maps and arrays that hold other maps or
+// arrays, so that a value which contains itself (a template can build one with sprig's
+// set) ends the walk instead of the process, and a part that is reachable twice is
+// walked once. Attributes read from JSON hold neither; a flat map costs nothing extra.
+type plainer struct {
+	seen map[plainKey]plainResult
+}
+
+// plainKey names a map (n is -1) or an array (n is its length) by its address.
+type plainKey struct {
+	p uintptr
+	n int
+}
+
+type plainResult struct {
+	v       any
+	changed bool
+}
+
+func (p *plainer) mapOf(m map[string]any) (map[string]any, bool) {
+	var (
+		out    map[string]any
+		key    plainKey
+		marked bool
+	)
 	for k, v := range m {
-		nv, changed := plainValue(v)
+		// Before going into a map or an array inside m, note that m is being walked:
+		// if it turns up again further down, it is left as it is there.
+		if !marked && isContainer(v) {
+			key, marked = plainKey{reflect.ValueOf(m).Pointer(), -1}, true
+			p.note(key, m, false)
+		}
+		nv, changed := p.value(v)
 		if !changed {
 			continue
 		}
@@ -58,37 +97,85 @@ func plainMap(m map[string]any) (map[string]any, bool) {
 		}
 		out[k] = nv
 	}
+	if marked && out != nil {
+		p.note(key, out, true)
+	}
 	return out, out != nil
 }
 
-func plainValue(v any) (any, bool) {
+func (p *plainer) sliceOf(s []any) ([]any, bool) {
+	var (
+		out    []any
+		key    plainKey
+		marked bool
+	)
+	for i, v := range s {
+		if !marked && isContainer(v) {
+			key, marked = plainKey{reflect.ValueOf(s).Pointer(), len(s)}, true
+			p.note(key, s, false)
+		}
+		nv, changed := p.value(v)
+		if !changed {
+			continue
+		}
+		if out == nil {
+			out = make([]any, len(s))
+			copy(out, s)
+		}
+		out[i] = nv
+	}
+	if marked && out != nil {
+		p.note(key, out, true)
+	}
+	return out, out != nil
+}
+
+func (p *plainer) value(v any) (any, bool) {
 	switch t := v.(type) {
 	case float64:
 		return Number(t), true
 	case map[string]any:
-		if out, changed := plainMap(t); changed {
+		if r, ok := p.seen[plainKey{reflect.ValueOf(t).Pointer(), -1}]; ok {
+			return r.v, r.changed
+		}
+		if out, changed := p.mapOf(t); changed {
 			return out, true
 		}
 	case JSON:
-		if out, changed := plainMap(t); changed {
+		if r, ok := p.seen[plainKey{reflect.ValueOf(t).Pointer(), -1}]; ok {
+			if m, ok := r.v.(map[string]any); ok {
+				return JSON(m), r.changed
+			}
+			return r.v, r.changed
+		}
+		if out, changed := p.mapOf(t); changed {
 			return JSON(out), true
 		}
 	case []any:
-		var out []any
-		for i, e := range t {
-			ne, changed := plainValue(e)
-			if !changed {
-				continue
-			}
-			if out == nil {
-				out = make([]any, len(t))
-				copy(out, t)
-			}
-			out[i] = ne
+		if len(t) == 0 {
+			return v, false
 		}
-		if out != nil {
+		if r, ok := p.seen[plainKey{reflect.ValueOf(t).Pointer(), len(t)}]; ok {
+			return r.v, r.changed
+		}
+		if out, changed := p.sliceOf(t); changed {
 			return out, true
 		}
 	}
 	return v, false
+}
+
+func (p *plainer) note(key plainKey, v any, changed bool) {
+	if p.seen == nil {
+		p.seen = map[plainKey]plainResult{}
+	}
+	p.seen[key] = plainResult{v, changed}
+}
+
+func isContainer(v any) bool {
+	switch v.(type) {
+	case map[string]any, JSON, []any:
+		return true
+	}
+	return false
 }
