@@ -78,8 +78,18 @@ git push origin v6.2.0-axm.1
 | `v6.2.0-axm.1` (2026-11-11 게시, GHCR public) | `fcba2d60cefde01e53d430516a554bff84a9132c` (#1–#8 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:0ed937465fe4cc582ecb6ac21be05d7df02281d545f892212d24e9143909da4c` (linux/amd64) | `v6.2.1-axm.1`, `.2`, `.3` | 2026-11-12 12:28 KST, lists.crevasse.ai(Railway 서비스 `8960c2f9-68c5-4ed9-9179-4fbc68be6da2`) |
 | `v6.2.0-axm.2` (2026-11-12 게시) | `e698d12617d59400ddc512828b22adcc4bdff6b8` (#10 가져오기 열 맞춤 화면 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:90bcf2fdf20dee75df1dc3ed00e6a32da44cb4f9f8e776af7bba4a258bca0b09` (linux/amd64) | 없음 (`v6.2.1-axm.3` 그대로) | 2026-11-12 14:52 KST, 같은 서비스. upgrade는 `no upgrades to run` |
 | `v6.2.0-axm.3` (2026-11-12 게시) | `54d199b446727103c8ff07fddc3a9fca0af3a20a` (#12 동적 리스트 숫자 비교 조건·뽑힌 구독자 미리보기 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:4a25d36925eb535c23325eea5da00c6a2f12de02b2f4b952d491504fdda40f48` (linux/amd64) | `v6.2.1-axm.4` (DB 함수 추가·교체뿐, 테이블·시퀀스·데이터 변경 없음) | 2026-11-12 16:49 KST, 같은 서비스. upgrade는 `v6.2.1-axm.4` 1회 |
+| `v6.2.0-axm.4` (2026-11-13 게시) | `80ab1ef9bb7c510ba15b9a5808cdeeeb40c06ee4` (#14 구독자 목록 추가 정보 열, #15 발송 기록, #16 가져오기 표준 항목 이름, #17 발송 중 재시작 결함 수정 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:ef42125fc6fc53dcf6f5573f9e81e832f3b5ddba6e414d1cc1bcabbe3b4cecf0` (linux/amd64) | `v6.2.1-axm.5` (`lists.axm_preset` 열), `v6.2.1-axm.6` (`axm_campaign_sends` 테이블, 시퀀스 없음) | 2026-11-13 11:39 KST, 같은 서비스. upgrade는 `.5`, `.6` 각 1회. 교체 뒤 백업 역할에 새 테이블 SELECT와 기본 권한을 줌(아래) |
 
-이미지 롤백 기준은 직전 운영 이미지다. 지금은 `v6.2.0-axm.2`의 digest다. 그 이미지는 더 높은 migrations 기록(`v6.2.1-axm.4`)을 보고 upgrade 없이 기동하며, `.4`가 바꾼 DB 함수는 그대로 남는다(운영 백업 사본에서 확인).
+이미지 롤백 기준은 직전 운영 이미지다. 지금은 `v6.2.0-axm.3`의 digest다. 그 이미지는 더 높은 migrations 기록(`v6.2.1-axm.6`)을 보고 upgrade 없이 기동하며, `.5`의 열과 `.6`의 테이블은 남지만 쓰지도 읽지도 않는다(dev 환경에서 되돌렸다가 다시 올려 확인). `v6.2.0-axm.3` 이하로 되돌릴 때는 실행 중인 캠페인을 먼저 일시정지한다(아래 LST-20 절).
+
+**백업 역할의 기본 권한 (2026-11-13 운영 적용).** 운영 DB의 테이블·시퀀스는 앱이 접속하는 역할 `postgres`가 만든다. 그 역할이 `public`에 새로 만드는 테이블과 시퀀스에는 `newsletter_backup`의 SELECT가 자동으로 붙는다.
+
+```sql
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON TABLES TO newsletter_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON SEQUENCES TO newsletter_backup;
+```
+
+그래서 다음 릴리스부터는 마이그레이션이 테이블을 만들어도 따로 GRANT할 필요가 없다. 그래도 교체 뒤에는 백업 역할이 못 읽는 테이블·시퀀스가 0개인지 조회하고 백업을 한 번 돌린다. 앱의 접속 역할을 바꾸거나 다른 스키마에 테이블을 만들면 이 설정이 닿지 않는다.
 포크 이전으로 되돌릴 때의 기준은 `listmonk/listmonk@sha256:f535d59e14991337a9f2d570273685378ae86b0d7698c3e00da444e3bc205286`(공식 v6.2.0)이다.
 공식 이미지는 더 높은 migrations 기록을 보고 upgrade 없이 기동하며, 포크 컬럼·함수·트리거는 남는다(운영 백업 사본과 합성 DB에서 확인).
 운영 Railway 시작 명령이 기동마다 `--upgrade --yes`를 실행하므로 이미지 교체가 곧 마이그레이션 실행이다. 교체 전에 발송·가져오기 중지와 백업을 확인한다.
@@ -387,7 +397,7 @@ GRANT SELECT ON TABLE public.axm_campaign_sends TO newsletter_backup;
 SELECT has_table_privilege('newsletter_backup', 'public.axm_campaign_sends', 'SELECT');
 ```
 
-그 뒤 백업 작업(listmonk-backup-cron)을 한 번 돌려 성공을 확인한다. NEWS-37의 기본 권한 설정이 교체 전에 적용돼 있었다면 GRANT 없이 확인 조회만 `t`인지 본다. 교체 순서는 다른 마이그레이션과 같다: **발송·가져오기 중지 확인 → DB 백업 → 새 이미지 기동(`--upgrade --yes`) → 위 GRANT와 확인 → 백업 1회**.
+그 뒤 백업 작업(listmonk-backup-cron)을 한 번 돌려 성공을 확인한다. 운영에는 2026-11-13 `v6.2.0-axm.4` 교체 때 이 GRANT와 기본 권한(위 「릴리스 기록」)을 함께 적용했다. 기본 권한이 이미 있는 DB라면 GRANT 없이 확인 조회만 `t`인지 본다. 교체 순서는 다른 마이그레이션과 같다: **발송·가져오기 중지 확인 → DB 백업 → 새 이미지 기동(`--upgrade --yes`) → 위 GRANT와 확인 → 백업 1회**.
 
 이전 포크 이미지(`v6.2.0-axm.3` 이하)나 공식 v6.2.0으로 되돌리면 더 높은 마이그레이션 기록을 보고 upgrade 없이 뜬다. 테이블은 남지만 그 이미지들은 쓰지도 읽지도 않으므로, 되돌린 동안 나간 캠페인은 발송 기록이 없다. 테이블을 지우려면 `DROP TABLE axm_campaign_sends`이고, 다시 이 이미지로 올 때는 기록 번호가 이미 `.6`이라 `--upgrade`가 테이블을 만들지 않으므로 마이그레이션의 SQL을 직접 실행해야 한다.
 
@@ -428,7 +438,7 @@ upstream은 수신자를 한 묶음(기본 1,000명) 읽는 순간 `campaigns.la
 
 ### 운영에서 알 것
 
-- **Railway는 기본값으로 SIGTERM 직후 SIGKILL을 보낸다**(`RAILWAY_DEPLOYMENT_DRAINING_SECONDS` 기본 0, Railway 문서 기준). 6번의 정리가 돌 시간이 없으면 강제 종료와 같아진다. 빠지는 사람은 없지만 위 예외만큼 중복이 생길 수 있다. 서비스 변수 `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=10`을 주면 정리한 뒤에 내려간다. 운영 설정 변경이므로 사람이 정한다.
+- **Railway는 기본값으로 SIGTERM 직후 SIGKILL을 보낸다**(`RAILWAY_DEPLOYMENT_DRAINING_SECONDS` 기본 0, Railway 문서 기준). 6번의 정리가 돌 시간이 없으면 강제 종료와 같아진다. 빠지는 사람은 없지만 위 예외만큼 중복이 생길 수 있다. 서비스 변수 `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=10`을 주면 정리한 뒤에 내려간다. 운영 설정 변경이므로 사람이 정한다. 2026-11-13 dev 환경(Railway, 이 변수 없음)에서 400명 발송 도중 재배포했을 때는 이전 컨테이너가 종료 신호를 받고 0.02초 만에 정리를 마쳤고 400명이 한 번씩 받았다. 메일 수신기(Mailpit)가 바로 답한 경우이고, 실제 메일 서버에 넘기던 메시지가 있을 때 Railway가 얼마나 기다려 주는지는 확인하지 못했다.
 - **이 변경이 든 이미지로 처음 바꿀 때와 이전 이미지로 되돌릴 때는 실행 중인 캠페인을 먼저 일시정지한다.** 이전 이미지는 잠금을 모르고 읽기 위치를 DB에서 읽는다. 새 이미지와 겹쳐 뜨는 동안 같은 캠페인을 함께 보내면 중복이 생긴다. 릴리스 절차의 「발송 중지 확인」이 이 경우를 막는다. 새 이미지끼리의 재배포는 캠페인이 실행 중이어도 된다.
 - 잠금은 DB 연결 하나를 계속 잡고 있다. 세션 잠금이므로 트랜잭션 단위 풀러(PgBouncer transaction 모드)를 사이에 두면 동작하지 않는다. 운영은 Postgres에 직접 붙는다.
 - 마이그레이션과 새 테이블이 없으므로 백업 역할에 줄 권한은 없다.
