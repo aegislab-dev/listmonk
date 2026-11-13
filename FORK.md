@@ -450,6 +450,44 @@ upstream이 이 결함을 고치면(같은 열의 뜻이 바뀔 수 있다) 이 
 - Go·DB 시험: `internal/manager/progress_test.go`(진행 위치 계산, 저장, `Close`)와 `cmd/axm_sends_db_test.go`(실제 엔진·쿼리·Postgres). 강제 종료 뒤 재시작(진행 위치 저장 전·후), 발송 수 제한 대기 중 종료(LST-16 C·D), 한 통도 나가기 전 일시정지, `Close` 뒤 재시작, 오류로 멈춘 뒤 재개, 기록이 안 쓰인 채 강제 종료, 두 인스턴스 동시 기동, 잠금 연결 끊김, 동적 리스트 캠페인을 돌린다.
 - 실제 이미지와 메일 수신기(Mailpit)로 돌린 결과는 LST-20 보고서에 있다.
 
+## 메일 본문의 숫자 표기 (LST-22)
+
+**upstream 동작을 바꾼 변경이다.** 메일 템플릿이 추가 정보의 숫자를 찍는 표기만 바꿨다. 화면, API, 설정, DB(저장된 값·구조·마이그레이션)는 바뀌지 않았다.
+
+### 고친 문제
+
+추가 정보의 JSON 숫자는 Go에서 `float64`로 읽히고, Go 템플릿은 `float64`를 100만부터 지수로 찍는다. `{{ .Subscriber.Attribs.follower }}`가 `999999`까지는 그대로 나오지만 `1000000`은 `1e+06`, `1234567`은 `1.234567e+06`으로 나갔다. 표준 항목 `follower`를 JSON 숫자로 저장하고(LST-18) 개인화 메뉴에 ‘팔로워 수’가 항상 보이게 되면서 드러났다.
+
+### 바뀐 동작
+
+템플릿에 값을 넘기기 직전에 숫자를 `models.Number`(`models/axm_numbers.go`)로 바꿔 넘긴다. `float64`와 같은 종류의 값이고 찍히는 표기만 다르다.
+
+- **표기**: `0.000001` 이상 `1e21` 미만은 자릿수 그대로 찍는다(`1234567`, `21474836480`, `1.5`, `0.00001`). 브라우저가 숫자를 보여 주는 규칙과 같아서 구독자 화면에 보이는 값과 같다. 그 밖(`1e21` 이상, `0.000001` 미만)은 전과 같은 지수 표기다.
+- **대상 값**: 구독자 추가 정보(`.Subscriber.Attribs`), 캠페인 추가 정보(`.Campaign.Attribs`), 트랜잭션 메일의 데이터(`.Tx.Data`). 안쪽 객체와 배열의 숫자도 포함한다.
+- **대상 경로**: 캠페인 발송, 테스트 발송, 관리 미리보기, 브라우저에서 보기, 공개 아카이브, 템플릿 미리보기, 트랜잭션 메일. 제목·본문·대체 본문·헤더에 모두 적용한다.
+- **그대로인 것**: 비교(`gt .Subscriber.Attribs.follower 1000000.0`), `printf "%.0f"`, sprig의 `int`·`add`·`mul`·`div`·`default`·`toJson`은 전과 같은 결과를 낸다. 정수와 바로 비교하면(`gt .Subscriber.Attribs.follower 1000000`) 전처럼 오류이고, `gt (int .Subscriber.Attribs.follower) 1000000`으로 쓴다. 저장된 값, API 응답, postback 메신저가 보내는 JSON도 그대로다.
+- **값의 형을 따지는 sprig 함수도 그대로다.** 템플릿에 적은 숫자(`3.0`)와 함수가 돌려준 숫자는 `float64`이고 추가 정보의 숫자는 `models.Number`라서, 형까지 같아야 같다고 보는 함수는 손대지 않으면 둘을 다른 값으로 본다. `has`·`mustHas`·`without`·`mustWithout`·`uniq`·`mustUniq`·`deepEqual`은 두 형을 같은 숫자로 보게, `typeOf`·`typeIs`·`typeIsLike`는 추가 정보의 숫자를 전처럼 `float64`라고 답하게, `round`는 셋째 값으로 추가 정보의 숫자를 받게 감쌌다(`internal/manager/numbers.go`의 `numberFuncs`). `{{ has 3.0 .Subscriber.Attribs.scores }}`, `{{ deepEqual .Subscriber.Attribs.follower 1234567.0 }}`, `{{ typeIs "float64" .Subscriber.Attribs.follower }}`는 전과 같이 `true`다.
+- **함께 바뀌는 것**: 숫자를 글자로 바꾸는 `toString`·`toStrings`·`print`·`printf "%v"`·`cat`·`join`·`quote`·`squote`와 링크 주소·속성 안에 넣은 값도 자릿수로 나온다. 그 글자를 받아 쓰는 일도 새 표기를 따른다: `sortAlpha`의 순서, 숫자를 키로 준 `dict`의 키, 글자끼리의 비교. `printf "%T"`와 템플릿 오류 문구에 나오는 형 이름은 `float64` 대신 `models.Number`다. 계산 함수가 돌려준 소수(`addf`·`mulf`·`divf`·`round`·`float64`의 결과)는 추가 정보가 아니므로 전처럼 100만부터 지수로 찍힌다(`int`로 감싸거나 `printf "%.0f"`를 쓴다).
+
+### 하지 않는 것
+
+- 천 단위 쉼표를 넣지 않는다(`1,234,567`이 아니라 `1234567`). 저장된 숫자를 그대로 찍을 뿐이다.
+- 9,007,199,254,740,992(2^53)를 넘는 정수는 `float64`의 한계로 전처럼 끝자리가 정확하지 않다.
+- 문자열로 저장된 값(`"1,234,567"`, `"10K"`)은 적힌 그대로 나간다.
+- 관리 미리보기는 예시 구독자(이름, 이메일, `city`)로 그리므로 `follower` 자리는 전처럼 비어 보인다. 실제 값은 테스트 발송으로 본다.
+- 옵트인 확인 메일·알림 같은 시스템 메일 템플릿(`static/email-templates`)은 대상이 아니다. 기본 템플릿은 추가 정보를 쓰지 않는다.
+
+### upstream을 따라갈 때
+
+upstream 파일에 넣은 것은 다섯 곳의 호출 한 줄씩이고 모두 `AXM (LST-22)` 주석이 붙어 있다: `internal/manager/message.go`의 `NewCampaignMessage`, `models/campaigns.go`의 `CompileTemplate`, `models/messages.go`의 `TxMessage.Render`, `cmd/archive.go`의 `compileArchiveCampaigns`, `internal/manager/manager.go`의 `makeGnericFuncMap`(sprig 함수를 감싸는 `numberFuncs` 호출). upstream이 템플릿의 숫자 표기를 고치면 이 변경을 걷어 낸다.
+
+sprig를 올릴 때는 `TestTemplateFuncsTakeNumberLikeFloat64`를 본다. 템플릿 함수를 모두 같은 인자로 두 번(추가 정보 값이 `float64`일 때와 `models.Number`일 때) 불러 결과를 견준다. 두 형을 다르게 다루는 함수가 새로 생기거나, 감싼 함수의 모양이 바뀌어 감싸지지 않으면 실패한다. 그때는 `numberFuncs`에 그 함수를 더한다.
+
+### 검증
+
+- Go 시험: `models/axm_numbers_test.go`(표기, 안쪽 값, 원본을 바꾸지 않음, JSON 출력 동일, 템플릿 비교·`printf`, 자기 자신을 담은 값), `internal/manager/numbers_test.go`(콘텐츠 형식 다섯 가지의 제목·본문·대체 본문·헤더, 템플릿 식 45가지, 템플릿 함수 전체를 `float64`와 `models.Number`로 불러 견주기), `cmd/axm_numbers_db_test.go`(Postgres에 저장된 값으로 실제 엔진이 보낸 메시지, 아카이브 제목·본문).
+- 실제 이미지와 메일 수신기(Mailpit)로 돌린 결과는 LST-22 보고서에 있다.
+
 ## 표준 추가 정보 사전 (LST-18)
 
 NEWS-40에서 정한 표준 추가 정보 항목 다섯 개를 한 파일에 둔다: **`internal/core/axm_standard_attribs.json`**.
@@ -495,8 +533,8 @@ NEWS-40에서 정한 표준 추가 정보 항목 다섯 개를 한 파일에 둔
 - ‘원본 그대로 올리기’, 구독자 API, 구독자 편집 창은 이름·값을 바꾸지 않는다. 서버는 형식을 강제하지 않는다.
 - 이미 저장된 값은 바꾸지 않는다. 운영 DB의 `region` → `country` 변환은 별도 작업(NEWS-40의 변환 초안)이다.
   그 초안은 `country`를 가진 구독자가 이미 있으면 멈추므로, **변환을 먼저 하고 이 기능이 든 이미지를 배포한다.**
-- JSON 숫자는 메일 본문 개인화에서 100만 이상이 `1.234567e+06`처럼 찍힌다(Go 템플릿의 float 표시, upstream 동작).
-  `follower`를 메일 본문에 넣기 전에 메일 렌더링 쪽을 따로 고쳐야 한다. 조건·정렬·목록 표시는 숫자로 맞게 읽는다.
+- 숫자로 저장한 `follower`가 메일 본문에서 100만부터 `1.234567e+06`으로 찍히던 문제는 LST-22에서 고쳤다(위 ‘메일 본문의 숫자 표기’).
+  메일에는 저장된 숫자가 자릿수 그대로 찍힌다(`1234567`). 조건·정렬·목록 표시는 숫자로 맞게 읽는다.
 
 Go 변경은 사전 파일과 읽는 코드, `/api/config` 필드 하나다. SQL·schema·마이그레이션·기존 API 계약 변경은 없다.
 

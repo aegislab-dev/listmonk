@@ -12,6 +12,9 @@ import (
 // to message templates while they're compiled. It represents a message from
 // a campaign that's bound to a single Subscriber.
 func (m *Manager) NewCampaignMessage(c *models.Campaign, s models.Subscriber) (CampaignMessage, error) {
+	// AXM (LST-22): templates print attribute numbers as digits, not as 1.234567e+06.
+	s.Attribs = models.PlainNumbers(s.Attribs)
+
 	msg := CampaignMessage{
 		Campaign:   c,
 		Subscriber: s,

@@ -146,6 +146,10 @@ func (camps Campaigns) LoadStats(stmt *sqlx.Stmt) error {
 // CompileTemplate compiles a campaign body template into its base
 // template and sets the resultant template to Campaign.Tpl.
 func (c *Campaign) CompileTemplate(f template.FuncMap) error {
+	// AXM (LST-22): every path that renders a campaign compiles it first, so this is
+	// where {{ .Campaign.Attribs.x }} gets numbers that print as digits.
+	c.Attribs = PlainNumbers(c.Attribs)
+
 	// If the subject line has a template string, compile it.
 	if hasTplExpr(c.Subject) {
 		subj := c.Subject
