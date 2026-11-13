@@ -288,6 +288,47 @@ func TestCloseStopsCampaignsAndSavesProgress(t *testing.T) {
 	}
 }
 
+// A mail server that takes seconds to answer: Close() waits for the answer, so the
+// message is behind the checkpoint and is not sent again on the next start. The wait
+// must cover a server that is slower than upstream's whole 3 second reload allowance.
+func TestCloseWaitsForSlowMessenger(t *testing.T) {
+	if closeDrainWait < 5*time.Second {
+		t.Fatalf("closeDrainWait is %v", closeDrainWait)
+	}
+
+	store := &countStore{}
+	m := New(Config{Concurrency: 2, MessageRate: 1000}, store, nil, log.New(io.Discard, "", 0))
+	m.sends.waits = nil
+	msgr := &heldMessenger{entered: make(chan int, 10), release: make(chan struct{})}
+	if err := m.AddMessenger(msgr); err != nil {
+		t.Fatal(err)
+	}
+	go m.sends.run()
+	go m.worker()
+	go m.worker()
+
+	p := testPipe(m, &models.Campaign{Base: models.Base{ID: 7}, Name: "test", Messenger: "email"}, 0)
+	for id := 1; id <= 4; id++ {
+		queueMessage(m, p, id)
+	}
+	<-msgr.entered
+	<-msgr.entered
+
+	// The server answers 2.5 seconds into the shutdown.
+	time.AfterFunc(2500*time.Millisecond, func() { close(msgr.release) })
+	start := time.Now()
+	m.Close()
+	if d := time.Since(start); d < 2400*time.Millisecond || d > 4500*time.Millisecond {
+		t.Fatalf("Close() took %v, want about 2.5s", d)
+	}
+	if n := m.inflight.Load(); n != 0 {
+		t.Fatalf("%d messages still with the messenger after Close()", n)
+	}
+	if sent, lastID, _ := store.get(); sent != 2 || lastID != 2 {
+		t.Fatalf("saved sent=%d lastID=%d, want 2 and 2", sent, lastID)
+	}
+}
+
 // Messages that are still with the messenger when Close() gives up waiting are not
 // behind the saved checkpoint.
 func TestCloseDoesNotWaitForeverForTheMessenger(t *testing.T) {
@@ -305,9 +346,10 @@ func TestCloseDoesNotWaitForeverForTheMessenger(t *testing.T) {
 	queueMessage(m, p, 1)
 	<-msgr.entered
 
+	m.drainWait = 300 * time.Millisecond
 	start := time.Now()
 	m.Close()
-	if d := time.Since(start); d < closeDrainWait || d > closeDrainWait+3*time.Second {
+	if d := time.Since(start); d < m.drainWait || d > m.drainWait+3*time.Second {
 		t.Fatalf("Close() took %v", d)
 	}
 	if sent, lastID, saves := store.get(); sent != 0 || lastID != 0 || saves != 0 {

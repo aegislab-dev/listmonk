@@ -12,8 +12,11 @@ const (
 	progressSaveInterval = time.Second
 
 	// closeDrainWait is how long Close() waits for the messages that are with a
-	// messenger at that moment.
-	closeDrainWait = 1500 * time.Millisecond
+	// messenger at that moment. A mail server can take seconds to answer, and a
+	// message that Close() gives up on goes out again on the next start. The app's
+	// shutdown and reload allow 8 seconds in all (shutdownWait in cmd): 1 for the
+	// HTTP server, this, and 1.5 for the send records.
+	closeDrainWait = 5 * time.Second
 
 	// sentIDsFlushWait is how long a campaign that is being picked up waits for the
 	// send records of its earlier run in this process to be written.

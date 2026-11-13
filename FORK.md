@@ -411,14 +411,15 @@ upstream은 수신자를 한 묶음(기본 1,000명) 읽는 순간 `campaigns.la
 3. **저장 시점.** 보내는 동안 1초마다, 캠페인이 멈추거나 끝날 때, 앱이 내려갈 때 `last_subscriber_id`와 보낸 수(`sent`)를 함께 저장한다. 기존 쿼리 `update-campaign-counts`를 그대로 쓴다.
 4. **이어 보낼 때 이미 받은 사람을 뺀다.** 캠페인을 다시 집으면 `last_subscriber_id` 다음부터 읽고, 그 위쪽에서 발송 기록(`axm_campaign_sends`)이 있는 구독자는 건너뛴다. 워커 여럿이 보내면 뒤쪽 메시지가 먼저 나가 있을 수 있기 때문이다. 이때 로그에 `campaign (이름) continues after subscriber N. M subscribers above it were already sent and are left out`이 남는다.
 5. **한 번에 한 인스턴스만 캠페인을 보낸다.** 읽기 위치를 DB에서 나눠 쓰지 않으므로, 두 인스턴스가 같은 캠페인을 처리하면 같은 사람에게 두 번 보낸다. 재배포 때는 새 컨테이너가 뜬 뒤에 이전 컨테이너가 내려가므로 실제로 겹친다. 그래서 캠페인을 처리하는 인스턴스는 Postgres 세션 잠금(`pg_try_advisory_lock(4282445, hashtext(current_schema()))`)을 잡는다. 못 잡은 인스턴스는 `another instance is sending campaigns. this one starts when that one stops`를 남기고 5초마다 다시 시도하다가, 잡으면 `this instance sends campaigns now`를 남기고 이어 보낸다. 잠금은 연결에 붙어 있어 앱이 어떻게 죽든 Postgres가 풀어 준다. 잠금을 잡은 연결이 끊기면 그 인스턴스는 처리 중이던 캠페인을 멈추고, 잠금을 다시 잡은 뒤 이어 보낸다. 트랜잭션 메일·알림·옵트인 메일은 잠금과 무관하게 모든 인스턴스가 보낸다. `passive` 인스턴스는 잠금을 잡지 않는다.
-6. **SIGTERM과 Ctrl+C를 받으면 정리하고 내려간다.** 전에는 신호를 받는 즉시 프로세스가 끝났다(종료 코드 2). 이제 설정 저장 때의 재시작과 같은 정리 절차를 거치고 종료 코드 0으로 끝난다. 최대 8초다. 캠페인 관리자(`Manager.Close`)는 새 메시지를 메신저에 넘기지 않고, 넘긴 메시지가 끝나기를 1.5초까지 기다리고, 발송 기록·진행 위치·보낸 수를 저장하고, 잠금을 푼다. 캠페인 상태는 「실행 중」으로 남아 다음 기동 때 이어진다. 관리 화면의 재시작(SIGHUP)도 같은 절차를 탄다.
+6. **SIGTERM과 Ctrl+C를 받으면 정리하고 내려간다.** 전에는 신호를 받는 즉시 프로세스가 끝났다(종료 코드 2). 이제 설정 저장 때의 재시작과 같은 정리 절차를 거치고 종료 코드 0으로 끝난다. 최대 8초다. 캠페인 관리자(`Manager.Close`)는 새 메시지를 메신저에 넘기지 않고, 넘긴 메시지가 끝나기를 5초까지 기다리고, 발송 기록·진행 위치·보낸 수를 저장하고, 잠금을 푼다. 캠페인 상태는 「실행 중」으로 남아 다음 기동 때 이어진다. 관리 화면의 재시작(SIGHUP)도 같은 절차를 탄다. upstream은 재시작 때 정리를 3초만 기다리고 프로세스를 바꿨는데, 이 절차가 끝날 수 있도록 종료 신호와 같은 8초로 늘렸다(HTTP 서버 1초, 메시지 5초, 발송 기록 1.5초).
 7. 그 밖에 엔진에서 바뀐 것. 멈춘 캠페인은 남은 수신자를 더 읽지 않는다(upstream은 끝까지 읽고 모두 버렸다). `Close`가 읽기 채널을 닫지 않는다(닫으면 종료 도중 읽기 루프가 패닉할 수 있었다). 보낸 수는 메시지를 끝난 것으로 표시하기 전에 세고, 저장할 때 한 번에 꺼내 0으로 돌린다. 그래서 캠페인 끝의 마지막 한 통이 빠지거나 마지막 묶음이 두 번 더해지던 일이 없어졌다.
 8. **다시 집을 때 보낸 수를 발송 기록 수에 맞춘다.** 강제 종료된 앱은 마지막 1초 동안 센 수를 저장하지 못한다. 그대로 두면 모두 받았는데도 보낸 수가 대상 수보다 작게 끝난다. 캠페인을 다시 집을 때 `sent`가 그 캠페인의 발송 기록 수보다 작으면 기록 수로 올리고 `campaign (이름) sent count raised from A to its B send records`를 남긴다. 내리지는 않는다(기록을 못 쓴 메시지, 발송 기록이 생기기 전에 시작한 캠페인).
 
 ### 보장하는 것과 못 하는 것
 
 - 재시작(강제 종료 포함), 재배포, 관리 화면 재시작, 일시정지·재개 뒤에 읽어 두고 못 보낸 수신자가 빠지지 않는다.
-- 종료 신호로 내려간 경우와 일시정지·재개는 중복도 없다.
+- 종료 신호로 내려간 경우와 일시정지·재개는 중복도 없다. 종료 신호의 경우 조건이 하나 있다. 그 순간 메일 서버에 넘기고 있던 메시지(많아야 워커 수)의 답이 5초 안에 와야 한다. 더 늦으면 앱은 그 메시지의 결과를 모르는 채 내려가고(`N campaign messages were still being sent when closing` 로그), 다시 뜬 뒤 한 번 더 보낸다. 관리 화면 재시작도 같다.
+- 잠금 연결이 끊긴 것은 다음 조회(5초 주기) 때 알아챈다. 그 사이에 다른 인스턴스가 잠금을 잡으면 길게는 5초 동안 두 인스턴스가 같은 캠페인을 보낼 수 있다. DB 연결이 끊기는 장애와 인스턴스 둘이 동시에 떠 있는 때가 겹쳐야 생긴다.
 - **강제 종료(SIGKILL, 장비 장애)는 예외가 하나 있다.** 메일 서버가 받았지만 발송 기록이 아직 DB에 쓰이지 않은 메시지는 다시 뜬 앱이 알 수 없어 한 번 더 보낸다. 기록은 보낸 뒤 20ms 안에 쓰기 시작하므로, 죽기 직전 수십 ms 동안 나간 메시지가 그 대상이다. 워커가 메시지를 몰아 보내는 도중에 죽으면 많아진다. 실제 이미지 실행에서는 운영 속도 설정(워커 2 × 초당 5통)으로 10번 강제 종료해 0통, 초당 약 50통 설정으로는 강제 종료 대부분이 0통이고 한 번에 11통·21통인 때가 있었고, 최대 속도(초당 2천 통대)에서는 한 번에 45~87통이었다. 그 순간 메일 서버에 넘기고 있던 메시지(많아야 워커 수)도 같다. 반대로 빠지는 일은 없다.
 - 강제 종료 뒤에도 캠페인이 끝났을 때 보낸 수는 대상 수와 같다. 위 예외로 두 번 받은 사람이 있으면 그만큼 클 수 있다.
 - 발송 기록을 쓰지 못한 메시지(DB 장애로 버린 묶음)도 같은 이유로, 그 직후에 재시작이나 재개가 겹치면 한 번 더 나갈 수 있다.
@@ -440,7 +441,7 @@ upstream은 수신자를 한 묶음(기본 1,000명) 읽는 순간 `campaigns.la
 - `queries/campaigns.sql`: `next-campaign-subscribers`에서 `u AS (UPDATE campaigns …)`를 지우고 마지막에 `ORDER BY id`를 붙였다.
 - `internal/manager/manager.go`: `Store` 인터페이스(`NextSubscribers` 인자, `GetCampaignSentIDs`, `HoldCampaignLock`, `ReleaseCampaignLock`), `Run`의 읽기 루프, `Close`, `scanCampaigns`, `worker`, `getCurrentCampaigns`.
 - `internal/manager/pipe.go`: `pipe` 구조체, `newPipe`, `NextSubscribers`, `newMessage`, `cleanup`.
-- `cmd/manager_store.go`, `cmd/main.go`(종료 신호), `cmd/init.go`(`awaitShutdown`), `models/campaigns.go`(`LastSubscriberID`).
+- `cmd/manager_store.go`, `cmd/main.go`(종료 신호), `cmd/init.go`(`awaitShutdown`, `awaitReload`의 대기 시간), `models/campaigns.go`(`LastSubscriberID`).
 
 upstream이 이 결함을 고치면(같은 열의 뜻이 바뀔 수 있다) 이 절의 변경을 걷어 내고 upstream 방식으로 맞춘다.
 

@@ -144,6 +144,7 @@ type Manager struct {
 	lockHeld    bool
 	lockWaiting bool
 	saveEvery   time.Duration
+	drainWait   time.Duration
 
 	tplFuncs template.FuncMap
 }
@@ -237,6 +238,7 @@ func New(cfg Config, store Store, i *i18n.I18n, l *log.Logger) *Manager {
 		slidingStart: time.Now(),
 		sends:        newSendLog(store, l),
 		saveEvery:    progressSaveInterval,
+		drainWait:    closeDrainWait,
 	}
 	m.tplFuncs = m.makeGnericFuncMap()
 
@@ -489,7 +491,7 @@ func (m *Manager) Close() {
 	m.closing.Store(true)
 	pipes := m.stopPipes()
 
-	deadline := time.Now().Add(closeDrainWait)
+	deadline := time.Now().Add(m.drainWait)
 	for m.inflight.Load() > 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}

@@ -1139,7 +1139,10 @@ func awaitReload(sigChan chan os.Signal, closerWait chan bool, closer func()) ch
 			case <-closerWait:
 				// Wait for the closer to finish.
 				respawn()
-			case <-time.After(time.Second * 3):
+			// AXM (LST-20): upstream gave the closer 3 seconds. The campaign
+			// manager alone may now wait 5 for a slow mail server, so a
+			// reload gets the same time as a shutdown.
+			case <-time.After(shutdownWait):
 				// Or timeout and force close.
 				respawn()
 			}
