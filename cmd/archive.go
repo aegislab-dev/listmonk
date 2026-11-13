@@ -256,6 +256,9 @@ func (a *App) compileArchiveCampaigns(camps []models.Campaign) ([]manager.Campai
 			return nil, echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("public.errorFetchingCampaign"))
 		}
 
+		// AXM (LST-22): the subject below is rendered here, not by NewCampaignMessage.
+		sub.Attribs = models.PlainNumbers(sub.Attribs)
+
 		m := manager.CampaignMessage{
 			Campaign:   &camp,
 			Subscriber: sub,
