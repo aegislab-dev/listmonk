@@ -1036,15 +1036,21 @@ func TestCampaignLockOutlivesConnectionLifetime(t *testing.T) {
 	if sessions != 1 {
 		t.Fatalf("%d sessions hold the lock, want 1", sessions)
 	}
+	// Postgres frees the lock when the session's backend exits, which is a moment after
+	// the connection is closed. An instance that finds the lock taken tries again.
 	holder.ReleaseCampaignLock()
-	if held, err := other.HoldCampaignLock(); !held || err != nil {
-		t.Fatalf("after release: held=%v err=%v", held, err)
-	}
+	waitFor(t, "the released lock to be free for another instance", func() bool {
+		held, err := other.HoldCampaignLock()
+		if err != nil {
+			t.Fatalf("after release: held=%v err=%v", held, err)
+		}
+		return held
+	})
 	other.ReleaseCampaignLock()
-	e.get(&sessions, `SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 4282445 AND objid = hashtext(current_schema()::TEXT)::OID`)
-	if sessions != 0 {
-		t.Fatalf("%d sessions hold the lock after both released it", sessions)
-	}
+	waitFor(t, "no session to hold the lock after both released it", func() bool {
+		e.get(&sessions, `SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 4282445 AND objid = hashtext(current_schema()::TEXT)::OID`)
+		return sessions == 0
+	})
 
 	// Releasing again, or without holding it, does nothing.
 	other.ReleaseCampaignLock()
