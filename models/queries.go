@@ -29,6 +29,7 @@ type Queries struct {
 	AxmMarkSendOpened              *sqlx.Stmt `query:"axm-mark-send-opened"`
 	AxmMarkSendClicked             *sqlx.Stmt `query:"axm-mark-send-clicked"`
 	AxmCountCampaignSends          *sqlx.Stmt `query:"axm-count-campaign-sends"`
+	AxmGetCampaignSentIDs          *sqlx.Stmt `query:"axm-get-campaign-sent-ids"`
 	AxmDeleteCampaignSends         *sqlx.Stmt `query:"axm-delete-campaign-sends"`
 	GetDashboardCharts             *sqlx.Stmt `query:"get-dashboard-charts"`
 	GetDashboardCounts             *sqlx.Stmt `query:"get-dashboard-counts"`

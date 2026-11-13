@@ -14,6 +14,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -640,7 +641,7 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 		SlidingWindowRate:     ko.Int("app.message_sliding_window_rate"),
 		ScanInterval:          time.Second * 5,
 		ScanCampaigns:         !ko.Bool("passive"),
-	}, newManagerStore(q, co, md), i, lo)
+	}, newManagerStore(q, co, md, db), i, lo)
 
 	// Attach all messengers to the campaign manager.
 	for _, m := range msgrs {
@@ -1084,6 +1085,37 @@ func initCron(co *core.Core, db *sqlx.DB) {
 	}
 }
 
+// shutdownWait is the longest that a shutdown on SIGTERM or an interrupt waits for the
+// closer. Container runtimes kill the process some seconds after SIGTERM (Docker: 10).
+const shutdownWait = 8 * time.Second
+
+// awaitShutdown ends the app on SIGTERM or an interrupt after running the closer
+// (AXM, LST-20). Without it the Go runtime ends the process as soon as the signal
+// arrives, in the middle of whatever a campaign is sending.
+func awaitShutdown(closer func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, os.Interrupt)
+
+	go func() {
+		sig := <-ch
+		lo.Printf("shutting down on signal (%v) ...", sig)
+
+		done := make(chan struct{})
+		go func() {
+			closer()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			lo.Println("shut down")
+		case <-time.After(shutdownWait):
+			lo.Println("shutdown is taking too long. exiting")
+		}
+		os.Exit(0)
+	}()
+}
+
 // awaitReload waits for a SIGHUP signal to reload the app. Every setting change on the UI causes a reload.
 func awaitReload(sigChan chan os.Signal, closerWait chan bool, closer func()) chan bool {
 	// The blocking signal handler that main() waits on.
@@ -1107,7 +1139,10 @@ func awaitReload(sigChan chan os.Signal, closerWait chan bool, closer func()) ch
 			case <-closerWait:
 				// Wait for the closer to finish.
 				respawn()
-			case <-time.After(time.Second * 3):
+			// AXM (LST-20): upstream gave the closer 3 seconds. The campaign
+			// manager alone may now wait 5 for a slow mail server, so a
+			// reload gets the same time as a shutdown.
+			case <-time.After(shutdownWait):
 				// Or timeout and force close.
 				respawn()
 			}

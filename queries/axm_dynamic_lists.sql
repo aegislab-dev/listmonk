@@ -49,6 +49,8 @@ SELECT COUNT(*) FILTER (WHERE blocked) AS blocklisted,
 FROM c;
 
 -- name: next-campaign-subscribers-dynamic
+-- Like next-campaign-subscribers, it reads after $3 and leaves the campaign's
+-- checkpoint alone (LST-20).
 WITH campLists AS (
     SELECT l.id AS list_id, l.optin, l.axm_filter FROM lists l
     JOIN campaign_lists cl ON cl.list_id = l.id WHERE cl.campaign_id = $1
@@ -70,9 +72,5 @@ dynamic AS (
     WHERE cl.axm_filter IS NOT NULL AND $2 != 'optin' AND cl.list_id = ANY($5::INT[])
 ),
 ids AS (SELECT id FROM regular UNION SELECT id FROM dynamic ORDER BY id LIMIT $6),
-subs AS (SELECT s.* FROM subscribers s JOIN ids ON ids.id = s.id ORDER BY s.id),
-u AS (
-    UPDATE campaigns SET last_subscriber_id = (SELECT MAX(id) FROM subs), updated_at = NOW()
-    WHERE (SELECT COUNT(id) FROM subs) > 0 AND id = $1
-)
+subs AS (SELECT s.* FROM subscribers s JOIN ids ON ids.id = s.id ORDER BY s.id)
 SELECT * FROM subs ORDER BY id;

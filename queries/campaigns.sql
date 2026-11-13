@@ -341,9 +341,14 @@ SELECT campaigns.id AS campaign_id, campaigns.type as campaign_type, last_subscr
     WHERE campaigns.id = $1 AND campaigns.status='running';
 
 -- name: next-campaign-subscribers
--- Returns a batch of subscribers in a given campaign starting from the last checkpoint
--- (last_subscriber_id). Every fetch updates the checkpoint and the sent count, which means
--- every fetch returns a new batch of subscribers until all rows are exhausted.
+-- Returns a batch of subscribers in a given campaign after the subscriber ID $3, the
+-- position that the caller has read up to.
+--
+-- AXM (LST-20): the fetch no longer moves the campaign's checkpoint (last_subscriber_id).
+-- Upstream advanced it here, at read time, so an app that went down between reading a
+-- batch and sending it skipped those subscribers after a restart and still finished the
+-- campaign. The campaign manager now keeps the read position in memory and saves
+-- last_subscriber_id only for subscribers it is done with (update-campaign-counts).
 --
 -- In previous versions, get-running-campaign + this was a single query spread across multiple
 -- CTEs, but despite numerous permutations and combinations, Postgres query planner simply would not use
@@ -388,13 +393,8 @@ subs AS (
             )
         ORDER BY s.id LIMIT $6
     ) subIDs JOIN subscribers s ON (s.id = subIDs.id) ORDER BY s.id
-),
-u AS (
-    UPDATE campaigns
-    SET last_subscriber_id = (SELECT MAX(id) FROM subs), updated_at = NOW()
-    WHERE (SELECT COUNT(id) FROM subs) > 0 AND id=$1
 )
-SELECT * FROM subs;
+SELECT * FROM subs ORDER BY id;
 
 -- name: delete-campaign-views
 DELETE FROM campaign_views WHERE created_at < $1;

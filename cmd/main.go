@@ -318,23 +318,37 @@ func main() {
 	// within N seconds, or do a force reload.
 	signal.Notify(chReload, syscall.SIGHUP)
 
+	// AXM (LST-20): the closer runs once, for a reload or for a shutdown,
+	// whichever comes first.
+	var closeOnce sync.Once
+	closeApp := func() {
+		closeOnce.Do(func() {
+			// Stop the HTTP server.
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+			srv.Shutdown(ctx)
+
+			// Close the campaign manager.
+			mgr.Close()
+
+			// Close the DB pool.
+			db.Close()
+
+			// Close the messenger pool.
+			for _, m := range app.messengers {
+				m.Close()
+			}
+		})
+	}
+
+	// AXM (LST-20): SIGTERM (a redeploy, `docker stop`) and Ctrl+C used to end the
+	// process on the spot. They now go through the same closer as a reload, so that
+	// running campaigns are stopped cleanly and continue on the next start.
+	awaitShutdown(closeApp)
+
 	closerWait := make(chan bool)
 	<-awaitReload(chReload, closerWait, func() {
-		// Stop the HTTP server.
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx)
-
-		// Close the campaign manager.
-		mgr.Close()
-
-		// Close the DB pool.
-		db.Close()
-
-		// Close the messenger pool.
-		for _, m := range app.messengers {
-			m.Close()
-		}
+		closeApp()
 
 		// Signal the close.
 		closerWait <- true

@@ -37,6 +37,12 @@ FROM campaigns c, subscribers s
 WHERE c.uuid = $1::UUID AND s.uuid = $2::UUID
     AND cs.campaign_id = c.id AND cs.subscriber_id = s.id;
 
+-- name: axm-get-campaign-sent-ids
+-- The subscribers above ID $2 who were already sent campaign $1. A campaign that is
+-- picked up again reads from its checkpoint and leaves these out, so that nobody
+-- gets it twice (LST-20).
+SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2;
+
 -- name: axm-count-campaign-sends
 SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1;
 

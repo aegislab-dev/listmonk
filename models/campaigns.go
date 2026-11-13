@@ -38,6 +38,11 @@ type Campaigns []Campaign
 type Campaign struct {
 	ReplyTo         string `db:"reply_to" json:"reply_to"`
 	ReplyToVerified bool   `db:"-" json:"reply_to_verified"`
+
+	// LastSubscriberID is the sending checkpoint (campaigns.last_subscriber_id): the
+	// campaign is done with every subscriber up to it. The campaign manager continues
+	// after it when it picks a campaign up (AXM, LST-20). It is not part of the API.
+	LastSubscriberID int `db:"last_subscriber_id" json:"-"`
 	Base
 	CampaignMeta
 
