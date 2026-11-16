@@ -589,26 +589,76 @@ func TestDrawConcurrent(t *testing.T) {
 	e := newDrawEnv(t)
 	src := e.list("S", "single")
 	e.subs(src, 100, "confirmed", `{}`)
+	// The test holds the source lock itself: a draw from the same source must wait for it.
+	tx, err := e.db.Beginx()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(e.q["axm-draw-lock"], src); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	var l models.List
+	go func() {
+		var err error
+		l, _, err = e.draw(src, count(60))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("a draw ran while the source lock was held (%v)", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	tx.Rollback()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	first := e.members(l.ID)
+	// Two draws at once still never overlap.
 	var wg sync.WaitGroup
 	res := make([][]int, 2)
-	errs := make([]error, 2)
 	for i := range res {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			l, _, err := e.draw(src, count(60))
-			errs[i] = err
-			if err == nil {
+			if l, _, err := e.draw(src, count(30)); err == nil {
 				res[i] = e.members(l.ID)
 			}
 		}(i)
 	}
 	wg.Wait()
-	if errs[0] != nil || errs[1] != nil {
-		t.Fatal(errs)
+	if len(res[0]) != 30 && len(res[0])+len(res[1]) != 40 || overlaps(res[0], res[1]) || overlaps(first, res[0]) || overlaps(first, res[1]) {
+		t.Fatalf("%d %d overlap", len(res[0]), len(res[1]))
 	}
-	if overlaps(res[0], res[1]) || len(res[0])+len(res[1]) != 100 {
-		t.Fatalf("%d and %d, overlap %v", len(res[0]), len(res[1]), overlaps(res[0], res[1]))
+}
+
+// A dynamic source based on all subscribers: the drawn list's own subscription must not
+// keep the person valid after they unsubscribe from their real list.
+func TestDrawUnsubscribeDynamicAllBase(t *testing.T) {
+	e := newDrawEnv(t)
+	real := e.list("Real", "single")
+	p := e.subs(real, 6, "confirmed", `{"seg":"x"}`)
+	f := DynamicFilter{Version: 1, Base: DynamicBase{Type: "all"}, Match: "all", Conditions: []DynamicCondition{eq("seg", "x")}}
+	raw, _ := json.Marshal(f)
+	dyn := testList(e.db, string(raw), "single")
+	g, _, err := e.draw(dyn, count(6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.db.MustExec(`UPDATE subscriber_lists SET status='unsubscribed' WHERE list_id=$1 AND subscriber_id=$2`, real, p[0])
+	var st string
+	e.db.Get(&st, `SELECT status::text FROM subscriber_lists WHERE list_id=$1 AND subscriber_id=$2`, g.ID, p[0])
+	if st != "unsubscribed" {
+		t.Fatalf("drawn list row is %s", st)
+	}
+	for _, id := range dbIDs(t, e.db, `SELECT * FROM axm_dynamic_list_members($1)`, dyn) {
+		if id == p[0] {
+			t.Fatal("still a member of the dynamic list")
+		}
+	}
+	if len(dbIDs(t, e.db, `SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 AND status='confirmed'`, g.ID)) != 5 {
+		t.Fatal("others must stay")
 	}
 }
 
@@ -736,6 +786,9 @@ func TestDrawDeleteKeepsReceivers(t *testing.T) {
 	e.db.Get(&kept, `SELECT COUNT(*) FROM axm_list_draw_campaigns WHERE source_list_id=$1 AND campaign_id=$2`, src, camp)
 	if kept != 1 {
 		t.Fatal("campaign link lost")
+	}
+	if rows, _ := e.c.GetListDraws(src, nil, 5); len(rows) != 1 || rows[0].Campaigns != 1 {
+		t.Fatalf("deleted record keeps its campaign count: %+v", rows)
 	}
 	var del bool
 	var listID *int

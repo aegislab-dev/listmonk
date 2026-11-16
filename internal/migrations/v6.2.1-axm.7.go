@@ -138,6 +138,7 @@ BEGIN
                 AND EXISTS (
                     SELECT 1 FROM subscriber_lists bl JOIN lists l ON l.id = bl.list_id
                     WHERE bl.subscriber_id = NEW.subscriber_id AND l.axm_filter IS NULL
+                        AND NOT EXISTS (SELECT 1 FROM axm_list_draws xd WHERE xd.list_id = l.id)
                         AND (sl.axm_filter->'base'->>'type' = 'all' OR
                             (sl.axm_filter->'base'->>'type' = 'lists' AND
                                 COALESCE(sl.axm_filter->'base'->'lists', '[]'::JSONB) @> to_jsonb(l.id)))
@@ -187,7 +188,11 @@ BEGIN
     JOIN campaign_lists cl ON cl.list_id = dr.list_id
     WHERE dr.list_id = OLD.id AND dr.source_list_id IS NOT NULL
     ON CONFLICT DO NOTHING;
-    UPDATE axm_list_draws SET deleted_at = NOW() WHERE list_id = OLD.id;
+    UPDATE axm_list_draws SET deleted_at = NOW(), result = result || jsonb_build_object(
+        'campaigns', (SELECT COUNT(*) FROM campaign_lists cl WHERE cl.list_id = OLD.id),
+        'campaigns_finished', (SELECT COUNT(*) FROM campaign_lists cl JOIN campaigns c ON c.id = cl.campaign_id
+            WHERE cl.list_id = OLD.id AND c.status = 'finished'))
+    WHERE list_id = OLD.id;
     RETURN OLD;
 END;
 $$;

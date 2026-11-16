@@ -82,7 +82,7 @@
           </b-taglist>
           <b-tag v-if="drawOf(props.row)" type="is-info is-light" class="drawn-from" data-cy="drawn-from"
             :title="drawTitle(drawOf(props.row))">
-            {{ $t('lists.draw.drawnBadge', { name: drawOf(props.row).sourceName }) }}
+            {{ drawBadge(drawOf(props.row)) }}
           </b-tag>
         </div>
       </b-table-column>
@@ -294,6 +294,12 @@ export default Vue.extend({
 
     drawOf(list) { return this.draws[list.id] || null; },
 
+    drawBadge(d) {
+      return this.$t('lists.draw.drawnBadge', {
+        name: d.sourceName, time: this.$utils.niceDate(d.drawnAt, true), num: this.$utils.formatNumber(d.result.drawn || 0),
+      });
+    },
+
     drawTitle(d) {
       return this.$t('lists.draw.drawnTitle', {
         name: d.sourceName, time: this.$utils.niceDate(d.drawnAt, true), num: this.$utils.formatNumber(d.result.drawn || 0),
@@ -314,7 +320,14 @@ export default Vue.extend({
     // Opens the edit form of a list by ID (a drawn list or a source, from the draw screens).
     openList(id) {
       this.isDrawVisible = false;
-      this.$api.getList(id).then((data) => this.showEditForm(data));
+      this.$api.getList(id).then((data) => {
+        // GET /api/lists/:id adds the status counts to the total again for an ordinary list.
+        const out = { ...data };
+        if (!out.axmFilter && out.subscriberStatuses) {
+          out.subscriberCount = Object.values(out.subscriberStatuses).reduce((a, b) => a + b, 0);
+        }
+        this.showEditForm(out);
+      });
     },
 
     setDrawn(on) {

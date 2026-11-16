@@ -50,7 +50,7 @@ func (a *App) DrawList(c echo.Context) error {
 		Name:   req.Name,
 		UserID: user.ID,
 		Describe: func(source string, at time.Time, r models.DrawCounts) string {
-			return a.i18n.Ts("lists.draw.description", "source", source, "time", at.Format("2006-01-02 15:04"),
+			return a.i18n.Ts("lists.draw.description", "source", source, "time", at.Format("2006-01-02 15:04 MST"),
 				"num", strconv.Itoa(r.WillDraw), "target", strconv.Itoa(r.Target),
 				"drawn", strconv.Itoa(r.AlreadyDrawn), "received", strconv.Itoa(r.AlreadyReceived),
 				"candidates", strconv.Itoa(r.Candidates))

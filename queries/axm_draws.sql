@@ -42,9 +42,11 @@ VALUES ($1, $2, $3, $4, $5, $6::JSONB, $7::JSONB) RETURNING id, drawn_at;
 -- Draw records of source $1 (0 = any) or of the drawn lists $2 (empty = any), newest first.
 SELECT d.id, d.list_id, d.source_list_id, d.source_name, COALESCE(l.name, d.list_name) AS list_name,
     d.drawn_at, d.drawn_by, COALESCE(u.name, '') AS drawn_by_name, d.settings, d.result, d.deleted_at,
-    (SELECT COUNT(*) FROM campaign_lists cl WHERE cl.list_id = d.list_id) AS campaigns,
-    (SELECT COUNT(*) FROM campaign_lists cl JOIN campaigns c ON c.id = cl.campaign_id
-        WHERE cl.list_id = d.list_id AND c.status = 'finished') AS campaigns_finished
+    CASE WHEN d.list_id IS NULL THEN COALESCE((d.result->>'campaigns')::INT, 0)
+        ELSE (SELECT COUNT(*) FROM campaign_lists cl WHERE cl.list_id = d.list_id) END AS campaigns,
+    CASE WHEN d.list_id IS NULL THEN COALESCE((d.result->>'campaigns_finished')::INT, 0)
+        ELSE (SELECT COUNT(*) FROM campaign_lists cl JOIN campaigns c ON c.id = cl.campaign_id
+            WHERE cl.list_id = d.list_id AND c.status = 'finished') END AS campaigns_finished
 FROM axm_list_draws d
 LEFT JOIN lists l ON l.id = d.list_id
 LEFT JOIN users u ON u.id = d.drawn_by

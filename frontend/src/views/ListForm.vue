@@ -124,7 +124,7 @@
                     <a v-if="d.listId" href="#" @click.prevent="$emit('open-list', d.listId)">{{ d.listName }}</a>
                     <span v-else class="has-text-grey">{{ $t('lists.draw.historyDeleted') }} &middot; {{ d.listName }}</span>
                   </td>
-                  <td>{{ d.listId ? campaignsText(d) : '' }}</td>
+                  <td>{{ campaignsText(d) }}</td>
                   <td class="draw-actions">
                     <template v-if="d.listId && canManageDrawn(d)">
                       <a href="#" :data-cy="`draw-archive-${d.id}`" @click.prevent="archiveDrawn(d)">{{ $t('lists.draw.historyArchive') }}</a>
