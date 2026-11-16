@@ -42,9 +42,10 @@ func TestReadingBatchLeavesCheckpointAlone(t *testing.T) {
 
 // A campaign with many recipients, many workers, a scan that runs all the time and a
 // checkpoint save that does too ends with every recipient sent once, recorded once and
-// counted once. The sent count is compared exactly: a last batch that is counted twice
-// (cleanup and the periodic scan both writing it) or a last message that is counted after
-// the campaign finished show up here.
+// counted exactly. This is an end-to-end check against the real queries. It can only catch
+// a miscount that happens by chance; the two orderings behind it are checked without
+// chance in internal/manager/progress_test.go (TestWorkerCountsMessageBeforeMarkingItDone,
+// TestSentCountIsWrittenOnce).
 func TestBigCampaignEndsWithExactCounts(t *testing.T) {
 	const n = 3000
 	e := newSendsEnv(t, n)

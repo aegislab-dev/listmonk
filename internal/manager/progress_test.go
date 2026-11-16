@@ -401,19 +401,104 @@ func TestWorkerCountsMessageBeforeMarkingItDone(t *testing.T) {
 	}
 }
 
-// The periodic scan and the pipe's own save both take the sent count with a swap, so a
-// count is written once whichever comes first (LST-25, defect 4 of LST-23).
+// The periodic scan, the pipe's periodic save and the campaign's cleanup all take the sent
+// count with a swap, so a count is written once whichever of them comes first (LST-25,
+// defect 4 of LST-23: a last batch of 54 was counted as 108 when the scan overlapped the
+// cleanup). Both orders are tried, with the cleanup of a stopped pipe, which saves and
+// ends there.
 func TestSentCountIsWrittenOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first string // Which comes first: "scan", "save" or "cleanup".
+		then  string
+	}{
+		{"scan then save", "scan", "save"},
+		{"save then scan", "save", "scan"},
+		{"scan then cleanup", "scan", "cleanup"},
+		{"cleanup then scan", "cleanup", "scan"},
+		{"save then cleanup", "save", "cleanup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &countStore{}
+			m := New(Config{}, store, nil, log.New(io.Discard, "", 0))
+			p := testPipe(m, &models.Campaign{Base: models.Base{ID: 7}, Name: "test", Messenger: "email"}, 0)
+			p.Stop(false)
+			p.sent.Add(54)
+
+			var scanned int64
+			do := map[string]func(){
+				"scan": func() { // what the scan hands to next-campaigns; a cleaned-up pipe is no longer listed
+					_, counts := m.getCurrentCampaigns()
+					for _, c := range counts {
+						scanned += c
+					}
+				},
+				"save":    p.saveProgress,
+				"cleanup": p.cleanup,
+			}
+			do[tc.first]()
+			do[tc.then]()
+			// Whatever runs again later must find nothing left to write.
+			do["save"]()
+			do["scan"]()
+
+			saved, _, _ := store.get()
+			if total := int(scanned) + saved; total != 54 {
+				t.Fatalf("the scan took %d and the pipe saved %d, together %d, want 54", scanned, saved, total)
+			}
+		})
+	}
+}
+
+// While messages are being counted, the scan and the pipe's save keep taking the count.
+// Every message ends up in exactly one of them (a load followed by a store of 0 would lose
+// the ones counted in between). This one relies on chance for a non-atomic take, like any
+// race test; the tests above cover the order of the steps without it.
+func TestSentCountSurvivesConcurrentTakers(t *testing.T) {
+	const adds = 300000
 	store := &countStore{}
 	m := New(Config{}, store, nil, log.New(io.Discard, "", 0))
 	p := testPipe(m, &models.Campaign{Base: models.Base{ID: 7}, Name: "test", Messenger: "email"}, 0)
 
-	p.sent.Add(54)
-	_, counts := m.getCurrentCampaigns() // what the scan hands to next-campaigns
-	p.saveProgress()                     // what cleanup writes
+	var (
+		wg      sync.WaitGroup
+		stop    = make(chan struct{})
+		scanned int64
+		scanMu  sync.Mutex
+	)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_, counts := m.getCurrentCampaigns()
+				scanMu.Lock()
+				for _, c := range counts {
+					scanned += c
+				}
+				scanMu.Unlock()
+				p.saveProgress()
+			}
+		}()
+	}
+	for i := 0; i < adds; i++ {
+		p.sent.Add(1)
+	}
+	close(stop)
+	wg.Wait()
 	p.saveProgress()
+	_, counts := m.getCurrentCampaigns()
+	for _, c := range counts {
+		scanned += c
+	}
+
 	saved, _, _ := store.get()
-	if total := int(counts[0]) + saved; total != 54 {
-		t.Fatalf("the scan took %d and the pipe saved %d, together %d, want 54", counts[0], saved, total)
+	if total := int(scanned) + saved; total != adds {
+		t.Fatalf("%d messages counted, the scan took %d and the pipe saved %d, together %d", adds, scanned, saved, total)
 	}
 }
