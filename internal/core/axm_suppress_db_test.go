@@ -54,14 +54,15 @@ func TestSuppressionFollowsBlocklist(t *testing.T) {
 		t.Fatal("unblocking removes the address")
 	}
 	e.db.MustExec(`UPDATE subscribers SET status='blocklisted' WHERE id=$1`, id)
-	// A blocked subscriber who changes address moves the record.
+	// A blocked subscriber who changes address keeps the old address blocked and blocks the new one.
 	e.db.MustExec(`UPDATE subscribers SET email='other@example.invalid' WHERE id=$1`, id)
 	var n int
 	e.db.Get(&n, `SELECT COUNT(*) FROM axm_suppressed_emails WHERE email_hash = axm_email_hash('someone@example.invalid')`)
-	if n != 0 || e.suppressed() != 1 {
-		t.Fatalf("the old address is released: %d, %d", n, e.suppressed())
+	if n != 1 || e.suppressed() != 2 {
+		t.Fatalf("the old address stays blocked, the new one is added: %d, %d", n, e.suppressed())
 	}
 	e.db.MustExec(`UPDATE subscribers SET email='Someone@Example.invalid' WHERE id=$1`, id)
+	e.db.MustExec(`DELETE FROM axm_suppressed_emails WHERE email_hash = axm_email_hash('other@example.invalid')`)
 
 	// Deleting keeps the address suppressed.
 	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, id)
@@ -199,5 +200,64 @@ func TestSuppressionAfterUnsubscribeLink(t *testing.T) {
 	st, subs = e.status("pref@example.invalid")
 	if st != "enabled" || subs[0] != "unsubscribed" || subs[1] != "confirmed" {
 		t.Fatalf("%s %v", st, subs)
+	}
+}
+
+// Editing the e-mail of a blocked subscriber does not free the old address: adding it again
+// gives a blocklisted subscriber.
+func TestSuppressionSurvivesEmailEdit(t *testing.T) {
+	e := newSuppressEnv(t)
+	l := e.list("L", "single")
+	id := e.sub("blocked@example.invalid", "enabled")
+	e.join(l, id, "confirmed")
+	e.db.MustExec(`UPDATE subscribers SET status='blocklisted' WHERE id=$1`, id)
+	e.db.MustExec(`UPDATE subscribers SET email='moved@example.invalid' WHERE id=$1`, id)
+	again := e.sub("blocked@example.invalid", "enabled")
+	e.join(l, again, "confirmed")
+	if st, subs := e.status("blocked@example.invalid"); st != "blocklisted" || subs[0] != "unsubscribed" {
+		t.Fatalf("the old address came back: %s %v", st, subs)
+	}
+	// Taking the subscriber off the blocklist frees the address it has now, not the old one.
+	e.db.MustExec(`UPDATE subscribers SET status='enabled' WHERE id=$1`, id)
+	var n int
+	e.db.Get(&n, `SELECT COUNT(*) FROM axm_suppressed_emails WHERE email_hash = axm_email_hash('moved@example.invalid')`)
+	if n != 0 {
+		t.Fatal("the current address is freed by the unblock")
+	}
+}
+
+// Changing another subscriber's e-mail to a suppressed address blocks that subscriber and
+// unsubscribes everything, as adding the address as a new subscriber would.
+func TestSuppressedAddressCannotBeTakenByEmailEdit(t *testing.T) {
+	e := newSuppressEnv(t)
+	l, l2 := e.list("L", "single"), e.list("L2", "single")
+	gone := e.sub("gone@example.invalid", "blocklisted")
+	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, gone)
+	other := e.sub("temp@example.invalid", "enabled")
+	e.join(l, other, "confirmed")
+	e.join(l2, other, "confirmed")
+	e.db.MustExec(`UPDATE subscribers SET email='Gone@Example.invalid' WHERE id=$1`, other)
+	st, subs := e.status("gone@example.invalid")
+	if st != "blocklisted" || len(subs) != 2 || subs[0] != "unsubscribed" || subs[1] != "unsubscribed" {
+		t.Fatalf("%s %v", st, subs)
+	}
+	// An ordinary change of address is untouched.
+	fine := e.sub("fine@example.invalid", "enabled")
+	e.join(l, fine, "confirmed")
+	e.db.MustExec(`UPDATE subscribers SET email='fine2@example.invalid' WHERE id=$1`, fine)
+	if st, subs := e.status("fine2@example.invalid"); st != "enabled" || subs[0] != "confirmed" {
+		t.Fatalf("%s %v", st, subs)
+	}
+}
+
+// The delete trigger keeps the address even when the record is gone (a record that was
+// cleaned by hand, or never made): deleting a blocked subscriber leaves it suppressed.
+func TestDeleteKeepsBlockedAddress(t *testing.T) {
+	e := newSuppressEnv(t)
+	id := e.sub("kept@example.invalid", "blocklisted")
+	e.db.MustExec(`DELETE FROM axm_suppressed_emails`)
+	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, id)
+	if e.suppressed() != 1 {
+		t.Fatal("the delete trigger did not keep the address")
 	}
 }

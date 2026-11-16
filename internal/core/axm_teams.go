@@ -321,6 +321,7 @@ func (c *Core) VisibleTeams(all bool, listIDs []int) ([]models.TeamCount, error)
 	}
 	for i := range out {
 		out[i].Name = models.TeamName(out[i].Tag)
+		out[i].HasRole = out[i].RoleID != nil
 	}
 	return out, nil
 }

@@ -69,10 +69,13 @@ type TeamMember struct {
 // TeamCount is a team tag with the number of lists a user may see under it. RoleID and
 // RoleName are only given to users who manage roles.
 type TeamCount struct {
-	Tag      string  `db:"tag" json:"tag"`
-	Name     string  `db:"-" json:"name"`
-	Lists    int     `db:"lists" json:"lists"`
-	RoleID   *int    `db:"role_id" json:"role_id,omitempty"`
+	Tag    string `db:"tag" json:"tag"`
+	Name   string `db:"-" json:"name"`
+	Lists  int    `db:"lists" json:"lists"`
+	RoleID *int   `db:"role_id" json:"role_id,omitempty"`
+	// HasRole tells that a team role exists for the tag, to everybody (the screens that make
+	// lists offer only the teams that exist; role_id is for those who manage roles).
+	HasRole  bool    `db:"-" json:"has_role"`
 	RoleName *string `db:"role_name" json:"role_name,omitempty"`
 }
 

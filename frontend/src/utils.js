@@ -156,6 +156,21 @@ export default class Utils {
     });
   };
 
+  // A confirmation with a title and a warning box (the text is escaped), for an action that
+  // reaches further than the person may think. The confirm button has its own name.
+  confirmWarn = (title, warning, confirmText, onConfirm) => {
+    Dialog.confirm({
+      scroll: 'keep',
+      title: this.escapeHTML(title),
+      message: `<div class="notification is-warning is-light" data-cy="warn-box">${this.escapeHTML(warning)}</div>`,
+      type: 'is-danger',
+      hasIcon: false,
+      confirmText,
+      cancelText: this.i18n.t('globals.buttons.cancel'),
+      onConfirm,
+    });
+  };
+
   prompt = (msg, inputAttrs, onConfirm, onCancel, params) => {
     const p = params || {};
 

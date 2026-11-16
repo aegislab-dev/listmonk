@@ -174,7 +174,7 @@ export default Vue.extend({
     validation() { return validateDraw(this.form); },
 
     isAdmin() { return this.$can('lists:manage_all'); },
-    adminTeams() { return (this.teams || []).filter((t) => t.roleId); },
+    adminTeams() { return (this.teams || []).filter((t) => t.hasRole); },
     sourceTeams() { return teamTags(this.source.tags); },
     sourceTeamNames() { return this.sourceTeams.map(teamName).join(', '); },
     myTeamName() { return teamName(this.$teamTag()); },

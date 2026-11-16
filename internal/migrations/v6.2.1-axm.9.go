@@ -9,7 +9,7 @@ import (
 )
 
 // V6_2_1_axm_9 keeps blocklisted addresses blocklisted for good: one table of address hashes
-// (axm_suppressed_emails), one function to hash, four trigger functions and five triggers.
+// (axm_suppressed_emails), one function to hash, five trigger functions and six triggers.
 // A backup role with per-object grants needs SELECT on the new table after this runs (see
 // FORK.md). No upstream query, campaign query or send engine code is touched.
 func V6_2_1_axm_9(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger) error {
@@ -47,12 +47,31 @@ DROP TRIGGER IF EXISTS axm_suppress_new_subscriber ON subscribers;
 CREATE TRIGGER axm_suppress_new_subscriber BEFORE INSERT ON subscribers
     FOR EACH ROW EXECUTE FUNCTION axm_suppress_new_subscriber();
 
--- Keeps the table equal to the blocklisted addresses.
+-- A subscriber whose e-mail is changed to a suppressed address becomes blocklisted, with every
+-- subscription unsubscribed, as a new subscriber with that address would.
+CREATE OR REPLACE FUNCTION axm_suppress_changed_email()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.status != 'blocklisted'
+        AND EXISTS (SELECT 1 FROM axm_suppressed_emails WHERE email_hash = axm_email_hash(NEW.email)) THEN
+        NEW.status = 'blocklisted';
+        UPDATE subscriber_lists SET status = 'unsubscribed', updated_at = NOW()
+            WHERE subscriber_id = NEW.id AND status != 'unsubscribed';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_suppress_changed_email ON subscribers;
+CREATE TRIGGER axm_suppress_changed_email BEFORE UPDATE OF email ON subscribers
+    FOR EACH ROW WHEN (lower(btrim(NEW.email)) != lower(btrim(OLD.email))) EXECUTE FUNCTION axm_suppress_changed_email();
+
+-- Keeps the table equal to the blocklisted addresses. An address is released only when its
+-- subscriber is taken off the blocklist; editing the e-mail of a blocked subscriber keeps the
+-- old address blocked and blocks the new one too.
 CREATE OR REPLACE FUNCTION axm_track_blocklist()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    IF TG_OP = 'UPDATE' AND OLD.status = 'blocklisted'
-        AND (NEW.status != 'blocklisted' OR lower(btrim(NEW.email)) != lower(btrim(OLD.email))) THEN
+    IF TG_OP = 'UPDATE' AND OLD.status = 'blocklisted' AND NEW.status != 'blocklisted' THEN
         DELETE FROM axm_suppressed_emails WHERE email_hash = axm_email_hash(OLD.email);
     END IF;
     IF NEW.status = 'blocklisted' THEN

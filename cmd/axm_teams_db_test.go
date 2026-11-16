@@ -200,6 +200,11 @@ func TestTeamListsTeamsEndpoint(t *testing.T) {
 	if len(out.Teams) != 2 || out.Teamless != nil || out.Teams[0].RoleID != nil {
 		t.Fatalf("a member sees the tags of the lists they read, no role ids, no teamless count: %s", data)
 	}
+	for _, tc := range out.Teams {
+		if !tc.HasRole {
+			t.Fatalf("a member sees which teams exist: %+v", tc)
+		}
+	}
 	_, data = e.call(e.a.GetListTeams, e.as(e.admin), "GET", "/api/lists/teams", "", "")
 	out.Teamless = nil
 	json.Unmarshal(data, &out)
@@ -583,5 +588,39 @@ func TestAPIUserFollowsTeamLists(t *testing.T) {
 	bot, _ = e.a.auth.GetAPIToken("bot", "secret")
 	if _, ok := bot.ListPermissionsMap[l.ID]; ok {
 		t.Fatal("the API user still has the list")
+	}
+}
+
+// Someone who may make every list but may not manage roles (an operator) still learns which
+// teams exist, so the screens can ask for the team of a list; they get no role IDs.
+func TestOperatorWithoutRolesSeesTeamsToChoose(t *testing.T) {
+	e := newTeamsEnv(t)
+	var role, user int
+	e.get(&role, `INSERT INTO roles(type,name,permissions) VALUES('user','operator-no-roles','{lists:get_all,lists:manage_all,subscribers:get_all}') RETURNING id`)
+	e.get(&user, `INSERT INTO users(username,email,name,user_role_id,status,type) VALUES('op-no-roles','op-no-roles@example.invalid','op',$1,'enabled','user') RETURNING id`, role)
+	op := e.as(user)
+	code, data := e.call(e.a.GetListTeams, op, "GET", "/api/lists/teams", "", "")
+	if code != 200 {
+		t.Fatal(code)
+	}
+	var out struct {
+		Teams []models.TeamCount `json:"teams"`
+	}
+	json.Unmarshal(data, &out)
+	if len(out.Teams) != 2 {
+		t.Fatalf("%s", data)
+	}
+	for _, tc := range out.Teams {
+		if !tc.HasRole || tc.RoleID != nil {
+			t.Fatalf("has_role without a role id: %+v", tc)
+		}
+	}
+	// And their list needs a team, which they can name.
+	create := e.guarded(e.a.CreateList)
+	if code, _ := e.call(create, op, "POST", "/api/lists", "", `{"name":"No team"}`); code != http.StatusBadRequest {
+		t.Fatalf("%d", code)
+	}
+	if code, data := e.call(create, op, "POST", "/api/lists", "", `{"name":"Op list","tags":["팀:가"]}`); code != 200 {
+		t.Fatalf("%d %s", code, data)
 	}
 }

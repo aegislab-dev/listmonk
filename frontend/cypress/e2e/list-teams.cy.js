@@ -11,6 +11,9 @@ const memberUser = `member${stamp}`;
 const memberPass = 'member-pass-1234';
 let memberRoleId;
 let memberId;
+let opRoleId;
+let opId;
+const opUser = `op${stamp}`;
 let listAId;
 let listBId;
 
@@ -41,6 +44,8 @@ describe('teams', () => {
       const mine = body.data.filter((t) => [teamA, teamB].includes(t.name));
       mine.forEach((t) => cy.request('PUT', `/api/teams/${t.id}/members`, { user_ids: [] }));
       cy.request('DELETE', `/api/users/${memberId}`);
+      cy.request('DELETE', `/api/users/${opId}`);
+      cy.request('DELETE', `/api/roles/${opRoleId}`);
       cy.request('/api/lists?per_page=all').then(({ body: lists }) => {
         const ids = lists.data.results.filter((l) => l.name.endsWith(`${stamp}`)).map((l) => l.id);
         ids.forEach((id) => cy.request('DELETE', `/api/lists/${id}`));
@@ -140,5 +145,35 @@ describe('teams', () => {
     cy.visit('/admin/subscribers');
     cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=other-teams]').should('contain', teamB);
     cy.contains('B 리스트').should('not.exist');
+
+    // Deleting that person asks with the approved warning: a title, the other team, "삭제".
+    cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=btn-delete]').click();
+    cy.get('.dialog').should('contain', '이 구독자를 삭제할까요?');
+    cy.get('[data-cy=warn-box]').should('contain', teamB).and('contain', '모든 팀에서 사라집니다');
+    cy.get('.dialog .modal-card-foot').should('contain', '취소').and('contain', '삭제');
+    cy.get('.dialog .modal-card-foot button').first().click();
+    cy.contains('tr', `shared-${stamp}@example.invalid`).should('exist');
+  });
+
+  it('lets an operator who may make every list but not manage roles choose the team', () => {
+    cy.loginAndVisit('/admin/lists');
+    cy.request('POST', '/api/roles/users', {
+      name: `운영 시험 ${stamp}`,
+      permissions: ['lists:get_all', 'lists:manage_all', 'subscribers:get_all', 'subscribers:manage'],
+    }).then(({ body }) => {
+      opRoleId = body.data.id;
+      return cy.request('POST', '/api/users', {
+        username: opUser, email: `${opUser}@example.invalid`, name: `운영 ${stamp}`, type: 'user', status: 'enabled',
+        password_login: true, password: memberPass, password2: memberPass, user_role_id: opRoleId,
+      });
+    }).then(({ body }) => { opId = body.data.id; });
+
+    loginAs(opUser, memberPass, '/admin/lists');
+    cy.get('[data-cy=btn-new]').click();
+    cy.get('[data-cy=list-team-field]').should('be.visible');
+    cy.get('input[name=name]').type(`운영 리스트 ${stamp}`);
+    cy.get('[data-cy=list-team]').select(teamA);
+    cy.get('[data-cy=btn-save]').click();
+    cy.contains('tr', `운영 리스트 ${stamp}`).find('[data-cy=team-badge]').should('contain', teamA);
   });
 });

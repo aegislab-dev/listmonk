@@ -265,7 +265,7 @@ export default {
     // The shortcuts make a new standard list, which takes the permission to make lists.
     canMakeExclude() { return this.$canCreateList(); },
     isAdmin() { return this.$can('lists:manage_all'); },
-    adminTeams() { return (this.teams || []).filter((t) => t.roleId); },
+    adminTeams() { return (this.teams || []).filter((t) => t.hasRole); },
     // A new exclude list belongs to a team like any list: a member's own, or one an admin picks
     // (the team of the base list is the likely one).
     showNewTeam() { return this.isAdmin ? this.adminTeams.length > 0 : !!this.$teamTag(); },

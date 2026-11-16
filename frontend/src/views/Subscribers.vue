@@ -588,25 +588,48 @@ export default Vue.extend({
       return teams.map((t) => this.$t('teams.otherTeamItem', { team: t.team || this.$t('teams.noTeam'), num: t.lists })).join(' / ');
     },
 
-    // The warning for deleting or blocking people who are on lists of other teams (a subscriber
-    // is one person for every team).
-    otherTeamsWarning(subs) {
-      const n = subs.filter((s) => s.otherTeams && s.otherTeams.length).length;
-      return n ? this.$t('teams.otherTeamsWarning', { num: n }) : '';
+    // The other teams of the checked subscribers, summed per team: "마케팅1팀 2개, 팀 없음 1개".
+    otherTeamsSummary(subs) {
+      const sum = {};
+      subs.forEach((s) => (s.otherTeams || []).forEach((t) => {
+        const name = t.team || this.$t('teams.noTeam');
+        sum[name] = (sum[name] || 0) + t.lists;
+      }));
+      return Object.entries(sum).map(([team, num]) => this.$t('teams.otherTeamItem', { team, num })).join(', ');
+    },
+
+    // A subscriber is one person for every team, so deleting or blocking people who are on lists
+    // of other teams reaches those teams too. The warning says which teams (and for a selection
+    // of everything, which the page cannot count, that there may be some).
+    otherTeamsNotice(subs, all, action) {
+      const who = subs.filter((s) => s.otherTeams && s.otherTeams.length);
+      if (all && !this.$can('lists:get_all', 'lists:manage_all')) return this.$t('teams.bulkAllWarn');
+      if (!who.length) return '';
+      const teams = this.otherTeamsSummary(who);
+      if (subs.length === 1) return this.$t(`teams.${action}Warn`, { teams });
+      return this.$t(`teams.${action}WarnMany`, { num: who.length, teams });
+    },
+
+    // Asks before deleting or blocking: the plain question, or (people on other teams' lists) a
+    // titled warning with its own button.
+    confirmReach(subs, all, action, question, fn) {
+      const notice = this.otherTeamsNotice(subs, all, action);
+      if (!notice) {
+        this.$utils.confirm(question, fn);
+        return;
+      }
+      const title = subs.length === 1 && !all ? this.$t(`teams.${action}Title`) : question;
+      this.$utils.confirmWarn(title, notice, this.$t(`teams.${action}Button`), fn);
     },
 
     deleteSubscriber(sub) {
-      const warn = this.otherTeamsWarning([sub]);
-      this.$utils.confirm(
-        warn ? `${this.$t('globals.messages.confirm')} ${warn}` : null,
-        () => {
-          this.$api.deleteSubscriber(sub.id).then(() => {
-            this.querySubscribers();
+      this.confirmReach([sub], false, 'delete', null, () => {
+        this.$api.deleteSubscriber(sub.id).then(() => {
+          this.querySubscribers();
 
-            this.$utils.toast(this.$t('globals.messages.deleted', { name: sub.name }));
-          });
-        },
-      );
+          this.$utils.toast(this.$t('globals.messages.deleted', { name: sub.name }));
+        });
+      });
     },
 
     blocklistSubscribers() {
@@ -633,8 +656,8 @@ export default Vue.extend({
         };
       }
 
-      const warn = this.otherTeamsWarning(this.bulk.all ? [] : this.bulk.checked);
-      this.$utils.confirm(`${this.$t('subscribers.confirmBlocklist', { num: this.numSelectedSubscribers })}${warn ? ` ${warn}` : ''}`, fn);
+      const question = this.$t('subscribers.confirmBlocklist', { num: this.numSelectedSubscribers });
+      this.confirmReach(this.bulk.all ? [] : this.bulk.checked, this.bulk.all, 'block', question, fn);
     },
 
     exportSubscribers() {
@@ -710,8 +733,8 @@ export default Vue.extend({
         };
       }
 
-      const warn = this.otherTeamsWarning(this.bulk.all ? [] : this.bulk.checked);
-      this.$utils.confirm(`${this.$t('subscribers.confirmDelete', { num: this.numSelectedSubscribers })}${warn ? ` ${warn}` : ''}`, fn);
+      const question = this.$t('subscribers.confirmDelete', { num: this.numSelectedSubscribers });
+      this.confirmReach(this.bulk.all ? [] : this.bulk.checked, this.bulk.all, 'delete', question, fn);
     },
 
     bulkChangeLists(action, preconfirm, lists) {

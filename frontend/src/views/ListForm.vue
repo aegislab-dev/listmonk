@@ -94,12 +94,10 @@
         <!-- The team of the list (LST-24): an admin picks it, a member's is fixed. -->
         <div v-if="showTeamField" class="field team-field" data-cy="list-team-field">
           <p class="label">
-            {{ $t('teams.field') }} <span v-if="teamRequired" class="has-text-danger">*</span>
+            {{ $t('teams.field') }} <span v-if="isAdmin" class="has-text-danger">*</span>
           </p>
           <b-select v-if="isAdmin" v-model="teamChoice" expanded :placeholder="$t('teams.choose')" :required="teamRequired"
             data-cy="list-team">
-            <option v-if="!teamRequired && !currentTeamTags.length" value="">{{ $t('teams.keepTeams') }}</option>
-            <option v-if="currentTeamTags.length > 1" value="">{{ $t('teams.keepTeams') }} ({{ currentTeamNames }})</option>
             <option v-for="t in adminTeams" :key="t.tag" :value="t.tag">{{ t.name }}</option>
             <option :value="NO_TEAM">{{ $t('teams.noTeamChoice') }}</option>
           </b-select>
@@ -329,7 +327,7 @@ export default Vue.extend({
     isAdmin() { return this.$can('lists:manage_all'); },
 
     // The teams an admin may pick: the ones that exist (a tag without a team role is not one).
-    adminTeams() { return (this.teams || []).filter((t) => t.roleId); },
+    adminTeams() { return (this.teams || []).filter((t) => t.hasRole); },
 
     currentTeamTags() { return teamTags(this.data.tags); },
     currentTeamNames() { return this.currentTeamTags.map(teamName).join(', '); },
@@ -350,9 +348,12 @@ export default Vue.extend({
     teamHelp() {
       if (!this.isAdmin) return this.$t('teams.memberFixed');
       if (this.teamRequired && !this.teamChoice) return this.$t('teams.requiredHelp');
-      const current = this.currentTeamTags.length === 1 ? this.currentTeamTags[0] : '';
-      if (this.isEditing && this.teamChoice && this.teamChoice !== current) {
-        return this.$t('teams.changeWarn');
+      if (this.isEditing && this.currentTeamTags.length === 1) {
+        return this.$t('teams.changeWarn', { name: this.currentTeamNames });
+      }
+      // A list of several teams keeps them until one team is chosen.
+      if (this.isEditing && this.currentTeamTags.length > 1) {
+        return this.$t('teams.multiTeams', { names: this.currentTeamNames });
       }
       return this.$t('teams.fieldHelp');
     },
@@ -397,8 +398,8 @@ export default Vue.extend({
     // The team tags are chosen in the team field, not typed in the tag input.
     this.form.tags = plainTags(this.data.tags);
     if (this.isEditing && this.currentTeamTags.length === 1) [this.teamChoice] = this.currentTeamTags;
-    if (this.isEditing && !this.currentTeamTags.length) this.teamChoice = '';
-    if (this.isEditing && this.currentTeamTags.length > 1) this.teamChoice = '';
+    // A list without a team shows "no team" as it is; a list of several teams shows none chosen.
+    if (this.isEditing && !this.currentTeamTags.length) this.teamChoice = NO_TEAM;
     if (!this.isEditing && this.data.defaultTeam) this.teamChoice = this.data.defaultTeam;
     this.loadDraws();
 
