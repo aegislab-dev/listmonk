@@ -270,7 +270,7 @@ func (a *App) SubscriptionPrefs(c echo.Context) error {
 		// AXM: a plain unsubscribe (the link, the page's button, the one-click header)
 		// blocklists the subscriber for every team and list. Only the preferences form, where
 		// people pick the lists they keep, still unsubscribes list by list.
-		blocklist = !req.Manage || (a.cfg.Privacy.AllowBlocklist && req.Blocklist)
+		blocklist = unsubscribeBlocklists(req.Manage, a.cfg.Privacy.AllowBlocklist, req.Blocklist)
 	)
 	if !req.Manage || blocklist {
 		if err := a.core.UnsubscribeByCampaign(subUUID, campUUID, blocklist); err != nil {
@@ -821,4 +821,11 @@ func (a *App) processSubForm(c echo.Context) (bool, error) {
 		return false, echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("%s", e.Message))
 	}
 	return false, echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("public.errorProcessingRequest"))
+}
+
+// unsubscribeBlocklists tells whether an unsubscribe request blocklists the subscriber. A
+// plain unsubscribe does, for every team. The preferences form (manage) only does when its
+// "unsubscribe from everything" box is ticked and the setting allows it.
+func unsubscribeBlocklists(manage, allowBlocklist, ticked bool) bool {
+	return !manage || (allowBlocklist && ticked)
 }
