@@ -16,9 +16,17 @@ JOIN subscribers s ON s.id = m.subscriber_id ORDER BY s.id;
 -- name: axm-preview-dynamic-excluded
 -- Explains who the conditions match but the list leaves out. It counts, in this order,
 -- blocklisted subscribers, those with no valid subscription to a base list (unsubscribed, or
--- unconfirmed on a double opt-in list), and those who unsubscribed from this dynamic list.
--- The three add up to the matching subscribers of the base minus axm_filter_members().
-WITH c AS (
+-- unconfirmed on a double opt-in list), those who unsubscribed from this dynamic list, and
+-- those on an exclude list of a version 2 rule.
+-- The four add up to the matching subscribers of the base minus axm_filter_members().
+-- A version 2 rule is matched as version 1 (axm_filter_match reads that), and one with no
+-- conditions matches everyone of the base.
+WITH f AS (
+    SELECT $1::JSONB->>'version' = '2' AS v2, $1::JSONB->'conditions' = '[]'::JSONB AS none,
+        CASE WHEN $1::JSONB->>'version' = '2' THEN jsonb_set($1::JSONB, '{version}', '1'::JSONB) ELSE $1::JSONB END AS j,
+        CASE WHEN $1::JSONB->>'version' = '2' THEN COALESCE($1::JSONB->'exclude'->'lists', '[]'::JSONB) ELSE '[]'::JSONB END AS excl
+),
+c AS (
     SELECT s.status = 'blocklisted' AS blocked,
         EXISTS (
             SELECT 1 FROM subscriber_lists sl JOIN lists l ON l.id = sl.list_id
@@ -32,9 +40,13 @@ WITH c AS (
         $2::INT IS NOT NULL AND EXISTS (
             SELECT 1 FROM subscriber_lists ex WHERE ex.subscriber_id = s.id
                 AND ex.list_id = $2::INT AND ex.status = 'unsubscribed'
-        ) AS opted_out
-    FROM subscribers s
-    WHERE axm_filter_match(s.attribs, $1::JSONB)
+        ) AS opted_out,
+        EXISTS (
+            SELECT 1 FROM subscriber_lists xl WHERE xl.subscriber_id = s.id
+                AND f.excl @> to_jsonb(xl.list_id)
+        ) AS on_exclude
+    FROM subscribers s CROSS JOIN f
+    WHERE (f.none OR axm_filter_match(s.attribs, f.j))
         AND EXISTS (
             SELECT 1 FROM subscriber_lists sl JOIN lists l ON l.id = sl.list_id
             WHERE sl.subscriber_id = s.id AND l.axm_filter IS NULL
@@ -45,7 +57,8 @@ WITH c AS (
 )
 SELECT COUNT(*) FILTER (WHERE blocked) AS blocklisted,
     COUNT(*) FILTER (WHERE NOT blocked AND NOT valid) AS unsubscribed,
-    COUNT(*) FILTER (WHERE NOT blocked AND valid AND opted_out) AS opted_out
+    COUNT(*) FILTER (WHERE NOT blocked AND valid AND opted_out) AS opted_out,
+    COUNT(*) FILTER (WHERE NOT blocked AND valid AND NOT opted_out AND on_exclude) AS exclude_list
 FROM c;
 
 -- name: next-campaign-subscribers-dynamic

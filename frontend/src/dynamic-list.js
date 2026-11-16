@@ -50,8 +50,11 @@ export function newDynamicFilter() {
 }
 
 // The form keeps number conditions as the text shown in the input (with thousands commas).
+// It always has exclude lists (none for a version 1 rule); formToFilter writes them back as
+// version 2 only when there are some, or when there are no conditions.
 export function filterToForm(filter) {
   const form = JSON.parse(JSON.stringify(filter || newDynamicFilter()));
+  form.exclude = { lists: [...new Set((form.exclude || {}).lists || [])] };
   form.conditions = form.conditions.map((c) => (isNumberOp(c.op) ? {
     ...c,
     value: formatNumberText(c.value),
@@ -66,8 +69,9 @@ const conditionValue = (op, value) => {
 };
 
 export function formToFilter(form) {
-  return {
-    version: 1,
+  const exclude = [...new Set((form.exclude || {}).lists || [])];
+  const filter = {
+    version: exclude.length || !form.conditions.length ? 2 : 1,
     base: form.base.type === 'lists'
       ? { type: 'lists', lists: [...new Set(form.base.lists || [])] }
       : { type: 'all' },
@@ -79,6 +83,9 @@ export function formToFilter(form) {
       ...(c.op === 'between' ? { value2: conditionValue(c.op, c.value2) } : {}),
     })),
   };
+  // Only a version 2 rule has exclude lists; a version 1 rule stays exactly as before.
+  if (filter.version === 2) filter.exclude = { lists: exclude };
+  return filter;
 }
 
 const summaryReady = (c) => c.key.trim() && (c.op === 'empty' || (isNumberOp(c.op)
@@ -93,7 +100,15 @@ export function summarizeFilter(form, lists, t, te) {
   const prefix = 'lists.dynamic.summary';
   const done = form.conditions.filter(summaryReady);
   const names = (form.base.lists || []).map((id) => lists[id]).filter(Boolean);
-  if (!done.length || (form.base.type === 'lists' && !names.length)) return '';
+  const excluded = ((form.exclude || {}).lists || []).map((id) => lists[id]).filter(Boolean);
+  // Without conditions the rule is the base minus the exclude lists.
+  const noConditions = !form.conditions.length && excluded.length > 0;
+  if ((!done.length && !noConditions) || (form.base.type === 'lists' && !names.length)) return '';
+  const base = form.base.type === 'lists' ? t(`${prefix}.baseLists`, { lists: names.join(', ') }) : t(`${prefix}.baseAll`);
+  const except = excluded.length ? t(`${prefix}.exclude`, { lists: excluded.join(', ') }) : '';
+  if (noConditions) {
+    return t(`${prefix}.noCondition.${form.base.type === 'lists' ? 'lists' : 'all'}`, { lists: names.join(', '), exclude: except });
+  }
   const mode = form.match === 'any' ? 'any' : 'all';
   const ending = (family, last) => {
     const key = `${prefix}.${family}.${last ? 'last' : mode}`;
@@ -108,8 +123,9 @@ export function summarizeFilter(form, lists, t, te) {
     do: ending('do', i === done.length - 1),
   }));
   return t(`${prefix}.sentence.${mode === 'any' && done.length > 1 ? 'any' : 'all'}`, {
-    base: form.base.type === 'lists' ? t(`${prefix}.baseLists`, { lists: names.join(', ') }) : t(`${prefix}.baseAll`),
+    base,
     conditions: clauses.join(t(`${prefix}.join.${mode}`)),
+    exclude: except,
   });
 }
 
@@ -117,7 +133,10 @@ export function validateDynamicForm(form) {
   if (!['all', 'lists'].includes(form.base.type) || !['all', 'any'].includes(form.match)) return 'invalid';
   if (form.base.type === 'lists' && (!(form.base.lists || []).length
     || form.base.lists.length > 20 || form.base.lists.some((id) => !Number.isInteger(id) || id < 1))) return 'baseRequired';
-  if (!form.conditions.length || form.conditions.length > 20) return 'conditionsRequired';
+  const exclude = (form.exclude || {}).lists || [];
+  if (exclude.length > 20 || exclude.some((id) => !Number.isInteger(id) || id < 1)) return 'excludeInvalid';
+  // A rule with no conditions needs exclude lists, or it would be the whole base.
+  if ((!form.conditions.length && !exclude.length) || form.conditions.length > 20) return 'conditionsRequired';
   if (form.conditions.some((c) => !c.key.trim() || [...c.key.trim()].length > 64
     || hasControls(c.key))) return 'keyRequired';
   if (form.conditions.some((c) => !TEXT_OPS.includes(c.op) && !isNumberOp(c.op))) return 'invalid';

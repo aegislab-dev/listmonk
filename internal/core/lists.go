@@ -252,6 +252,10 @@ func (c *Core) DeleteLists(ids []int, query string, getAll bool, permittedIDs []
 	}
 
 	if _, err := c.q.DeleteLists.Exec(pq.Array(ids), queryStr, getAll, pq.Array(permittedIDs)); err != nil {
+		// A list that a dynamic list excludes people of cannot go (AXM, migration axm.7).
+		if pe, ok := err.(*pq.Error); ok && pe.Code == axmExcludeListInUse {
+			return echo.NewHTTPError(http.StatusBadRequest, pe.Message)
+		}
 		c.log.Printf("error deleting lists: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.lists}", "error", pqErrMsg(err)))

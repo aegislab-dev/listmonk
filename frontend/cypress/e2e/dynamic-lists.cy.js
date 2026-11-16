@@ -38,8 +38,8 @@ describe('dynamic lists', () => {
     cy.get('[data-cy=list-composition]').select('dynamic');
     cy.get('input[name=name]').type(dynamicName);
     cy.get('[data-cy=dynamic-base]').select('lists');
-    cy.get('.dynamic-filter .list-selector input').type(baseName);
-    cy.contains('.dynamic-filter .list-selector .autocomplete a', baseName).click();
+    cy.get('[data-cy=dynamic-base-lists] input').type(baseName);
+    cy.contains('[data-cy=dynamic-base-lists] .autocomplete a', baseName).click();
     cy.get('[data-cy=dynamic-key-0]').type('plan');
     cy.get('[data-cy=dynamic-op-0]').select('eq');
     cy.get('[data-cy=dynamic-value-0]').type('pro');
@@ -143,8 +143,8 @@ describe('dynamic lists', () => {
     cy.get('[data-cy=list-composition]').select('dynamic');
     cy.get('input[name=name]').type(name);
     cy.get('[data-cy=dynamic-base]').select('lists');
-    cy.get('.dynamic-filter .list-selector input').type(baseName);
-    cy.contains('.dynamic-filter .list-selector .autocomplete a', baseName).click();
+    cy.get('[data-cy=dynamic-base-lists] input').type(baseName);
+    cy.contains('[data-cy=dynamic-base-lists] .autocomplete a', baseName).click();
     cy.get('[data-cy=dynamic-key-0]').type('amount');
 
     // A number input shows thousands separators after leaving it and explains the rule.

@@ -119,6 +119,14 @@ export const previewDynamicList = (data) => http.post('/api/lists/dynamic/previe
   camelCase: (keyPath) => !keyPath.startsWith('.sample.*.attribs'),
 });
 
+// Draw N people from a list into a new list (LST-23). The preview counts and writes nothing.
+export const previewListDraw = (id, data) => http.post(`/api/lists/${id}/draw/preview`, data, { disableToast: true });
+
+export const drawList = (id, data) => http.post(`/api/lists/${id}/draw`, data, { loading: models.lists });
+
+// The draw records of a source list ({ source_id }) or of drawn lists ({ list_id: [ids] }).
+export const getListDraws = (params) => http.get('/api/lists/draws', { params, disableToast: true });
+
 export const getLists = (params) => http.get(
   '/api/lists',
   {

@@ -234,3 +234,87 @@ test('summarizes in English without Korean endings', () => {
   assert.equal(summarizeFilter(form, {}, t, te), "All subscribers with a valid subscription whose a is less than 5 or b contains 'x'"
     + ' (any one condition is enough).');
 });
+
+// Version 2 rules: exclude lists, and no conditions when there are exclude lists (LST-23).
+test('a version 1 rule stays version 1 through the form', () => {
+  const form = filterToForm(valid());
+  assert.deepEqual(form.exclude, { lists: [] });
+  const out = formToFilter(form);
+  assert.equal(out.version, 1);
+  assert.equal('exclude' in out, false);
+});
+
+test('exclude lists make a version 2 rule and come back from the form unchanged', () => {
+  const raw = {
+    version: 2,
+    base: { type: 'lists', lists: [1] },
+    match: 'all',
+    conditions: [{ key: 'plan', op: 'eq', value: 'pro' }],
+    exclude: { lists: [7, 8, 7] },
+  };
+  const form = filterToForm(raw);
+  assert.deepEqual(form.exclude.lists, [7, 8]);
+  assert.deepEqual(formToFilter(form), { ...raw, exclude: { lists: [7, 8] } });
+  // Taking the exclude lists away writes version 1 again, so a rule that needs no new
+  // feature stays readable by the older app.
+  form.exclude.lists = [];
+  const back = formToFilter(form);
+  assert.equal(back.version, 1);
+  assert.equal('exclude' in back, false);
+});
+
+test('a rule without conditions is version 2 and keeps "conditions" an array', () => {
+  const form = filterToForm({ version: 2, base: { type: 'all' }, match: 'all', conditions: [], exclude: { lists: [3] } });
+  assert.deepEqual(formToFilter(form), { version: 2, base: { type: 'all' }, match: 'all', conditions: [], exclude: { lists: [3] } });
+  assert.equal(validateDynamicForm(form), '');
+  // Neither conditions nor exclude lists is not a rule.
+  form.exclude.lists = [];
+  assert.equal(validateDynamicForm(form), 'conditionsRequired');
+});
+
+test('exclude lists are checked', () => {
+  const form = filterToForm(valid());
+  form.exclude.lists = Array.from({ length: 21 }, (_, i) => i + 1);
+  assert.equal(validateDynamicForm(form), 'excludeInvalid');
+  form.exclude.lists = [0];
+  assert.equal(validateDynamicForm(form), 'excludeInvalid');
+  form.exclude.lists = [1.5];
+  assert.equal(validateDynamicForm(form), 'excludeInvalid');
+  form.exclude.lists = Array.from({ length: 20 }, (_, i) => i + 1);
+  assert.equal(validateDynamicForm(form), '');
+});
+
+test('the sentence names the exclude lists, also for a rule without conditions', () => {
+  for (const lang of ['ko', 'en']) {
+    const [t, te] = language(lang);
+    const names = { 1: '미국 크리에이터', 7: '기존 고객' };
+    const form = filterToForm(valid());
+    form.base = { type: 'lists', lists: [1] };
+    const plain = summarizeFilter(form, names, t, te);
+    form.exclude.lists = [7];
+    const withExclude = summarizeFilter(form, names, t, te);
+    assert.ok(withExclude.startsWith(plain.replace(/\.$/, '')), `${lang}: ${withExclude}`);
+    assert.ok(withExclude.includes('기존 고객'), `${lang}: ${withExclude}`);
+    form.conditions = [];
+    const none = summarizeFilter(form, names, t, te);
+    assert.ok(none.includes('미국 크리에이터') && none.includes('기존 고객'), `${lang}: ${none}`);
+    form.base = { type: 'all' };
+    assert.ok(summarizeFilter(form, names, t, te).includes('기존 고객'), lang);
+    // No conditions and no exclude list says nothing.
+    form.exclude.lists = [];
+    assert.equal(summarizeFilter(form, names, t, te), '');
+  }
+});
+
+test('every message the exclude list screens use exists in both languages', () => {
+  for (const lang of ['ko', 'en']) {
+    const messages = JSON.parse(readFileSync(new URL(`../../i18n/${lang}.json`, import.meta.url), 'utf8'));
+    for (const key of ['excludeLists', 'excludeHelp', 'selectExclude', 'excludeInvalid', 'noConditions', 'excludeNew', 'excludeImport',
+      'excludeImportMade', 'excludeNewTitle', 'excludeNewName', 'excludeNewDefault', 'excludeNewFixed', 'excludeNewHelp',
+      'excludeNewCreate', 'excludeNewImport', 'excludeNewCancel', 'excludeMade', 'excludeMadeHelp', 'excludeRecount',
+      'excludedExcludeList', 'summary.exclude', 'summary.noCondition.lists', 'summary.noCondition.all']) {
+      assert.ok(`lists.dynamic.${key}` in messages, `${lang} lacks lists.dynamic.${key}`);
+    }
+    assert.equal(messages['lists.dynamic.excludeNewDefault'].length > 0, true);
+  }
+});

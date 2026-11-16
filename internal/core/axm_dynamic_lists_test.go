@@ -15,7 +15,7 @@ func TestValidateDynamicFilter(t *testing.T) {
 	}
 	cases := map[string]string{
 		"unknown":          strings.Replace(validFilter, `"version":1`, `"unknown":true,"version":1`, 1),
-		"version":          strings.Replace(validFilter, `"version":1`, `"version":2`, 1),
+		"version":          strings.Replace(validFilter, `"version":1`, `"version":3`, 1),
 		"no version":       strings.Replace(validFilter, `"version":1,`, "", 1),
 		"match":            strings.Replace(validFilter, `"match":"all"`, `"match":"and"`, 1),
 		"base":             strings.Replace(validFilter, `"type":"lists"`, `"type":"sql"`, 1),

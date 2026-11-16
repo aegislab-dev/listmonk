@@ -7,10 +7,56 @@
         <option value="lists">{{ $t('lists.dynamic.baseLists') }}</option>
       </b-select>
     </b-field>
-    <list-selector v-if="form.base.type === 'lists'" :label="$t('lists.dynamic.baseLists')"
+    <list-selector v-if="form.base.type === 'lists'" data-cy="dynamic-base-lists" :label="$t('lists.dynamic.baseLists')"
       :placeholder="$t('lists.dynamic.selectBase')" :all="ordinaryLists" :selected="selectedBase"
       @input="setBase" />
-    <b-field :label="$t('lists.dynamic.match')">
+    <div class="dynamic-exclude" data-cy="dynamic-exclude">
+      <list-selector :label="$t('lists.dynamic.excludeLists')" :placeholder="$t('lists.dynamic.selectExclude')"
+        :message="$t('lists.dynamic.excludeHelp')" :all="ordinaryLists" :selected="selectedExclude" @input="setExclude" />
+      <div v-if="canMakeExclude" class="exclude-links">
+        <b-button size="is-small" data-cy="exclude-new" @click="openNew('create')">{{ $t('lists.dynamic.excludeNew') }}</b-button>
+        <b-button v-if="$can('subscribers:import')" size="is-small" data-cy="exclude-import" @click="importClick">
+          {{ madeList ? $t('lists.dynamic.excludeImportMade') : $t('lists.dynamic.excludeImport') }}
+        </b-button>
+      </div>
+      <div v-if="newOpen" class="exclude-new" data-cy="exclude-new-form">
+        <p class="label">{{ $t('lists.dynamic.excludeNewTitle') }}</p>
+        <div class="exclude-new-row">
+          <b-field :label="$t('lists.dynamic.excludeNewName')" :type="newError ? 'is-danger' : ''" :message="newError">
+            <b-input v-model="newName" maxlength="200" :has-counter="false" ref="newName" data-cy="exclude-new-name"
+              @keydown.native.enter.prevent="makeList(false)" />
+          </b-field>
+          <b-tag type="is-info is-light" class="exclude-fixed">{{ $t('lists.dynamic.excludeNewFixed') }}</b-tag>
+        </div>
+        <p class="help">{{ $t('lists.dynamic.excludeNewHelp') }}</p>
+        <div class="exclude-new-buttons">
+          <b-button size="is-small" type="is-primary" :loading="making" data-cy="exclude-new-create" @click="makeList(false)">
+            {{ $t('lists.dynamic.excludeNewCreate') }}
+          </b-button>
+          <b-button v-if="$can('subscribers:import')" size="is-small" :loading="making" data-cy="exclude-new-import"
+            @click="makeList(true)">
+            {{ $t('lists.dynamic.excludeNewImport') }}
+          </b-button>
+          <b-button size="is-small" type="is-text" data-cy="exclude-new-cancel" @click="newOpen = false">
+            {{ $t('lists.dynamic.excludeNewCancel') }}
+          </b-button>
+        </div>
+      </div>
+      <div v-if="madeList" class="exclude-made" data-cy="exclude-made">
+        {{ $t('lists.dynamic.excludeMade', { name: madeList.name, num: $utils.formatNumber(madeList.subscriberCount || 0) }) }}
+        <div class="exclude-new-buttons">
+          <b-button v-if="$can('subscribers:import')" size="is-small" type="is-primary" data-cy="exclude-made-import"
+            @click="openImport(madeList.id)">
+            {{ $t('lists.dynamic.excludeImportMade') }}
+          </b-button>
+          <b-button size="is-small" :loading="counting" data-cy="exclude-recount" @click="recount">
+            {{ $t('lists.dynamic.excludeRecount') }}
+          </b-button>
+        </div>
+        <p class="help">{{ $t('lists.dynamic.excludeMadeHelp') }}</p>
+      </div>
+    </div>
+    <b-field v-if="form.conditions.length" :label="$t('lists.dynamic.match')">
       <b-select v-model="form.match" expanded data-cy="dynamic-match">
         <option value="all">{{ $t('lists.dynamic.matchAll') }}</option>
         <option value="any">{{ $t('lists.dynamic.matchAny') }}</option>
@@ -81,8 +127,9 @@
       </b-field>
       <b-button type="is-text" icon-left="trash-can-outline" class="condition-remove"
         :aria-label="$t('lists.dynamic.removeCondition', { num: index + 1 })"
-        :disabled="form.conditions.length === 1" @click="removeCondition(index)" :data-cy="`dynamic-remove-${index}`" />
+        :disabled="form.conditions.length === 1 && !form.exclude.lists.length" @click="removeCondition(index)" :data-cy="`dynamic-remove-${index}`" />
     </div>
+    <p v-if="!form.conditions.length" class="dynamic-info" data-cy="dynamic-no-conditions">{{ $t('lists.dynamic.noConditions') }}</p>
     <div class="dynamic-buttons">
       <b-button icon-left="plus" :disabled="form.conditions.length >= 20" @click="addCondition" data-cy="dynamic-add">
         {{ $t('lists.dynamic.addCondition') }}
@@ -177,6 +224,12 @@ export default {
       savedFilter: this.listId ? JSON.stringify(formToFilter(filterToForm(this.value))) : '',
       rowKeys: this.value.conditions.map((c, i) => i),
       nextKey: this.value.conditions.length,
+      // The shortcut to make a list to exclude: the mini form, the list made last.
+      newOpen: false,
+      newName: '',
+      newError: '',
+      making: false,
+      madeList: null,
       count: null,
       counting: false,
       sampling: false,
@@ -192,13 +245,17 @@ export default {
     standardAttribs() { return this.serverConfig.axm_standard_attribs || []; },
     ordinaryLists() { return (this.lists.results || []).filter((l) => !l.axmFilter); },
     selectedBase() { return this.ordinaryLists.filter((l) => (this.form.base.lists || []).includes(l.id)); },
+    selectedExclude() { return this.ordinaryLists.filter((l) => this.form.exclude.lists.includes(l.id)); },
+    // The shortcuts make a new standard list, which takes the permission to make lists.
+    canMakeExclude() { return this.$can('lists:manage_all'); },
     hasNumberCondition() { return this.form.conditions.some((c) => isNumberOp(c.op)); },
     summary() {
       const names = Object.fromEntries(this.ordinaryLists.map((l) => [l.id, l.name]));
       return summarizeFilter(this.form, names, (key, params) => this.$t(key, params), (key) => this.$te(key));
     },
     excludedText() {
-      const items = [['unsubscribed', 'excludedUnsubscribed'], ['blocklisted', 'excludedBlocklisted'], ['optedOut', 'excludedOptedOut']]
+      const items = [['unsubscribed', 'excludedUnsubscribed'], ['blocklisted', 'excludedBlocklisted'], ['optedOut', 'excludedOptedOut'],
+        ['excludeList', 'excludedExcludeList']]
         .filter(([field]) => this.excluded[field] > 0)
         .map(([field, key]) => this.$t(`lists.dynamic.${key}`, { num: this.$utils.formatNumber(this.excluded[field]) }));
       return items.length ? this.$t('lists.dynamic.excluded', { items: items.join(' · ') }) : '';
@@ -220,9 +277,55 @@ export default {
       deep: true,
       handler() { this.keys = []; this.loadKeys(); },
     },
+    // A rule needs conditions or exclude lists: without the last exclude list a blank condition returns.
+    'form.exclude.lists': {
+      handler(lists) {
+        if (!lists.length && !this.form.conditions.length) this.addCondition();
+      },
+    },
   },
   methods: {
     setBase(lists) { this.$set(this.form.base, 'lists', lists.map((l) => l.id)); },
+    setExclude(lists) { this.$set(this.form.exclude, 'lists', lists.map((l) => l.id)); },
+    openNew() {
+      this.newName = this.$t('lists.dynamic.excludeNewDefault');
+      this.newError = '';
+      this.newOpen = true;
+      this.$nextTick(() => { if (this.$refs.newName) this.$refs.newName.focus(); });
+    },
+    // The CSV shortcut imports into the list made here, or first asks for the name of a new one.
+    importClick() {
+      if (this.madeList) this.openImport(this.madeList.id);
+      else this.openNew();
+    },
+    // The import runs in its own tab, so the rule being edited here is not lost.
+    openImport(id) {
+      const { href } = this.$router.resolve({ name: 'import', query: { list_id: id } });
+      window.open(href, '_blank', 'noopener');
+    },
+    // Makes the standard list to exclude (private, single opt-in, like any new list) and adds it.
+    async makeList(thenImport) {
+      const name = this.newName.trim();
+      if (!name) { this.newError = this.$t('lists.invalidName'); return; }
+      this.making = true;
+      this.newError = '';
+      try {
+        const data = await this.$api.createList({
+          name, type: 'private', optin: 'single', status: 'active', tags: [], description: '',
+        });
+        // The new list is not in the lists the form knows; load them, then pick it.
+        await this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' });
+        this.madeList = data;
+        this.newOpen = false;
+        if (this.form.exclude.lists.length < 20 && !this.form.exclude.lists.includes(data.id)) this.form.exclude.lists.push(data.id);
+        this.$utils.toast(this.$t('globals.messages.created', { name: data.name }));
+        if (thenImport) this.openImport(data.id);
+      } catch (e) {
+        this.newError = e.response?.data?.message || '';
+      } finally { this.making = false; }
+    },
+    // The made list may have people now (imported in the other tab): count again.
+    recount() { this.preview(); },
     keyOptions(key) {
       return withStandardFirst(this.standardAttribs, this.keys).filter((k) => k.toLowerCase().includes(key.toLowerCase()));
     },
@@ -327,6 +430,15 @@ export default {
 <style scoped>
 .dynamic-filter { background: #f8fafb; border: 1px solid #dce3e8; border-radius: 5px; padding: 20px; margin-bottom: 24px; }
 .dynamic-help { margin-bottom: 20px; }
+.dynamic-exclude { margin-top: 18px; }
+.exclude-links { display: flex; flex-wrap: wrap; gap: 8px; margin: -8px 0 12px; }
+.exclude-new, .exclude-made { background: #fff; border: 1px solid #b9d3f0; border-radius: 5px; padding: 12px 14px; margin: 0 0 14px; font-size: .9rem; }
+.exclude-made { background: #effaf3; border-color: #bfe3cc; color: #14502e; }
+.exclude-new-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.exclude-new-row .field { margin-bottom: 0; min-width: 260px; flex: 1 1 260px; }
+.exclude-fixed { margin-bottom: 4px; }
+.exclude-new-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.dynamic-info { margin: 14px 0; padding: 8px 12px; border-left: 3px solid #2862b1; background: #f1f6fc; font-size: .85rem; }
 .dynamic-condition { display: grid; grid-template-columns: 20px minmax(0, 1.1fr) minmax(0, .9fr) minmax(0, 1.2fr) 36px; gap: 10px; align-items: start; margin: 20px 0 12px; }
 .dynamic-condition .field, .condition-value { min-width: 0; margin-bottom: 0; }
 .condition-number { padding-top: 33px; color: #777; }
