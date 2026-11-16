@@ -229,6 +229,13 @@ func (a *App) GetUserProfile(c echo.Context) error {
 	user.Password.String = ""
 	user.Password.Valid = false
 
+	// A member of a team gets the team's tag (the screens use it to make lists).
+	if user.ListRole != nil {
+		lr := *user.ListRole
+		lr.TeamTag = a.teamTagOf(user)
+		user.ListRole = &lr
+	}
+
 	return c.JSON(http.StatusOK, okResp{user})
 }
 

@@ -204,6 +204,12 @@
         <b-tag v-if="props.row.status !== 'enabled'" :class="props.row.status" data-cy="blocklisted">
           {{ $t(`subscribers.status.${props.row.status}`) }}
         </b-tag>
+        <div v-if="props.row.otherTeams && props.row.otherTeams.length" class="other-teams" data-cy="other-teams">
+          <b-tag type="is-info is-light" :title="$t('teams.otherTeamsHelp')">
+            <b-icon icon="account-multiple" size="is-small" /> {{ $t('teams.otherTeams') }} &middot;
+            {{ otherTeamsText(props.row.otherTeams) }}
+          </b-tag>
+        </div>
         <b-taglist>
           <template v-for="l in props.row.lists">
             <router-link :to="`/subscribers/lists/${l.id}`" :key="l.id" style="padding-right:0.5em;">
@@ -577,17 +583,53 @@ export default Vue.extend({
       });
     },
 
-    deleteSubscriber(sub) {
-      this.$utils.confirm(
-        null,
-        () => {
-          this.$api.deleteSubscriber(sub.id).then(() => {
-            this.querySubscribers();
+    // "마케팅1팀 2개 / 팀 없음 1개": the other teams a subscriber's lists belong to.
+    otherTeamsText(teams) {
+      return teams.map((t) => this.$t('teams.otherTeamItem', { team: t.team || this.$t('teams.noTeam'), num: t.lists })).join(' / ');
+    },
 
-            this.$utils.toast(this.$t('globals.messages.deleted', { name: sub.name }));
-          });
-        },
-      );
+    // The other teams of the checked subscribers, summed per team: "마케팅1팀 2개, 팀 없음 1개".
+    otherTeamsSummary(subs) {
+      const sum = {};
+      subs.forEach((s) => (s.otherTeams || []).forEach((t) => {
+        const name = t.team || this.$t('teams.noTeam');
+        sum[name] = (sum[name] || 0) + t.lists;
+      }));
+      return Object.entries(sum).map(([team, num]) => this.$t('teams.otherTeamItem', { team, num })).join(', ');
+    },
+
+    // A subscriber is one person for every team, so deleting or blocking people who are on lists
+    // of other teams reaches those teams too. The warning says which teams (and for a selection
+    // of everything, which the page cannot count, that there may be some).
+    otherTeamsNotice(subs, all, action) {
+      const who = subs.filter((s) => s.otherTeams && s.otherTeams.length);
+      if (all && !this.$can('lists:get_all', 'lists:manage_all')) return this.$t('teams.bulkAllWarn');
+      if (!who.length) return '';
+      const teams = this.otherTeamsSummary(who);
+      if (subs.length === 1) return this.$t(`teams.${action}Warn`, { teams });
+      return this.$t(`teams.${action}WarnMany`, { num: who.length, teams });
+    },
+
+    // Asks before deleting or blocking: the plain question, or (people on other teams' lists) a
+    // titled warning with its own button.
+    confirmReach(subs, all, action, question, fn) {
+      const notice = this.otherTeamsNotice(subs, all, action);
+      if (!notice) {
+        this.$utils.confirm(question, fn);
+        return;
+      }
+      const title = subs.length === 1 && !all ? this.$t(`teams.${action}Title`) : question;
+      this.$utils.confirmWarn(title, notice, this.$t(`teams.${action}Button`), fn);
+    },
+
+    deleteSubscriber(sub) {
+      this.confirmReach([sub], false, 'delete', null, () => {
+        this.$api.deleteSubscriber(sub.id).then(() => {
+          this.querySubscribers();
+
+          this.$utils.toast(this.$t('globals.messages.deleted', { name: sub.name }));
+        });
+      });
     },
 
     blocklistSubscribers() {
@@ -614,7 +656,8 @@ export default Vue.extend({
         };
       }
 
-      this.$utils.confirm(this.$t('subscribers.confirmBlocklist', { num: this.numSelectedSubscribers }), fn);
+      const question = this.$t('subscribers.confirmBlocklist', { num: this.numSelectedSubscribers });
+      this.confirmReach(this.bulk.all ? [] : this.bulk.checked, this.bulk.all, 'block', question, fn);
     },
 
     exportSubscribers() {
@@ -690,7 +733,8 @@ export default Vue.extend({
         };
       }
 
-      this.$utils.confirm(this.$t('subscribers.confirmDelete', { num: this.numSelectedSubscribers }), fn);
+      const question = this.$t('subscribers.confirmDelete', { num: this.numSelectedSubscribers });
+      this.confirmReach(this.bulk.all ? [] : this.bulk.checked, this.bulk.all, 'delete', question, fn);
     },
 
     bulkChangeLists(action, preconfirm, lists) {
@@ -832,3 +876,7 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.other-teams { margin: 2px 0; }
+</style>

@@ -16,6 +16,9 @@
         </b-field>
       </div>
     </header>
+    <p v-if="!isUser && teamRoleCount" class="notification is-info is-light team-note" data-cy="team-roles-note">
+      {{ $t('teams.rolesNote') }}
+    </p>
     <b-table :data="roles" :loading="isLoading()" hoverable>
       <b-table-column v-slot="props" field="role" :label="$tc('users.role')" sortable>
         <a href="#" @click.prevent="showEditForm(props.row, 'user')">
@@ -24,6 +27,9 @@
           </b-tag>
           <template v-else>{{ props.row.name }}</template>
         </a>
+        <b-tag v-if="props.row.teamTag" type="is-info is-light" class="team-role-tag" data-cy="team-role-tag">
+          <b-icon icon="account-multiple" size="is-small" /> {{ $t('teams.autoManaged') }}
+        </b-tag>
       </b-table-column>
 
       <b-table-column v-slot="props" field="created_at" :label="$t('globals.fields.createdAt')"
@@ -37,7 +43,10 @@
       </b-table-column>
 
       <b-table-column v-slot="props" cell-class="actions has-text-right">
-        <template v-if="$can('roles:manage')">
+        <router-link v-if="props.row.teamTag" :to="{ name: 'teams' }" class="is-size-7" data-cy="btn-team-manage">
+          {{ $t('teams.manageThere') }} &rarr;
+        </router-link>
+        <template v-else-if="$can('roles:manage')">
           <a href="#" @click.prevent="$utils.prompt($t('globals.buttons.clone'),
             {
               placeholder: $t('globals.fields.name'),
@@ -170,6 +179,10 @@ export default Vue.extend({
   },
 
   computed: {
+    teamRoleCount() {
+      return this.roles.filter((r) => r.teamTag).length;
+    },
+
     ...mapState(['loading', 'userRoles', 'listRoles']),
 
     isUser() {
@@ -191,3 +204,8 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.team-note { margin: 0 0 16px; }
+.team-role-tag { margin-left: 8px; }
+</style>

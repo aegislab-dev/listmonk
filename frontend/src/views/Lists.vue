@@ -6,6 +6,9 @@
           {{ $t('globals.terms.lists') }}
           <span v-if="queryParams.status === 'archived'" class="has-text-grey-light">/ {{ queryParams.status }} </span>
           <span v-if="!isNaN(lists.total)">({{ lists.total }})</span>
+          <b-tag v-if="myTeam" type="is-info is-light" class="my-team" data-cy="my-team">
+            <b-icon icon="account-multiple" size="is-small" /> {{ myTeamName }}
+          </b-tag>
         </h1>
 
         <div class="is-size-7">
@@ -15,6 +18,12 @@
           <router-link v-else :to="{ name: 'lists' }">
             {{ $t('globals.buttons.view') }} {{ $t('menu.allLists').toLowerCase() }} &rarr;
           </router-link>
+          <template v-if="queryParams.status !== 'archived' && teamless > 0 && queryParams.team !== NO_TEAM">
+            &nbsp;&middot;&nbsp;
+            <a href="#" data-cy="teamless-link" @click.prevent="setTeam(NO_TEAM)">
+              {{ $t('teams.teamlessLink', { num: teamless }) }} &rarr;
+            </a>
+          </template>
           <template v-if="queryParams.status !== 'archived'">
             &nbsp;&middot;&nbsp;
             <a v-if="!queryParams.drawn" href="#" data-cy="drawn-only" @click.prevent="setDrawn(true)">
@@ -27,7 +36,7 @@
         </div>
       </div>
       <div class="column has-text-right">
-        <b-field v-if="$can('lists:manage_all')" expanded>
+        <b-field v-if="$canCreateList()" expanded>
           <b-button expanded type="is-primary" icon-left="plus" class="btn-new" @click="showNewForm" data-cy="btn-new">
             {{ $t('globals.buttons.new') }}
           </b-button>
@@ -41,7 +50,7 @@
       :total="lists.total" checkable backend-sorting @sort="onSort">
       <template #top-left>
         <div class="columns">
-          <div class="column is-6">
+          <div class="column" :class="showTeamFilter ? 'is-5' : 'is-6'">
             <form @submit.prevent="getLists">
               <b-field>
                 <b-input v-model="queryParams.query" name="query" expanded icon="magnify" ref="query" data-cy="query" />
@@ -50,6 +59,14 @@
                 </p>
               </b-field>
             </form>
+          </div>
+          <div v-if="showTeamFilter" class="column is-3">
+            <b-select v-model="queryParams.team" expanded data-cy="team-filter" :aria-label="$t('teams.filter')"
+              @input="onTeamFilter">
+              <option value="">{{ $t('teams.filterAll') }}</option>
+              <option v-for="t in teamOptions" :key="t.tag" :value="t.tag">{{ t.name }} ({{ t.lists }})</option>
+              <option v-if="teamless > 0" :value="NO_TEAM">{{ $t('teams.filterNone', { num: teamless }) }}</option>
+            </b-select>
           </div>
         </div>
         <div class="actions" v-if="bulk.checked.length > 0">
@@ -75,8 +92,13 @@
           <a :href="`/lists/${props.row.id}`" @click.prevent="showEditForm(props.row)">
             {{ props.row.name }}
           </a>
+          <b-taglist class="team-badges">
+            <b-tag v-for="t in teamTagsOf(props.row)" :key="t" type="is-info is-light" class="team-badge" data-cy="team-badge">
+              <b-icon icon="account-multiple" size="is-small" /> {{ teamName(t) }}
+            </b-tag>
+          </b-taglist>
           <b-taglist>
-            <b-tag class="is-small" v-for="t in props.row.tags" :key="t">
+            <b-tag class="is-small" v-for="t in plainTagsOf(props.row)" :key="t">
               {{ t }}
             </b-tag>
           </b-taglist>
@@ -192,14 +214,14 @@
 
     <!-- Add / edit form modal -->
     <b-modal custom-class="axm-list-modal" has-modal-card scroll="keep" :aria-modal="true" :active.sync="isFormVisible" :width="860" @close="onFormClose">
-      <list-form :key="curItem ? curItem.id : 0" :data="curItem" :is-editing="isEditing" @finished="formFinished" @draw="showDrawForm"
+      <list-form :key="curItem ? curItem.id : 0" :data="curItem" :is-editing="isEditing" :teams="teams" @finished="formFinished" @draw="showDrawForm"
         @open-list="openList" />
     </b-modal>
 
     <!-- Draw N people into a new list -->
     <b-modal custom-class="axm-list-modal" has-modal-card scroll="keep" :aria-modal="true" :active.sync="isDrawVisible"
       :width="680" @close="onDrawClose">
-      <list-draw v-if="drawSource" :source="drawSource" @finished="formFinished" @open-list="openList" />
+      <list-draw v-if="drawSource" :source="drawSource" :teams="teams" @finished="formFinished" @open-list="openList" />
     </b-modal>
 
     <p v-if="settings['app.cache_slow_queries']" class="has-text-grey">
@@ -219,6 +241,9 @@ import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
 import ListDraw from '../components/ListDraw.vue';
 import ListForm from './ListForm.vue';
 import { DRAW_TAG } from '../list-draw';
+import {
+  NO_TEAM, defaultTeamTag, plainTags, teamName, teamTags,
+} from '../teams';
 
 export default Vue.extend({
   components: {
@@ -242,7 +267,14 @@ export default Vue.extend({
         status: this.$route.query.status || 'active',
         // Only the lists made by a draw (they carry the draw tag).
         drawn: this.$route.query.drawn === '1',
+        // A team tag, NO_TEAM (lists without a team) or '' (all).
+        team: this.$route.query.team || '',
       },
+
+      // The teams on the lists the user may read, and (admins) how many lists have no team.
+      teams: [],
+      teamless: 0,
+      NO_TEAM,
 
       // Draw records of the lists on this page, by drawn list ID.
       draws: {},
@@ -284,18 +316,54 @@ export default Vue.extend({
 
     // Show the new list form.
     showNewForm() {
-      this.curItem = {};
+      // A team filter in use is the team a new list is most likely for.
+      const asked = this.queryParams.team && this.queryParams.team !== NO_TEAM ? [this.queryParams.team] : [];
+      this.curItem = { defaultTeam: defaultTeamTag(asked, this.teams) };
       this.isFormVisible = true;
       this.isEditing = false;
     },
 
     formFinished() {
       this.getLists();
+      this.loadTeams();
+      // A team member's lists changed: the permission checks need the new ones.
+      this.$refreshProfile();
     },
 
-    // Drawing needs the permission to make lists, and a list that is not archived or itself drawn.
+    // Drawing needs the permission to make lists (or being on a team), read access to the
+    // list, and a list that is not archived or itself drawn.
     canDraw(list) {
-      return this.$can('lists:manage_all') && list.status !== 'archived' && !this.drawOf(list);
+      return this.$canCreateList() && (this.$can('lists:manage_all') || this.$canList(list.id, 'list:get'))
+        && list.status !== 'archived' && !this.drawOf(list);
+    },
+
+    teamName,
+    teamTagsOf(list) { return teamTags(list.tags); },
+    plainTagsOf(list) { return plainTags(list.tags); },
+
+    loadTeams() {
+      this.$api.getListTeams().then((out) => {
+        this.teams = out.teams || [];
+        this.teamless = out.teamless || 0;
+      }).catch(() => { this.teams = []; this.teamless = 0; });
+    },
+
+    onTeamFilter() { this.setTeam(this.queryParams.team); },
+
+    setTeam(team) {
+      this.queryParams.team = team;
+      this.queryParams.page = 1;
+      this.syncRoute();
+      this.getLists();
+    },
+
+    // The filters stay in the address so a link (or a reload) keeps them.
+    syncRoute() {
+      const query = {};
+      if (this.queryParams.drawn) query.drawn = '1';
+      if (this.queryParams.team) query.team = this.queryParams.team;
+      if (this.queryParams.status === 'archived') query.status = 'archived';
+      this.$router.replace({ name: 'lists', query }).catch(() => {});
     },
 
     drawOf(list) { return this.draws[list.id] || null; },
@@ -332,7 +400,7 @@ export default Vue.extend({
     setDrawn(on) {
       this.queryParams.drawn = on;
       this.queryParams.page = 1;
-      this.$router.replace({ name: 'lists', query: { ...(on ? { drawn: '1' } : {}) } }).catch(() => {});
+      this.syncRoute();
       this.getLists();
     },
 
@@ -363,13 +431,14 @@ export default Vue.extend({
     },
 
     getLists() {
+      this.loadTeams();
       this.$api.queryLists({
         page: this.queryParams.page,
         query: this.queryParams.query.replace(/[^\p{L}\p{N}\s]/gu, ' '),
         order_by: this.queryParams.orderBy,
         order: this.queryParams.order,
         status: this.queryParams.status,
-        ...(this.queryParams.drawn ? { tag: DRAW_TAG } : {}),
+        ...(this.teamParams()),
       }).then((resp) => {
         this.lists = resp;
         this.loadDraws(resp.results);
@@ -378,6 +447,17 @@ export default Vue.extend({
       // Also fetch the minimal lists for the global store that appears
       // in dropdown menus on other pages like import and campaigns.
       this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' });
+    },
+
+    // The team filter and the draw tag are tag conditions; "no team" is its own parameter.
+    teamParams() {
+      const tags = [];
+      if (this.queryParams.drawn) tags.push(DRAW_TAG);
+      const out = {};
+      if (this.queryParams.team === NO_TEAM) out.team = 'none';
+      else if (this.queryParams.team) tags.push(this.queryParams.team);
+      if (tags.length) out.tag = tags;
+      return out;
     },
 
     deleteList(list) {
@@ -458,6 +538,13 @@ export default Vue.extend({
   computed: {
     ...mapState(['loading', 'settings']),
 
+    myTeam() { return this.$teamTag(); },
+    myTeamName() { return teamName(this.myTeam); },
+
+    // Only people who read lists of several teams (admins) have a team to choose.
+    showTeamFilter() { return !this.myTeam && this.teamOptions.length > 0; },
+    teamOptions() { return this.teams; },
+
     numSelectedLists() {
       return this.bulk.all ? this.lists.total : this.bulk.checked.length;
     },
@@ -486,5 +573,8 @@ export default Vue.extend({
 <style>
 .axm-list-modal .animation-content { width: calc(100vw - 20px); }
 /* The draw badge is long: let it wrap inside its cell instead of widening the page. */
+.team-badges { margin: 4px 0 0; }
+.team-badge { margin-bottom: 2px; }
+.my-team { vertical-align: middle; margin-left: 8px; }
 .tag.drawn-from { height: auto; max-width: 100%; white-space: normal; padding: 2px 8px; line-height: 1.4; margin-top: 4px; }
 </style>

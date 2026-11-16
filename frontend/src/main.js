@@ -33,7 +33,8 @@ router.afterEach((to) => {
 
 async function initConfig(app) {
   // Load logged in user profile, server side config, and the language file before mounting the app.
-  const [profile, cfg] = await Promise.all([api.getUserProfile(), api.getServerConfig()]);
+  const [initialProfile, cfg] = await Promise.all([api.getUserProfile(), api.getServerConfig()]);
+  let profile = initialProfile;
 
   const lang = await api.getLang(cfg.lang);
   i18n.locale = cfg.lang;
@@ -82,6 +83,16 @@ async function initConfig(app) {
   Vue.prototype.$canManageList = (id) => Vue.prototype.$can('lists:manage_all')
     || ((profile.listRole && profile.listRole.lists) || [])
       .some((list) => list.id === id && list.permissions.includes('list:manage'));
+
+  // The user's team tag ("팀:이름") when their list role is a team role, else ''.
+  Vue.prototype.$teamTag = () => (profile.listRole && profile.listRole.teamTag) || '';
+
+  // $canCreateList() tells whether the user may make lists: lists:manage_all, or a team member
+  // (the server makes the list a list of the member's team).
+  Vue.prototype.$canCreateList = () => Vue.prototype.$can('lists:manage_all') || !!Vue.prototype.$teamTag();
+
+  // $refreshProfile() reads the profile again: a team member's lists change when they make one.
+  Vue.prototype.$refreshProfile = async () => { profile = await api.getUserProfile(); };
 
   // Set the page title after i18n has loaded.
   const to = router.history.current;

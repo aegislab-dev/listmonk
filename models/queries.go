@@ -24,6 +24,24 @@ type Queries struct {
 	AxmDrawAddMembers              *sqlx.Stmt `query:"axm-draw-add-members"`
 	AxmDrawRecord                  *sqlx.Stmt `query:"axm-draw-record"`
 	AxmGetListDraws                *sqlx.Stmt `query:"axm-get-list-draws"`
+	AxmGetTeams                    *sqlx.Stmt `query:"axm-get-teams"`
+	AxmGetTeamMembers              *sqlx.Stmt `query:"axm-get-team-members"`
+	AxmGetTeamRole                 *sqlx.Stmt `query:"axm-get-team-role"`
+	AxmCountTeamRoles              *sqlx.Stmt `query:"axm-count-team-roles"`
+	AxmCreateTeamRole              *sqlx.Stmt `query:"axm-create-team-role"`
+	AxmUpdateTeamRole              *sqlx.Stmt `query:"axm-update-team-role"`
+	AxmRetagLists                  *sqlx.Stmt `query:"axm-retag-lists"`
+	AxmDeleteTeamRole              *sqlx.Stmt `query:"axm-delete-team-role"`
+	AxmCountListRoleUsers          *sqlx.Stmt `query:"axm-count-list-role-users"`
+	AxmCountTeamLists              *sqlx.Stmt `query:"axm-count-team-lists"`
+	AxmUserRoleFacts               *sqlx.Stmt `query:"axm-user-role-facts"`
+	AxmTeamCandidateUsers          *sqlx.Stmt `query:"axm-team-candidate-users"`
+	AxmReleaseTeamMembers          *sqlx.Stmt `query:"axm-release-team-members"`
+	AxmAssignTeamMembers           *sqlx.Stmt `query:"axm-assign-team-members"`
+	AxmApplyTeamUserRole           *sqlx.Stmt `query:"axm-apply-team-user-role"`
+	AxmVisibleTeams                *sqlx.Stmt `query:"axm-visible-teams"`
+	AxmTeamlessListIDs             *sqlx.Stmt `query:"axm-teamless-list-ids"`
+	AxmSubscriberOtherTeams        *sqlx.Stmt `query:"axm-subscriber-other-teams"`
 	NextCampaignSubscribersDynamic *sqlx.Stmt `query:"next-campaign-subscribers-dynamic"`
 	ListSenderAddresses            *sqlx.Stmt `query:"list-sender-addresses"`
 	GetSenderAddress               *sqlx.Stmt `query:"get-sender-address"`

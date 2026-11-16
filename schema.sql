@@ -603,6 +603,7 @@ DROP TABLE IF EXISTS axm_campaign_sends CASCADE;
 -- The same for the list draw tables: they reference lists, users and campaigns.
 DROP TABLE IF EXISTS axm_list_draw_campaigns CASCADE;
 DROP TABLE IF EXISTS axm_list_draws CASCADE;
+DROP TABLE IF EXISTS axm_suppressed_emails CASCADE;
 
 -- AXM campaign send records. Keep this block identical to V6_2_1_axm_6.
 -- One row per campaign message that a messenger accepted: who got which campaign and when,
@@ -845,3 +846,180 @@ DROP TRIGGER IF EXISTS axm_guard_exclude_list_delete ON lists;
 CREATE TRIGGER axm_guard_exclude_list_delete BEFORE DELETE ON lists
     FOR EACH ROW EXECUTE FUNCTION axm_guard_exclude_list_delete();
 -- End of AXM list draws and exclude lists.
+
+-- AXM team roles. Keep this block identical to V6_2_1_axm_8.
+-- Team roles: a list role whose axm_team_tag is set holds exactly the lists that carry
+-- that tag, as ordinary child rows (parent_id, list_id) with list:get and list:manage.
+-- Nothing else about roles changes, so the permission checks read them as before.
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS axm_team_tag VARCHAR(100) NULL;
+-- The user role that members of the team get when an admin adds them (a convenience default).
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS axm_team_user_role_id INTEGER NULL REFERENCES roles(id) ON DELETE SET NULL ON UPDATE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_axm_team_tag ON roles(axm_team_tag) WHERE axm_team_tag IS NOT NULL;
+
+-- Makes the child rows of the team roles match the lists' tags. p_role_id / p_list_id
+-- limit the work to one role or one list (NULL = all). Safe to run again.
+CREATE OR REPLACE FUNCTION axm_sync_team_lists(p_role_id INT, p_list_id INT)
+RETURNS VOID LANGUAGE plpgsql AS $$
+BEGIN
+    DELETE FROM roles c USING roles r
+    WHERE c.parent_id = r.id AND r.parent_id IS NULL AND r.type = 'list' AND r.axm_team_tag IS NOT NULL
+        AND (p_role_id IS NULL OR r.id = p_role_id)
+        AND (p_list_id IS NULL OR c.list_id = p_list_id)
+        AND NOT EXISTS (SELECT 1 FROM lists l WHERE l.id = c.list_id AND r.axm_team_tag = ANY(l.tags));
+
+    INSERT INTO roles (parent_id, list_id, type, permissions)
+    SELECT r.id, l.id, 'list', ARRAY['list:get', 'list:manage']
+    FROM roles r JOIN lists l ON r.axm_team_tag = ANY(l.tags)
+    WHERE r.parent_id IS NULL AND r.type = 'list' AND r.axm_team_tag IS NOT NULL
+        AND (p_role_id IS NULL OR r.id = p_role_id)
+        AND (p_list_id IS NULL OR l.id = p_list_id)
+    ON CONFLICT (parent_id, list_id) DO UPDATE SET permissions = EXCLUDED.permissions;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION axm_team_lists_trigger()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM roles WHERE axm_team_tag IS NOT NULL) THEN
+        PERFORM axm_sync_team_lists(NULL, NEW.id);
+    END IF;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_team_lists_sync ON lists;
+CREATE TRIGGER axm_team_lists_sync AFTER INSERT OR UPDATE OF tags ON lists
+    FOR EACH ROW EXECUTE FUNCTION axm_team_lists_trigger();
+
+CREATE OR REPLACE FUNCTION axm_team_role_trigger()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM axm_sync_team_lists(NEW.id, NULL);
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_team_role_sync ON roles;
+CREATE TRIGGER axm_team_role_sync AFTER INSERT OR UPDATE OF axm_team_tag ON roles
+    FOR EACH ROW WHEN (NEW.parent_id IS NULL AND NEW.type = 'list' AND NEW.axm_team_tag IS NOT NULL)
+    EXECUTE FUNCTION axm_team_role_trigger();
+-- End of AXM team roles.
+
+-- AXM suppressed addresses. Keep this block identical to V6_2_1_axm_9.
+-- Addresses that were blocklisted stay blocklisted when the subscriber row is deleted and the
+-- address is added or imported again. Only a hash of the lowercased address is kept. The
+-- table follows subscribers.status: it gets a row when a subscriber is blocklisted and loses
+-- it when the subscriber is unblocked. Deleting a blocklisted subscriber leaves the row.
+CREATE TABLE IF NOT EXISTS axm_suppressed_emails (
+    email_hash       BYTEA PRIMARY KEY,
+    reason           TEXT NOT NULL DEFAULT 'blocklist',
+    created_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE OR REPLACE FUNCTION axm_email_hash(p_email TEXT)
+RETURNS BYTEA LANGUAGE SQL IMMUTABLE PARALLEL SAFE AS $$
+    SELECT sha256(convert_to(lower(btrim(p_email)), 'UTF8'));
+$$;
+
+INSERT INTO axm_suppressed_emails (email_hash, reason)
+    SELECT axm_email_hash(email), 'blocklist' FROM subscribers WHERE status = 'blocklisted'
+    ON CONFLICT (email_hash) DO NOTHING;
+
+-- A new subscriber with a suppressed address starts blocklisted.
+CREATE OR REPLACE FUNCTION axm_suppress_new_subscriber()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM axm_suppressed_emails WHERE email_hash = axm_email_hash(NEW.email)) THEN
+        NEW.status = 'blocklisted';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_suppress_new_subscriber ON subscribers;
+CREATE TRIGGER axm_suppress_new_subscriber BEFORE INSERT ON subscribers
+    FOR EACH ROW EXECUTE FUNCTION axm_suppress_new_subscriber();
+
+-- A subscriber whose e-mail is changed to a suppressed address becomes blocklisted, as a new
+-- subscriber with that address would. Its subscriptions are unsubscribed when the statement is
+-- done (a deferred trigger): the statements that edit a subscriber also write its
+-- subscriptions, and a trigger must not change those rows in the middle of them.
+CREATE OR REPLACE FUNCTION axm_suppress_changed_email()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.status != 'blocklisted'
+        AND EXISTS (SELECT 1 FROM axm_suppressed_emails WHERE email_hash = axm_email_hash(NEW.email)) THEN
+        NEW.status = 'blocklisted';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_suppress_changed_email ON subscribers;
+CREATE TRIGGER axm_suppress_changed_email BEFORE UPDATE OF email ON subscribers
+    FOR EACH ROW WHEN (lower(btrim(NEW.email)) != lower(btrim(OLD.email))) EXECUTE FUNCTION axm_suppress_changed_email();
+
+CREATE OR REPLACE FUNCTION axm_unsubscribe_blocked_email()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE subscriber_lists SET status = 'unsubscribed', updated_at = NOW()
+        WHERE subscriber_id = NEW.id AND status != 'unsubscribed';
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_unsubscribe_blocked_email ON subscribers;
+CREATE CONSTRAINT TRIGGER axm_unsubscribe_blocked_email AFTER UPDATE OF email ON subscribers
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW WHEN (NEW.status = 'blocklisted' AND OLD.status != 'blocklisted')
+    EXECUTE FUNCTION axm_unsubscribe_blocked_email();
+
+-- Keeps the table equal to the blocklisted addresses. An address is released only when its
+-- subscriber is taken off the blocklist; editing the e-mail of a blocked subscriber keeps the
+-- old address blocked and blocks the new one too.
+CREATE OR REPLACE FUNCTION axm_track_blocklist()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' AND OLD.status = 'blocklisted' AND NEW.status != 'blocklisted' THEN
+        DELETE FROM axm_suppressed_emails WHERE email_hash = axm_email_hash(OLD.email);
+    END IF;
+    IF NEW.status = 'blocklisted' THEN
+        INSERT INTO axm_suppressed_emails (email_hash) VALUES (axm_email_hash(NEW.email))
+            ON CONFLICT (email_hash) DO NOTHING;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_track_blocklist ON subscribers;
+DROP TRIGGER IF EXISTS axm_track_blocklist_ins ON subscribers;
+DROP TRIGGER IF EXISTS axm_track_blocklist_upd ON subscribers;
+-- The WHEN clauses keep the function from running for the ordinary subscriber.
+CREATE TRIGGER axm_track_blocklist_ins AFTER INSERT ON subscribers
+    FOR EACH ROW WHEN (NEW.status = 'blocklisted') EXECUTE FUNCTION axm_track_blocklist();
+CREATE TRIGGER axm_track_blocklist_upd AFTER UPDATE OF status, email ON subscribers
+    FOR EACH ROW WHEN (OLD.status = 'blocklisted' OR NEW.status = 'blocklisted') EXECUTE FUNCTION axm_track_blocklist();
+
+-- Deleting a blocklisted subscriber keeps its address suppressed.
+CREATE OR REPLACE FUNCTION axm_keep_blocklist()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.status = 'blocklisted' THEN
+        INSERT INTO axm_suppressed_emails (email_hash, reason) VALUES (axm_email_hash(OLD.email), 'delete')
+            ON CONFLICT (email_hash) DO NOTHING;
+    END IF;
+    RETURN OLD;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_keep_blocklist ON subscribers;
+CREATE TRIGGER axm_keep_blocklist BEFORE DELETE ON subscribers
+    FOR EACH ROW EXECUTE FUNCTION axm_keep_blocklist();
+
+-- A blocklisted subscriber is never subscribed to anything, whichever way the row arrives.
+CREATE OR REPLACE FUNCTION axm_block_subscription()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM subscribers WHERE id = NEW.subscriber_id AND status = 'blocklisted') THEN
+        NEW.status = 'unsubscribed';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_block_subscription ON subscriber_lists;
+CREATE TRIGGER axm_block_subscription BEFORE INSERT OR UPDATE ON subscriber_lists
+    FOR EACH ROW WHEN (NEW.status != 'unsubscribed') EXECUTE FUNCTION axm_block_subscription();
+-- End of AXM suppressed addresses.
