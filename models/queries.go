@@ -16,6 +16,14 @@ type Queries struct {
 	AxmPreviewDynamicFilter        *sqlx.Stmt `query:"axm-preview-dynamic-filter"`
 	AxmPreviewDynamicSample        *sqlx.Stmt `query:"axm-preview-dynamic-sample"`
 	AxmPreviewDynamicExcluded      *sqlx.Stmt `query:"axm-preview-dynamic-excluded"`
+	AxmDrawLock                    *sqlx.Stmt `query:"axm-draw-lock"`
+	AxmDrawSource                  *sqlx.Stmt `query:"axm-draw-source"`
+	AxmDrawCounts                  *sqlx.Stmt `query:"axm-draw-counts"`
+	AxmDrawNames                   *sqlx.Stmt `query:"axm-draw-names"`
+	AxmDrawCreateList              *sqlx.Stmt `query:"axm-draw-create-list"`
+	AxmDrawAddMembers              *sqlx.Stmt `query:"axm-draw-add-members"`
+	AxmDrawRecord                  *sqlx.Stmt `query:"axm-draw-record"`
+	AxmGetListDraws                *sqlx.Stmt `query:"axm-get-list-draws"`
 	NextCampaignSubscribersDynamic *sqlx.Stmt `query:"next-campaign-subscribers-dynamic"`
 	ListSenderAddresses            *sqlx.Stmt `query:"list-sender-addresses"`
 	GetSenderAddress               *sqlx.Stmt `query:"get-sender-address"`

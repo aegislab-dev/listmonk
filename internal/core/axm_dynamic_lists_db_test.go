@@ -689,6 +689,7 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM dynamic list conditions. Keep this block identical to V6_2_1_axm_4.", "-- AXM dynamic list members and guard.", "v6.2.1-axm.4.go"},
 		{"-- AXM dynamic list members and guard. Keep this block identical to V6_2_1_axm_3.", "-- AXM dynamic list planning hints.", "v6.2.1-axm.3.go"},
 		{"-- AXM dynamic list planning hints. Keep this block identical to V6_2_1_axm_4.", "-- Verified external reply addresses (AXM).", "v6.2.1-axm.4.go"},
+		{"-- AXM list draws and exclude lists. Keep this block identical to V6_2_1_axm_7.", "-- End of AXM list draws and exclude lists.", "v6.2.1-axm.7.go"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
 		if err != nil {
@@ -717,10 +718,15 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
-	if len(before) != 5 {
-		t.Fatalf("expected 5 axm functions, got %d", len(before))
+	if len(before) != 10 {
+		t.Fatalf("expected 10 axm functions, got %d", len(before))
 	}
-	// Simulate official schema, then upgrade twice.
+	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
+	// official schema has none, and they use the functions dropped below.
+	db.MustExec(`DROP TRIGGER axm_propagate_draw_unsub ON subscriber_lists; DROP TRIGGER axm_keep_draw_campaigns ON lists; DROP TRIGGER axm_guard_exclude_list_delete ON lists;
+		DROP TABLE axm_list_draw_campaigns; DROP TABLE axm_list_draws;
+		DROP FUNCTION axm_propagate_draw_unsub(); DROP FUNCTION axm_keep_draw_campaigns(); DROP FUNCTION axm_guard_exclude_list_delete();
+		DROP FUNCTION axm_draw_candidates(INT, TEXT, INT); DROP FUNCTION axm_list_target(INT)`)
 	db.MustExec(`DROP TRIGGER axm_guard_dynamic_subscription ON subscriber_lists; ALTER TABLE lists DROP COLUMN axm_filter CASCADE;
 		DROP FUNCTION axm_dynamic_list_members(INT, INT, INT, INT); DROP FUNCTION axm_filter_members(JSONB, INT, INT, INT, INT);
 		DROP FUNCTION axm_filter_match(JSONB, JSONB); DROP FUNCTION axm_to_number(JSONB); DROP FUNCTION axm_guard_dynamic_subscription()`)
@@ -729,6 +735,9 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := migrations.V6_2_1_axm_4(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_7(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

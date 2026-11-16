@@ -19,12 +19,24 @@ import (
 	"github.com/lib/pq"
 )
 
+// axmExcludeListInUse is the SQLSTATE the DB raises when a list that is an exclude list of a
+// dynamic list is deleted.
+const axmExcludeListInUse pq.ErrorCode = "AX001"
+
 // DynamicFilter is a versioned data format, never an SQL expression.
 type DynamicFilter struct {
-	Version    int                `json:"version"`
-	Base       DynamicBase        `json:"base"`
-	Match      string             `json:"match"`
+	Version int         `json:"version"`
+	Base    DynamicBase `json:"base"`
+	Match   string      `json:"match"`
+	// Exclude is only in version 2 rules.
+	Exclude    *DynamicExclude    `json:"exclude,omitempty"`
 	Conditions []DynamicCondition `json:"conditions"`
+}
+
+// DynamicExclude names the ordinary lists whose subscribers a rule leaves out, whatever
+// the status of their subscription.
+type DynamicExclude struct {
+	Lists []int `json:"lists"`
 }
 type DynamicBase struct {
 	Type  string `json:"type"`
@@ -87,8 +99,11 @@ func ValidateDynamicFilter(raw []byte) (DynamicFilter, error) {
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return f, fmt.Errorf("invalid trailing JSON")
 	}
-	if f.Version != 1 {
+	if f.Version != 1 && f.Version != 2 {
 		return f, fmt.Errorf("unsupported filter version")
+	}
+	if f.Version == 1 && f.Exclude != nil {
+		return f, fmt.Errorf("exclude lists need filter version 2")
 	}
 	if f.Match != "all" && f.Match != "any" {
 		return f, fmt.Errorf("invalid match")
@@ -117,10 +132,61 @@ func ValidateDynamicFilter(raw []byte) (DynamicFilter, error) {
 	default:
 		return f, fmt.Errorf("invalid base type")
 	}
-	if err := validateDynamicConditions(f.Conditions); err != nil {
+	if f.Version == 1 {
+		if err := validateDynamicConditions(f.Conditions); err != nil {
+			return f, err
+		}
+		return f, nil
+	}
+	// Version 2: conditions may be none when exclude lists are given, and "conditions" is
+	// always a JSON array so the DB can tell "none" from "missing".
+	var exclude []int
+	if f.Exclude != nil {
+		var err error
+		if exclude, err = normalizeExcludeLists(f.Exclude.Lists); err != nil {
+			return f, err
+		}
+	}
+	if len(f.Conditions) == 0 {
+		if len(exclude) == 0 {
+			return f, fmt.Errorf("provide conditions or exclude lists")
+		}
+		f.Conditions = []DynamicCondition{}
+	} else if err := validateDynamicConditions(f.Conditions); err != nil {
 		return f, err
 	}
+	if exclude == nil {
+		exclude = []int{}
+	}
+	f.Exclude = &DynamicExclude{Lists: exclude}
 	return f, nil
+}
+
+// normalizeExcludeLists checks a version 2 rule's exclude lists and removes duplicates.
+func normalizeExcludeLists(in []int) ([]int, error) {
+	if len(in) > 20 {
+		return nil, fmt.Errorf("select at most 20 exclude lists")
+	}
+	seen := map[int]bool{}
+	ids := []int{}
+	for _, id := range in {
+		if id < 1 || int64(id) > 2147483647 {
+			return nil, fmt.Errorf("invalid exclude list ID")
+		}
+		if !seen[id] {
+			ids = append(ids, id)
+			seen[id] = true
+		}
+	}
+	return ids, nil
+}
+
+// ExcludeLists returns the exclude lists of a rule, none for version 1.
+func (f DynamicFilter) ExcludeLists() []int {
+	if f.Exclude == nil {
+		return nil
+	}
+	return f.Exclude.Lists
 }
 
 // validateDynamicConditions checks and normalizes conditions in place. Saved dynamic lists and
@@ -182,21 +248,38 @@ func validateDynamicConditions(conds []DynamicCondition) error {
 	return nil
 }
 
-// ValidateDynamicBase checks live list existence and rejects nested dynamic lists.
+// ValidateDynamicBase checks live list existence and rejects nested dynamic lists, as base
+// lists and as exclude lists.
 func (c *Core) ValidateDynamicBase(f DynamicFilter) error {
-	if f.Base.Type == "all" {
+	exclude := f.ExcludeLists()
+	if f.Base.Type == "all" && len(exclude) == 0 {
 		return nil
 	}
-	lists, err := c.GetLists("", "", false, f.Base.Lists)
+	ids := append(append([]int{}, f.Base.Lists...), exclude...)
+	lists, err := c.GetLists("", "", false, ids)
 	if err != nil {
 		return err
 	}
-	if len(lists) != len(f.Base.Lists) {
-		return echo.NewHTTPError(http.StatusBadRequest, "Unknown base list")
-	}
+	byID := map[int]models.List{}
 	for _, l := range lists {
+		byID[l.ID] = l
+	}
+	for _, id := range f.Base.Lists {
+		l, ok := byID[id]
+		if !ok {
+			return echo.NewHTTPError(http.StatusBadRequest, "Unknown base list")
+		}
 		if l.AxmFilter != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, "Dynamic lists cannot be base lists")
+		}
+	}
+	for _, id := range exclude {
+		l, ok := byID[id]
+		if !ok {
+			return echo.NewHTTPError(http.StatusBadRequest, "Unknown exclude list")
+		}
+		if l.AxmFilter != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "Dynamic lists cannot be exclude lists")
 		}
 	}
 	return nil
@@ -245,6 +328,8 @@ type DynamicExcluded struct {
 	Blocklisted  int `db:"blocklisted" json:"blocklisted"`
 	Unsubscribed int `db:"unsubscribed" json:"unsubscribed"`
 	OptedOut     int `db:"opted_out" json:"opted_out"`
+	// ExcludeList counts those who are on one of the rule's exclude lists.
+	ExcludeList int `db:"exclude_list" json:"exclude_list"`
 }
 
 // DynamicSample is a member with only the attributes the conditions use.

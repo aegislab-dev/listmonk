@@ -30,9 +30,14 @@ func (a *App) checkDynamicBasePerm(c echo.Context, f core.DynamicFilter) error {
 		if !user.HasPerm(auth.PermListGetAll) {
 			return auth.ErrPermDenied
 		}
-		return nil
+	} else if err := user.HasListPerm(auth.PermTypeGet, f.Base.Lists...); err != nil {
+		return err
 	}
-	return user.HasListPerm(auth.PermTypeGet, f.Base.Lists...)
+	// The exclude lists need the same read access as the base lists.
+	if exclude := f.ExcludeLists(); len(exclude) > 0 {
+		return user.HasListPerm(auth.PermTypeGet, exclude...)
+	}
+	return nil
 }
 
 // dynamicSampleSize is how many members a preview lists.
