@@ -1214,11 +1214,11 @@
     "teams.multiTeams": "This list belongs to several teams ({names}) and keeps them until you choose one team.",
     "teams.deleteTitle": "Delete this subscriber?",
     "teams.deleteButton": "Delete",
-    "teams.deleteWarn": "This person is also used on lists of other teams ({teams}). Deleting removes them from every team.",
-    "teams.deleteWarnMany": "{num} of them are also used on lists of other teams ({teams}). Deleting removes them from every team.",
+    "teams.deleteWarn": "This person is also used on lists of other teams ({teams}). Deleting removes them from every team. Blocking stops every team from sending to them.",
+    "teams.deleteWarnMany": "{num} of them are also used on lists of other teams ({teams}). Deleting removes them from every team. Blocking stops every team from sending to them.",
     "teams.blockTitle": "Block this subscriber?",
     "teams.blockButton": "Block",
-    "teams.blockWarn": "This person is also used on lists of other teams ({teams}). Blocking stops every team from sending to them.",
-    "teams.blockWarnMany": "{num} of them are also used on lists of other teams ({teams}). Blocking stops every team from sending to them.",
+    "teams.blockWarn": "This person is also used on lists of other teams ({teams}). Deleting removes them from every team. Blocking stops every team from sending to them.",
+    "teams.blockWarnMany": "{num} of them are also used on lists of other teams ({teams}). Deleting removes them from every team. Blocking stops every team from sending to them.",
     "teams.bulkAllWarn": "Everyone that matches is selected: some of them may also be used on lists of other teams, and deleting or blocking reaches every team."
 }

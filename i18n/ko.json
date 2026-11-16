@@ -1220,11 +1220,11 @@
     "teams.multiTeams": "이 리스트는 여러 팀({names})에 속해 있습니다. 한 팀을 고르기 전까지는 그대로 둡니다.",
     "teams.deleteTitle": "이 구독자를 삭제할까요?",
     "teams.deleteButton": "삭제",
-    "teams.deleteWarn": "이 사람은 다른 팀 리스트({teams})에서도 사용 중입니다. 삭제하면 모든 팀에서 사라집니다.",
-    "teams.deleteWarnMany": "이 중 {num}명은 다른 팀 리스트({teams})에서도 사용 중입니다. 삭제하면 모든 팀에서 사라집니다.",
+    "teams.deleteWarn": "이 사람은 다른 팀 리스트({teams})에서도 사용 중입니다. 삭제하면 모든 팀에서 사라집니다. 차단하면 모든 팀에서 더 이상 보낼 수 없습니다.",
+    "teams.deleteWarnMany": "이 중 {num}명은 다른 팀 리스트({teams})에서도 사용 중입니다. 삭제하면 모든 팀에서 사라집니다. 차단하면 모든 팀에서 더 이상 보낼 수 없습니다.",
     "teams.blockTitle": "이 구독자를 차단할까요?",
     "teams.blockButton": "차단",
-    "teams.blockWarn": "이 사람은 다른 팀 리스트({teams})에서도 사용 중입니다. 차단하면 모든 팀에서 더 이상 보낼 수 없습니다.",
-    "teams.blockWarnMany": "이 중 {num}명은 다른 팀 리스트({teams})에서도 사용 중입니다. 차단하면 모든 팀에서 더 이상 보낼 수 없습니다.",
+    "teams.blockWarn": "이 사람은 다른 팀 리스트({teams})에서도 사용 중입니다. 삭제하면 모든 팀에서 사라집니다. 차단하면 모든 팀에서 더 이상 보낼 수 없습니다.",
+    "teams.blockWarnMany": "이 중 {num}명은 다른 팀 리스트({teams})에서도 사용 중입니다. 삭제하면 모든 팀에서 사라집니다. 차단하면 모든 팀에서 더 이상 보낼 수 없습니다.",
     "teams.bulkAllWarn": "조건에 맞는 모든 사람이 선택됐습니다. 다른 팀 리스트에서도 사용 중인 사람이 있을 수 있고, 삭제하거나 차단하면 모든 팀에 적용됩니다."
 }

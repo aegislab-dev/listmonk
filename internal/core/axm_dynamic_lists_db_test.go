@@ -721,12 +721,12 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
-	if len(before) != 19 {
-		t.Fatalf("expected 19 axm functions, got %d", len(before))
+	if len(before) != 20 {
+		t.Fatalf("expected 20 axm functions, got %d", len(before))
 	}
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.
-	db.MustExec(`DROP TRIGGER axm_suppress_changed_email ON subscribers; DROP FUNCTION axm_suppress_changed_email();
+	db.MustExec(`DROP TRIGGER axm_unsubscribe_blocked_email ON subscribers; DROP FUNCTION axm_unsubscribe_blocked_email(); DROP TRIGGER axm_suppress_changed_email ON subscribers; DROP FUNCTION axm_suppress_changed_email();
 		DROP TRIGGER axm_suppress_new_subscriber ON subscribers; DROP TRIGGER axm_track_blocklist_ins ON subscribers; DROP TRIGGER axm_track_blocklist_upd ON subscribers;
 		DROP TRIGGER axm_keep_blocklist ON subscribers; DROP TRIGGER axm_block_subscription ON subscriber_lists;
 		DROP FUNCTION axm_suppress_new_subscriber(); DROP FUNCTION axm_track_blocklist(); DROP FUNCTION axm_keep_blocklist();

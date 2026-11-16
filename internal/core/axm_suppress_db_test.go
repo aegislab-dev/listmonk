@@ -1,8 +1,10 @@
 package core
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/knadh/listmonk/models"
 	"github.com/lib/pq"
 )
 
@@ -259,5 +261,48 @@ func TestDeleteKeepsBlockedAddress(t *testing.T) {
 	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, id)
 	if e.suppressed() != 1 {
 		t.Fatal("the delete trigger did not keep the address")
+	}
+}
+
+// The real edit path (the statement the subscriber form saves with) works when the e-mail is
+// changed to a suppressed address: no error, the subscriber is blocklisted and every
+// subscription ends up unsubscribed, whichever lists the edit sends.
+func TestEditToSuppressedAddressThroughTheEditPath(t *testing.T) {
+	e := newSuppressEnv(t)
+	l1, l2, l3 := e.list("L1", "single"), e.list("L2", "single"), e.list("L3", "single")
+	gone := e.sub("gone@example.invalid", "blocklisted")
+	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, gone)
+
+	cases := []struct {
+		name      string
+		lists     []int
+		deleteAll bool
+		permitted []int
+		preconf   bool
+	}{
+		{"admin, lists sent", []int{l1, l2}, true, []int{}, true},
+		{"admin, other lists", []int{l3}, true, []int{}, false},
+		{"member, own lists only", []int{l1}, true, []int{l1, l2}, false},
+		{"no lists sent", nil, false, []int{}, false},
+		{"no lists, delete the rest", nil, true, []int{}, false},
+	}
+	for i, c := range cases {
+		temp := e.sub(fmt.Sprintf("temp%d@example.invalid", i), "enabled")
+		e.join(l1, temp, "confirmed")
+		e.join(l2, temp, "confirmed")
+		sub := models.Subscriber{Email: "Gone@Example.invalid", Name: "Synthetic", Status: "enabled", Attribs: models.JSON{}}
+		if _, _, err := e.c.UpdateSubscriberWithLists(temp, sub, c.lists, nil, c.preconf, c.deleteAll, false, c.permitted, false); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var st string
+		e.db.Get(&st, `SELECT status FROM subscribers WHERE id=$1`, temp)
+		var live int
+		e.db.Get(&live, `SELECT COUNT(*) FROM subscriber_lists WHERE subscriber_id=$1 AND status != 'unsubscribed'`, temp)
+		if st != "blocklisted" || live != 0 {
+			t.Fatalf("%s: status %s, %d live subscriptions", c.name, st, live)
+		}
+		// Put the address back for the next case.
+		e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, temp)
+		e.db.MustExec(`INSERT INTO axm_suppressed_emails (email_hash) VALUES (axm_email_hash('gone@example.invalid')) ON CONFLICT DO NOTHING`)
 	}
 }

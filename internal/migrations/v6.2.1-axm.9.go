@@ -9,7 +9,7 @@ import (
 )
 
 // V6_2_1_axm_9 keeps blocklisted addresses blocklisted for good: one table of address hashes
-// (axm_suppressed_emails), one function to hash, five trigger functions and six triggers.
+// (axm_suppressed_emails), one function to hash, six trigger functions and seven triggers.
 // A backup role with per-object grants needs SELECT on the new table after this runs (see
 // FORK.md). No upstream query, campaign query or send engine code is touched.
 func V6_2_1_axm_9(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger) error {
@@ -47,16 +47,16 @@ DROP TRIGGER IF EXISTS axm_suppress_new_subscriber ON subscribers;
 CREATE TRIGGER axm_suppress_new_subscriber BEFORE INSERT ON subscribers
     FOR EACH ROW EXECUTE FUNCTION axm_suppress_new_subscriber();
 
--- A subscriber whose e-mail is changed to a suppressed address becomes blocklisted, with every
--- subscription unsubscribed, as a new subscriber with that address would.
+-- A subscriber whose e-mail is changed to a suppressed address becomes blocklisted, as a new
+-- subscriber with that address would. Its subscriptions are unsubscribed when the statement is
+-- done (a deferred trigger): the statements that edit a subscriber also write its
+-- subscriptions, and a trigger must not change those rows in the middle of them.
 CREATE OR REPLACE FUNCTION axm_suppress_changed_email()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
     IF NEW.status != 'blocklisted'
         AND EXISTS (SELECT 1 FROM axm_suppressed_emails WHERE email_hash = axm_email_hash(NEW.email)) THEN
         NEW.status = 'blocklisted';
-        UPDATE subscriber_lists SET status = 'unsubscribed', updated_at = NOW()
-            WHERE subscriber_id = NEW.id AND status != 'unsubscribed';
     END IF;
     RETURN NEW;
 END;
@@ -64,6 +64,20 @@ $$;
 DROP TRIGGER IF EXISTS axm_suppress_changed_email ON subscribers;
 CREATE TRIGGER axm_suppress_changed_email BEFORE UPDATE OF email ON subscribers
     FOR EACH ROW WHEN (lower(btrim(NEW.email)) != lower(btrim(OLD.email))) EXECUTE FUNCTION axm_suppress_changed_email();
+
+CREATE OR REPLACE FUNCTION axm_unsubscribe_blocked_email()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE subscriber_lists SET status = 'unsubscribed', updated_at = NOW()
+        WHERE subscriber_id = NEW.id AND status != 'unsubscribed';
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_unsubscribe_blocked_email ON subscribers;
+CREATE CONSTRAINT TRIGGER axm_unsubscribe_blocked_email AFTER UPDATE OF email ON subscribers
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW WHEN (NEW.status = 'blocklisted' AND OLD.status != 'blocklisted')
+    EXECUTE FUNCTION axm_unsubscribe_blocked_email();
 
 -- Keeps the table equal to the blocklisted addresses. An address is released only when its
 -- subscriber is taken off the blocklist; editing the e-mail of a blocked subscriber keeps the
