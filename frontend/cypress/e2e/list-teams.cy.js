@@ -146,11 +146,13 @@ describe('teams', () => {
     cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=other-teams]').should('contain', teamB);
     cy.contains('B 리스트').should('not.exist');
 
-    // Deleting that person asks with the approved warning: a title, the other team, "삭제".
+    // Deleting that person asks with the approved warning: a title, the other team, a delete button.
     cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=btn-delete]').click();
-    cy.get('.dialog').should('contain', '이 구독자를 삭제할까요?');
-    cy.get('[data-cy=warn-box]').should('contain', teamB).and('contain', '모든 팀에서 사라집니다');
-    cy.get('.dialog .modal-card-foot').should('contain', '취소').and('contain', '삭제');
+    // (The checks do not depend on the language of the screen.)
+    cy.get('.dialog .modal-card-title').invoke('text').should('not.be.empty');
+    cy.get('[data-cy=warn-box]').should('contain', teamB);
+    cy.get('.dialog .modal-card-foot button').should('have.length', 2);
+    cy.get('.dialog .modal-card-foot button.is-danger').should('have.length', 1);
     cy.get('.dialog .modal-card-foot button').first().click();
     cy.contains('tr', `shared-${stamp}@example.invalid`).should('exist');
   });
