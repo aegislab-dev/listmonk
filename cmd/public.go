@@ -278,8 +278,12 @@ func (a *App) SubscriptionPrefs(c echo.Context) error {
 				makeMsgTpl(a.i18n.T("public.errorTitle"), "", a.i18n.T("public.errorProcessingRequest")))
 		}
 
+		info := a.i18n.T("public.unsubbedInfo")
+		if blocklist {
+			info = a.i18n.T("public.unsubbedAllInfo")
+		}
 		return c.Render(http.StatusOK, tplMessage,
-			makeMsgTpl(a.i18n.T("public.unsubbedTitle"), "", a.i18n.T("public.unsubbedInfo")))
+			makeMsgTpl(a.i18n.T("public.unsubbedTitle"), "", info))
 	}
 
 	// Is preference management enabled?

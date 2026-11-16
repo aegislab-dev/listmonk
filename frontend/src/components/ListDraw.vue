@@ -26,6 +26,20 @@
           </b-field>
         </div>
 
+        <!-- The team of the new list (LST-24) -->
+        <div v-if="showTeam" class="field draw-team" data-cy="draw-team-field">
+          <p class="label">{{ $t('teams.drawTeam') }} <span v-if="teamRequired" class="has-text-danger">*</span></p>
+          <b-select v-if="isAdmin" v-model="team" expanded :placeholder="$t('teams.choose')" data-cy="draw-team">
+            <option v-if="sourceTeams.length" value="">{{ $t('teams.sameAsSource', { name: sourceTeamNames }) }}</option>
+            <option v-for="t in adminTeams" :key="t.tag" :value="t.tag">{{ t.name }}</option>
+            <option :value="NO_TEAM">{{ $t('teams.noTeamChoice') }}</option>
+          </b-select>
+          <b-tag v-else type="is-info is-light" data-cy="draw-team-fixed">
+            <b-icon icon="account-multiple" size="is-small" /> {{ myTeamName }}
+          </b-tag>
+          <p class="help" :class="{ 'is-danger': teamRequired && !team }">{{ teamHelp }}</p>
+        </div>
+
         <div class="draw-box">
           <p class="label">{{ $t('lists.draw.excludeTitle') }}</p>
           <div class="draw-row">
@@ -123,6 +137,7 @@ import Vue from 'vue';
 import {
   defaultDrawName, drawBody, localDate, validateDraw, willDraw,
 } from '../list-draw';
+import { NO_TEAM, teamName, teamTags } from '../teams';
 
 export default Vue.extend({
   name: 'ListDraw',
@@ -130,6 +145,8 @@ export default Vue.extend({
   props: {
     // The list to draw from, as the lists table has it.
     source: { type: Object, required: true },
+    // The teams on the lists the user may read (GET /api/lists/teams).
+    teams: { type: Array, default: () => [] },
   },
 
   data() {
@@ -137,6 +154,9 @@ export default Vue.extend({
       form: {
         unit: 'count', value: '', scope: 'same_source', period: 'all', days: '7', name: '',
       },
+      NO_TEAM,
+      // The team of the new list: a team tag, NO_TEAM, or '' (the source's teams).
+      team: '',
       nameTouched: false,
       // The numbers of the last check. Any change of the settings clears them, so what the
       // user sees is what the draw is asked to make.
@@ -152,6 +172,19 @@ export default Vue.extend({
 
   computed: {
     validation() { return validateDraw(this.form); },
+
+    isAdmin() { return this.$can('lists:manage_all'); },
+    adminTeams() { return (this.teams || []).filter((t) => t.roleId); },
+    sourceTeams() { return teamTags(this.source.tags); },
+    sourceTeamNames() { return this.sourceTeams.map(teamName).join(', '); },
+    myTeamName() { return teamName(this.$teamTag()); },
+    showTeam() { return this.isAdmin ? this.adminTeams.length > 0 : !!this.$teamTag(); },
+    // A source without a team gives the new list nothing to inherit: an admin must choose.
+    teamRequired() { return this.isAdmin && this.adminTeams.length > 0 && !this.sourceTeams.length; },
+    teamHelp() {
+      if (!this.isAdmin) return this.$t('teams.drawMember');
+      return this.teamRequired && !this.team ? this.$t('teams.drawRequired') : this.$t('teams.drawHelp');
+    },
     valueError() {
       return this.touched && this.validation === 'valueRequired'
         ? this.$t(`lists.draw.${this.form.unit === 'percent' ? 'percentInvalid' : 'countInvalid'}`) : '';
@@ -160,7 +193,10 @@ export default Vue.extend({
       return this.touched && this.validation === 'daysRequired' ? this.$t('lists.draw.daysInvalid') : '';
     },
     will() { return willDraw(this.counts); },
-    canCreate() { return !!this.counts && this.will > 0 && !!this.form.name.trim() && !this.creating; },
+    canCreate() {
+      return !!this.counts && this.will > 0 && !!this.form.name.trim() && !this.creating
+        && !(this.teamRequired && !this.team);
+    },
     createLabel() {
       if (!this.counts) return this.$t('lists.draw.createFirst');
       if (this.will === 0) return this.$t('lists.draw.createNone');
@@ -210,7 +246,10 @@ export default Vue.extend({
       this.creating = true;
       this.error = '';
       try {
-        const data = await this.$api.drawList(this.source.id, { ...drawBody(this.form), name: this.form.name.trim() });
+        let teamBody = {};
+        if (this.isAdmin && this.team === NO_TEAM) teamBody = { no_team: true };
+        else if (this.isAdmin && this.team) teamBody = { team: this.team };
+        const data = await this.$api.drawList(this.source.id, { ...drawBody(this.form), ...teamBody, name: this.form.name.trim() });
         this.result = { list: data.list, counts: { ...data.draw.result } };
         this.done = true;
         this.$emit('finished');
@@ -239,6 +278,7 @@ export default Vue.extend({
 <style scoped>
 .list-draw { width: 100% !important; max-width: 100%; margin: 0; }
 .source-line { margin: 4px 0 0; }
+.draw-team { margin: 14px 0 0; }
 .draw-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
 .draw-row .field { margin-bottom: 0; }
 .draw-days { width: 110px; }

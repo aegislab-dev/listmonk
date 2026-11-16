@@ -5,16 +5,10 @@
         <h2>{{ L.T "public.unsubTitle" }}</h2>
         <form method="post" class="unsub-form">
             <div>
-                {{ if .Data.AllowBlocklist }}
-                    <p>{{ L.T "public.unsubHelp" }}</p>
-                    <p>
-                        <input id="privacy-blocklist" type="checkbox" name="blocklist" value="true" />
-                        <label for="privacy-blocklist">{{ L.T "public.unsubFull" }}</label>
-                    </p>
-                {{ end }}
+                <p>{{ L.T "public.unsubAllHelp" }}</p>
 
                 <p>
-                    <button type="submit" class="button" id="btn-unsub">{{ L.T "public.unsub" }}</button>
+                    <button type="submit" class="button" id="btn-unsub">{{ L.T "public.unsubAll" }}</button>
                 </p>
 
                 {{ if .Data.AllowPreferences }}

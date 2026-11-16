@@ -32,9 +32,9 @@
           </div>
           <div class="column is-4">
             <b-field :label="$t('globals.fields.status')" label-position="on-border"
-              :message="$t('subscribers.blocklistedHelp')">
+              :message="unblockLocked ? $t('teams.unblockAdminOnly') : $t('subscribers.blocklistedHelp')">
               <b-select v-model="form.status" name="status" :placeholder="$t('globals.fields.status')" required
-                expanded>
+                expanded :disabled="unblockLocked" data-cy="sub-status">
                 <option value="enabled">
                   {{ $t('subscribers.status.enabled') }}
                 </option>
@@ -44,6 +44,16 @@
               </b-select>
             </b-field>
           </div>
+        </div>
+
+        <div v-if="isEditing && data.otherTeams && data.otherTeams.length" class="other-teams-box" data-cy="other-teams">
+          <p class="label">{{ $t('teams.otherTeams') }}</p>
+          <b-taglist>
+            <b-tag v-for="t in data.otherTeams" :key="t.team" type="is-info is-light">
+              {{ $t('teams.otherTeamLists', { team: t.team || $t('teams.noTeam'), num: t.lists }) }}
+            </b-tag>
+          </b-taglist>
+          <p class="help">{{ $t('teams.otherTeamsHelp') }}</p>
         </div>
 
         <b-tabs type="is-boxed" :animated="false">
@@ -335,6 +345,12 @@ export default Vue.extend({
   computed: {
     ...mapState(['lists', 'loading']),
 
+    // A blocklisted address is blocked for every team: only someone who reads all subscribers
+    // takes it off the blocklist (the server checks the same).
+    unblockLocked() {
+      return this.isEditing && this.data.status === 'blocklisted' && !this.$can('subscribers:get_all');
+    },
+
     hasOptinList() {
       return this.form.lists.some((l) => l.optin === 'double');
     },
@@ -360,3 +376,8 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.other-teams-box { background: #f8fafb; border: 1px solid #dce3e8; border-radius: 5px; padding: 10px 14px; margin: 0 0 16px; }
+.other-teams-box .label { margin-bottom: 4px; }
+</style>

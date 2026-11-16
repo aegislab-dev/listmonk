@@ -51,6 +51,8 @@
         data-cy="userRoles" icon="newspaper-variant-outline" :label="$t('users.userRoles')" />
       <b-menu-item v-if="$can('roles:get')" :to="{ name: 'listRoles' }" tag="router-link" :active="activeItem.listRoles"
         data-cy="listRoles" icon="format-list-bulleted-square" :label="$t('users.listRoles')" />
+      <b-menu-item v-if="$can('roles:get')" :to="{ name: 'teams' }" tag="router-link" :active="activeItem.teams"
+        data-cy="teams" icon="account-multiple" :label="$t('teams.title')" />
     </b-menu-item><!-- users -->
 
     <b-menu-item v-if="$can('settings:*')" :expanded="activeGroup.settings" :active="activeGroup.settings"

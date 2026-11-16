@@ -28,6 +28,15 @@
           </b-field>
           <b-tag type="is-info is-light" class="exclude-fixed">{{ $t('lists.dynamic.excludeNewFixed') }}</b-tag>
         </div>
+        <b-field v-if="showNewTeam" :label="$t('teams.field')" data-cy="exclude-new-team-field">
+          <b-select v-if="isAdmin" v-model="newTeam" expanded :placeholder="$t('teams.choose')" required data-cy="exclude-new-team">
+            <option v-for="t in adminTeams" :key="t.tag" :value="t.tag">{{ t.name }}</option>
+            <option :value="NO_TEAM">{{ $t('teams.noTeamChoice') }}</option>
+          </b-select>
+          <b-tag v-else type="is-info is-light" data-cy="exclude-new-team-fixed">
+            <b-icon icon="account-multiple" size="is-small" /> {{ myTeamName }}
+          </b-tag>
+        </b-field>
         <p class="help">{{ $t('lists.dynamic.excludeNewHelp') }}</p>
         <div class="exclude-new-buttons">
           <b-button size="is-small" type="is-primary" :loading="making" data-cy="exclude-new-create" @click="makeList(false)">
@@ -201,6 +210,9 @@ import {
   TEXT_OPS, validateDynamicForm,
 } from '../dynamic-list';
 import { countryHint, standardByKey, withStandardFirst } from '../lib/standard-attribs';
+import {
+  NO_TEAM, defaultTeamTag, teamName, teamTags,
+} from '../teams';
 
 export default {
   components: { ListSelector },
@@ -227,6 +239,10 @@ export default {
       // The shortcut to make a list to exclude: the mini form, the list made last.
       newOpen: false,
       newName: '',
+      NO_TEAM,
+      // The teams on the lists the user may read, and the team picked for a new exclude list.
+      teams: [],
+      newTeam: '',
       newError: '',
       making: false,
       madeList: null,
@@ -247,7 +263,13 @@ export default {
     selectedBase() { return this.ordinaryLists.filter((l) => (this.form.base.lists || []).includes(l.id)); },
     selectedExclude() { return this.ordinaryLists.filter((l) => this.form.exclude.lists.includes(l.id)); },
     // The shortcuts make a new standard list, which takes the permission to make lists.
-    canMakeExclude() { return this.$can('lists:manage_all'); },
+    canMakeExclude() { return this.$canCreateList(); },
+    isAdmin() { return this.$can('lists:manage_all'); },
+    adminTeams() { return (this.teams || []).filter((t) => t.roleId); },
+    // A new exclude list belongs to a team like any list: a member's own, or one an admin picks
+    // (the team of the base list is the likely one).
+    showNewTeam() { return this.isAdmin ? this.adminTeams.length > 0 : !!this.$teamTag(); },
+    myTeamName() { return teamName(this.$teamTag()); },
     hasNumberCondition() { return this.form.conditions.some((c) => isNumberOp(c.op)); },
     summary() {
       const names = Object.fromEntries(this.ordinaryLists.map((l) => [l.id, l.name]));
@@ -289,6 +311,7 @@ export default {
     setExclude(lists) { this.$set(this.form.exclude, 'lists', lists.map((l) => l.id)); },
     openNew() {
       this.newName = this.$t('lists.dynamic.excludeNewDefault');
+      this.newTeam = this.baseTeam();
       this.newError = '';
       this.newOpen = true;
       this.$nextTick(() => { if (this.$refs.newName) this.$refs.newName.focus(); });
@@ -303,16 +326,30 @@ export default {
       const { href } = this.$router.resolve({ name: 'import', query: { list_id: id } });
       window.open(href, '_blank', 'noopener');
     },
+    // The team of the first base list that has one: the likely team of a list to exclude.
+    baseTeam() {
+      const ids = this.form.base.lists || [];
+      const tags = ids.flatMap((id) => teamTags((this.ordinaryLists.find((l) => l.id === id) || {}).tags));
+      return defaultTeamTag(tags, this.adminTeams);
+    },
     // Makes the standard list to exclude (private, single opt-in, like any new list) and adds it.
     async makeList(thenImport) {
       const name = this.newName.trim();
       if (!name) { this.newError = this.$t('lists.invalidName'); return; }
+      if (this.isAdmin && this.adminTeams.length && !this.newTeam) { this.newError = this.$t('teams.requiredHelp'); return; }
       this.making = true;
       this.newError = '';
       try {
         const data = await this.$api.createList({
-          name, type: 'private', optin: 'single', status: 'active', tags: [], description: '',
+          name,
+          type: 'private',
+          optin: 'single',
+          status: 'active',
+          tags: this.isAdmin && this.newTeam && this.newTeam !== NO_TEAM ? [this.newTeam] : [],
+          ...(this.isAdmin && this.newTeam === NO_TEAM ? { no_team: true } : {}),
+          description: '',
         });
+        this.$refreshProfile();
         // The new list is not in the lists the form knows; load them, then pick it.
         await this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' });
         this.madeList = data;
@@ -422,6 +459,7 @@ export default {
     if (!this.$can('lists:get_all') && this.form.base.type === 'all') this.form.base = { type: 'lists', lists: [] };
     this.loadKeys();
     if (this.listId) this.preview();
+    this.$api.getListTeams().then((out) => { this.teams = out.teams || []; }).catch(() => { this.teams = []; });
   },
   beforeDestroy() { this.sampleRevision += 1; },
 };

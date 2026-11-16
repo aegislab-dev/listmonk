@@ -91,6 +91,23 @@
             </option>
           </b-select>
         </b-field>
+        <!-- The team of the list (LST-24): an admin picks it, a member's is fixed. -->
+        <div v-if="showTeamField" class="field team-field" data-cy="list-team-field">
+          <p class="label">
+            {{ $t('teams.field') }} <span v-if="teamRequired" class="has-text-danger">*</span>
+          </p>
+          <b-select v-if="isAdmin" v-model="teamChoice" expanded :placeholder="$t('teams.choose')" :required="teamRequired"
+            data-cy="list-team">
+            <option v-if="!teamRequired && !currentTeamTags.length" value="">{{ $t('teams.keepTeams') }}</option>
+            <option v-if="currentTeamTags.length > 1" value="">{{ $t('teams.keepTeams') }} ({{ currentTeamNames }})</option>
+            <option v-for="t in adminTeams" :key="t.tag" :value="t.tag">{{ t.name }}</option>
+            <option :value="NO_TEAM">{{ $t('teams.noTeamChoice') }}</option>
+          </b-select>
+          <div v-else class="team-fixed" data-cy="list-team-fixed">
+            <b-tag type="is-info is-light"><b-icon icon="account-multiple" size="is-small" /> {{ fixedTeamName }}</b-tag>
+          </div>
+          <p class="help" :class="{ 'is-danger': teamRequired && !teamChoice }" data-cy="list-team-help">{{ teamHelp }}</p>
+        </div>
         <b-field :label="$t('globals.terms.tags')" label-position="on-border">
           <b-taginput v-model="form.tags" name="tags" ellipsis icon="tag-outline"
             :placeholder="$t('globals.terms.tags')" />
@@ -138,7 +155,7 @@
           </div>
           <p class="help">{{ $t('lists.draw.historyHelp') }}</p>
         </div>
-        <div v-if="isEditing && $can('lists:manage_all') && !isDrawnList && data.status !== 'archived'" class="draw-history-button">
+        <div v-if="isEditing && $canCreateList() && !isDrawnList && data.status !== 'archived'" class="draw-history-button">
           <b-button size="is-small" data-cy="btn-draw-from-form" @click="$emit('draw', data)">
             {{ $t('lists.draw.action') }}
           </b-button>
@@ -164,6 +181,9 @@ import CopyText from '../components/CopyText.vue';
 import DynamicListFilter from '../components/DynamicListFilter.vue';
 import { filterToForm, formToFilter, validateDynamicForm } from '../dynamic-list';
 import { recordSettings } from '../list-draw';
+import {
+  NO_TEAM, plainTags, tagsForSave, teamName, teamTags,
+} from '../teams';
 
 export default Vue.extend({
   name: 'ListForm',
@@ -175,6 +195,8 @@ export default Vue.extend({
   props: {
     data: { type: Object, default: () => ({}) },
     isEditing: { type: Boolean, default: false },
+    // The teams on the lists the user may read (GET /api/lists/teams).
+    teams: { type: Array, default: () => [] },
   },
 
   data() {
@@ -189,6 +211,9 @@ export default Vue.extend({
       // list's preset until the user picks one.
       preset: this.data.axmPreset || '',
       presetTouched: false,
+      NO_TEAM,
+      // The team picked in the team field: a team tag, NO_TEAM, or '' (keep the list's teams).
+      teamChoice: '',
       // Binds form input values.
       form: {
         name: '',
@@ -236,8 +261,12 @@ export default Vue.extend({
     },
 
     payload() {
+      const { defaultTeam, ...rest } = this.form; // eslint-disable-line no-unused-vars
+      const { tags, noTeam } = tagsForSave(this.form.tags, this.data.tags, this.isAdmin ? this.teamChoice : '');
       return {
-        ...this.form,
+        ...rest,
+        tags,
+        ...(noTeam ? { no_team: true } : {}),
         axm_filter: this.composition === 'dynamic' ? formToFilter(this.filter) : null,
         axm_preset: this.preset,
       };
@@ -291,9 +320,41 @@ export default Vue.extend({
       });
     },
 
-    // The server's rule: creating takes lists:manage_all, editing that or list:manage on the list.
+    // The server's rule: creating takes lists:manage_all or being on a team, editing takes
+    // lists:manage_all or list:manage on the list.
     canSave() {
-      return this.isEditing ? this.$canManageList(this.data.id) : this.$can('lists:manage_all');
+      return this.isEditing ? this.$canManageList(this.data.id) : this.$canCreateList();
+    },
+
+    isAdmin() { return this.$can('lists:manage_all'); },
+
+    // The teams an admin may pick: the ones that exist (a tag without a team role is not one).
+    adminTeams() { return (this.teams || []).filter((t) => t.roleId); },
+
+    currentTeamTags() { return teamTags(this.data.tags); },
+    currentTeamNames() { return this.currentTeamTags.map(teamName).join(', '); },
+    fixedTeamName() {
+      const own = this.$teamTag();
+      return teamName(own || this.currentTeamTags[0] || '');
+    },
+
+    // Once a team exists every list has one: the field shows for admins, for members (fixed),
+    // and read-only for anybody who edits a list that has teams.
+    showTeamField() {
+      if (this.isAdmin) return this.adminTeams.length > 0;
+      return !!this.$teamTag() || this.currentTeamTags.length > 0;
+    },
+
+    teamRequired() { return !this.isEditing && this.isAdmin && this.adminTeams.length > 0; },
+
+    teamHelp() {
+      if (!this.isAdmin) return this.$t('teams.memberFixed');
+      if (this.teamRequired && !this.teamChoice) return this.$t('teams.requiredHelp');
+      const current = this.currentTeamTags.length === 1 ? this.currentTeamTags[0] : '';
+      if (this.isEditing && this.teamChoice && this.teamChoice !== current) {
+        return this.$t('teams.changeWarn');
+      }
+      return this.$t('teams.fieldHelp');
     },
 
     // The preset a new dynamic list takes over: that of its first base list.
@@ -333,6 +394,10 @@ export default Vue.extend({
 
   mounted() {
     this.form = { ...this.form, ...this.$props.data };
+    // The team tags are chosen in the team field, not typed in the tag input.
+    this.form.tags = plainTags(this.data.tags);
+    if (this.isEditing && this.currentTeamTags.length === 1) [this.teamChoice] = this.currentTeamTags;
+    if (!this.isEditing && this.data.defaultTeam) this.teamChoice = this.data.defaultTeam;
     this.loadDraws();
 
     this.$nextTick(() => {
@@ -354,6 +419,8 @@ export default Vue.extend({
 .draw-summary-table td:first-child { width: 110px; color: #555; }
 .draw-summary-table tr.sub td { font-size: .85rem; color: #555; }
 .draw-history-button { margin: 12px 0 0; }
+.team-field { margin-bottom: 1rem; }
+.team-fixed { padding: 4px 0; }
 @media screen and (max-width: 600px) {
   .modal-card-body { padding: 20px 14px; }
 }

@@ -204,6 +204,12 @@
         <b-tag v-if="props.row.status !== 'enabled'" :class="props.row.status" data-cy="blocklisted">
           {{ $t(`subscribers.status.${props.row.status}`) }}
         </b-tag>
+        <div v-if="props.row.otherTeams && props.row.otherTeams.length" class="other-teams" data-cy="other-teams">
+          <b-tag type="is-info is-light" :title="$t('teams.otherTeamsHelp')">
+            <b-icon icon="account-multiple" size="is-small" /> {{ $t('teams.otherTeams') }} &middot;
+            {{ otherTeamsText(props.row.otherTeams) }}
+          </b-tag>
+        </div>
         <b-taglist>
           <template v-for="l in props.row.lists">
             <router-link :to="`/subscribers/lists/${l.id}`" :key="l.id" style="padding-right:0.5em;">
@@ -577,9 +583,22 @@ export default Vue.extend({
       });
     },
 
+    // "마케팅1팀 2개 / 팀 없음 1개": the other teams a subscriber's lists belong to.
+    otherTeamsText(teams) {
+      return teams.map((t) => this.$t('teams.otherTeamItem', { team: t.team || this.$t('teams.noTeam'), num: t.lists })).join(' / ');
+    },
+
+    // The warning for deleting or blocking people who are on lists of other teams (a subscriber
+    // is one person for every team).
+    otherTeamsWarning(subs) {
+      const n = subs.filter((s) => s.otherTeams && s.otherTeams.length).length;
+      return n ? this.$t('teams.otherTeamsWarning', { num: n }) : '';
+    },
+
     deleteSubscriber(sub) {
+      const warn = this.otherTeamsWarning([sub]);
       this.$utils.confirm(
-        null,
+        warn ? `${this.$t('globals.messages.confirm')} ${warn}` : null,
         () => {
           this.$api.deleteSubscriber(sub.id).then(() => {
             this.querySubscribers();
@@ -614,7 +633,8 @@ export default Vue.extend({
         };
       }
 
-      this.$utils.confirm(this.$t('subscribers.confirmBlocklist', { num: this.numSelectedSubscribers }), fn);
+      const warn = this.otherTeamsWarning(this.bulk.all ? [] : this.bulk.checked);
+      this.$utils.confirm(`${this.$t('subscribers.confirmBlocklist', { num: this.numSelectedSubscribers })}${warn ? ` ${warn}` : ''}`, fn);
     },
 
     exportSubscribers() {
@@ -690,7 +710,8 @@ export default Vue.extend({
         };
       }
 
-      this.$utils.confirm(this.$t('subscribers.confirmDelete', { num: this.numSelectedSubscribers }), fn);
+      const warn = this.otherTeamsWarning(this.bulk.all ? [] : this.bulk.checked);
+      this.$utils.confirm(`${this.$t('subscribers.confirmDelete', { num: this.numSelectedSubscribers })}${warn ? ` ${warn}` : ''}`, fn);
     },
 
     bulkChangeLists(action, preconfirm, lists) {
@@ -832,3 +853,7 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.other-teams { margin: 2px 0; }
+</style>
