@@ -28,6 +28,10 @@ type pipe struct {
 	prog        *progress
 	alreadySent map[int]struct{}
 
+	// beforeDone, when set by a test, is called by the worker right before it marks a
+	// message of the pipe as done (AXM, LST-25).
+	beforeDone func(p *pipe, subID int)
+
 	// saved is the checkpoint that was last written to the store.
 	saveMut sync.Mutex
 	saved   int

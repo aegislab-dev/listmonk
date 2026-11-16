@@ -357,3 +357,63 @@ func TestCloseDoesNotWaitForeverForTheMessenger(t *testing.T) {
 	}
 	close(msgr.release)
 }
+
+// A message is counted and settled for the checkpoint before it is marked as done, so that
+// the cleanup of the campaign, which starts once the last message is done, saves the last
+// message's count and checkpoint (LST-25, defect 3 of LST-23). The worker calls
+// beforeDone right before the mark, which makes the order observable: a worker that counts
+// the message after marking it fails here every time, not only when it loses a race.
+func TestWorkerCountsMessageBeforeMarkingItDone(t *testing.T) {
+	store := &countStore{}
+	m := New(Config{Concurrency: 1, MessageRate: 1000}, store, nil, log.New(io.Discard, "", 0))
+	m.sends = nil
+	msgr := &pushMessenger{fail: map[int]bool{3: true}}
+	if err := m.AddMessenger(msgr); err != nil {
+		t.Fatal(err)
+	}
+	go m.worker()
+
+	p := testPipe(m, &models.Campaign{Base: models.Base{ID: 9}, Name: "test", Messenger: "email"}, 0)
+	var (
+		mu   sync.Mutex
+		seen = map[int][2]int{} // subscriber -> sent count and checkpoint when marked done
+	)
+	p.beforeDone = func(p *pipe, subID int) {
+		mu.Lock()
+		seen[subID] = [2]int{int(p.sent.Load()), p.prog.get()}
+		mu.Unlock()
+	}
+
+	for id := 1; id <= 5; id++ {
+		queueMessage(m, p, id)
+	}
+	p.wg.Wait()
+
+	// One worker sends in order. The message to subscriber 3 is rejected: it is not
+	// counted, and the checkpoint passes it once subscriber 4 is sent.
+	want := map[int][2]int{1: {1, 1}, 2: {2, 2}, 3: {2, 2}, 4: {3, 4}, 5: {4, 5}}
+	mu.Lock()
+	defer mu.Unlock()
+	for id, w := range want {
+		if seen[id] != w {
+			t.Errorf("subscriber %d: sent count and checkpoint when marked done: %v, want %v", id, seen[id], w)
+		}
+	}
+}
+
+// The periodic scan and the pipe's own save both take the sent count with a swap, so a
+// count is written once whichever comes first (LST-25, defect 4 of LST-23).
+func TestSentCountIsWrittenOnce(t *testing.T) {
+	store := &countStore{}
+	m := New(Config{}, store, nil, log.New(io.Discard, "", 0))
+	p := testPipe(m, &models.Campaign{Base: models.Base{ID: 7}, Name: "test", Messenger: "email"}, 0)
+
+	p.sent.Add(54)
+	_, counts := m.getCurrentCampaigns() // what the scan hands to next-campaigns
+	p.saveProgress()                     // what cleanup writes
+	p.saveProgress()
+	saved, _, _ := store.get()
+	if total := int(counts[0]) + saved; total != 54 {
+		t.Fatalf("the scan took %d and the pipe saved %d, together %d, want 54", counts[0], saved, total)
+	}
+}

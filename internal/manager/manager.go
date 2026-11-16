@@ -756,6 +756,12 @@ func (m *Manager) worker() {
 					msg.pipe.sent.Add(1)
 				}
 
+				// Test seam (AXM, LST-25): the point where the campaign's cleanup
+				// may start. Always nil in the app.
+				if msg.pipe.beforeDone != nil {
+					msg.pipe.beforeDone(msg.pipe, msg.Subscriber.ID)
+				}
+
 				// Mark the message as done.
 				msg.pipe.wg.Done()
 
