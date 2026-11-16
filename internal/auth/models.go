@@ -131,6 +131,9 @@ type ListRolePermissions struct {
 	ID    int              `db:"-" json:"id"`
 	Name  string           `db:"-" json:"name"`
 	Lists []ListPermission `db:"-" json:"lists"`
+
+	// TeamTag is the team tag when the list role is a team role. Filled by the profile handler.
+	TeamTag string `db:"-" json:"team_tag,omitempty"`
 }
 
 type Role struct {
@@ -150,6 +153,10 @@ type ListRole struct {
 	Base
 
 	Name null.String `db:"name" json:"name"`
+
+	// A team role (AXM): the tag of the team and the user role its members get by default.
+	AxmTeamTag        null.String `db:"axm_team_tag" json:"team_tag"`
+	AxmTeamUserRoleID null.Int    `db:"axm_team_user_role_id" json:"team_user_role_id"`
 
 	ListID   null.Int         `db:"list_id" json:"-"`
 	ParentID null.Int         `db:"parent_id" json:"-"`

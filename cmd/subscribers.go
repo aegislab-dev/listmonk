@@ -76,6 +76,9 @@ func (a *App) GetSubscriber(c echo.Context) error {
 	}
 
 	maskRestrictedSubLists(user, &out)
+	one := []models.Subscriber{out}
+	a.attachOtherTeams(user, one)
+	out = one[0]
 
 	return c.JSON(http.StatusOK, okResp{out})
 }
@@ -143,6 +146,7 @@ func (a *App) QuerySubscribers(c echo.Context) error {
 	for i := range res {
 		maskRestrictedSubLists(user, &res[i])
 	}
+	a.attachOtherTeams(user, res)
 
 	out := models.PageResults{
 		Query:   query,
@@ -330,6 +334,9 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 	if err := a.hasSubPerm(user, []int{id}); err != nil {
 		return err
 	}
+	if err := a.checkUnblock(user, id, req.Status); err != nil {
+		return err
+	}
 
 	// Get the user's permitted lists to pass to the update query so that lists on the subscribers
 	// to which they don't have permissions are preserved/left as-is when deleteLists=true.
@@ -385,6 +392,9 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
 		req.Email = em
+	}
+	if err := a.checkUnblock(user, id, req.Status); err != nil {
+		return err
 	}
 
 	if req.Name != "" && !strHasLen(req.Name, 1, stdInputMaxLen) {
@@ -978,4 +988,20 @@ func makeOptinNotifyHook(unsubHeader bool, u *UrlConfig, q *models.Queries, i *i
 
 		return len(lists), nil
 	}
+}
+
+// checkUnblock lets only a user who reads all subscribers (subscribers:get_all) take a
+// subscriber off the blocklist. A blocklisted address is blocked for every team.
+func (a *App) checkUnblock(user auth.User, id int, status string) error {
+	if status == "" || status == models.SubscriberStatusBlockListed || user.HasPerm(auth.PermSubscribersGetAll) {
+		return nil
+	}
+	cur, err := a.core.GetSubscriber(id, "", "")
+	if err != nil {
+		return err
+	}
+	if cur.Status == models.SubscriberStatusBlockListed {
+		return echo.NewHTTPError(http.StatusForbidden, a.i18n.T("subscribers.unblockAdminOnly"))
+	}
+	return nil
 }

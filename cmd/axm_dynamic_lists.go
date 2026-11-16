@@ -76,7 +76,7 @@ func (a *App) PreviewDynamicList(c echo.Context) error {
 		if l.AxmFilter == nil {
 			return echo.NewHTTPError(http.StatusBadRequest, "List is not dynamic")
 		}
-	} else if !user.HasPerm(auth.PermListManageAll) {
+	} else if !a.canMakeLists(user) {
 		return auth.ErrPermDenied
 	}
 	f, err := core.ValidateDynamicFilter(req.Filter)

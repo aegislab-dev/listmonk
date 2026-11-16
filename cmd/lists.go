@@ -18,6 +18,14 @@ func (a *App) GetLists(c echo.Context) error {
 	// Get the list IDs (or blanket permission) the user has access to.
 	hasAllPerm, permittedIDs := user.GetPermittedLists(auth.PermTypeGet)
 
+	// team=none shows the lists without a team (AXM).
+	if c.FormValue("team") == "none" {
+		var err error
+		if hasAllPerm, permittedIDs, err = a.restrictToTeamless(hasAllPerm, permittedIDs); err != nil {
+			return err
+		}
+	}
+
 	// Minimal query simply returns the list of all lists without JOIN subscriber counts. This is fast.
 	minimal, _ := strconv.ParseBool(c.FormValue("minimal"))
 	if minimal {
@@ -103,6 +111,12 @@ func (a *App) CreateList(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("lists.invalidName"))
 	}
 
+	tags, err := a.tagsForNewList(auth.GetUser(c), l.Tags, l.NoTeam)
+	if err != nil {
+		return err
+	}
+	l.Tags = tags
+
 	if err := a.validateDynamicList(c, &l); err != nil {
 		return err
 	}
@@ -110,6 +124,7 @@ func (a *App) CreateList(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.refreshTeamUsers()
 
 	return c.JSON(http.StatusOK, okResp{out})
 }
@@ -144,6 +159,9 @@ func (a *App) UpdateList(c echo.Context) error {
 	if old.AxmFilter != nil && l.AxmFilter == nil {
 		l.AxmFilter = old.AxmFilter
 	}
+	if l.Tags, err = a.tagsForUpdatedList(user, l.Tags, old.Tags, l.NoTeam); err != nil {
+		return err
+	}
 	if err := a.validateDynamicList(c, &l); err != nil {
 		return err
 	}
@@ -152,6 +170,7 @@ func (a *App) UpdateList(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.refreshTeamUsers()
 
 	return c.JSON(http.StatusOK, okResp{out})
 }
@@ -171,6 +190,7 @@ func (a *App) DeleteList(c echo.Context) error {
 	if err := a.core.DeleteLists([]int{id}, "", true, nil); err != nil {
 		return err
 	}
+	a.refreshTeamUsers()
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -225,6 +245,8 @@ func (a *App) DeleteLists(c echo.Context) error {
 			return err
 		}
 	}
+
+	a.refreshTeamUsers()
 
 	return c.JSON(http.StatusOK, okResp{true})
 }

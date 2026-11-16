@@ -144,6 +144,23 @@ export const queryLists = (params) => http.get(
   },
 );
 
+// The teams on the lists the user may read, with the number of lists without a team (admins).
+export const getListTeams = () => http.get('/api/lists/teams', { disableToast: true });
+
+export const getTeams = () => http.get('/api/teams', { loading: models.listRoles });
+
+export const createTeam = (data) => http.post('/api/teams', data, { loading: models.listRoles });
+
+export const updateTeam = (data) => http.put(`/api/teams/${data.id}`, data, { loading: models.listRoles });
+
+export const setTeamMembers = (id, userIds) => http.put(
+  `/api/teams/${id}/members`,
+  { user_ids: userIds },
+  { loading: models.listRoles },
+);
+
+export const deleteTeam = (id) => http.delete(`/api/teams/${id}`, { loading: models.listRoles });
+
 export const getList = async (id) => http.get(
   `/api/lists/${id}`,
   { loading: models.list },

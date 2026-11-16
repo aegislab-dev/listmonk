@@ -34,6 +34,10 @@ type Subscriber struct {
 	Attribs JSON           `db:"attribs" json:"attribs"`
 	Status  string         `db:"status" json:"status"`
 	Lists   types.JSONText `db:"lists" json:"lists"`
+
+	// OtherTeams tells a restricted user that the subscriber is also on lists of other
+	// teams (team name and number of lists, never list names). Filled by the handlers.
+	OtherTeams []OtherTeam `db:"-" json:"other_teams,omitempty"`
 }
 
 type subLists struct {

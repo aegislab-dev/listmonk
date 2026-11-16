@@ -132,6 +132,12 @@ const routes = [
     component: () => import('../views/Roles.vue'),
   },
   {
+    path: '/users/teams',
+    name: 'teams',
+    meta: { title: 'teams.title', group: 'users' },
+    component: () => import('../views/Teams.vue'),
+  },
+  {
     path: '/settings/maintenance',
     name: 'maintenance',
     meta: { title: 'maintenance.title', group: 'settings' },

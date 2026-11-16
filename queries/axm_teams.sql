@@ -1,0 +1,104 @@
+-- name: axm-get-teams
+-- The team roles with the number of their lists and members.
+SELECT r.id, r.name, r.axm_team_tag AS tag, r.axm_team_user_role_id AS user_role_id,
+    (SELECT COUNT(*) FROM roles c WHERE c.parent_id = r.id) AS lists,
+    (SELECT COUNT(*) FROM users u WHERE u.list_role_id = r.id) AS members
+FROM roles r
+WHERE r.parent_id IS NULL AND r.type = 'list' AND r.axm_team_tag IS NOT NULL
+ORDER BY r.name;
+
+-- name: axm-get-team-members
+SELECT u.id, u.username, u.name, u.type, u.status, u.user_role_id, u.list_role_id AS team_id
+FROM users u JOIN roles r ON r.id = u.list_role_id
+WHERE r.parent_id IS NULL AND r.type = 'list' AND r.axm_team_tag IS NOT NULL
+ORDER BY u.list_role_id, u.id;
+
+-- name: axm-get-team-role
+-- One list role: its team tag is NULL when it is an ordinary list role.
+SELECT id, name, axm_team_tag AS tag, axm_team_user_role_id AS user_role_id
+FROM roles WHERE id = $1 AND parent_id IS NULL AND type = 'list';
+
+-- name: axm-count-team-roles
+SELECT COUNT(*) FROM roles WHERE parent_id IS NULL AND type = 'list' AND axm_team_tag IS NOT NULL;
+
+-- name: axm-create-team-role
+INSERT INTO roles (name, type, permissions, axm_team_tag, axm_team_user_role_id, created_at, updated_at)
+VALUES ($1, 'list', '{}', $2, $3, NOW(), NOW()) RETURNING id;
+
+-- name: axm-update-team-role
+UPDATE roles SET name = $2, axm_team_tag = $3, axm_team_user_role_id = $4, updated_at = NOW()
+WHERE id = $1 AND parent_id IS NULL AND type = 'list' AND axm_team_tag IS NOT NULL;
+
+-- name: axm-retag-lists
+-- Replaces the tag $1 by $2 on every list that has it (no duplicates, order kept).
+UPDATE lists SET tags = ARRAY(
+        SELECT t FROM (SELECT t, MIN(n) AS n FROM UNNEST(ARRAY_REPLACE(tags, $1, $2)) WITH ORDINALITY AS u(t, n) GROUP BY t) x ORDER BY n),
+    updated_at = NOW()
+WHERE $1 = ANY(tags);
+
+-- name: axm-delete-team-role
+DELETE FROM roles WHERE id = $1 AND parent_id IS NULL AND type = 'list' AND axm_team_tag IS NOT NULL;
+
+-- name: axm-count-list-role-users
+SELECT COUNT(*) FROM users WHERE list_role_id = $1;
+
+-- name: axm-count-team-lists
+SELECT COUNT(*) FROM lists WHERE $1 = ANY(tags);
+
+-- name: axm-user-role-facts
+-- For each user role id: whether it is the super admin role or carries a lists:*_all permission.
+SELECT id, (id = 1) AS super_admin, (permissions && ARRAY['lists:get_all', 'lists:manage_all']) AS all_lists
+FROM roles WHERE id = ANY($1::INT[]) AND type = 'user' AND parent_id IS NULL;
+
+-- name: axm-team-candidate-users
+-- The users with the given IDs and their user role, to check who may join a team.
+SELECT u.id, (u.user_role_id = 1) AS super_admin,
+    COALESCE(ur.permissions && ARRAY['lists:get_all', 'lists:manage_all'], FALSE) AS all_lists
+FROM users u LEFT JOIN roles ur ON ur.id = u.user_role_id
+WHERE u.id = ANY($1::INT[]);
+
+-- name: axm-release-team-members
+UPDATE users SET list_role_id = NULL, updated_at = NOW()
+WHERE list_role_id = $1 AND NOT (id = ANY($2::INT[]));
+
+-- name: axm-assign-team-members
+-- $3 is the user role members get (0 = keep theirs).
+UPDATE users SET list_role_id = $1, user_role_id = (CASE WHEN $3::INT > 0 THEN $3::INT ELSE user_role_id END), updated_at = NOW()
+WHERE id = ANY($2::INT[]);
+
+-- name: axm-apply-team-user-role
+UPDATE users SET user_role_id = $2, updated_at = NOW() WHERE list_role_id = $1 AND user_role_id != 1;
+
+-- name: axm-visible-teams
+-- The team tags on the lists $2 (all lists when $1), with the number of those lists and
+-- the team role of each tag.
+WITH t AS (
+    SELECT tag, COUNT(*) AS lists
+    FROM lists l, UNNEST(l.tags) AS tag
+    WHERE STARTS_WITH(tag, $3) AND ($1 OR l.id = ANY($2::INT[]))
+    GROUP BY tag
+)
+SELECT COALESCE(t.tag, r.axm_team_tag) AS tag, COALESCE(t.lists, 0) AS lists, r.id AS role_id, r.name AS role_name
+FROM t FULL JOIN (SELECT id, name, axm_team_tag FROM roles WHERE parent_id IS NULL AND type = 'list' AND axm_team_tag IS NOT NULL) r
+    ON r.axm_team_tag = t.tag
+WHERE t.tag IS NOT NULL OR $1
+ORDER BY 1;
+
+-- name: axm-teamless-list-ids
+SELECT id FROM lists WHERE NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS t WHERE STARTS_WITH(t, $1));
+
+-- name: axm-subscriber-other-teams
+-- For subscribers $1: the teams of the lists they are active on that the viewer ($2 = the
+-- lists the viewer may read) cannot read, with the number of such lists per team. A list
+-- without a team counts for the team "". A list with two team tags counts for both.
+SELECT sl.subscriber_id, COALESCE(t.tag, '') AS team, COUNT(*) AS lists
+FROM subscriber_lists sl
+JOIN lists l ON l.id = sl.list_id
+LEFT JOIN LATERAL (
+    SELECT tag FROM UNNEST(l.tags) AS tag WHERE STARTS_WITH(tag, $3)
+    UNION ALL SELECT NULL WHERE NOT EXISTS (SELECT 1 FROM UNNEST(l.tags) AS tag WHERE STARTS_WITH(tag, $3))
+) t ON TRUE
+WHERE sl.subscriber_id = ANY($1::INT[]) AND sl.status != 'unsubscribed' AND NOT (sl.list_id = ANY($2::INT[]))
+    AND l.axm_filter IS NULL
+GROUP BY sl.subscriber_id, COALESCE(t.tag, '')
+ORDER BY sl.subscriber_id, 2;

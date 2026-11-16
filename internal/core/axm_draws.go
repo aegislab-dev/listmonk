@@ -31,6 +31,11 @@ type DrawOpts struct {
 
 	// UserID is the user who draws, 0 for none.
 	UserID int
+
+	// TeamTags, when SetTeams is true, replace the team tags the new list inherits from the
+	// source (none = no team). The handler decides them from who draws.
+	SetTeams bool
+	TeamTags []string
 }
 
 type drawSource struct {
@@ -177,6 +182,9 @@ func (c *Core) DrawList(sourceID int, s models.DrawSettings, o DrawOpts) (models
 	name = uniqueDrawName(taken, name)
 
 	tags := normalizeTags(append([]string{}, src.Tags...))
+	if o.SetTeams {
+		tags = append(models.WithoutTeamTags(tags), o.TeamTags...)
+	}
 	has := false
 	for _, t := range tags {
 		has = has || t == models.DrawListTag

@@ -32,6 +32,9 @@ type List struct {
 	SubscriberCounts StringIntMap    `db:"subscriber_statuses" json:"subscriber_statuses"`
 	SubscriberID     int             `db:"subscriber_id" json:"-"`
 
+	// NoTeam is sent by an admin who makes or saves a list on purpose without a team.
+	NoTeam bool `db:"-" json:"no_team,omitempty"`
+
 	// This is only relevant when querying the lists of a subscriber.
 	SubscriptionStatus    string    `db:"subscription_status" json:"subscription_status,omitempty"`
 	SubscriptionCreatedAt null.Time `db:"subscription_created_at" json:"subscription_created_at,omitempty"`
