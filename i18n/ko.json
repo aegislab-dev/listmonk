@@ -1150,5 +1150,16 @@
     "lists.dynamic.standardTag": "표준",
     "lists.dynamic.countryHint": "country에는 두 글자 국가 코드가 저장됩니다.",
     "lists.dynamic.countryUse": "‘{code}’로 바꾸기",
-    "lists.dynamic.countryExample": "예: US, KR, GB"
+    "lists.dynamic.countryExample": "예: US, KR, GB",
+    "lists.team.required": "리스트의 팀을 고르세요(팀 없이 만들려면 「팀 없음」을 직접 고르세요).",
+    "lists.team.unknown": "「{name}」 팀이 없습니다.",
+    "teams.invalidName": "팀 이름은 쉼표·줄바꿈 없이 1~90자여야 합니다.",
+    "teams.exists": "같은 이름의 팀이나 태그가 이미 있습니다.",
+    "teams.invalidUserRole": "모든 리스트를 보는 권한이 없는 사용자 역할을 고르세요.",
+    "teams.invalidUsers": "없는 사용자가 있습니다.",
+    "teams.superAdmin": "Super Admin은 팀에 넣을 수 없습니다.",
+    "teams.needsUserRole": "팀의 기본 사용자 역할을 먼저 정하세요. 이 사용자는 아직 모든 리스트를 봅니다.",
+    "teams.notEmpty": "팀원과 리스트를 먼저 비우세요.",
+    "teams.managedByTeams": "팀에 속한 역할입니다. 「팀」 화면에서 관리하세요.",
+    "subscribers.unblockAdminOnly": "차단 해제는 관리자만 할 수 있습니다."
 }

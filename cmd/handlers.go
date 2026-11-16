@@ -156,12 +156,13 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 
 		// Individual list permissions are applied directly within handleGetLists.
 		g.GET("/api/lists", a.GetLists)
+		g.GET("/api/lists/teams", a.GetListTeams)
 		g.GET("/api/lists/:id", hasID(a.GetList))
 		g.POST("/api/lists/dynamic/preview", a.PreviewDynamicList)
 		g.GET("/api/lists/draws", a.GetListDraws)
-		g.POST("/api/lists/:id/draw/preview", pm(hasID(a.PreviewListDraw), "lists:manage_all"))
-		g.POST("/api/lists/:id/draw", pm(hasID(a.DrawList), "lists:manage_all"))
-		g.POST("/api/lists", pm(a.CreateList, "lists:manage_all"))
+		g.POST("/api/lists/:id/draw/preview", a.listMaker(hasID(a.PreviewListDraw)))
+		g.POST("/api/lists/:id/draw", a.listMaker(hasID(a.DrawList)))
+		g.POST("/api/lists", a.listMaker(a.CreateList))
 		g.PUT("/api/lists/:id", hasID(a.UpdateList))
 		g.DELETE("/api/lists", a.DeleteLists)
 		g.DELETE("/api/lists/:id", hasID(a.DeleteList))
@@ -226,6 +227,12 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.PUT("/api/roles/users/:id", pm(hasID(a.UpdateUserRole), "roles:manage"))
 		g.PUT("/api/roles/lists/:id", pm(hasID(a.UpdateListRole), "roles:manage"))
 		g.DELETE("/api/roles/:id", pm(hasID(a.DeleteRole), "roles:manage"))
+
+		g.GET("/api/teams", pm(a.GetTeams, "roles:get"))
+		g.POST("/api/teams", pm(a.CreateTeam, "roles:manage"))
+		g.PUT("/api/teams/:id", pm(hasID(a.UpdateTeam), "roles:manage"))
+		g.PUT("/api/teams/:id/members", pm(hasID(a.SetTeamMembers), "roles:manage", "users:manage"))
+		g.DELETE("/api/teams/:id", pm(hasID(a.DeleteTeam), "roles:manage"))
 
 		if a.cfg.BounceWebhooksEnabled {
 			// Private authenticated bounce endpoint.

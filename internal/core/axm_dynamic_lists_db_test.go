@@ -16,6 +16,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/goyesql/v2"
+	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/migrations"
 	"github.com/knadh/listmonk/models"
 	"github.com/lib/pq"
@@ -153,7 +154,7 @@ func testCore(t *testing.T, db *sqlx.DB, q map[string]string) *Core {
 			typ.Field(i).Set(reflect.ValueOf(stmt))
 		}
 	}
-	return New(&Opt{DB: db, Queries: queries, Log: log.New(io.Discard, "", 0)}, nil)
+	return New(&Opt{DB: db, Queries: queries, Log: log.New(io.Discard, "", 0), I18n: &i18n.I18n{}}, nil)
 }
 
 func TestDynamicDBOperators(t *testing.T) {

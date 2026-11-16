@@ -1144,5 +1144,16 @@
     "lists.dynamic.standardTag": "Standard",
     "lists.dynamic.countryHint": "country holds two-letter country codes.",
     "lists.dynamic.countryUse": "Change to ‘{code}’",
-    "lists.dynamic.countryExample": "e.g. US, KR, GB"
+    "lists.dynamic.countryExample": "e.g. US, KR, GB",
+    "lists.team.required": "Choose a team for the list (or choose no team on purpose).",
+    "lists.team.unknown": "There is no team named \"{name}\".",
+    "teams.invalidName": "The team name must be 1 to 90 characters without commas or line breaks.",
+    "teams.exists": "A team or a tag with this name already exists.",
+    "teams.invalidUserRole": "Choose a user role that does not read all lists.",
+    "teams.invalidUsers": "Some users do not exist.",
+    "teams.superAdmin": "A super admin cannot join a team.",
+    "teams.needsUserRole": "Set the team's default user role first: this user would still read all lists.",
+    "teams.notEmpty": "Remove the team's members and lists first.",
+    "teams.managedByTeams": "This role belongs to a team. Manage it on the Teams screen.",
+    "subscribers.unblockAdminOnly": "Only an administrator can take a subscriber off the blocklist."
 }

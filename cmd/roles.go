@@ -124,6 +124,11 @@ func (a *App) UpdateListRole(c echo.Context) error {
 		return err
 	}
 
+	// A team role is changed on the teams screen.
+	if a.core.TeamTagOfRole(id) != "" {
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("teams.managedByTeams"))
+	}
+
 	// Validate.
 	r.Name.String = strings.TrimSpace(r.Name.String)
 
@@ -149,6 +154,17 @@ func (a *App) DeleteRole(c echo.Context) error {
 	// ID 1 is reserved for the Super Admin user role.
 	if id == auth.SuperAdminRoleID {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("globals.messages.invalidID"))
+	}
+
+	// A team role is deleted on the teams screen. Deleting a list role would also delete the
+	// accounts that use it (users.list_role_id cascades), so a role in use is refused.
+	if a.core.TeamTagOfRole(int(id)) != "" {
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("teams.managedByTeams"))
+	}
+	if n, err := a.core.CountListRoleUsers(int(id)); err != nil {
+		return err
+	} else if n > 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("users.cantDeleteRole"))
 	}
 
 	// Delete the role from the DB.

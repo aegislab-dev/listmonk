@@ -41,15 +41,15 @@ func TestDynamicExcludeListPermissions(t *testing.T) {
 	}
 }
 
-// The three draw routes exist, and the two that write or count over all lists need the
-// permission to make lists.
+// The three draw routes exist, and the two that write or count need the permission to make
+// lists (lists:manage_all or a team member).
 func TestDrawRoutesAreGuarded(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "cmd", "handlers.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	for _, route := range []string{`"/api/lists/:id/draw/preview", pm(hasID(a.PreviewListDraw), "lists:manage_all")`, `"/api/lists/:id/draw", pm(hasID(a.DrawList), "lists:manage_all")`, `g.GET("/api/lists/draws", a.GetListDraws)`} {
+	for _, route := range []string{`"/api/lists/:id/draw/preview", a.listMaker(hasID(a.PreviewListDraw))`, `"/api/lists/:id/draw", a.listMaker(hasID(a.DrawList))`, `g.POST("/api/lists", a.listMaker(a.CreateList))`, `g.GET("/api/lists/draws", a.GetListDraws)`} {
 		if !strings.Contains(src, route) {
 			t.Fatalf("route missing: %s", route)
 		}

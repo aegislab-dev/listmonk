@@ -19,13 +19,20 @@ const drawNameMax = 200
 type drawRequest struct {
 	models.DrawSettings
 	Name string `json:"name"`
+
+	// Team (a team tag) and NoTeam are for admins drawing from a list that has no team.
+	Team   string `json:"team"`
+	NoTeam bool   `json:"no_team"`
 }
 
-// PreviewListDraw counts a draw from the list without making anything. It needs the same
-// permission as making a list (lists:manage_all), which covers every list.
+// PreviewListDraw counts a draw from the list without making anything. It needs the
+// permission to make lists (lists:manage_all, or a team member) and to read the source.
 func (a *App) PreviewListDraw(c echo.Context) error {
 	var req drawRequest
 	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := a.checkDrawSource(auth.GetUser(c), getID(c)); err != nil {
 		return err
 	}
 	out, err := a.core.PreviewListDraw(getID(c), req.DrawSettings)
@@ -46,9 +53,18 @@ func (a *App) DrawList(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("lists.invalidName"))
 	}
 	user := auth.GetUser(c)
+	if err := a.checkDrawSource(user, getID(c)); err != nil {
+		return err
+	}
+	setTeams, teamTags, err := a.teamsForDraw(user, getID(c), req)
+	if err != nil {
+		return err
+	}
 	list, draw, err := a.core.DrawList(getID(c), req.DrawSettings, core.DrawOpts{
-		Name:   req.Name,
-		UserID: user.ID,
+		Name:     req.Name,
+		UserID:   user.ID,
+		SetTeams: setTeams,
+		TeamTags: teamTags,
 		Describe: func(source string, at time.Time, r models.DrawCounts) string {
 			return a.i18n.Ts("lists.draw.description", "source", source, "time", at.Format("2006-01-02 15:04 MST"),
 				"num", strconv.Itoa(r.WillDraw), "target", strconv.Itoa(r.Target),
@@ -59,6 +75,7 @@ func (a *App) DrawList(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.refreshTeamUsers()
 	return c.JSON(http.StatusOK, okResp{struct {
 		List models.List     `json:"list"`
 		Draw models.ListDraw `json:"draw"`
@@ -110,4 +127,41 @@ func (a *App) GetListDraws(c echo.Context) error {
 		out = append(out, d)
 	}
 	return c.JSON(http.StatusOK, okResp{out})
+}
+
+// teamsForDraw decides the team tags of the list a draw makes. A team member's list belongs
+// to the member's team. An admin's list takes the team asked for, else the teams of the
+// source; a source without a team needs a team (or no_team) once teams exist.
+func (a *App) teamsForDraw(user auth.User, sourceID int, req drawRequest) (bool, []string, error) {
+	if !user.HasPerm(auth.PermListManageAll) {
+		own := a.teamTagOf(user)
+		if own == "" {
+			return false, nil, auth.ErrPermDenied
+		}
+		return true, []string{own}, nil
+	}
+	if t := cleanTags([]string{req.Team}); len(t) == 1 {
+		if err := a.checkAdminTeams(t, false); err != nil {
+			return false, nil, err
+		}
+		return true, t, nil
+	}
+	src, err := a.core.GetList(sourceID, "")
+	if err != nil {
+		return false, nil, err
+	}
+	teams := models.TeamTags(src.Tags)
+	if err := a.checkAdminTeams(teams, req.NoTeam); err != nil {
+		return false, nil, err
+	}
+	return false, nil, nil
+}
+
+// checkDrawSource lets a user who manages all lists draw from any list, and anybody else only
+// from a list they may read.
+func (a *App) checkDrawSource(user auth.User, id int) error {
+	if user.HasPerm(auth.PermListManageAll) {
+		return nil
+	}
+	return user.HasListPerm(auth.PermTypeGet, id)
 }
