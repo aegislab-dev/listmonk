@@ -334,10 +334,17 @@ SELECT link_clicks.campaign_id,
 -- name: get-running-campaign
 -- Returns the metadata for a running campaign that is required by next-campaign-subscribers to retrieve
 -- a batch of campaign subscribers for processing.
-SELECT campaigns.id AS campaign_id, campaigns.type as campaign_type, last_subscriber_id, max_subscriber_id, lists.id AS list_id, (lists.axm_filter IS NOT NULL) AS is_dynamic
+--
+-- AXM (LST-25): the lists are LEFT JOINed, so a running campaign always gives at least one row,
+-- also one whose lists are all gone (list_id is 0 then). No row at all means the campaign is not
+-- running (paused, cancelled, finished). The caller must not treat that as "no subscribers left":
+-- a campaign that was paused while its pipe was reading and was resumed right after would
+-- otherwise be finished with its recipients unsent.
+SELECT campaigns.id AS campaign_id, campaigns.type as campaign_type, last_subscriber_id, max_subscriber_id,
+    COALESCE(lists.id, 0) AS list_id, COALESCE(lists.axm_filter IS NOT NULL, false) AS is_dynamic
     FROM campaigns
-    JOIN campaign_lists ON (campaign_lists.campaign_id = campaigns.id)
-    JOIN lists ON (lists.id = campaign_lists.list_id)
+    LEFT JOIN campaign_lists ON (campaign_lists.campaign_id = campaigns.id)
+    LEFT JOIN lists ON (lists.id = campaign_lists.list_id)
     WHERE campaigns.id = $1 AND campaigns.status='running';
 
 -- name: next-campaign-subscribers

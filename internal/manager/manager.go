@@ -46,6 +46,12 @@ const (
 	dummyUUID = "00000000-0000-0000-0000-000000000000"
 )
 
+// ErrCampaignNotRunning is what Store.NextSubscribers returns for a campaign that is
+// not 'running' in the data source any more (paused, cancelled, finished). It is
+// not the same as a campaign with no subscribers left (AXM, LST-25): the pipe is
+// stopped and the campaign is not finished.
+var ErrCampaignNotRunning = errors.New("campaign is not running")
+
 // Store represents a data backend, such as a database,
 // that provides subscriber and campaign records.
 type Store interface {
@@ -54,7 +60,8 @@ type Store interface {
 	// NextSubscribers returns the next batch of a running campaign's subscribers
 	// after the subscriber ID lastSubID, in ascending ID order. AXM (LST-20): the
 	// caller keeps the read position. Upstream kept it in the DB and moved it on
-	// every read.
+	// every read. An empty result means the campaign has no subscribers left;
+	// ErrCampaignNotRunning means it is not running.
 	NextSubscribers(campID, lastSubID, limit int) ([]models.Subscriber, error)
 	GetCampaign(campID int) (*models.Campaign, error)
 	GetAttachment(mediaID int) (models.Attachment, error)
@@ -747,6 +754,12 @@ func (m *Manager) worker() {
 				msg.pipe.prog.done(msg.Subscriber.ID, err == nil)
 				if err == nil {
 					msg.pipe.sent.Add(1)
+				}
+
+				// Test seam (AXM, LST-25): the point where the campaign's cleanup
+				// may start. Always nil in the app.
+				if msg.pipe.beforeDone != nil {
+					msg.pipe.beforeDone(msg.pipe, msg.Subscriber.ID)
 				}
 
 				// Mark the message as done.

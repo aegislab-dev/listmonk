@@ -262,8 +262,9 @@ func TestSendLogNeverBlocksSending(t *testing.T) {
 	}
 }
 
-// waitSent waits for a pipe's sent counter. The worker marks a message as done before
-// it counts it, so the counter can trail wg.Wait() by a moment.
+// waitSent waits for a pipe's sent counter. The worker counts a message before it marks
+// it as done, so the counter is already final when wg.Wait() returns; this only keeps the
+// tests that predate that order from depending on it.
 func waitSent(t *testing.T, p *pipe, n int64) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

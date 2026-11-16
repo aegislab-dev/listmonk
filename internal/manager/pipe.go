@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,10 @@ type pipe struct {
 	readID      int
 	prog        *progress
 	alreadySent map[int]struct{}
+
+	// beforeDone, when set by a test, is called by the worker right before it marks a
+	// message of the pipe as done (AXM, LST-25).
+	beforeDone func(p *pipe, subID int)
 
 	// saved is the checkpoint that was last written to the store.
 	saveMut sync.Mutex
@@ -112,6 +117,15 @@ func (p *pipe) NextSubscribers() (bool, error) {
 	// AXM (LST-20): after the position this run has read up to. The fetch no longer
 	// moves the campaign's checkpoint in the DB.
 	subs, err := p.m.store.NextSubscribers(p.camp.ID, p.readID, p.m.cfg.BatchSize)
+
+	// AXM (LST-25): the campaign was paused or cancelled while this pipe was being
+	// picked up or read. Stop the pipe without finishing the campaign. Reading
+	// nothing used to mean "done", and a campaign that was resumed right after was
+	// finished with its recipients unsent. The next scan picks it up if it runs.
+	if errors.Is(err, ErrCampaignNotRunning) {
+		p.Stop(false)
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("error fetching campaign subscribers (%s): %v", p.camp.Name, err)
 	}

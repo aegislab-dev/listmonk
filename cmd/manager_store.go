@@ -83,9 +83,18 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 		return nil, err
 	}
 
+	// AXM (LST-25): no row means the campaign is not running. That is not the same
+	// as having no subscribers left, which would finish it.
+	if len(camps) == 0 {
+		return nil, manager.ErrCampaignNotRunning
+	}
+
 	query := s.queries.NextCampaignSubscribers
 	var listIDs []int
 	for _, c := range camps {
+		if c.ListID == 0 {
+			continue
+		}
 		listIDs = append(listIDs, c.ListID)
 		if c.IsDynamic {
 			query = s.queries.NextCampaignSubscribersDynamic
@@ -182,24 +191,6 @@ func (s *store) CreateLink(url string) (string, error) {
 	}
 
 	return out, nil
-}
-
-// RecordBounce records a bounce event and returns the bounce count.
-func (s *store) RecordBounce(b models.Bounce) (int64, int, error) {
-	var res = struct {
-		SubscriberID int64 `db:"subscriber_id"`
-		Num          int   `db:"num"`
-	}{}
-
-	err := s.queries.UpdateCampaignStatus.Select(&res,
-		b.SubscriberUUID,
-		b.Email,
-		b.CampaignUUID,
-		b.Type,
-		b.Source,
-		b.Meta)
-
-	return res.SubscriberID, res.Num, err
 }
 
 // RecordCampaignSends saves the send records of delivered campaign messages in one
@@ -309,6 +300,7 @@ func (s *store) BlocklistSubscriber(id int64) error {
 
 // DeleteSubscriber deletes a subscriber from the DB.
 func (s *store) DeleteSubscriber(id int64) error {
-	_, err := s.queries.DeleteSubscribers.Exec(pq.Int64Array{id})
+	// The query takes the IDs and the UUIDs as two arguments (AXM, LST-25: it was given one).
+	_, err := s.queries.DeleteSubscribers.Exec(pq.Int64Array{id}, pq.StringArray{})
 	return err
 }
