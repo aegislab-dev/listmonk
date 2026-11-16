@@ -271,7 +271,13 @@ export default Vue.extend({
 
     // Show the edit list form.
     showEditForm(list) {
-      this.curItem = list;
+      // GET /api/lists/:id adds the status counts to the total again for an ordinary list;
+      // the form (and the draw dialog opened from it) gets the real count whatever the path.
+      const item = { ...list };
+      if (!item.axmFilter && item.subscriberStatuses) {
+        item.subscriberCount = Object.values(item.subscriberStatuses).reduce((a, b) => a + b, 0);
+      }
+      this.curItem = item;
       this.isFormVisible = true;
       this.isEditing = true;
     },
@@ -320,14 +326,7 @@ export default Vue.extend({
     // Opens the edit form of a list by ID (a drawn list or a source, from the draw screens).
     openList(id) {
       this.isDrawVisible = false;
-      this.$api.getList(id).then((data) => {
-        // GET /api/lists/:id adds the status counts to the total again for an ordinary list.
-        const out = { ...data };
-        if (!out.axmFilter && out.subscriberStatuses) {
-          out.subscriberCount = Object.values(out.subscriberStatuses).reduce((a, b) => a + b, 0);
-        }
-        this.showEditForm(out);
-      });
+      this.$api.getList(id).then((data) => this.showEditForm(data));
     },
 
     setDrawn(on) {
@@ -486,4 +485,6 @@ export default Vue.extend({
 
 <style>
 .axm-list-modal .animation-content { width: calc(100vw - 20px); }
+/* The draw badge is long: let it wrap inside its cell instead of widening the page. */
+.tag.drawn-from { height: auto; max-width: 100%; white-space: normal; padding: 2px 8px; line-height: 1.4; margin-top: 4px; }
 </style>
