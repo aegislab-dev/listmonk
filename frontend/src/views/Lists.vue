@@ -15,6 +15,15 @@
           <router-link v-else :to="{ name: 'lists' }">
             {{ $t('globals.buttons.view') }} {{ $t('menu.allLists').toLowerCase() }} &rarr;
           </router-link>
+          <template v-if="queryParams.status !== 'archived'">
+            &nbsp;&middot;&nbsp;
+            <a v-if="!queryParams.drawn" href="#" data-cy="drawn-only" @click.prevent="setDrawn(true)">
+              {{ $t('lists.draw.onlyDrawn') }} &rarr;
+            </a>
+            <a v-else href="#" data-cy="drawn-all" @click.prevent="setDrawn(false)">
+              {{ $t('lists.draw.allLists') }} &rarr;
+            </a>
+          </template>
         </div>
       </div>
       <div class="column has-text-right">
@@ -71,6 +80,10 @@
               {{ t }}
             </b-tag>
           </b-taglist>
+          <b-tag v-if="drawOf(props.row)" type="is-info is-light" class="drawn-from" data-cy="drawn-from"
+            :title="drawTitle(drawOf(props.row))">
+            {{ $t('lists.draw.drawnBadge', { name: drawOf(props.row).sourceName }) }}
+          </b-tag>
         </div>
       </b-table-column>
 
@@ -142,6 +155,13 @@
             </b-tooltip>
           </router-link>
 
+          <a v-if="canDraw(props.row)" href="#" @click.prevent="showDrawForm(props.row)" data-cy="btn-draw"
+            :aria-label="$t('lists.draw.action')">
+            <b-tooltip :label="$t('lists.draw.action')" type="is-dark">
+              <b-icon icon="account-search-outline" size="is-small" />
+            </b-tooltip>
+          </a>
+
           <a v-if="$can('lists:manage') || $canList(props.row.id, 'list:manage')" href="#"
             @click.prevent="showEditForm(props.row)" data-cy="btn-edit" :aria-label="$t('globals.buttons.edit')">
             <b-tooltip :label="$t('globals.buttons.edit')" type="is-dark">
@@ -172,7 +192,14 @@
 
     <!-- Add / edit form modal -->
     <b-modal custom-class="axm-list-modal" has-modal-card scroll="keep" :aria-modal="true" :active.sync="isFormVisible" :width="860" @close="onFormClose">
-      <list-form :data="curItem" :is-editing="isEditing" @finished="formFinished" />
+      <list-form :key="curItem ? curItem.id : 0" :data="curItem" :is-editing="isEditing" @finished="formFinished" @draw="showDrawForm"
+        @open-list="openList" />
+    </b-modal>
+
+    <!-- Draw N people into a new list -->
+    <b-modal custom-class="axm-list-modal" has-modal-card scroll="keep" :aria-modal="true" :active.sync="isDrawVisible"
+      :width="680" @close="onDrawClose">
+      <list-draw v-if="drawSource" :source="drawSource" @finished="formFinished" @open-list="openList" />
     </b-modal>
 
     <p v-if="settings['app.cache_slow_queries']" class="has-text-grey">
@@ -189,11 +216,14 @@
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
+import ListDraw from '../components/ListDraw.vue';
 import ListForm from './ListForm.vue';
+import { DRAW_TAG } from '../list-draw';
 
 export default Vue.extend({
   components: {
     ListForm,
+    ListDraw,
     EmptyPlaceholder,
   },
 
@@ -210,7 +240,14 @@ export default Vue.extend({
         orderBy: 'id',
         order: 'asc',
         status: this.$route.query.status || 'active',
+        // Only the lists made by a draw (they carry the draw tag).
+        drawn: this.$route.query.drawn === '1',
       },
+
+      // Draw records of the lists on this page, by drawn list ID.
+      draws: {},
+      isDrawVisible: false,
+      drawSource: null,
 
       // Table bulk row selection states.
       bulk: {
@@ -250,6 +287,54 @@ export default Vue.extend({
       this.getLists();
     },
 
+    // Drawing needs the permission to make lists, and a list that is not archived or itself drawn.
+    canDraw(list) {
+      return this.$can('lists:manage_all') && list.status !== 'archived' && !this.drawOf(list);
+    },
+
+    drawOf(list) { return this.draws[list.id] || null; },
+
+    drawTitle(d) {
+      return this.$t('lists.draw.drawnTitle', {
+        name: d.sourceName, time: this.$utils.niceDate(d.drawnAt, true), num: this.$utils.formatNumber(d.result.drawn || 0),
+      });
+    },
+
+    showDrawForm(list) {
+      // Asked from inside the edit form: close that one first.
+      this.isFormVisible = false;
+      this.drawSource = list;
+      this.isDrawVisible = true;
+    },
+
+    onDrawClose() {
+      this.drawSource = null;
+    },
+
+    // Opens the edit form of a list by ID (a drawn list or a source, from the draw screens).
+    openList(id) {
+      this.isDrawVisible = false;
+      this.$api.getList(id).then((data) => this.showEditForm(data));
+    },
+
+    setDrawn(on) {
+      this.queryParams.drawn = on;
+      this.queryParams.page = 1;
+      this.$router.replace({ name: 'lists', query: { ...(on ? { drawn: '1' } : {}) } }).catch(() => {});
+      this.getLists();
+    },
+
+    // The draw records of the lists on the page, to mark the drawn ones.
+    loadDraws(results) {
+      const ids = (results || []).map((l) => l.id);
+      if (!ids.length) { this.draws = {}; return; }
+      this.$api.getListDraws({ list_id: ids }).then((rows) => {
+        const out = {};
+        (rows || []).forEach((r) => { if (r.listId) out[r.listId] = r; });
+        this.draws = out;
+      }).catch(() => { this.draws = {}; });
+    },
+
     onFormClose() {
       if (this.$route.params.id) {
         this.$router.push({ name: 'lists' });
@@ -272,8 +357,10 @@ export default Vue.extend({
         order_by: this.queryParams.orderBy,
         order: this.queryParams.order,
         status: this.queryParams.status,
+        ...(this.queryParams.drawn ? { tag: DRAW_TAG } : {}),
       }).then((resp) => {
         this.lists = resp;
+        this.loadDraws(resp.results);
       });
 
       // Also fetch the minimal lists for the global store that appears

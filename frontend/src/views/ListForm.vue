@@ -17,6 +17,35 @@
         </h4>
       </header>
       <section expanded class="modal-card-body">
+        <div v-if="isEditing && drawnRecord" class="draw-summary" data-cy="draw-summary">
+          <p class="label">{{ $t('lists.draw.drawnList') }}</p>
+          <table class="draw-summary-table">
+            <tbody>
+              <tr>
+                <td>{{ $t('lists.draw.from') }}</td>
+                <td>
+                  <a v-if="drawnRecord.sourceListId" href="#" @click.prevent="$emit('open-list', drawnRecord.sourceListId)">{{ drawnRecord.sourceName }}</a>
+                  <span v-else>{{ drawnRecord.sourceName }} <span class="has-text-grey">({{ $t('lists.draw.historyDeleted') }})</span></span>
+                </td>
+              </tr>
+              <tr>
+                <td>{{ $t('lists.draw.at') }}</td>
+                <td>{{ $utils.niceDate(drawnRecord.drawnAt, true) }}{{ drawnRecord.drawnByName ? ` · ${drawnRecord.drawnByName}` : '' }}</td>
+              </tr>
+              <tr><td>{{ $t('lists.draw.settings') }}</td><td>{{ settingsText }}</td></tr>
+              <tr class="sub">
+                <td>{{ $t('lists.draw.numbers') }}</td>
+                <td>
+                  {{ $t('lists.draw.rowTarget') }} {{ $utils.formatNumber(drawnRecord.result.target || 0) }} ·
+                  {{ $t('lists.draw.rowDrawn') }} {{ $utils.formatNumber(drawnRecord.result.alreadyDrawn || 0) }} ·
+                  {{ $t('lists.draw.rowReceived') }} {{ $utils.formatNumber(drawnRecord.result.alreadyReceived || 0) }} ·
+                  {{ $t('lists.draw.rowCandidates') }} {{ $utils.formatNumber(drawnRecord.result.candidates || 0) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="help">{{ $t('lists.draw.drawnHelp') }}</p>
+        </div>
         <b-field :label="$t('lists.dynamic.composition')">
           <b-select v-model="composition" :disabled="isEditing" expanded data-cy="list-composition">
             <option value="static">{{ $t('lists.dynamic.static') }}</option>
@@ -75,6 +104,45 @@
         <b-field :message="$t('lists.archivedHelp')" :label="$t('lists.archived')">
           <b-switch v-model="isArchived" name="status" />
         </b-field>
+
+        <!-- Lists drawn from this one (LST-23) -->
+        <div v-if="isEditing && sourceDraws.length" class="draw-history" data-cy="draw-history">
+          <p class="label">{{ $t('lists.draw.history') }} <span class="has-text-grey is-size-7">({{ sourceDraws.length }})</span></p>
+          <div class="draw-history-scroll">
+            <table class="table is-narrow is-fullwidth">
+              <thead>
+                <tr>
+                  <th>{{ $t('lists.draw.historyTime') }}</th><th>{{ $t('lists.draw.historyNum') }}</th>
+                  <th>{{ $t('lists.draw.historyList') }}</th><th>{{ $t('lists.draw.historyCamps') }}</th><th />
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="d in sourceDraws" :key="d.id" :data-cy="`draw-row-${d.id}`">
+                  <td>{{ $utils.niceDate(d.drawnAt, true) }}</td>
+                  <td>{{ $t('lists.draw.numFormat', { num: $utils.formatNumber(d.result.drawn || 0) }) }}</td>
+                  <td>
+                    <a v-if="d.listId" href="#" @click.prevent="$emit('open-list', d.listId)">{{ d.listName }}</a>
+                    <span v-else class="has-text-grey">{{ $t('lists.draw.historyDeleted') }} &middot; {{ d.listName }}</span>
+                  </td>
+                  <td>{{ d.listId ? campaignsText(d) : '' }}</td>
+                  <td class="draw-actions">
+                    <template v-if="d.listId && canManageDrawn(d)">
+                      <a href="#" :data-cy="`draw-archive-${d.id}`" @click.prevent="archiveDrawn(d)">{{ $t('lists.draw.historyArchive') }}</a>
+                      &middot;
+                      <a href="#" :data-cy="`draw-delete-${d.id}`" @click.prevent="deleteDrawn(d)">{{ $t('lists.draw.historyDelete') }}</a>
+                    </template>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="help">{{ $t('lists.draw.historyHelp') }}</p>
+        </div>
+        <div v-if="isEditing && $can('lists:manage_all') && !isDrawnList && data.status !== 'archived'" class="draw-history-button">
+          <b-button size="is-small" data-cy="btn-draw-from-form" @click="$emit('draw', data)">
+            {{ $t('lists.draw.action') }}
+          </b-button>
+        </div>
       </section>
       <footer class="modal-card-foot has-text-right">
         <b-button @click="$parent.close()">
@@ -95,6 +163,7 @@ import { mapState } from 'vuex';
 import CopyText from '../components/CopyText.vue';
 import DynamicListFilter from '../components/DynamicListFilter.vue';
 import { filterToForm, formToFilter, validateDynamicForm } from '../dynamic-list';
+import { recordSettings } from '../list-draw';
 
 export default Vue.extend({
   name: 'ListForm',
@@ -110,6 +179,9 @@ export default Vue.extend({
 
   data() {
     return {
+      // Draw records: the lists drawn from this one, and the record of this list if it was drawn.
+      sourceDraws: [],
+      drawnRecord: null,
       composition: this.data.axmFilter ? 'dynamic' : 'static',
       filter: filterToForm(this.data.axmFilter),
       filterError: '',
@@ -129,6 +201,40 @@ export default Vue.extend({
   },
 
   methods: {
+    loadDraws() {
+      if (!this.isEditing || !this.data.id) return;
+      this.$api.getListDraws({ source_id: this.data.id }).then((rows) => { this.sourceDraws = rows || []; }).catch(() => {});
+      this.$api.getListDraws({ list_id: [this.data.id] }).then((rows) => { this.drawnRecord = (rows || [])[0] || null; }).catch(() => {});
+    },
+
+    campaignsText(d) {
+      if (!d.campaigns) return '0';
+      return d.campaignsFinished ? this.$t('lists.draw.campaignsDone', { num: d.campaigns, done: d.campaignsFinished }) : String(d.campaigns);
+    },
+
+    // Archiving or deleting a drawn list is the ordinary list API; $canManageList covers permission.
+    canManageDrawn(d) { return this.$can('lists:manage_all') || this.$canManageList(d.listId); },
+
+    archiveDrawn(d) {
+      this.$api.getList(d.listId).then((l) => this.$api.updateList({
+        id: l.id, name: l.name, type: l.type, optin: l.optin, status: 'archived', tags: l.tags, description: l.description, axm_preset: l.axmPreset,
+      })).then(() => {
+        this.$utils.toast(this.$t('globals.messages.updated', { name: d.listName }));
+        this.$emit('finished');
+        this.loadDraws();
+      });
+    },
+
+    deleteDrawn(d) {
+      this.$utils.confirm(this.$t('lists.draw.confirmDelete', { name: d.listName }), () => {
+        this.$api.deleteList(d.listId).then(() => {
+          this.$utils.toast(this.$t('globals.messages.deleted', { name: d.listName }));
+          this.$emit('finished');
+          this.loadDraws();
+        });
+      });
+    },
+
     payload() {
       return {
         ...this.form,
@@ -174,6 +280,17 @@ export default Vue.extend({
       return this.serverConfig.axm_column_presets || [];
     },
 
+    isDrawnList() { return !!this.drawnRecord; },
+
+    settingsText() {
+      const s = recordSettings(this.drawnRecord.settings);
+      return this.$t('lists.draw.settingsText', {
+        num: s.unit === 'percent' ? `${s.value}%` : this.$t('lists.draw.numFormat', { num: this.$utils.formatNumber(s.value) }),
+        scope: this.$t(s.scope === 'all' ? 'lists.draw.scopeAll' : 'lists.draw.scopeSame').replace(/\s*\(.*\)$/, ''),
+        period: s.days ? this.$t('lists.draw.periodRecent', { days: s.days }) : this.$t('lists.draw.periodAll').replace(/\s*\(.*\)$/, ''),
+      });
+    },
+
     // The server's rule: creating takes lists:manage_all, editing that or list:manage on the list.
     canSave() {
       return this.isEditing ? this.$canManageList(this.data.id) : this.$can('lists:manage_all');
@@ -216,6 +333,7 @@ export default Vue.extend({
 
   mounted() {
     this.form = { ...this.form, ...this.$props.data };
+    this.loadDraws();
 
     this.$nextTick(() => {
       this.$refs.focus.focus();
@@ -226,6 +344,16 @@ export default Vue.extend({
 
 <style scoped>
 .dynamic-list-form { width: 100% !important; max-width: 100%; margin: 0; }
+.draw-history, .draw-summary { background: #f8fafb; border: 1px solid #dce3e8; border-radius: 5px; padding: 14px 16px; margin: 20px 0 8px; }
+.draw-summary { margin: 0 0 20px; }
+.draw-history-scroll { overflow-x: auto; }
+.draw-history .table { margin: 0; font-size: .85rem; background: transparent; }
+.draw-history th, .draw-history td { white-space: nowrap; }
+.draw-summary-table { width: 100%; font-size: .9rem; border-collapse: collapse; background: transparent; }
+.draw-summary-table td { padding: 4px 0; border: 0; border-bottom: 1px solid #e6ebef; vertical-align: top; }
+.draw-summary-table td:first-child { width: 110px; color: #555; }
+.draw-summary-table tr.sub td { font-size: .85rem; color: #555; }
+.draw-history-button { margin: 12px 0 0; }
 @media screen and (max-width: 600px) {
   .modal-card-body { padding: 20px 14px; }
 }
