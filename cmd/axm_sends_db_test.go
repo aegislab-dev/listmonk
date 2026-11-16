@@ -286,9 +286,9 @@ func (e *sendsEnv) campaign() (status string, sent, toSend int) {
 }
 
 // waitCampaign waits for the campaign to reach a status and for its sent counter to
-// reach at least n. The counter is not compared exactly: the engine adds to it from the
-// periodic scan and from cleanup, which can land after the status changes, and can add a
-// pipe's last count twice when a scan runs during cleanup.
+// reach at least n. Cleanup writes the last count before it sets the status, so the counter
+// is exact then (TestBigCampaignEndsWithExactCounts checks that); at least n keeps tests that
+// pause in the middle simple.
 func (e *sendsEnv) waitCampaign(status string, n int) {
 	e.t.Helper()
 	waitFor(e.t, fmt.Sprintf("campaign to be %s with at least %d sent", status, n), func() bool {

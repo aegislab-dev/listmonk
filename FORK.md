@@ -492,6 +492,30 @@ upstream이 이 결함을 고치면(같은 열의 뜻이 바뀔 수 있다) 이 
 - Go·DB 시험: `internal/manager/progress_test.go`(진행 위치 계산, 저장, `Close`)와 `cmd/axm_sends_db_test.go`(실제 엔진·쿼리·Postgres). 강제 종료 뒤 재시작(진행 위치 저장 전·후), 발송 수 제한 대기 중 종료(LST-16 C·D), 한 통도 나가기 전 일시정지, `Close` 뒤 재시작, 오류로 멈춘 뒤 재개, 기록이 안 쓰인 채 강제 종료, 두 인스턴스 동시 기동, 잠금 연결 끊김, 동적 리스트 캠페인을 돌린다.
 - 실제 이미지와 메일 수신기(Mailpit)로 돌린 결과는 LST-20 보고서에 있다.
 
+## 일시정지·재개가 겹칠 때의 완료 판정 (LST-25)
+
+LST-23 보고가 적은 발송 결함 5건을 현재 코드에서 시험으로 다시 확인한 결과다. 앞의 4건(읽는 순간 마지막 ID가 올라가 수신자가 빠짐, 워커 사이 마지막 ID 경합으로 재개 때 중복, 완료 표시가 보낸 수 증가보다 먼저, 마지막 묶음 수가 두 번 더해짐)은 LST-20이 이미 고쳤고, 회귀 시험(`cmd/axm_send_defects_db_test.go`)만 더했다. 바뀐 것은 아래 둘이다.
+
+### 고친 결함: 일시정지 직후 재개하면 수신자를 빠뜨린 채 완료
+
+수신자를 읽는 쿼리(`get-running-campaign`)는 `status='running'`인 캠페인만 돌려주고, 아니면 빈 결과였다. 엔진은 빈 결과를 「수신자를 다 보냈다」로 보았다. 스캔이 캠페인을 막 집은 순간 일시정지했다가 곧바로 재개하면, 읽기는 「일시정지」 상태에서 빈 결과를 받고, 끝낼 때(`cleanup`)는 다시 「실행 중」인 상태를 보고 캠페인을 `finished`로 바꾼다. 일시정지·재개를 25번 반복한 시험에서 1,500명 중 1,040명만 보내고 완료되는 경우가 나왔다. upstream에도 같은 틈이 있다(LST-20은 건드리지 않았다).
+
+- `get-running-campaign`이 리스트를 `LEFT JOIN`한다. 실행 중인 캠페인은 리스트가 모두 지워졌어도 한 행을 돌려주고(`list_id`는 0), **행이 없으면 실행 중이 아니라는 뜻**이다. 읽기 쿼리와 같은 문장 하나에서 판정하므로 사이에 상태가 바뀌는 틈이 없다.
+- `Store.NextSubscribers`는 실행 중이 아니면 `manager.ErrCampaignNotRunning`을 돌려주고, `pipe.NextSubscribers`는 파이프를 멈추기만 한다(완료 처리 안 함). 캠페인이 다시 실행 중이면 다음 스캔(기본 5초)이 이어 보낸다. 리스트가 없는 실행 중 캠페인은 전처럼 바로 완료된다.
+- 바뀐 동작은 이것뿐이고 화면·API·설정·DB 구조는 그대로다.
+
+### 정리: 쓰이지 않던 store 메서드
+
+`cmd/manager_store.go`의 `DeleteSubscriber`는 쿼리가 요구하는 인자 둘 중 하나만 넘겨 항상 실패했고, `RecordBounce`는 맞지 않는 쿼리(`UpdateCampaignStatus`)를 불렀다. 둘 다 발송 엔진이 호출하지 않는 코드였고, 실제 반송 처리(`internal/core/bounces.go`의 `RecordBounce`, 반송 동작 「삭제」 포함)는 정상이다(`TestBounceActionDelete`). `DeleteSubscriber`는 인자를 채워 고쳤고 `RecordBounce`는 지웠다. upstream master(v7.0.0-beta.2)에도 같은 코드가 있어 따를 수정은 없다.
+
+### upstream을 따라갈 때
+
+`queries/campaigns.sql`의 `get-running-campaign`, `cmd/manager_store.go`(`NextSubscribers`, `DeleteSubscriber`, `RecordBounce` 삭제), `internal/manager/manager.go`(`ErrCampaignNotRunning`), `internal/manager/pipe.go`(`NextSubscribers`)에 `AXM (LST-25)` 주석이 붙어 있다.
+
+### 운영 반영 때
+
+DB 구조 변경이 없다. 이 이미지로 교체할 때 LST-20 절의 「운영에서 알 것」이 그대로 적용된다(이미 LST-20이 든 이미지에서 바꾸는 것이므로 겹쳐 뜬 동안의 중복 걱정은 없다).
+
 ## 메일 본문의 숫자 표기 (LST-22)
 
 **upstream 동작을 바꾼 변경이다.** 메일 템플릿이 추가 정보의 숫자를 찍는 표기만 바꿨다. 화면, API, 설정, DB(저장된 값·구조·마이그레이션)는 바뀌지 않았다.
