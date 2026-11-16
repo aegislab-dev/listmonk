@@ -690,6 +690,8 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM dynamic list members and guard. Keep this block identical to V6_2_1_axm_3.", "-- AXM dynamic list planning hints.", "v6.2.1-axm.3.go"},
 		{"-- AXM dynamic list planning hints. Keep this block identical to V6_2_1_axm_4.", "-- Verified external reply addresses (AXM).", "v6.2.1-axm.4.go"},
 		{"-- AXM list draws and exclude lists. Keep this block identical to V6_2_1_axm_7.", "-- End of AXM list draws and exclude lists.", "v6.2.1-axm.7.go"},
+		{"-- AXM team roles. Keep this block identical to V6_2_1_axm_8.", "-- End of AXM team roles.", "v6.2.1-axm.8.go"},
+		{"-- AXM suppressed addresses. Keep this block identical to V6_2_1_axm_9.", "-- End of AXM suppressed addresses.", "v6.2.1-axm.9.go"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
 		if err != nil {
@@ -718,11 +720,18 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
-	if len(before) != 10 {
-		t.Fatalf("expected 10 axm functions, got %d", len(before))
+	if len(before) != 18 {
+		t.Fatalf("expected 18 axm functions, got %d", len(before))
 	}
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.
+	db.MustExec(`DROP TRIGGER axm_suppress_new_subscriber ON subscribers; DROP TRIGGER axm_track_blocklist ON subscribers;
+		DROP TRIGGER axm_keep_blocklist ON subscribers; DROP TRIGGER axm_block_subscription ON subscriber_lists;
+		DROP FUNCTION axm_suppress_new_subscriber(); DROP FUNCTION axm_track_blocklist(); DROP FUNCTION axm_keep_blocklist();
+		DROP FUNCTION axm_block_subscription(); DROP TABLE axm_suppressed_emails; DROP FUNCTION axm_email_hash(TEXT)`)
+	db.MustExec(`DROP TRIGGER axm_team_lists_sync ON lists; DROP TRIGGER axm_team_role_sync ON roles;
+		DROP FUNCTION axm_team_lists_trigger(); DROP FUNCTION axm_team_role_trigger(); DROP FUNCTION axm_sync_team_lists(INT, INT);
+		DROP INDEX idx_roles_axm_team_tag; ALTER TABLE roles DROP COLUMN axm_team_user_role_id; ALTER TABLE roles DROP COLUMN axm_team_tag`)
 	db.MustExec(`DROP TRIGGER axm_propagate_draw_unsub ON subscriber_lists; DROP TRIGGER axm_keep_draw_campaigns ON lists; DROP TRIGGER axm_guard_exclude_list_delete ON lists;
 		DROP TABLE axm_list_draw_campaigns; DROP TABLE axm_list_draws;
 		DROP FUNCTION axm_propagate_draw_unsub(); DROP FUNCTION axm_keep_draw_campaigns(); DROP FUNCTION axm_guard_exclude_list_delete();
@@ -738,6 +747,12 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := migrations.V6_2_1_axm_7(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_8(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_9(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
