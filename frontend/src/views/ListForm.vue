@@ -213,7 +213,7 @@ export default Vue.extend({
       presetTouched: false,
       NO_TEAM,
       // The team picked in the team field: a team tag, NO_TEAM, or '' (keep the list's teams).
-      teamChoice: '',
+      teamChoice: null,
       // Binds form input values.
       form: {
         name: '',
@@ -397,6 +397,8 @@ export default Vue.extend({
     // The team tags are chosen in the team field, not typed in the tag input.
     this.form.tags = plainTags(this.data.tags);
     if (this.isEditing && this.currentTeamTags.length === 1) [this.teamChoice] = this.currentTeamTags;
+    if (this.isEditing && !this.currentTeamTags.length) this.teamChoice = '';
+    if (this.isEditing && this.currentTeamTags.length > 1) this.teamChoice = '';
     if (!this.isEditing && this.data.defaultTeam) this.teamChoice = this.data.defaultTeam;
     this.loadDraws();
 

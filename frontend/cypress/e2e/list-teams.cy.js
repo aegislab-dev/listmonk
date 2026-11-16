@@ -34,6 +34,25 @@ describe('teams', () => {
     cy.viewport(1440, 1000);
   });
 
+  // Teams make every list need a team: leave the database as found for the other specs.
+  after(() => {
+    cy.loginAndVisit('/admin/lists');
+    cy.request('/api/teams').then(({ body }) => {
+      const mine = body.data.filter((t) => [teamA, teamB].includes(t.name));
+      mine.forEach((t) => cy.request('PUT', `/api/teams/${t.id}/members`, { user_ids: [] }));
+      cy.request('DELETE', `/api/users/${memberId}`);
+      cy.request('/api/lists?per_page=all').then(({ body: lists }) => {
+        const ids = lists.data.results.filter((l) => l.name.endsWith(`${stamp}`)).map((l) => l.id);
+        ids.forEach((id) => cy.request('DELETE', `/api/lists/${id}`));
+      });
+      cy.request('/api/subscribers?per_page=all&query=' + encodeURIComponent(`subscribers.email LIKE 'shared-${stamp}%'`)).then(({ body: subs }) => {
+        subs.data.results.forEach((sub) => cy.request('DELETE', `/api/subscribers/${sub.id}`));
+      });
+      mine.forEach((t) => cy.request('DELETE', `/api/teams/${t.id}`));
+      cy.request('DELETE', `/api/roles/${memberRoleId}`);
+    });
+  });
+
   it('makes a team on the teams screen and adds a member', () => {
     cy.loginAndVisit('/admin/users/teams');
     cy.get('[data-cy=btn-new]').click();
@@ -81,10 +100,10 @@ describe('teams', () => {
     });
 
     cy.visit('/admin/lists');
-    cy.get('[data-cy=team-filter]').select(teamB);
+    cy.get('[data-cy=team-filter]').select(tagB);
     cy.contains('tr', `B 리스트 ${stamp}`).should('exist');
     cy.contains('tr', `A 리스트 ${stamp}`).should('not.exist');
-    cy.get('[data-cy=team-filter]').select('팀: 전체');
+    cy.get('[data-cy=team-filter]').select('');
     cy.get('[data-cy=teamless-link]').click();
     cy.contains('tr', `팀 없음 ${stamp}`).should('exist');
     cy.contains('tr', `A 리스트 ${stamp}`).should('not.exist');
