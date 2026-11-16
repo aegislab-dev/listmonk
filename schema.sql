@@ -953,8 +953,13 @@ BEGIN
 END;
 $$;
 DROP TRIGGER IF EXISTS axm_track_blocklist ON subscribers;
-CREATE TRIGGER axm_track_blocklist AFTER INSERT OR UPDATE OF status, email ON subscribers
-    FOR EACH ROW EXECUTE FUNCTION axm_track_blocklist();
+DROP TRIGGER IF EXISTS axm_track_blocklist_ins ON subscribers;
+DROP TRIGGER IF EXISTS axm_track_blocklist_upd ON subscribers;
+-- The WHEN clauses keep the function from running for the ordinary subscriber.
+CREATE TRIGGER axm_track_blocklist_ins AFTER INSERT ON subscribers
+    FOR EACH ROW WHEN (NEW.status = 'blocklisted') EXECUTE FUNCTION axm_track_blocklist();
+CREATE TRIGGER axm_track_blocklist_upd AFTER UPDATE OF status, email ON subscribers
+    FOR EACH ROW WHEN (OLD.status = 'blocklisted' OR NEW.status = 'blocklisted') EXECUTE FUNCTION axm_track_blocklist();
 
 -- Deleting a blocklisted subscriber keeps its address suppressed.
 CREATE OR REPLACE FUNCTION axm_keep_blocklist()

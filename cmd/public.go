@@ -265,8 +265,8 @@ func (a *App) SubscriptionPrefs(c echo.Context) error {
 
 	// Simple unsubscribe.
 	var (
-		campUUID  = c.Param("campUUID")
-		subUUID   = c.Param("subUUID")
+		campUUID = c.Param("campUUID")
+		subUUID  = c.Param("subUUID")
 		// AXM: a plain unsubscribe (the link, the page's button, the one-click header)
 		// blocklists the subscriber for every team and list. Only the preferences form, where
 		// people pick the lists they keep, still unsubscribes list by list.

@@ -726,7 +726,7 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 	}
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.
-	db.MustExec(`DROP TRIGGER axm_suppress_new_subscriber ON subscribers; DROP TRIGGER axm_track_blocklist ON subscribers;
+	db.MustExec(`DROP TRIGGER axm_suppress_new_subscriber ON subscribers; DROP TRIGGER axm_track_blocklist_ins ON subscribers; DROP TRIGGER axm_track_blocklist_upd ON subscribers;
 		DROP TRIGGER axm_keep_blocklist ON subscribers; DROP TRIGGER axm_block_subscription ON subscriber_lists;
 		DROP FUNCTION axm_suppress_new_subscriber(); DROP FUNCTION axm_track_blocklist(); DROP FUNCTION axm_keep_blocklist();
 		DROP FUNCTION axm_block_subscription(); DROP TABLE axm_suppressed_emails; DROP FUNCTION axm_email_hash(TEXT)`)
