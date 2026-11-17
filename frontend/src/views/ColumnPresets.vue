@@ -43,7 +43,7 @@
         <div v-if="canManage">
           <a href="#" data-cy="btn-clone" :aria-label="$t('presets.clone')" @click.prevent="showCloneForm(props.row)">
             <b-tooltip :label="$t('presets.clone')" type="is-dark">
-              <b-icon icon="content-copy" size="is-small" />
+              <svg class="preset-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" /></svg>
             </b-tooltip>
           </a>
           <template v-if="!props.row.builtin">
@@ -174,4 +174,5 @@ export default Vue.extend({
 .preset-columns li { background: #f2f4f6; border-radius: 4px; padding: 1px 8px 1px 4px; font-size: .85rem; white-space: nowrap; }
 .preset-order { display: inline-block; min-width: 1.2em; margin-right: 4px; color: #888; font-size: .75rem; text-align: center; }
 .preset-count-cell { white-space: nowrap; }
+.preset-svg { width: 1.05em; height: 1.05em; vertical-align: -0.15em; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 </style>

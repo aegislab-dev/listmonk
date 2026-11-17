@@ -1043,6 +1043,30 @@ section.lists {
     td.actions a {
       margin: 0 6px;
     }
+    /* Four or more attribute columns share the width: each may be a little narrower. */
+    &.attrib-many td.attrib-cell {
+      max-width: 9.5rem;
+    }
+  }
+
+  /* When the table still scrolls sideways, the row buttons (download, edit, delete) stay
+     at the right edge instead of scrolling away. */
+  @media screen and (min-width: 769px) {
+    .subscribers-table.is-wide {
+      th:last-child, td.actions {
+        position: sticky;
+        right: 0;
+        z-index: 1;
+        background: #fff;
+        box-shadow: -8px 0 8px -8px rgba(0, 0, 0, .25);
+      }
+      tbody tr:hover td.actions {
+        background: #fafafa;
+      }
+      thead th:last-child {
+        background: #fafafa;
+      }
+    }
   }
 
   @media screen and (max-width: 768px) {

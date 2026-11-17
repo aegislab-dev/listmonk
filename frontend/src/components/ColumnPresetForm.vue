@@ -34,7 +34,7 @@
                 </button>
                 <button type="button" :aria-label="$t('presets.remove', { key })" :title="$t('presets.remove', { key })"
                   data-cy="preset-remove" @click="remove(i)">
-                  <b-icon icon="close" size="is-small" />
+                  <svg class="preset-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18" /></svg>
                 </button>
               </span>
             </li>
@@ -194,6 +194,7 @@ export default Vue.extend({
 .preset-buttons button { border: 0; background: none; cursor: pointer; padding: 6px; border-radius: 4px; color: #555; min-width: 32px; min-height: 32px; }
 .preset-buttons button:hover:not(:disabled), .preset-buttons button:focus-visible { background: #eef1f3; color: #0055d4; }
 .preset-buttons button:disabled { opacity: .3; cursor: default; }
+.preset-svg { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; vertical-align: -0.12em; }
 .preset-none { margin-bottom: 8px; }
 .preset-option { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
 </style>
