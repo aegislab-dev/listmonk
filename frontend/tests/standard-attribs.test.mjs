@@ -8,9 +8,10 @@ import { COUNTRIES, COUNTRY_ALIASES } from '../src/lib/countries.js';
 
 const STANDARD = JSON.parse(readFileSync(new URL('../../internal/core/axm_standard_attribs.json', import.meta.url), 'utf8'));
 
-test('the dictionary has the five standard items and finds them by key and alias', () => {
+test('the dictionary has the nine standard items and finds them by key and alias', () => {
   assert.deepEqual(STANDARD.map(({ key, kind }) => [key, kind]), [
     ['country', 'country'], ['follower', 'integer'], ['company', 'text'], ['title', 'text'], ['industry', 'text'],
+    ['brand', 'text'], ['website', 'text'], ['mail_status', 'text'], ['owner', 'text'],
   ]);
   assert.equal(normalizeName('  Follower_Count '), 'followercount');
   assert.equal(normalizeName('팔로워 수'), normalizeName('팔로워수'));
@@ -21,7 +22,7 @@ test('the dictionary has the five standard items and finds them by key and alias
   assert.equal(standardFor(undefined, 'country'), null);
   assert.equal(standardByKey(STANDARD, 'follower').kind, 'integer');
   assert.equal(standardByKey(STANDARD, 'followers'), null);
-  assert.deepEqual(withStandardFirst(STANDARD, ['gmv', 'follower', 'gmv']), ['country', 'follower', 'company', 'title', 'industry', 'gmv']);
+  assert.deepEqual(withStandardFirst(STANDARD, ['gmv', 'follower', 'gmv']), ['country', 'follower', 'company', 'title', 'industry', 'brand', 'website', 'mail_status', 'owner', 'gmv']);
   // No name answers to two items.
   const seen = new Map();
   STANDARD.forEach(({ key, aliases }) => [key, ...aliases].forEach((name) => {

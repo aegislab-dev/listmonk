@@ -1043,9 +1043,13 @@ section.lists {
     td.actions a {
       margin: 0 6px;
     }
-    /* Four or more attribute columns share the width: each may be a little narrower. */
+    /* Four or more attribute columns share the width: each may be a little narrower (9.5rem). */
     &.attrib-many td.attrib-cell {
       max-width: 9.5rem;
+    }
+    /* Five or more: narrower still, so that six columns (the B2B preset) fit in 1440px. */
+    &.attrib-most td.attrib-cell {
+      max-width: 8rem;
     }
   }
 

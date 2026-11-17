@@ -49,7 +49,7 @@ const DefaultColumnPreset = "creator"
 // whose preset no longer exists is shown with the default preset.
 var ColumnPresets = []ColumnPreset{
 	{ID: "creator", Columns: []string{"country", "follower"}, Builtin: true},
-	{ID: "b2b", Columns: []string{"company", "title", "industry", "country"}, Builtin: true},
+	{ID: "b2b", Columns: []string{"company", "brand", "title", "industry", "mail_status", "owner"}, Builtin: true},
 }
 
 // builtinPresetNames are the names a preset people make cannot take (lower case, Korean and

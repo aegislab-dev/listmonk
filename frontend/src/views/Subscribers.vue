@@ -158,7 +158,7 @@
       @check="onTableCheck" :checked-rows.sync="bulk.checked" paginated backend-pagination pagination-position="both"
       @page-change="onPageChange" :current-page="queryParams.page" :per-page="subscribers.perPage"
       :total="subscribers.total" hoverable checkable backend-sorting @sort="onSort" class="subscribers-table"
-      :class="{ 'is-wide': isTableWide, 'attrib-many': attribColumns.length >= 4 }"
+      :class="{ 'is-wide': isTableWide, 'attrib-many': attribColumns.length >= 4, 'attrib-most': attribColumns.length >= 5 }"
       :mobile-sort-placeholder="$t('subscribers.columns.sortBy')">
       <template #top-left>
         <div class="actions">

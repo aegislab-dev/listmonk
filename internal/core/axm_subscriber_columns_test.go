@@ -160,7 +160,7 @@ func TestColumnPresets(t *testing.T) {
 	// The presets agreed for this release (B2B follows the NEWS-40 standard names).
 	if !reflect.DeepEqual(ColumnPresets, []ColumnPreset{
 		{ID: "creator", Columns: []string{"country", "follower"}, Builtin: true},
-		{ID: "b2b", Columns: []string{"company", "title", "industry", "country"}, Builtin: true},
+		{ID: "b2b", Columns: []string{"company", "brand", "title", "industry", "mail_status", "owner"}, Builtin: true},
 	}) {
 		t.Fatal(ColumnPresets)
 	}

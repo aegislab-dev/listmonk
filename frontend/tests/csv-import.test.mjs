@@ -215,7 +215,11 @@ test('column names the standard dictionary knows get the standard key', () => {
     follower: ['팔로워', '팔로워 수', '팔로워수', '팔로어', 'Follower', 'Followers', 'Follower Count', 'follower_count', 'followers_count'],
     company: ['회사', '회사명', '기업명', '소속', '업체명', '상호', '법인명', 'Company', 'Company Name', 'company_name', 'Organization'],
     title: ['직함', '직책', '직급', '직위', 'Title', 'Job Title', 'job_title', 'Position'],
-    industry: ['업종', '산업', '산업군', 'Industry', 'sector'],
+    industry: ['업종', '산업', '산업군', '카테고리', '분류', '대분류', 'Industry', 'sector', 'Category'],
+    brand: ['브랜드', '브랜드명', '브랜드 이름', '회사명(브랜드명)', 'Brand', 'brand_name'],
+    website: ['홈페이지', '웹사이트', '회사홈페이지', '회사 홈페이지', '브랜드 홈페이지', 'Website', 'homepage'],
+    mail_status: ['메일 발송여부', '메일발송', '발송여부', '회신', '회신 여부', 'mail_status', 'Reply'],
+    owner: ['담당', '담당자', '담당자명', '영업 담당', '내부 담당', 'Owner', 'account_owner'],
   };
   Object.entries(names).forEach(([key, labels]) => labels.forEach((label) => {
     assert.equal(suggestKey(label, STANDARD), key, label);
@@ -223,7 +227,7 @@ test('column names the standard dictionary knows get the standard key', () => {
     assert.deepEqual(suggest(parsed)[1], { role: 'attribute', key }, label);
   }));
   // Names with another meaning are not collected.
-  for (const label of ['소재지', '주소', '도시', 'city', 'address', '구독자 수', '평균 조회수', '참여율', '브랜드명', '광고주명', '부서', 'department', '카테고리', '업태']) {
+  for (const label of ['소재지', '주소', '도시', 'city', 'address', '구독자 수', '평균 조회수', '참여율', '광고주명', '부서', 'department', '업태', '발송 메일 주소', '제품명', '경로']) {
     assert.equal(STANDARD.some(({ key }) => key === suggestKey(label, STANDARD)), false, label);
   }
   // The names this screen used to make up for these columns are gone.
@@ -341,4 +345,28 @@ test('the preview adds rows with a value left out when the first five have none'
   const result = convertCSV(parsed, suggest(parsed), [], STANDARD);
   assert.deepEqual(result.preview.map(({ row }) => row), [2, 3, 4, 5, 6, 8, 10, 11]);
   assert.deepEqual(result.preview.map(({ dropped }) => dropped.length), [0, 0, 0, 0, 0, 1, 1, 1]);
+});
+
+// LST-17: the five advertiser sheets of the shared drive (header rows only; the values were
+// not copied). Each header must land where the table in the report says.
+test('the headers of the advertiser sheets map as the B2B preset expects', () => {
+  const sheets = {
+    '광고주 DB': [['브랜드명', 'brand'], ['회사명', 'company'], ['이메일', 'email'], ['메일 발송여부', 'mail_status'], ['비고', 'discard'], ['발송 메일 주소', 'fa_song_me_il_ju_so']],
+    '리멤버 사본': [['회사', 'company'], ['브랜드', 'brand'], ['성함', 'name'], ['직책', 'title'], ['회사홈페이지', 'website'], ['브랜드 홈페이지', 'website_2'], ['비고', 'discard']],
+    '푸드 광고주 서치': [['담당자', 'owner'], ['카테고리', 'industry'], ['회사명', 'company'], ['브랜드명', 'brand'], ['홈페이지', 'website'], ['이메일', 'email'], ['다른 문의 방법', 'daleun_munui_bangbeop'], ['비고', 'discard']],
+    '다이소': [['대분류', 'industry'], ['분류', 'bunryu'], ['법인명', 'company'], ['회사명(브랜드명)', 'brand'], ['제품명', 'jepummyeong'], ['성함', 'name'], ['직함', 'title'], ['이메일', 'email'], ['경로', 'gyeongro'], ['메일발송', 'mail_status'], ['회신', 'hoesin']],
+    '인디뷰티쇼': [['대표이메일', 'email'], ['회사명', 'company'], ['브랜드명', 'brand'], ['성함', 'name'], ['직책', 'title']],
+  };
+  Object.entries(sheets).forEach(([sheet, cols]) => {
+    const parsed = parseCSV(`${cols.map(([h]) => h).join(',')}\n${cols.map(() => 'x').join(',')}`);
+    const got = suggest(parsed).map(({ role, key }) => (role === 'attribute' ? key : (role === 'email' || role === 'name' || role === 'discard' ? role : key)));
+    const want = cols.map(([, key]) => key);
+    // Spelled-out names (romanized) are only checked for being valid new keys.
+    got.forEach((key, i) => {
+      if (STANDARD.some((entry) => entry.key === want[i]) || ['email', 'name', 'discard'].includes(want[i])) assert.equal(key, want[i], `${sheet}: ${cols[i][0]}`);
+      else assert.match(key, /^[a-z][a-z0-9_]*$/, `${sheet}: ${cols[i][0]}`);
+    });
+    // The Remember copy has no e-mail column: it cannot be imported until one is added.
+    assert.deepEqual(validateMapping(suggest(parsed)), sheet === '리멤버 사본' ? [{ type: 'emailColumns' }] : [], sheet);
+  });
 });

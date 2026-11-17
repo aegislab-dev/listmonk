@@ -10,7 +10,7 @@ func TestStandardAttribs(t *testing.T) {
 	for _, a := range StandardAttribs {
 		keys = append(keys, a.Key)
 	}
-	if want := []string{"country", "follower", "company", "title", "industry"}; !reflect.DeepEqual(keys, want) {
+	if want := []string{"country", "follower", "company", "title", "industry", "brand", "website", "mail_status", "owner"}; !reflect.DeepEqual(keys, want) {
 		t.Fatalf("got %v", keys)
 	}
 	if !IsStandardAttrib("follower") || IsStandardAttrib("followers") || IsStandardAttrib("region") {
