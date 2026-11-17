@@ -90,6 +90,8 @@ func (a *App) CreateUser(c echo.Context) error {
 		return err
 	}
 
+	a.auditUserCreated(c, user)
+
 	// Blank out the password hash in the response.
 	if user.Type != auth.UserTypeAPI {
 		user.Password = null.String{}
@@ -161,10 +163,12 @@ func (a *App) UpdateUser(c echo.Context) error {
 	}
 
 	// Update the user in the DB.
+	before := a.userInfoOf(id)
 	user, err := a.core.UpdateUser(id, u)
 	if err != nil {
 		return err
 	}
+	a.auditUserUpdated(c, id, before, user, u.Password.String != "")
 
 	// Blank out the password hash in the response.
 	user.Password = null.String{}
@@ -188,9 +192,11 @@ func (a *App) UpdateUser(c echo.Context) error {
 func (a *App) DeleteUser(c echo.Context) error {
 	// Delete the user(s) from the DB.
 	id := getID(c)
+	before := a.userInfos([]int{id})
 	if err := a.core.DeleteUsers([]int{id}); err != nil {
 		return err
 	}
+	a.auditUsersDeleted(c, []int{id}, before)
 
 	// Cache the API token for in-memory, off-DB /api/* request auth.
 	if _, err := cacheUsers(a.core, a.auth); err != nil {
@@ -208,9 +214,11 @@ func (a *App) DeleteUsers(c echo.Context) error {
 	}
 
 	// Delete the user(s) from the DB.
+	before := a.userInfos(ids)
 	if err := a.core.DeleteUsers(ids); err != nil {
 		return err
 	}
+	a.auditUsersDeleted(c, ids, before)
 
 	// Cache the API token for in-memory, off-DB /api/* request auth.
 	if _, err := cacheUsers(a.core, a.auth); err != nil {
@@ -318,6 +326,7 @@ func (a *App) EnableTOTP(c echo.Context) error {
 	if err := a.core.SetTwoFA(u.ID, models.TwofaTypeTOTP, secret); err != nil {
 		return err
 	}
+	a.audit(c, auditUserTwofa, auditTarget{auditTargetUser, u.ID, u.Username}, auditNoCount, map[string]any{"enabled": true})
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -348,6 +357,7 @@ func (a *App) DisableTOTP(c echo.Context) error {
 	if err := a.core.SetTwoFA(u.ID, models.TwofaTypeNone, ""); err != nil {
 		return err
 	}
+	a.audit(c, auditUserTwofa, auditTarget{auditTargetUser, u.ID, u.Username}, auditNoCount, map[string]any{"enabled": false})
 
 	return c.JSON(http.StatusOK, okResp{true})
 }

@@ -17,6 +17,14 @@ export const teamTagOf = (name) => `${TEAM_PREFIX}${String(name || '').trim().sp
   .filter(Boolean)
   .join('-')}`;
 
+// The team tags of a list that is another team's from the point of view of `mine` (the team tag
+// of the person, '' for nobody's team): a list with team tags, none of them mine. A list
+// without a team is nobody's other team.
+export function otherTeamTags(tags, mine) {
+  const t = teamTags(tags);
+  return t.length > 0 && !t.includes(mine) ? t : [];
+}
+
 // The tags to send when a list is saved: its own tags without team tags, then the team choice.
 // `choice` is a team tag, NO_TEAM (no team on purpose) or '' (leave the list's teams as they
 // are). Returns { tags, noTeam }.

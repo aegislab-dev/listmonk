@@ -321,6 +321,7 @@ func (a *App) UpdateSettings(c echo.Context) error {
 	if err := a.core.UpdateSettings(set); err != nil {
 		return err
 	}
+	a.auditSettings(c, changedSettingKeys(cur, set))
 
 	return a.handleSettingsRestart(c)
 }
@@ -379,6 +380,7 @@ func (a *App) UpdateSettingsByKey(c echo.Context) error {
 	if err := a.core.UpdateSettingsByKey(key, b); err != nil {
 		return err
 	}
+	a.auditSettings(c, []string{key})
 
 	return a.handleSettingsRestart(c)
 }

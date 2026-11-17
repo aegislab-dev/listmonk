@@ -99,6 +99,7 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			a.i18n.Ts("import.errorStarting", "error", err.Error()))
 	}
+	a.importStarted(c, opt)
 	go sess.Start()
 
 	if strings.HasSuffix(strings.ToLower(file.Filename), ".csv") {
@@ -137,6 +138,12 @@ func (a *App) GetImportSubscriberStats(c echo.Context) error {
 // If there's an ongoing import, it'll be stopped, and if an import
 // is finished, it's state is cleared.
 func (a *App) StopImportSubscribers(c echo.Context) error {
+	st := a.importer.GetStats()
 	a.importer.Stop()
+	if st.Status == subimporter.StatusImporting || st.Status == subimporter.StatusStopping {
+		a.audit(c, auditImportStop, auditTarget{Type: auditTargetImport}, auditNoCount, map[string]any{
+			"imported": st.Imported, "total": st.Total,
+		})
+	}
 	return c.JSON(http.StatusOK, okResp{a.importer.GetStats()})
 }

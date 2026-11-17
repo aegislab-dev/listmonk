@@ -64,6 +64,8 @@
         :active="activeItem.maintenance" data-cy="maintenance" icon="wrench-outline" :label="$t('menu.maintenance')" />
       <b-menu-item v-if="$can('settings:get')" :to="{ name: 'logs' }" tag="router-link" :active="activeItem.logs"
         data-cy="logs" icon="format-list-bulleted-square" :label="$t('menu.logs')" />
+      <b-menu-item v-if="$can('settings:get')" :to="{ name: 'audit' }" tag="router-link" :active="activeItem.audit"
+        data-cy="audit" icon="file-find-outline" :label="$t('menu.audit')" />
     </b-menu-item><!-- settings -->
   </b-menu-list>
 </template>
