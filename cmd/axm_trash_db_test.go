@@ -423,3 +423,104 @@ func TestTrashBigListTiming(t *testing.T) {
 		t.Fatalf("restored %d of %d", got, n)
 	}
 }
+
+// delete-lists reads an empty list of IDs as "every list". Nothing may reach it with one: not a
+// delete of no lists, a search that finds none, nor IDs that do not exist (LST-27). Without the
+// guards in core.TrashLists these three calls delete every list.
+func TestTrashNeverDeletesEverything(t *testing.T) {
+	e := newAuditEnv(t)
+	count := func() int {
+		var n int
+		e.get(&n, `SELECT COUNT(*) FROM lists`)
+		return n
+	}
+	before := count()
+	if before < 5 {
+		t.Fatalf("only %d lists", before)
+	}
+	admin := e.as(e.admin)
+
+	if out, err := e.core.TrashLists([]int{}, core.TrashActor{ID: e.admin}); err != nil || len(out) != 0 {
+		t.Fatalf("no IDs: %v %v", out, err)
+	}
+	if out, err := e.core.TrashLists(nil, core.TrashActor{ID: e.admin}); err != nil || len(out) != 0 {
+		t.Fatalf("nil IDs: %v %v", out, err)
+	}
+	if n := count(); n != before {
+		t.Fatalf("TrashLists with no IDs left %d of %d lists", n, before)
+	}
+	if out, err := e.core.TrashLists([]int{999999}, core.TrashActor{ID: e.admin}); err != nil || len(out) != 0 {
+		t.Fatalf("IDs that do not exist: %v %v", out, err)
+	}
+	if n := count(); n != before {
+		t.Fatalf("TrashLists of a missing ID left %d of %d lists", n, before)
+	}
+
+	for _, target := range []string{"/api/lists?query=zzznomatch", "/api/lists?id=999999"} {
+		if code, _ := e.call(e.a.DeleteLists, admin, "DELETE", target, "", ""); code != 200 {
+			t.Fatalf("%s: %d", target, code)
+		}
+		if n := count(); n != before {
+			t.Fatalf("%s left %d of %d lists", target, n, before)
+		}
+	}
+	var trash int
+	e.get(&trash, `SELECT COUNT(*) FROM axm_deleted_lists`)
+	if trash != 0 {
+		t.Fatalf("%d lists in the trash", trash)
+	}
+}
+
+// The delete confirmation names the lists the delete will take: the preview and the delete
+// agree, for a search and for "all", by what the user may manage.
+func TestListsDeletePreviewMatchesDelete(t *testing.T) {
+	e := newAuditEnv(t)
+	// A running campaign would refuse the delete of its list (409).
+	e.db.MustExec(`UPDATE campaigns SET status = 'draft'`)
+	for _, c := range []struct {
+		user   int
+		target string
+		del    string
+	}{
+		{e.ua, "/api/lists/delete-preview?query=", "/api/lists?all=true"},
+		{e.admin, "/api/lists/delete-preview?query=", "/api/lists?all=true"},
+		{e.admin, "/api/lists/delete-preview?query=A1", "/api/lists?query=A1"},
+		{e.admin, "/api/lists/delete-preview?query=nomatch", "/api/lists?query=nomatch"},
+	} {
+		code, data := e.call(e.a.PreviewListsDelete, e.as(c.user), "GET", c.target, "", "")
+		if code != 200 {
+			t.Fatal(code)
+		}
+		var preview []models.TrashedList
+		json.Unmarshal(data, &preview)
+		var got []int
+		for _, l := range preview {
+			got = append(got, l.ID)
+		}
+		del := c.del
+		before := e.ids(`SELECT id FROM lists ORDER BY id`)
+		if code, _ := e.call(e.a.DeleteLists, e.as(c.user), "DELETE", del, "", ""); code != 200 {
+			t.Fatalf("%s: %d", del, code)
+		}
+		after := e.ids(`SELECT id FROM lists ORDER BY id`)
+		var gone []int
+		in := map[int]bool{}
+		for _, id := range after {
+			in[id] = true
+		}
+		for _, id := range before {
+			if !in[id] {
+				gone = append(gone, id)
+			}
+		}
+		if fmt.Sprint(gone) != fmt.Sprint(got) {
+			t.Fatalf("%s: the preview said %v, the delete took %v", c.target, got, gone)
+		}
+		// Put them back for the next case.
+		for _, id := range gone {
+			if code, _ := e.restore(id, e.admin); code != 200 {
+				t.Fatalf("restore %d: %d", id, code)
+			}
+		}
+	}
+}

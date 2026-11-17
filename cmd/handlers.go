@@ -160,6 +160,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/lists", a.GetLists)
 		g.GET("/api/lists/teams", a.GetListTeams)
 		g.GET("/api/lists/trash", a.GetListTrash)
+		g.GET("/api/lists/delete-preview", a.PreviewListsDelete)
 		g.POST("/api/lists/trash/:id/restore", hasID(a.RestoreList))
 		g.GET("/api/lists/:id", hasID(a.GetList))
 		g.POST("/api/lists/dynamic/preview", a.PreviewDynamicList)

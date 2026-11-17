@@ -125,6 +125,8 @@ type userInfo struct {
 	email         string
 	userRoleID    int
 	listRoleID    int
+	userRole      string // role names, for the detail (the ID when the name is not known)
+	listRole      string
 	passwordLogin bool
 }
 
@@ -137,18 +139,33 @@ func (a *App) userInfoOf(id int) userInfo {
 }
 
 func userFrom(u auth.User) userInfo {
+	// core.setupUserFields moves the user role into u.UserRole and zeroes u.UserRoleID.
 	ui := userInfo{found: true, username: u.Username, name: u.Name, typ: u.Type, status: u.Status,
-		email: u.Email.String, userRoleID: u.UserRoleID, passwordLogin: u.PasswordLogin}
+		email: u.Email.String, userRoleID: u.UserRole.ID, passwordLogin: u.PasswordLogin}
+	ui.userRole = roleLabel(u.UserRole.ID, u.UserRole.Name)
 	if u.ListRoleID != nil {
 		ui.listRoleID = *u.ListRoleID
+		ui.listRole = roleLabel(*u.ListRoleID, u.ListRoleName.String)
 	}
 	return ui
 }
 
+// roleLabel is a role's name, or its ID when the name is not known.
+func roleLabel(id int, name string) string {
+	if name != "" {
+		return name
+	}
+	if id == 0 {
+		return ""
+	}
+	return "#" + strconv.Itoa(id)
+}
+
 func (a *App) auditUserCreated(c echo.Context, u auth.User) {
-	d := map[string]any{"type": u.Type, "status": u.Status, "user_role_id": u.UserRoleID, "password_login": u.PasswordLogin}
-	if u.ListRoleID != nil {
-		d["list_role_id"] = *u.ListRoleID
+	now := userFrom(u)
+	d := map[string]any{"type": u.Type, "status": u.Status, "user_role": now.userRole, "password_login": u.PasswordLogin}
+	if now.listRole != "" {
+		d["list_role"] = now.listRole
 	}
 	a.audit(c, auditUserCreate, auditTarget{auditTargetUser, u.ID, u.Username}, auditNoCount, d)
 }
@@ -167,8 +184,12 @@ func (a *App) auditUserUpdated(c echo.Context, id int, before userInfo, after au
 		set("username", before.username, now.username)
 		set("name", before.name, now.name)
 		set("status", before.status, now.status)
-		set("user_role_id", before.userRoleID, now.userRoleID)
-		set("list_role_id", before.listRoleID, now.listRoleID)
+		if before.userRoleID != now.userRoleID {
+			d["user_role"] = map[string]any{"from": before.userRole, "to": now.userRole}
+		}
+		if before.listRoleID != now.listRoleID {
+			d["list_role"] = map[string]any{"from": before.listRole, "to": now.listRole}
+		}
 		set("password_login", before.passwordLogin, now.passwordLogin)
 		if before.email != now.email {
 			d["email_changed"] = true

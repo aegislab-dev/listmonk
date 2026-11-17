@@ -87,9 +87,23 @@ func (c *Core) PurgeOldAudit() (int, error) {
 }
 
 // CountSubscribersMatching counts the subscribers a bulk action by query is about to reach,
-// with the same conditions the action uses. Without any condition it is the (cached) total.
+// with the same conditions the action uses (search text, SQL condition, lists, subscription
+// status). Only a bulk action with no condition at all uses the (cached) total: that cached
+// count ignores the search text, so any condition makes the count exact.
 func (c *Core) CountSubscribersMatching(searchStr, queryExp string, listIDs []int, subStatus string) (int, error) {
-	return c.getSubscriberCount(searchStr, sanitizeSQLExp(queryExp), subStatus, listIDs)
+	// Resolve dynamic lists the way the actions do, and keep the list IDs non-nil: a NULL array
+	// makes the count's list condition false.
+	listIDs, queryExp, err := c.resolveDynamicListQuery(listIDs, subStatus, sanitizeSQLExp(queryExp))
+	if err != nil {
+		return 0, err
+	}
+	if listIDs == nil {
+		listIDs = []int{}
+	}
+	if queryExp == "" && (searchStr != "" || subStatus != "" || len(listIDs) > 0) {
+		queryExp = "TRUE"
+	}
+	return c.getSubscriberCount(searchStr, queryExp, subStatus, listIDs)
 }
 
 // CampaignRef is a campaign's ID and name.

@@ -101,13 +101,17 @@ type auditTarget struct {
 }
 
 var (
-	reAuditEmail = regexp.MustCompile(`[^\s@'",()=<>;]+@[^\s@'",()=<>;]*[^\s@'",()=<>;]`)
+	// Any run of characters around an "@" (a whole address, or a part of one such as "kim.lee@"
+	// or "%@example.com") is hidden. An address typed URL-encoded (%40) is read as one first.
+	reAuditEmail = regexp.MustCompile(`[^\s'",()=<>;]*@[^\s'",()=<>;]*`)
+	reAuditPct40 = regexp.MustCompile(`(?i)%40`)
 )
 
 // scrubAuditText hides e-mail addresses in a text that will be stored in the audit log and
 // cuts it to auditMaxText characters. Any "@" that is left over is replaced too, so a row
 // never holds one.
 func scrubAuditText(s string) string {
+	s = reAuditPct40.ReplaceAllString(s, "@")
 	s = reAuditEmail.ReplaceAllString(s, "[email]")
 	s = strings.ReplaceAll(s, "@", "(at)")
 	if utf8.RuneCountInString(s) > auditMaxText {

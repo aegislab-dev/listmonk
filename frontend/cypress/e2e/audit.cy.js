@@ -57,4 +57,44 @@ describe('activity log', () => {
     cy.request({ method: 'DELETE', url: '/api/audit', failOnStatusCode: false }).its('status').should('be.oneOf', [404, 405]);
     cy.request({ method: 'PUT', url: '/api/audit/1', body: {}, failOnStatusCode: false }).its('status').should('be.oneOf', [404, 405]);
   });
+
+  it('counts what a bulk action by search reached, not every subscriber', () => {
+    ['a', 'b', 'c'].forEach((n) => cy.request('POST', '/api/subscribers', {
+      email: `bulk-${stamp}-${n}@example.invalid`, name: `대량시험${stamp}${n}`, status: 'enabled', lists: [],
+    }));
+    cy.request('POST', '/api/subscribers/query/delete', { search: `대량시험${stamp}a`, list_ids: [] });
+    cy.request('/api/audit?per_page=all&action=subscriber.delete').then(({ body }) => {
+      const row = body.data.results.filter((r) => r.detail.by === 'query' && r.detail.search).pop();
+      expect(row.count).to.eq(1);
+      expect(JSON.stringify(row)).to.not.contain('@');
+    });
+    cy.request('/api/subscribers?per_page=all&query=' + encodeURIComponent(`subscribers.name LIKE '대량시험${stamp}%'`)).then(({ body }) => {
+      body.data.results.forEach((sub) => cy.request('DELETE', `/api/subscribers/${sub.id}`));
+    });
+  });
+
+  it('records a change of a user role with both role names', () => {
+    cy.request('POST', '/api/roles/users', { name: `기록역할${stamp}`, permissions: ['subscribers:get'] }).then(({ body: role }) => {
+      cy.request('POST', '/api/users', {
+        username: `rec${stamp}`, type: 'user', name: '기록 사용자', email: `rec-${stamp}@example.invalid`, status: 'enabled',
+        password_login: true, password: 'record-pass-1234', user_role_id: role.data.id,
+      }).then(({ body: user }) => {
+        cy.request('PUT', `/api/users/${user.data.id}`, {
+          username: `rec${stamp}`, type: 'user', name: '기록 사용자', email: `rec-${stamp}@example.invalid`, status: 'enabled',
+          password_login: true, user_role_id: 1,
+        });
+        cy.request('/api/audit?per_page=all&area=access').then(({ body }) => {
+          const rows = body.data.results.filter((r) => r.target_name === `rec${stamp}`);
+          const created = rows.find((r) => r.action === 'user.create');
+          const updated = rows.find((r) => r.action === 'user.update');
+          expect(created.detail.user_role).to.eq(`기록역할${stamp}`);
+          expect(updated.detail.user_role.from).to.eq(`기록역할${stamp}`);
+          expect(updated.detail.user_role.to).to.eq('Super Admin');
+          expect(JSON.stringify(rows)).to.not.contain('@');
+        });
+        cy.request('DELETE', `/api/users/${user.data.id}`);
+        cy.request('DELETE', `/api/roles/${role.data.id}`);
+      });
+    });
+  });
 });

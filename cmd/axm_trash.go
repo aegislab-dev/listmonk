@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
@@ -30,6 +31,19 @@ func (a *App) trashLists(c echo.Context, ids []int) error {
 		})
 	}
 	return nil
+}
+
+// PreviewListsDelete returns the lists that DELETE /api/lists with the same query (or all=true)
+// would delete for this user: the same search and the same permission as the delete itself.
+// The delete confirmation names them.
+func (a *App) PreviewListsDelete(c echo.Context) error {
+	user := auth.GetUser(c)
+	hasAll, ids := user.GetPermittedLists(auth.PermTypeManage)
+	out, err := a.core.ResolveListsToDelete(nil, strings.TrimSpace(c.FormValue("query")), hasAll, ids)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, okResp{out})
 }
 
 // GetListTrash returns the lists in the trash that the user may see.

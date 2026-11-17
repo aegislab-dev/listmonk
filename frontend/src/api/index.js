@@ -183,8 +183,15 @@ export const deleteList = (id) => http.delete(
   { loading: models.lists },
 );
 
-// The lists a delete by search reaches (full rows with tags), for the delete confirmation.
-export const getListsForDelete = (params) => http.get('/api/lists', { params: { ...params, per_page: 'all' }, disableToast: true });
+// The lists a delete by search reaches: the server answers with the ones the delete itself would
+// delete (id, name), and the full rows (tags, subscriber counts) are read for those, for the
+// delete confirmation.
+export const getListsForDelete = async (params) => {
+  const hit = await http.get('/api/lists/delete-preview', { params, disableToast: true });
+  const ids = new Set(hit.map((l) => l.id));
+  const all = await http.get('/api/lists', { params: { per_page: 'all' }, disableToast: true });
+  return { results: all.results.filter((l) => ids.has(l.id)) };
+};
 
 // The list trash (LST-27).
 export const getListTrash = () => http.get('/api/lists/trash', { loading: models.lists });

@@ -31,7 +31,7 @@ func TestScrubAuditText(t *testing.T) {
 		"email = 'bob@example.com' OR name = 'x'": "email = '[email]' OR name = 'x'",
 		"subscribers.email LIKE '%@example.com'":  "subscribers.email LIKE '[email]'",
 		"cho@a.kr, kim@b.kr":                      "[email], [email]",
-		"@":                                       "(at)",
+		"@":                                       "[email]",
 		"plain search":                            "plain search",
 	} {
 		if got := scrubAuditText(in); got != want {
@@ -45,6 +45,20 @@ func TestScrubAuditText(t *testing.T) {
 	d := scrubAuditDetail(map[string]any{"q": "a@b.c", "n": 3, "l": []string{"x@y.z"}, "m": map[string]any{"k": "p@q.r"}})
 	if b, _ := json.Marshal(d); strings.Contains(string(b), "@") {
 		t.Errorf("an @ is left: %s", b)
+	}
+}
+
+func TestScrubAuditPartialAddresses(t *testing.T) {
+	for in, want := range map[string]string{
+		"kim.lee@":                       "[email]",
+		"kim%40example.com":              "[email]",
+		"KIM%40Example.com":              "[email]",
+		"name LIKE 'kim.lee@%'":          "name LIKE '[email]'",
+		"subscribers.email LIKE '%@x.y'": "subscribers.email LIKE '[email]'",
+	} {
+		if got := scrubAuditText(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -317,11 +331,31 @@ func TestAuditAccessChanges(t *testing.T) {
 	if code, data := e.call(e.a.UpdateUser, admin, "PUT", "/api/users/x", itoa(u.ID), body); code != 200 {
 		t.Fatal(code, string(data))
 	}
-	uu := e.oneAudit(auditUserUpdate)
+	uu := e.audits("action = 'user.update'")[0]
 	var ud map[string]any
 	json.Unmarshal(uu.Detail, &ud)
 	if ud["email_changed"] != true || ud["password_changed"] != true || ud["status"] == nil {
 		t.Fatalf("user update: %s", uu.Detail)
+	}
+	// The created row names the role the user got; a change of role names both roles.
+	cr := e.oneAudit(auditUserCreate)
+	var cd map[string]any
+	json.Unmarshal(cr.Detail, &cd)
+	if cd["user_role"] != "member" {
+		t.Fatalf("user create: %s", cr.Detail)
+	}
+	body = `{"username":"newbie","type":"user","name":"New","email":"other@example.invalid","user_role_id":1,"status":"disabled","password_login":true}`
+	if code, data := e.call(e.a.UpdateUser, admin, "PUT", "/api/users/x", itoa(u.ID), body); code != 200 {
+		t.Fatal(code, string(data))
+	}
+	all := e.audits("action = 'user.update'")
+	rows := all[len(all)-1:]
+	var rd struct {
+		UserRole struct{ From, To string } `json:"user_role"`
+	}
+	json.Unmarshal(rows[0].Detail, &rd)
+	if rd.UserRole.From != "member" || rd.UserRole.To != "Super Admin" {
+		t.Fatalf("a promotion to Super Admin: %s", rows[0].Detail)
 	}
 	e.call(e.a.DeleteUser, admin, "DELETE", "/api/users/x", itoa(u.ID), "")
 	if r := e.oneAudit(auditUserDelete); r.TargetName != "newbie" {
@@ -390,5 +424,73 @@ func TestAuditCampaignsAndImports(t *testing.T) {
 	}
 	if strings.Contains(string(st.Detail), "people-list") || strings.Contains(string(fin.Detail), "people-list") {
 		t.Fatal("the file name is in the log")
+	}
+}
+
+// A bulk action by search, SQL condition or list counts the subscribers it reaches, not every
+// subscriber in the database (the cached total ignores the search text).
+func TestAuditBulkCountsAreReached(t *testing.T) {
+	e := newAuditEnv(t)
+	e.db.MustExec(`UPDATE roles SET permissions = permissions || '{subscribers:sql_query}' WHERE id = 1`)
+	sa := e.as(e.superAdmin)
+	for i := 1; i <= 8; i++ {
+		id := e.addSub("enabled", "confirmed")
+		e.db.MustExec(`UPDATE subscribers SET name = $2 WHERE id = $1`, id, fmt.Sprintf("zebra-%d", i))
+	}
+	// People who are on no list make the total bigger than the list.
+	e.db.MustExec(`INSERT INTO subscribers (uuid, email, name) SELECT gen_random_uuid(), 'x' || g || '@example.invalid', 'other' FROM generate_series(1, 12) g`)
+	var total, inList int
+	e.get(&total, `SELECT COUNT(*) FROM subscribers`)
+	e.get(&inList, `SELECT COUNT(*) FROM subscriber_lists WHERE list_id = $1`, e.listID)
+	if total <= inList {
+		t.Fatal("setup")
+	}
+	last := func(action string) auditRow {
+		rows := e.audits("action = $1", action)
+		if len(rows) == 0 || rows[len(rows)-1].Count == nil {
+			t.Fatalf("%s rows: %+v", action, rows)
+		}
+		return rows[len(rows)-1]
+	}
+	run := func(h echo.HandlerFunc, method, body string) {
+		t.Helper()
+		if code, _ := e.call(h, sa, method, "/api/subscribers/query/x", "", body); code != 200 {
+			t.Fatalf("%s: %d", body, code)
+		}
+	}
+
+	// A search: the "select all, then delete" of the subscribers screen.
+	run(e.a.BlocklistSubscribersByQuery, "PUT", `{"search":"zebra-3"}`)
+	if n := *last(auditSubBlocklist).Count; n != 1 {
+		t.Fatalf("blocklist by search counted %d of %d subscribers", n, total)
+	}
+	run(e.a.DeleteSubscribersByQuery, "POST", `{"search":"zebra-1"}`)
+	if n := *last(auditSubDelete).Count; n != 1 {
+		t.Fatalf("delete by search counted %d", n)
+	}
+	var left int
+	e.get(&left, `SELECT COUNT(*) FROM subscribers`)
+	if left != total-1 {
+		t.Fatalf("the delete took %d", total-left)
+	}
+	// A search that finds nobody counts none.
+	run(e.a.DeleteSubscribersByQuery, "POST", `{"search":"no-such-person"}`)
+	if n := *last(auditSubDelete).Count; n != 0 {
+		t.Fatalf("an empty search counted %d", n)
+	}
+	// A list without any other condition counts its people.
+	run(e.a.BlocklistSubscribersByQuery, "PUT", fmt.Sprintf(`{"all":true,"list_ids":[%d]}`, e.listID))
+	if n := *last(auditSubBlocklist).Count; n >= total || n < inList-3 {
+		t.Fatalf("a list counted %d (list %d, all %d)", n, inList, total)
+	}
+	// A SQL condition, and "all".
+	run(e.a.DeleteSubscribersByQuery, "POST", `{"query":"subscribers.name = 'other'"}`)
+	if n := *last(auditSubDelete).Count; n != 12 {
+		t.Fatalf("a condition counted %d", n)
+	}
+	e.get(&left, `SELECT COUNT(*) FROM subscribers`)
+	run(e.a.DeleteSubscribersByQuery, "POST", `{"all":true}`)
+	if n := *last(auditSubDelete).Count; n < 1 {
+		t.Fatalf("all counted %d of %d", n, left)
 	}
 }
