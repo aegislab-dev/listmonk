@@ -1051,6 +1051,16 @@ section.lists {
     &.attrib-most td.attrib-cell {
       max-width: 8rem;
     }
+    /* ... and closer together, so that six columns still fit where the page has a classic
+       scrollbar (15px less) as on Windows. */
+    &.attrib-most th.attrib-head, &.attrib-most td.attrib-cell {
+      padding-left: .5em;
+      padding-right: .5em;
+    }
+    &.attrib-most th.attrib-head .attrib-head-filter {
+      margin-left: 1px;
+      padding: 0 1px;
+    }
   }
 
   /* When the table still scrolls sideways, the row buttons (download, edit, delete) stay
