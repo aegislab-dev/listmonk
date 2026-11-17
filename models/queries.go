@@ -80,8 +80,8 @@ type Queries struct {
 	AxmTrashDrop         *sqlx.Stmt `query:"axm-trash-drop"`
 	AxmTrashPurge        *sqlx.Stmt `query:"axm-trash-purge"`
 
-	GetDashboardCharts   *sqlx.Stmt `query:"get-dashboard-charts"`
-	GetDashboardCounts   *sqlx.Stmt `query:"get-dashboard-counts"`
+	GetDashboardCharts *sqlx.Stmt `query:"get-dashboard-charts"`
+	GetDashboardCounts *sqlx.Stmt `query:"get-dashboard-counts"`
 
 	InsertSubscriber                *sqlx.Stmt `query:"insert-subscriber"`
 	UpsertSubscriber                *sqlx.Stmt `query:"upsert-subscriber"`
