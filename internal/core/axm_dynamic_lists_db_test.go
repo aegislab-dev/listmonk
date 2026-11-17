@@ -353,7 +353,7 @@ func TestDynamicDBNumericPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES($1,$2,'Synthetic')`, camp, dynamic)
-			rows, err := db.Queryx(q["next-campaigns"], pq.Array([]int{}), pq.Array([]int{}))
+			rows, err := db.Queryx(q["next-campaigns"], pq.Array([]int{}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -619,7 +619,7 @@ func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 				for _, l := range tc.lists {
 					db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES($1,$2,'Synthetic')`, camp, l)
 				}
-				rows, err := db.Queryx(q["next-campaigns"], pq.Array([]int{}), pq.Array([]int{}))
+				rows, err := db.Queryx(q["next-campaigns"], pq.Array([]int{}))
 				if err != nil {
 					t.Fatal(err)
 				}
