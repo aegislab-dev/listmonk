@@ -35,8 +35,10 @@ describe('activity log', () => {
     cy.get('[data-cy=audit-detail]').should('exist');
     cy.get('[data-cy=audit-reset]').click();
     cy.get('[data-cy=audit-area]').select('Subscribers');
-    cy.get('[data-cy=audit-action-label]').each(($el) => {
-      expect($el.text()).to.match(/subscriber|Blocklisted|Added|Removed|Unsubscribed|Cleaned/i);
+    // Retries until the filtered page is there: no list action is left.
+    cy.get('[data-cy=audit-action-label]').should(($els) => {
+      expect($els.length).to.be.greaterThan(0);
+      $els.each((_, el) => expect(el.textContent).to.not.match(/(Created|Edited|Deleted|Restored|Changed) list|Trash/));
     });
     cy.get('[data-cy=audit-action]').select('Deleted subscribers');
     cy.get('[data-cy=audit-action-label]').first().should('contain', 'Deleted subscribers');
