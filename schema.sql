@@ -604,6 +604,7 @@ DROP TABLE IF EXISTS axm_campaign_sends CASCADE;
 DROP TABLE IF EXISTS axm_list_draw_campaigns CASCADE;
 DROP TABLE IF EXISTS axm_list_draws CASCADE;
 DROP TABLE IF EXISTS axm_suppressed_emails CASCADE;
+DROP TABLE IF EXISTS axm_column_presets CASCADE;
 
 -- AXM campaign send records. Keep this block identical to V6_2_1_axm_6.
 -- One row per campaign message that a messenger accepted: who got which campaign and when,
@@ -1023,3 +1024,15 @@ DROP TRIGGER IF EXISTS axm_block_subscription ON subscriber_lists;
 CREATE TRIGGER axm_block_subscription BEFORE INSERT OR UPDATE ON subscriber_lists
     FOR EACH ROW WHEN (NEW.status != 'unsubscribed') EXECUTE FUNCTION axm_block_subscription();
 -- End of AXM suppressed addresses.
+
+-- AXM column presets. Keep this block identical to V6_2_1_axm_12.
+-- Presets people make for the subscribers table: a name and the attribute keys to show, in order.
+CREATE TABLE IF NOT EXISTS axm_column_presets (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    columns     TEXT[] NOT NULL,
+    created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_axm_column_presets_name ON axm_column_presets (lower(name));
+-- End of AXM column presets.

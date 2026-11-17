@@ -158,6 +158,7 @@
       @check="onTableCheck" :checked-rows.sync="bulk.checked" paginated backend-pagination pagination-position="both"
       @page-change="onPageChange" :current-page="queryParams.page" :per-page="subscribers.perPage"
       :total="subscribers.total" hoverable checkable backend-sorting @sort="onSort" class="subscribers-table"
+      :class="{ 'is-wide': isTableWide, 'attrib-many': attribColumns.length >= 4 }"
       :mobile-sort-placeholder="$t('subscribers.columns.sortBy')">
       <template #top-left>
         <div class="actions">
@@ -263,12 +264,12 @@
       </b-table-column>
 
       <b-table-column v-slot="props" field="created_at" :label="$t('globals.fields.createdAt')"
-        header-class="cy-created_at" sortable cell-class="sub-date-cell">
+        header-class="cy-created_at" sortable cell-class="sub-date-cell" :visible="!hiddenDates.created">
         {{ $utils.niceDate(props.row.createdAt) }}
       </b-table-column>
 
       <b-table-column v-slot="props" field="updated_at" :label="$t('globals.fields.updatedAt')"
-        header-class="cy-updated_at" sortable cell-class="sub-date-cell">
+        header-class="cy-updated_at" sortable cell-class="sub-date-cell" :visible="!hiddenDates.updated">
         {{ $utils.niceDate(props.row.updatedAt) }}
       </b-table-column>
 
@@ -324,7 +325,7 @@ import { isNumberOp } from '../dynamic-list';
 import { countryHint, standardByKey } from '../lib/standard-attribs';
 import {
   FILTER_OPS, LONG_VALUE, MAX_CONDITIONS, attribKeys, attribText, cleanCondition, conditionError, conditionValueText,
-  newCondition, presetOf,
+  hiddenDateColumns, newCondition, presetLabel, presetOf,
 } from '../subscriber-columns';
 
 export default Vue.extend({
@@ -795,7 +796,16 @@ export default Vue.extend({
     },
 
     presetName() {
-      return this.preset.id ? this.$t(`lists.preset.${this.preset.id}`) : '';
+      return presetLabel(this.preset, this.$t.bind(this));
+    },
+
+    hiddenDateKey() {
+      return `${this.hiddenDates.created}-${this.hiddenDates.updated}`;
+    },
+
+    // The date columns left out so that the attribute columns fit (see hiddenDateColumns).
+    hiddenDates() {
+      return hiddenDateColumns(this.attribColumns.length);
     },
 
     // Keys offered when adding a condition: the preset's columns, then the other keys the
@@ -840,6 +850,14 @@ export default Vue.extend({
   watch: {
     'subscribers.results': function onResults() {
       this.openCells = {};
+    },
+
+    // A column that is left out cannot stay the sort column: go back to the default order.
+    hiddenDateKey() {
+      const { orderBy } = this.queryParams;
+      if ((orderBy === 'updated_at' && this.hiddenDates.updated) || (orderBy === 'created_at' && this.hiddenDates.created)) {
+        this.querySubscribers({ orderBy: 'id', order: 'desc' });
+      }
     },
   },
 

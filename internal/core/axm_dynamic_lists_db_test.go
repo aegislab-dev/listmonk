@@ -693,6 +693,7 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM list draws and exclude lists. Keep this block identical to V6_2_1_axm_7.", "-- End of AXM list draws and exclude lists.", "v6.2.1-axm.7.go"},
 		{"-- AXM team roles. Keep this block identical to V6_2_1_axm_8.", "-- End of AXM team roles.", "v6.2.1-axm.8.go"},
 		{"-- AXM suppressed addresses. Keep this block identical to V6_2_1_axm_9.", "-- End of AXM suppressed addresses.", "v6.2.1-axm.9.go"},
+		{"-- AXM column presets. Keep this block identical to V6_2_1_axm_12.", "-- End of AXM column presets.", "v6.2.1-axm.12.go"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
 		if err != nil {

@@ -24,6 +24,15 @@ type Queries struct {
 	AxmDrawAddMembers              *sqlx.Stmt `query:"axm-draw-add-members"`
 	AxmDrawRecord                  *sqlx.Stmt `query:"axm-draw-record"`
 	AxmGetListDraws                *sqlx.Stmt `query:"axm-get-list-draws"`
+	AxmGetColumnPresets            *sqlx.Stmt `query:"axm-get-column-presets"`
+	AxmGetColumnPreset             *sqlx.Stmt `query:"axm-get-column-preset"`
+	AxmColumnPresetExists          *sqlx.Stmt `query:"axm-column-preset-exists"`
+	AxmCreateColumnPreset          *sqlx.Stmt `query:"axm-create-column-preset"`
+	AxmUpdateColumnPreset          *sqlx.Stmt `query:"axm-update-column-preset"`
+	AxmDeleteColumnPreset          *sqlx.Stmt `query:"axm-delete-column-preset"`
+	AxmColumnPresetUsage           *sqlx.Stmt `query:"axm-column-preset-usage"`
+	AxmColumnPresetListNames       *sqlx.Stmt `query:"axm-column-preset-list-names"`
+	AxmResetPresetLists            *sqlx.Stmt `query:"axm-reset-preset-lists"`
 	AxmGetTeams                    *sqlx.Stmt `query:"axm-get-teams"`
 	AxmGetTeamMembers              *sqlx.Stmt `query:"axm-get-team-members"`
 	AxmGetTeamRole                 *sqlx.Stmt `query:"axm-get-team-role"`
