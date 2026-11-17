@@ -100,4 +100,25 @@ describe('list trash', () => {
       });
     });
   });
+
+  it('asks for the number the select-all delete will delete, by a search', () => {
+    const names = [1, 2, 3].map((n) => `휴지통전체${stamp}${n}`);
+    names.forEach((name) => cy.request('POST', '/api/lists', { name, type: 'private', optin: 'single', no_team: true }));
+    cy.visit('/admin/lists');
+    cy.get('[data-cy=query]').type(`휴지통전체${stamp}`);
+    cy.get('[data-cy=btn-query]').click();
+    cy.get('tbody tr').should('have.length', 3);
+    cy.get('thead .b-checkbox').first().click();
+    cy.get('a[data-cy=select-all-lists]').should('not.exist'); // all three are on the page
+    cy.get('a[data-cy=btn-delete-lists]').click();
+    cy.get('[data-cy=list-delete-confirm]').should('contain', names[0]).and('contain', names[2]);
+    cy.get('[data-cy=delete-confirm-input]').type('4');
+    cy.get('[data-cy=btn-delete-confirm]').should('be.disabled');
+    cy.get('[data-cy=delete-confirm-input]').clear().type('3');
+    cy.get('[data-cy=btn-delete-confirm]').click();
+    cy.request('/api/lists/trash').then(({ body }) => {
+      const trashed = body.data.results.map((l) => l.name);
+      names.forEach((n) => expect(trashed).to.include(n));
+    });
+  });
 });
