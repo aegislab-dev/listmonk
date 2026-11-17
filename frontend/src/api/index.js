@@ -183,6 +183,16 @@ export const deleteList = (id) => http.delete(
   { loading: models.lists },
 );
 
+// The list trash (LST-27).
+export const getListTrash = () => http.get('/api/lists/trash', { loading: models.lists });
+
+export const restoreList = (id) => http.post(`/api/lists/trash/${id}/restore`, null, { loading: models.lists });
+
+// The audit log (LST-27).
+export const getAudit = (params) => http.get('/api/audit', { params, loading: models.audit, camelCase: false });
+
+export const getAuditUsers = () => http.get('/api/audit/users', { camelCase: false, disableToast: true });
+
 export const deleteLists = (params) => http.delete(
   '/api/lists',
   { params, loading: models.lists },

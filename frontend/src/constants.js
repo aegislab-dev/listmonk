@@ -19,6 +19,7 @@ export const models = Object.freeze({
   listRoles: 'listRoles',
   settings: 'settings',
   logs: 'logs',
+  audit: 'audit',
   maintenance: 'maintenance',
 });
 

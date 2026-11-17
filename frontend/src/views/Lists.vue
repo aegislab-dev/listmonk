@@ -24,6 +24,12 @@
               {{ $t('teams.teamlessLink', { num: teamless }) }} &rarr;
             </a>
           </template>
+          <template>
+            &nbsp;&middot;&nbsp;
+            <router-link :to="{ name: 'listTrash' }" data-cy="trash-link">
+              <b-icon icon="trash-can-outline" size="is-small" /> {{ $t('lists.trash.link') }} &rarr;
+            </router-link>
+          </template>
           <template v-if="queryParams.status !== 'archived'">
             &nbsp;&middot;&nbsp;
             <a v-if="!queryParams.drawn" href="#" data-cy="drawn-only" @click.prevent="setDrawn(true)">
@@ -219,6 +225,12 @@
     </b-modal>
 
     <!-- Draw N people into a new list -->
+    <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isDeleteVisible" :width="560"
+      @close="deleteAsk = { lists: [], total: 0, fn: null }">
+      <list-delete-confirm :lists="deleteAsk.lists" :total="deleteAsk.total" :trash-days="trashDays"
+        @confirm="onDeleteConfirmed" />
+    </b-modal>
+
     <b-modal custom-class="axm-list-modal" has-modal-card scroll="keep" :aria-modal="true" :active.sync="isDrawVisible"
       :width="680" @close="onDrawClose">
       <list-draw v-if="drawSource" :source="drawSource" :teams="teams" @finished="formFinished" @open-list="openList" />
@@ -239,6 +251,7 @@ import Vue from 'vue';
 import { mapState } from 'vuex';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
 import ListDraw from '../components/ListDraw.vue';
+import ListDeleteConfirm from '../components/ListDeleteConfirm.vue';
 import ListForm from './ListForm.vue';
 import { DRAW_TAG } from '../list-draw';
 import {
@@ -249,6 +262,7 @@ export default Vue.extend({
   components: {
     ListForm,
     ListDraw,
+    ListDeleteConfirm,
     EmptyPlaceholder,
   },
 
@@ -256,6 +270,11 @@ export default Vue.extend({
     return {
       // Current list item being edited.
       curItem: null,
+
+      // The delete confirmation (LST-27) and the days a deleted list stays in the trash.
+      isDeleteVisible: false,
+      deleteAsk: { lists: [], total: 0, fn: null },
+      trashDays: 14,
       isEditing: false,
       isFormVisible: false,
       lists: [],
@@ -461,16 +480,26 @@ export default Vue.extend({
     },
 
     deleteList(list) {
-      this.$utils.confirm(
-        this.$t('lists.confirmDelete'),
-        () => {
-          this.$api.deleteList(list.id).then(() => {
-            this.getLists();
+      this.askDelete([list], 1, () => {
+        this.$api.deleteList(list.id).then(() => {
+          this.getLists();
 
-            this.$utils.toast(this.$t('globals.messages.deleted', { name: list.name }));
-          });
-        },
-      );
+          this.$utils.toast(this.$t('lists.delete.done', { name: list.name, days: this.trashDays }));
+        });
+      });
+    },
+
+    // Opens the confirmation that asks for the name (one list) or the number of lists, and
+    // runs fn when it is given.
+    askDelete(lists, total, fn) {
+      this.deleteAsk = { lists, total, fn };
+      this.isDeleteVisible = true;
+    },
+
+    onDeleteConfirmed() {
+      const { fn } = this.deleteAsk;
+      this.deleteAsk = { lists: [], total: 0, fn: null };
+      if (fn) fn();
     },
 
     // Mark all lists in the query as selected.
@@ -486,8 +515,6 @@ export default Vue.extend({
     },
 
     deleteLists() {
-      const name = this.$tc('globals.terms.list', this.numSelectedCampaigns);
-
       const fn = () => {
         const params = {};
         if (!this.bulk.all && this.bulk.checked.length > 0) {
@@ -502,19 +529,12 @@ export default Vue.extend({
         this.$api.deleteLists(params)
           .then(() => {
             this.getLists();
-            this.$utils.toast(this.$tc(
-              'globals.messages.deletedCount',
-              this.numSelectedLists,
-              { num: this.numSelectedLists, name },
-            ));
+            this.$utils.toast(this.$t('lists.delete.doneMany', { num: this.numSelectedLists, days: this.trashDays }));
           });
       };
 
-      this.$utils.confirm(this.$tc(
-        'globals.messages.confirmDelete',
-        this.numSelectedLists,
-        { num: this.numSelectedLists, name: name.toLowerCase() },
-      ), fn);
+      const byIDs = !this.bulk.all && this.bulk.checked.length > 0;
+      this.askDelete(byIDs ? this.bulk.checked : [], this.numSelectedLists, fn);
     },
 
     createOptinCampaign(list) {

@@ -1812,3 +1812,34 @@ th.role-toggle-select a {
     width: auto;
   }
 }
+
+/* Audit log and list trash (LST-27) */
+.audit {
+  .audit-filters {
+    margin-bottom: 0.5rem;
+  }
+
+  .audit-detail {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 1.25rem;
+    margin: 0;
+    font-size: 0.9em;
+
+    dt {
+      color: $grey;
+    }
+
+    dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  .tag.audit-list { background: #e8f1fb; color: #1d5fa8; }
+  .tag.audit-subscriber { background: #fdeee0; color: #a5560f; }
+  .tag.audit-import { background: #eee8fb; color: #5a3aa8; }
+  .tag.audit-campaign { background: #e3f6ec; color: #16724a; }
+  .tag.audit-access { background: #fbe8ee; color: #a8244f; }
+  .tag.audit-settings { background: #eceff3; color: #44505c; }
+}

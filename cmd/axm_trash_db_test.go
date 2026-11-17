@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -389,4 +390,36 @@ func TestTrashAndAuditRetention(t *testing.T) {
 	}
 	_ = pq.Array
 	_ = time.Now
+}
+
+// AXM_TRASH_BIG=<n> times the delete and the restore of a list with n subscriptions (LST-27).
+func TestTrashBigListTiming(t *testing.T) {
+	n := atoi(os.Getenv("AXM_TRASH_BIG"))
+	if n == 0 {
+		t.Skip("AXM_TRASH_BIG not set")
+	}
+	e := newAuditEnv(t)
+	var list int
+	e.get(&list, `INSERT INTO lists(uuid,name,type,optin) VALUES(gen_random_uuid(),'Big','private','single') RETURNING id`)
+	e.db.MustExec(`INSERT INTO subscribers (uuid, email, name) SELECT gen_random_uuid(), 'big' || g || '@example.invalid', 'x' FROM generate_series(1, $1) g`, n)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status)
+		SELECT id, $1, CASE WHEN id % 10 = 0 THEN 'unsubscribed'::subscription_status ELSE 'confirmed' END FROM subscribers WHERE email LIKE 'big%'`, list)
+	e.db.MustExec(`ANALYZE`)
+
+	start := time.Now()
+	if code, _ := e.trash(list, e.admin); code != 200 {
+		t.Fatal(code)
+	}
+	del := time.Since(start)
+	start = time.Now()
+	if code, _ := e.restore(list, e.admin); code != 200 {
+		t.Fatal(code)
+	}
+	res := time.Since(start)
+	var got int
+	e.get(&got, `SELECT COUNT(*) FROM subscriber_lists WHERE list_id = $1`, list)
+	t.Logf("%d subscriptions: delete into the trash %s, restore %s, restored %d", n, del, res, got)
+	if got != n {
+		t.Fatalf("restored %d of %d", got, n)
+	}
 }
