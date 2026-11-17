@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -620,8 +621,7 @@ func (m *Manager) scanCampaigns(tick time.Duration) {
 			continue
 		}
 
-		ids, counts := m.getCurrentCampaigns()
-		campaigns, err := m.store.NextCampaigns(ids, counts)
+		campaigns, err := m.nextCampaigns()
 		if err != nil {
 			m.log.Printf("error fetching campaigns: %v", err)
 			continue
@@ -754,6 +754,11 @@ func (m *Manager) worker() {
 				msg.pipe.prog.done(msg.Subscriber.ID, err == nil)
 				if err == nil {
 					msg.pipe.sent.Add(1)
+					msg.pipe.rate.Incr(1)
+				} else {
+					// Settle the error threshold before releasing cleanup. The
+					// last message may be the one that pauses the campaign.
+					msg.pipe.OnError()
 				}
 
 				// Test seam (AXM, LST-25): the point where the campaign's cleanup
@@ -764,14 +769,6 @@ func (m *Manager) worker() {
 
 				// Mark the message as done.
 				msg.pipe.wg.Done()
-
-				if err != nil {
-					// Call the error callback, which keeps track of the error count
-					// and stops the campaign if the error count exceeds the threshold.
-					msg.pipe.OnError()
-				} else {
-					msg.pipe.rate.Incr(1)
-				}
 			}
 			m.inflight.Add(-1)
 
@@ -789,18 +786,32 @@ func (m *Manager) worker() {
 	}
 }
 
-// getCurrentCampaigns returns the IDs of campaigns currently being processed
-// and their sent counts.
-func (m *Manager) getCurrentCampaigns() ([]int64, []int64) {
-	// Needs to return an empty slice in case there are no campaigns.
+// nextCampaigns saves the running campaigns' sent counts while fetching the next
+// campaigns. A failed query returns the counts to their original pipes for retry.
+func (m *Manager) nextCampaigns() ([]*models.Campaign, error) {
 	m.pipesMut.RLock()
-	defer m.pipesMut.RUnlock()
-
-	var (
-		ids    = make([]int64, 0, len(m.pipes))
-		counts = make([]int64, 0, len(m.pipes))
-	)
+	pipes := make([]*pipe, 0, len(m.pipes))
 	for _, p := range m.pipes {
+		pipes = append(pipes, p)
+	}
+	m.pipesMut.RUnlock()
+
+	// Keep progress saves (including cleanup and Close) from passing a batch
+	// still owned by this scan. Otherwise a failed query could restore counts
+	// to a pipe whose final save has already run. Lock in campaign order so
+	// concurrent scans cannot deadlock, and leave workers free to add new sends.
+	sort.Slice(pipes, func(i, j int) bool { return pipes[i].camp.ID < pipes[j].camp.ID })
+	for _, p := range pipes {
+		p.saveMut.Lock()
+		defer p.saveMut.Unlock()
+	}
+
+	// The query needs empty slices rather than NULL when no campaigns run.
+	var (
+		ids    = make([]int64, 0, len(pipes))
+		counts = make([]int64, 0, len(pipes))
+	)
+	for _, p := range pipes {
 		ids = append(ids, int64(p.camp.ID))
 
 		// Get the sent counts for campaigns and reset them to 0
@@ -810,7 +821,13 @@ func (m *Manager) getCurrentCampaigns() ([]int64, []int64) {
 		counts = append(counts, p.sent.Swap(0))
 	}
 
-	return ids, counts
+	campaigns, err := m.store.NextCampaigns(ids, counts)
+	if err != nil {
+		for i, p := range pipes {
+			p.sent.Add(counts[i])
+		}
+	}
+	return campaigns, err
 }
 
 // trackLink register a URL and return its UUID to be used in message templates

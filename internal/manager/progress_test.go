@@ -151,6 +151,16 @@ func (s *countStore) UpdateCampaignCounts(campID, toSend, sent, lastSubID int) e
 }
 
 func (s *countStore) RecordCampaignSends([]models.CampaignSend) error { return nil }
+
+func (s *countStore) NextCampaigns(_, counts []int64) ([]*models.Campaign, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, count := range counts {
+		s.sent += int(count)
+	}
+	return nil, nil
+}
+
 func (s *countStore) ReleaseCampaignLock() {
 	s.mu.Lock()
 	s.released = true
@@ -401,6 +411,83 @@ func TestWorkerCountsMessageBeforeMarkingItDone(t *testing.T) {
 	}
 }
 
+type workerStatusStore struct {
+	countStore
+	status string
+}
+
+func (s *workerStatusStore) GetCampaign(id int) (*models.Campaign, error) {
+	return &models.Campaign{Base: models.Base{ID: id}, Status: s.status}, nil
+}
+
+func (s *workerStatusStore) UpdateCampaignStatus(_ int, status string) error {
+	s.status = status
+	return nil
+}
+
+// The last message must settle the error threshold before releasing cleanup.
+// beforeDone observes the ordering deterministically, even if cleanup loses the
+// race to OnError on an unpatched worker.
+func TestWorkerSettlesErrorsBeforeMarkingItDone(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		limit     int
+		previous  uint64
+		fail      bool
+		wantCount uint64
+		wantPause bool
+	}{
+		{"first error reaches limit", 1, 0, true, 1, true},
+		{"last error reaches limit", 3, 2, true, 3, true},
+		{"below limit", 3, 1, true, 2, false},
+		{"disabled limit", 0, 0, true, 0, false},
+		{"success", 1, 0, false, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &workerStatusStore{status: models.CampaignStatusRunning}
+			m := New(Config{MessageRate: 1000, MaxSendErrors: tc.limit}, store, nil, log.New(io.Discard, "", 0))
+			m.sends = nil
+			var notified string
+			m.fnNotify = func(_ string, data any) error {
+				notified = data.(map[string]any)["Status"].(string)
+				return nil
+			}
+			if err := m.AddMessenger(&pushMessenger{fail: map[int]bool{1: tc.fail}}); err != nil {
+				t.Fatal(err)
+			}
+			p := testPipe(m, &models.Campaign{Base: models.Base{ID: 7}, Name: "test", Messenger: "email"}, 0)
+			p.errors.Store(tc.previous)
+			p.beforeDone = func(p *pipe, _ int) {
+				if got := p.errors.Load(); got != tc.wantCount {
+					t.Errorf("error count before done = %d, want %d", got, tc.wantCount)
+				}
+				if p.stopped.Load() != tc.wantPause || p.withErrors.Load() != tc.wantPause {
+					t.Errorf("before done: stopped=%v withErrors=%v, want %v", p.stopped.Load(), p.withErrors.Load(), tc.wantPause)
+				}
+			}
+			workerDone := make(chan struct{})
+			go func() {
+				defer close(workerDone)
+				m.worker()
+			}()
+			defer func() {
+				close(m.campMsgQ)
+				<-workerDone
+			}()
+			queueMessage(m, p, 1)
+			p.wg.Wait()
+			p.cleanup()
+			wantStatus := models.CampaignStatusFinished
+			if tc.wantPause {
+				wantStatus = models.CampaignStatusPaused
+			}
+			if store.status != wantStatus || notified != wantStatus {
+				t.Fatalf("status=%s notification=%s, want %s", store.status, notified, wantStatus)
+			}
+		})
+	}
+}
+
 // The periodic scan, the pipe's periodic save and the campaign's cleanup all take the sent
 // count with a swap, so a count is written once whichever of them comes first (LST-25,
 // defect 4 of LST-23: a last batch of 54 was counted as 108 when the scan overlapped the
@@ -425,12 +512,10 @@ func TestSentCountIsWrittenOnce(t *testing.T) {
 			p.Stop(false)
 			p.sent.Add(54)
 
-			var scanned int64
 			do := map[string]func(){
 				"scan": func() { // what the scan hands to next-campaigns; a cleaned-up pipe is no longer listed
-					_, counts := m.getCurrentCampaigns()
-					for _, c := range counts {
-						scanned += c
+					if _, err := m.nextCampaigns(); err != nil {
+						t.Fatal(err)
 					}
 				},
 				"save":    p.saveProgress,
@@ -443,8 +528,8 @@ func TestSentCountIsWrittenOnce(t *testing.T) {
 			do["scan"]()
 
 			saved, _, _ := store.get()
-			if total := int(scanned) + saved; total != 54 {
-				t.Fatalf("the scan took %d and the pipe saved %d, together %d, want 54", scanned, saved, total)
+			if saved != 54 {
+				t.Fatalf("the scan and pipe saved %d, want 54", saved)
 			}
 		})
 	}
@@ -461,10 +546,8 @@ func TestSentCountSurvivesConcurrentTakers(t *testing.T) {
 	p := testPipe(m, &models.Campaign{Base: models.Base{ID: 7}, Name: "test", Messenger: "email"}, 0)
 
 	var (
-		wg      sync.WaitGroup
-		stop    = make(chan struct{})
-		scanned int64
-		scanMu  sync.Mutex
+		wg   sync.WaitGroup
+		stop = make(chan struct{})
 	)
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
@@ -476,12 +559,9 @@ func TestSentCountSurvivesConcurrentTakers(t *testing.T) {
 					return
 				default:
 				}
-				_, counts := m.getCurrentCampaigns()
-				scanMu.Lock()
-				for _, c := range counts {
-					scanned += c
+				if _, err := m.nextCampaigns(); err != nil {
+					t.Error(err)
 				}
-				scanMu.Unlock()
 				p.saveProgress()
 			}
 		}()
@@ -492,13 +572,12 @@ func TestSentCountSurvivesConcurrentTakers(t *testing.T) {
 	close(stop)
 	wg.Wait()
 	p.saveProgress()
-	_, counts := m.getCurrentCampaigns()
-	for _, c := range counts {
-		scanned += c
+	if _, err := m.nextCampaigns(); err != nil {
+		t.Fatal(err)
 	}
 
 	saved, _, _ := store.get()
-	if total := int(scanned) + saved; total != adds {
-		t.Fatalf("%d messages counted, the scan took %d and the pipe saved %d, together %d", adds, scanned, saved, total)
+	if saved != adds {
+		t.Fatalf("%d messages counted, the scan and pipe saved %d", adds, saved)
 	}
 }
