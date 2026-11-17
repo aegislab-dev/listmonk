@@ -79,3 +79,12 @@ Cypress.on('uncaught:exception', (err, runnable) => {
 
   return true;
 });
+
+// Confirms the list delete dialog (LST-27): types what it asks for (the list name, or the
+// number of lists) and presses the delete button.
+Cypress.Commands.add('confirmListDelete', () => {
+  cy.get('[data-cy=delete-confirm-input]').then(($input) => {
+    cy.wrap($input).type($input.attr('placeholder'), { parseSpecialCharSequences: false });
+  });
+  cy.get('[data-cy=btn-delete-confirm]').click();
+});

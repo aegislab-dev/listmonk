@@ -66,7 +66,7 @@ describe('Lists', () => {
     // Delete all visible lists.
     cy.get('tbody tr').each(() => {
       cy.get('tbody a[data-cy=btn-delete]').first().click();
-      cy.get('.modal button.is-primary').click();
+      cy.confirmListDelete();
     });
 
     // Confirm deletion.
@@ -162,7 +162,7 @@ describe('Lists', () => {
     cy.get('thead input[type="checkbox"]').click({ force: true });
     cy.get('a[data-cy=select-all-lists]').click();
     cy.get('a[data-cy=btn-delete-lists]').click();
-    cy.get('.modal button.is-primary:eq(0)').click();
+    cy.confirmListDelete();
     cy.get('table tr.is-empty');
 
     // Bulk delete with the selected IDs.
@@ -175,7 +175,7 @@ describe('Lists', () => {
     cy.wait(500);
     cy.get('thead input[type="checkbox"]').click({ force: true });
     cy.get('a[data-cy=btn-delete-lists]').click();
-    cy.get('.modal button.is-primary:eq(0)').click();
+    cy.confirmListDelete();
     cy.get('table tr.is-empty');
   });
 });
