@@ -57,8 +57,31 @@ type Queries struct {
 	AxmCountCampaignSends          *sqlx.Stmt `query:"axm-count-campaign-sends"`
 	AxmGetCampaignSentIDs          *sqlx.Stmt `query:"axm-get-campaign-sent-ids"`
 	AxmDeleteCampaignSends         *sqlx.Stmt `query:"axm-delete-campaign-sends"`
-	GetDashboardCharts             *sqlx.Stmt `query:"get-dashboard-charts"`
-	GetDashboardCounts             *sqlx.Stmt `query:"get-dashboard-counts"`
+
+	AxmInsertAudit *sqlx.Stmt `query:"axm-insert-audit"`
+	AxmAuditUsers  *sqlx.Stmt `query:"axm-audit-users"`
+	AxmDeleteAudit *sqlx.Stmt `query:"axm-delete-audit"`
+	AxmQueryAudit  string     `query:"axm-query-audit"`
+
+	AxmResolveCampaignsToDelete *sqlx.Stmt `query:"axm-resolve-campaigns-to-delete"`
+
+	AxmTrashResolveLists *sqlx.Stmt `query:"axm-trash-resolve-lists"`
+	AxmTrashBusyLists    *sqlx.Stmt `query:"axm-trash-busy-lists"`
+	AxmTrashSaveLists    *sqlx.Stmt `query:"axm-trash-save-lists"`
+	AxmTrashClearSubs    *sqlx.Stmt `query:"axm-trash-clear-subs"`
+	AxmTrashSaveSubs     *sqlx.Stmt `query:"axm-trash-save-subs"`
+	AxmGetListTrash      *sqlx.Stmt `query:"axm-get-list-trash"`
+	AxmTrashLock         *sqlx.Stmt `query:"axm-trash-lock"`
+	AxmTrashRestoreList  *sqlx.Stmt `query:"axm-trash-restore-list"`
+	AxmTrashRestoreSubs  *sqlx.Stmt `query:"axm-trash-restore-subs"`
+	AxmTrashRestoreCamps *sqlx.Stmt `query:"axm-trash-restore-campaigns"`
+	AxmTrashRestoreRoles *sqlx.Stmt `query:"axm-trash-restore-roles"`
+	AxmTrashRestoreDraws *sqlx.Stmt `query:"axm-trash-restore-draws"`
+	AxmTrashDrop         *sqlx.Stmt `query:"axm-trash-drop"`
+	AxmTrashPurge        *sqlx.Stmt `query:"axm-trash-purge"`
+
+	GetDashboardCharts *sqlx.Stmt `query:"get-dashboard-charts"`
+	GetDashboardCounts *sqlx.Stmt `query:"get-dashboard-counts"`
 
 	InsertSubscriber                *sqlx.Stmt `query:"insert-subscriber"`
 	UpsertSubscriber                *sqlx.Stmt `query:"upsert-subscriber"`

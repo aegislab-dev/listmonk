@@ -32,6 +32,7 @@ func (a *App) GCSubscribers(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.audit(c, auditSubGC, auditTarget{Type: auditTargetSubscriber}, n, map[string]any{"type": typ})
 
 	return c.JSON(http.StatusOK, okResp{struct {
 		Count int `json:"count"`
@@ -51,6 +52,9 @@ func (a *App) GCSubscriptions(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.audit(c, auditSubGC, auditTarget{Type: auditTargetSubscriber}, n, map[string]any{
+		"type": "unconfirmed_subscriptions", "before": t.Format(time.RFC3339),
+	})
 
 	return c.JSON(http.StatusOK, okResp{struct {
 		Count int `json:"count"`

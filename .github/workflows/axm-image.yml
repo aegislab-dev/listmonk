@@ -162,6 +162,8 @@ jobs:
           test "$teams" = 2:3:2
           suppress=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_suppressed_emails')::text || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname IN ('axm_suppress_new_subscriber', 'axm_suppress_changed_email', 'axm_unsubscribe_blocked_email', 'axm_track_blocklist_ins', 'axm_track_blocklist_upd', 'axm_keep_blocklist', 'axm_block_subscription') AND NOT tgisinternal)::text")
           test "$suppress" = 1:7
+          audit=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_audit_log')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_audit_log')::text || ':' || (SELECT count(*) FROM pg_tables WHERE tablename IN ('axm_deleted_lists', 'axm_deleted_list_subs'))::text")
+          test "$audit" = 12:5:2
           docker run -d --name axm-smoke --network host "${env_args[@]}" listmonk-axm:ci
           curl --fail --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 http://127.0.0.1:9000/health
           python3 - <<'PY'
@@ -204,7 +206,7 @@ jobs:
           npm install --global yarn@1.22.22
           cd frontend
           yarn install --frozen-lockfile
-          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/subscriber-columns.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/subscriber-columns.cy.js,cypress/e2e/audit.cy.js,cypress/e2e/list-trash.cy.js'
 
       - name: Upgrade official v6.2.0 database and smoke test
         env:
@@ -232,7 +234,7 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.9
+          test "$migration" = v6.2.1-axm.11
           sends=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_campaign_sends')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_campaign_sends')::text")
           test "$sends" = 13:3
           draws=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename IN ('axm_list_draws', 'axm_list_draw_campaigns'))::text || ':' || (SELECT count(*) FROM pg_proc WHERE proname IN ('axm_list_target', 'axm_draw_candidates')) || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname IN ('axm_propagate_draw_unsub', 'axm_keep_draw_campaigns', 'axm_guard_exclude_list_delete') AND NOT tgisinternal)")
@@ -241,6 +243,8 @@ jobs:
           test "$teams" = 2:3:2
           suppress=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_suppressed_emails')::text || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname IN ('axm_suppress_new_subscriber', 'axm_suppress_changed_email', 'axm_unsubscribe_blocked_email', 'axm_track_blocklist_ins', 'axm_track_blocklist_upd', 'axm_keep_blocklist', 'axm_block_subscription') AND NOT tgisinternal)::text")
           test "$suppress" = 1:7
+          audit=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_audit_log')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_audit_log')::text || ':' || (SELECT count(*) FROM pg_tables WHERE tablename IN ('axm_deleted_lists', 'axm_deleted_list_subs'))::text")
+          test "$audit" = 12:5:2
           number=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT axm_to_number('\" 100,000 \"'::jsonb)::text || ':' || (axm_to_number('\"100,000원\"'::jsonb) IS NULL)::text")
           test "$number" = 100000:true
           column=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM information_schema.columns WHERE table_name = 'lists' AND column_name = 'axm_filter'")

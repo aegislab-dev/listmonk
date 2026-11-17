@@ -46,6 +46,7 @@ func (a *App) CreateUserRole(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.auditRoleCreated(c, out.ID, roleInfo{name: out.Name.String, kind: auth.RoleTypeUser, perms: out.Permissions})
 
 	return c.JSON(http.StatusOK, okResp{out})
 }
@@ -65,6 +66,7 @@ func (a *App) CreateListRole(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.auditRoleCreated(c, out.ID, listRoleInfo(out))
 
 	return c.JSON(http.StatusOK, okResp{out})
 }
@@ -91,10 +93,12 @@ func (a *App) UpdateUserRole(c echo.Context) error {
 	r.Name.String = strings.TrimSpace(r.Name.String)
 
 	// Update the role in the DB.
+	before := a.roleInfoOf(id)
 	out, err := a.core.UpdateUserRole(id, r)
 	if err != nil {
 		return err
 	}
+	a.auditRoleUpdated(c, id, before, roleInfo{found: true, name: out.Name.String, kind: auth.RoleTypeUser, perms: out.Permissions})
 
 	// Cache API tokens for in-memory, off-DB /api/* request auth.
 	if _, err := cacheUsers(a.core, a.auth); err != nil {
@@ -133,10 +137,12 @@ func (a *App) UpdateListRole(c echo.Context) error {
 	r.Name.String = strings.TrimSpace(r.Name.String)
 
 	// Update the role in the DB.
+	before := a.roleInfoOf(id)
 	out, err := a.core.UpdateListRole(id, r)
 	if err != nil {
 		return err
 	}
+	a.auditRoleUpdated(c, id, before, listRoleInfo(out))
 
 	// Cache API tokens for in-memory, off-DB /api/* request auth.
 	if _, err := cacheUsers(a.core, a.auth); err != nil {
@@ -168,9 +174,11 @@ func (a *App) DeleteRole(c echo.Context) error {
 	}
 
 	// Delete the role from the DB.
+	before := a.roleInfoOf(int(id))
 	if err := a.core.DeleteRole(int(id)); err != nil {
 		return err
 	}
+	a.audit(c, auditRoleDelete, auditTarget{auditTargetRole, int(id), before.name}, auditNoCount, map[string]any{"kind": before.kind})
 
 	// Cache API tokens for in-memory, off-DB /api/* request auth.
 	if _, err := cacheUsers(a.core, a.auth); err != nil {

@@ -421,6 +421,7 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 	if req.Status == models.CampaignStatusPaused || req.Status == models.CampaignStatusCancelled {
 		a.manager.StopCampaign(id)
 	}
+	a.auditCampaignStatus(c, req.Status, out)
 
 	if err := a.campaignReplyVerified(&out); err != nil {
 		return err
@@ -474,9 +475,11 @@ func (a *App) DeleteCampaign(c echo.Context) error {
 	}
 
 	// Delete the campaign from the DB.
+	camps, _ := a.core.ResolveCampaignsToDelete([]int{id}, "", true, nil)
 	if err := a.core.DeleteCampaign(id); err != nil {
 		return err
 	}
+	a.auditCampaignsDeleted(c, camps)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -524,9 +527,14 @@ func (a *App) DeleteCampaigns(c echo.Context) error {
 	}
 
 	// Delete the campaigns from the DB.
+	camps, err := a.core.ResolveCampaignsToDelete(ids, query, hasAllPerm, permittedLists)
+	if err != nil {
+		a.log.Printf("error reading campaigns for the audit log: %v", err)
+	}
 	if err := a.core.DeleteCampaigns(ids, query, hasAllPerm, permittedLists); err != nil {
 		return err
 	}
+	a.auditCampaignsDeleted(c, camps)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }

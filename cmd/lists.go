@@ -125,6 +125,10 @@ func (a *App) CreateList(c echo.Context) error {
 		return err
 	}
 	a.refreshTeamUsers()
+	a.audit(c, auditListCreate, auditTarget{auditTargetList, out.ID, out.Name}, auditNoCount, map[string]any{
+		"type": out.Type, "optin": out.Optin, "status": out.Status, "dynamic": out.AxmFilter != nil,
+		"teams": teamNames(out.Tags),
+	})
 
 	return c.JSON(http.StatusOK, okResp{out})
 }
@@ -171,6 +175,7 @@ func (a *App) UpdateList(c echo.Context) error {
 		return err
 	}
 	a.refreshTeamUsers()
+	a.auditListUpdate(c, old, out)
 
 	return c.JSON(http.StatusOK, okResp{out})
 }
@@ -185,9 +190,9 @@ func (a *App) DeleteList(c echo.Context) error {
 		return err
 	}
 
-	// Delete the list from the DB.
-	// Pass getAll=true since we've already verified permissions above.
-	if err := a.core.DeleteLists([]int{id}, "", true, nil); err != nil {
+	// Move the list to the trash (AXM): it is deleted as before, and kept for core.TrashDays
+	// days. Permissions were verified above.
+	if err := a.trashLists(c, []int{id}); err != nil {
 		return err
 	}
 	a.refreshTeamUsers()
@@ -231,17 +236,24 @@ func (a *App) DeleteLists(c echo.Context) error {
 			return err
 		}
 
-		// Delete the lists from the DB.
-		// Pass getAll=true since we've already verified permissions above.
-		if err := a.core.DeleteLists(ids, "", true, nil); err != nil {
+		// Move the lists to the trash (AXM). Permissions were verified above.
+		if err := a.trashLists(c, ids); err != nil {
 			return err
 		}
 	} else {
 		// For query deletion, get the list IDs the user has manage permission for.
 		hasAllPerm, permittedIDs := user.GetPermittedLists(auth.PermTypeManage)
 
-		// Delete the lists from the DB with permission filtering.
-		if err := a.core.DeleteLists(nil, query, hasAllPerm, permittedIDs); err != nil {
+		// Find the lists with permission filtering, then move them to the trash.
+		found, err := a.core.ResolveListsToDelete(nil, query, hasAllPerm, permittedIDs)
+		if err != nil {
+			return err
+		}
+		resolved := make([]int, 0, len(found))
+		for _, l := range found {
+			resolved = append(resolved, l.ID)
+		}
+		if err := a.trashLists(c, resolved); err != nil {
 			return err
 		}
 	}
@@ -249,4 +261,50 @@ func (a *App) DeleteLists(c echo.Context) error {
 	a.refreshTeamUsers()
 
 	return c.JSON(http.StatusOK, okResp{true})
+}
+
+// teamNames returns the names of the teams among the list tags.
+func teamNames(tags []string) []string {
+	out := []string{}
+	for _, t := range models.TeamTags(tags) {
+		out = append(out, models.TeamName(t))
+	}
+	return out
+}
+
+// auditListUpdate writes what a list save changed: list.update for its name, type, opt-in,
+// status, description or tags, and list.team_change for its teams.
+func (a *App) auditListUpdate(c echo.Context, old, now models.List) {
+	target := auditTarget{auditTargetList, now.ID, now.Name}
+	changed := map[string]any{}
+	if old.Name != now.Name {
+		changed["name"] = map[string]any{"from": old.Name, "to": now.Name}
+	}
+	if old.Type != now.Type {
+		changed["type"] = map[string]any{"from": old.Type, "to": now.Type}
+	}
+	if old.Optin != now.Optin {
+		changed["optin"] = map[string]any{"from": old.Optin, "to": now.Optin}
+	}
+	if old.Status != now.Status {
+		changed["status"] = map[string]any{"from": old.Status, "to": now.Status}
+	}
+	if old.Description != now.Description {
+		changed["description"] = true
+	}
+	if !sameStrings(models.WithoutTeamTags(old.Tags), models.WithoutTeamTags(now.Tags)) {
+		changed["tags"] = true
+	}
+	if (old.AxmFilter == nil) != (now.AxmFilter == nil) ||
+		(old.AxmFilter != nil && now.AxmFilter != nil && string(*old.AxmFilter) != string(*now.AxmFilter)) {
+		changed["rule"] = true
+	}
+	if len(changed) > 0 {
+		a.audit(c, auditListUpdate, target, auditNoCount, map[string]any{"changed": changed})
+	}
+	if !sameStrings(models.TeamTags(old.Tags), models.TeamTags(now.Tags)) {
+		a.audit(c, auditListTeamChange, target, auditNoCount, map[string]any{
+			"from": teamNames(old.Tags), "to": teamNames(now.Tags),
+		})
+	}
 }
