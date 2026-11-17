@@ -515,7 +515,9 @@ export default Vue.extend({
     },
 
     deleteLists() {
-      const fn = () => {
+      // count is the number of lists the delete takes (what the person typed); the number of
+      // checked rows when the lists were chosen by ID.
+      const fn = (count = this.numSelectedLists) => {
         const params = {};
         if (!this.bulk.all && this.bulk.checked.length > 0) {
           // If 'all' is not selected, delete lists by IDs.
@@ -529,7 +531,7 @@ export default Vue.extend({
         this.$api.deleteLists(params)
           .then(() => {
             this.getLists();
-            this.$utils.toast(this.$t('lists.delete.doneMany', { num: this.numSelectedLists, days: this.trashDays }));
+            this.$utils.toast(this.$t('lists.delete.doneMany', { num: count, days: this.trashDays }));
           });
       };
 
@@ -542,7 +544,7 @@ export default Vue.extend({
       // Every list a search finds: read them, so the confirmation can name them.
       const query = this.queryParams.query.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim();
       this.$api.getListsForDelete({ query }).then((resp) => {
-        this.askDelete(resp.results, resp.results.length, fn);
+        this.askDelete(resp.results, resp.results.length, () => fn(resp.results.length));
       }).catch(() => {
         this.askDelete([], this.numSelectedLists, fn);
       });

@@ -101,24 +101,37 @@ describe('list trash', () => {
     });
   });
 
+  // More lists than a page holds, so that "select all" appears and the delete goes by search,
+  // not by ID: the dialog must come from GET /api/lists/delete-preview.
   it('asks for the number the select-all delete will delete, by a search', () => {
-    const names = [1, 2, 3].map((n) => `휴지통전체${stamp}${n}`);
-    names.forEach((name) => cy.request('POST', '/api/lists', { name, type: 'private', optin: 'single', no_team: true }));
+    const total = 22;
+    const prefix = `휴지통전체${stamp}`;
+    for (let n = 1; n <= total; n += 1) {
+      cy.request('POST', '/api/lists', { name: `${prefix}-${n}`, type: 'private', optin: 'single', no_team: true });
+    }
+    cy.intercept('GET', '/api/lists/delete-preview*').as('preview');
+    cy.intercept('DELETE', '/api/lists*').as('deleteLists');
     cy.visit('/admin/lists');
-    cy.get('[data-cy=query]').type(`휴지통전체${stamp}`);
+    cy.get('[data-cy=query]').type(prefix);
     cy.get('[data-cy=btn-query]').click();
-    cy.get('tbody tr').should('have.length', 3);
+    cy.get('tbody tr').should('have.length.at.most', 20);
     cy.get('thead .b-checkbox').first().click();
-    cy.get('a[data-cy=select-all-lists]').should('not.exist'); // all three are on the page
+    cy.get('a[data-cy=select-all-lists]').should('exist').click();
     cy.get('a[data-cy=btn-delete-lists]').click();
-    cy.get('[data-cy=list-delete-confirm]').should('contain', names[0]).and('contain', names[2]);
-    cy.get('[data-cy=delete-confirm-input]').type('4');
+    cy.wait('@preview').its('request.url').should('contain', 'delete-preview');
+    cy.get('[data-cy=list-delete-confirm]').should('contain', `${total}`);
+    cy.get('[data-cy=delete-confirm-input]').type(`${total - 1}`);
     cy.get('[data-cy=btn-delete-confirm]').should('be.disabled');
-    cy.get('[data-cy=delete-confirm-input]').clear().type('3');
+    cy.get('[data-cy=delete-confirm-input]').clear().type(`${total}`);
     cy.get('[data-cy=btn-delete-confirm]').click();
+    // The delete went by search (no id in the request), and took exactly those lists.
+    cy.wait('@deleteLists').its('request.url').should('not.contain', 'id=');
     cy.request('/api/lists/trash').then(({ body }) => {
-      const trashed = body.data.results.map((l) => l.name);
-      names.forEach((n) => expect(trashed).to.include(n));
+      const trashed = body.data.results.map((l) => l.name).filter((n) => n.startsWith(prefix));
+      expect(trashed).to.have.length(total);
+    });
+    cy.request('/api/lists?per_page=all').then(({ body }) => {
+      expect(body.data.results.filter((l) => l.name.startsWith(prefix))).to.have.length(0);
     });
   });
 });
