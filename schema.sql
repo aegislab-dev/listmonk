@@ -604,6 +604,9 @@ DROP TABLE IF EXISTS axm_campaign_sends CASCADE;
 DROP TABLE IF EXISTS axm_list_draw_campaigns CASCADE;
 DROP TABLE IF EXISTS axm_list_draws CASCADE;
 DROP TABLE IF EXISTS axm_suppressed_emails CASCADE;
+DROP TABLE IF EXISTS axm_audit_log CASCADE;
+DROP TABLE IF EXISTS axm_deleted_list_subs CASCADE;
+DROP TABLE IF EXISTS axm_deleted_lists CASCADE;
 DROP TABLE IF EXISTS axm_column_presets CASCADE;
 
 -- AXM campaign send records. Keep this block identical to V6_2_1_axm_6.
@@ -1024,6 +1027,68 @@ DROP TRIGGER IF EXISTS axm_block_subscription ON subscriber_lists;
 CREATE TRIGGER axm_block_subscription BEFORE INSERT OR UPDATE ON subscriber_lists
     FOR EACH ROW WHEN (NEW.status != 'unsubscribed') EXECUTE FUNCTION axm_block_subscription();
 -- End of AXM suppressed addresses.
+
+-- AXM audit log. Keep this block identical to V6_2_1_axm_10.
+-- One row per action somebody (or the server) took that changes lists, subscribers, imports,
+-- campaigns, roles, users or settings. Who is copied in (user_id has no foreign key) so a
+-- row outlives the account. No subscriber e-mail, name or attribute value is ever stored:
+-- a subscriber is an ID or a count. Rows are only added; the screen and the API read them,
+-- and the daily job deletes the ones past the retention period.
+CREATE TABLE IF NOT EXISTS axm_audit_log (
+    id               BIGSERIAL PRIMARY KEY,
+    created_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    user_id          INTEGER NULL,
+    username         TEXT NOT NULL DEFAULT '',
+    user_name        TEXT NOT NULL DEFAULT '',
+    user_type        TEXT NOT NULL DEFAULT '',
+    action           TEXT NOT NULL,
+    target_type      TEXT NOT NULL DEFAULT '',
+    target_id        INTEGER NULL,
+    target_name      TEXT NOT NULL DEFAULT '',
+    count            INTEGER NULL,
+    detail           JSONB NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_axm_audit_created ON axm_audit_log (created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_axm_audit_action ON axm_audit_log (action);
+CREATE INDEX IF NOT EXISTS idx_axm_audit_user ON axm_audit_log (user_id);
+CREATE INDEX IF NOT EXISTS idx_axm_audit_target ON axm_audit_log (target_type, target_id);
+-- End of AXM audit log.
+
+-- AXM list trash. Keep this block identical to V6_2_1_axm_11.
+-- Deleting a list keeps what it took with it for a while: the list row, who deleted it and
+-- when, its subscriptions (subscriber ID, status, meta, dates) and the ids of the rows that
+-- pointed at it (campaign links, list role rows, draw records). Restoring puts them back.
+-- No e-mail or name is copied. A subscriber who is deleted leaves the trash with them.
+CREATE TABLE IF NOT EXISTS axm_deleted_lists (
+    list_id              INTEGER PRIMARY KEY,
+    uuid                 UUID NOT NULL,
+    name                 TEXT NOT NULL,
+    list                 JSONB NOT NULL,
+    sub_count            INTEGER NOT NULL DEFAULT 0,
+    deleted_by           INTEGER NULL,
+    deleted_by_username  TEXT NOT NULL DEFAULT '',
+    deleted_by_name      TEXT NOT NULL DEFAULT '',
+    deleted_at           TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    campaign_links       INTEGER[] NOT NULL DEFAULT '{}',
+    roles                JSONB NOT NULL DEFAULT '[]',
+    draws                INTEGER[] NOT NULL DEFAULT '{}',
+    source_draws         INTEGER[] NOT NULL DEFAULT '{}',
+    draw_campaigns       INTEGER[] NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_axm_deleted_lists_at ON axm_deleted_lists (deleted_at);
+
+CREATE TABLE IF NOT EXISTS axm_deleted_list_subs (
+    list_id          INTEGER NOT NULL REFERENCES axm_deleted_lists(list_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    subscriber_id    INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    status           subscription_status NOT NULL,
+    meta             JSONB NOT NULL DEFAULT '{}',
+    created_at       TIMESTAMP WITH TIME ZONE NULL,
+    updated_at       TIMESTAMP WITH TIME ZONE NULL,
+    PRIMARY KEY (list_id, subscriber_id)
+);
+-- The lookup that deleting a subscriber cascades through.
+CREATE INDEX IF NOT EXISTS idx_axm_deleted_list_subs_sub ON axm_deleted_list_subs (subscriber_id);
+-- End of AXM list trash.
 
 -- AXM column presets. Keep this block identical to V6_2_1_axm_12.
 -- Presets people make for the subscribers table: a name and the attribute keys to show, in order.

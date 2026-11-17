@@ -115,6 +115,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/api/settings/smtp/test", pm(a.TestSMTPSettings, "settings:manage"))
 		g.POST("/api/admin/reload", pm(a.ReloadApp, "settings:manage"))
 		g.GET("/api/logs", pm(a.GetLogs, "settings:get"))
+		g.GET("/api/audit", pm(a.GetAudit, "settings:get"))
+		g.GET("/api/audit/users", pm(a.GetAuditUsers, "settings:get"))
 		g.GET("/api/events", pm(a.EventStream, "settings:get"))
 		g.GET("/api/about", a.GetAboutInfo)
 
@@ -161,6 +163,9 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/api/lists/presets", pm(a.CreateColumnPreset, "lists:manage_all"))
 		g.PUT("/api/lists/presets/:id", pm(a.UpdateColumnPreset, "lists:manage_all"))
 		g.DELETE("/api/lists/presets/:id", pm(a.DeleteColumnPreset, "lists:manage_all"))
+		g.GET("/api/lists/trash", a.GetListTrash)
+		g.GET("/api/lists/delete-preview", a.PreviewListsDelete)
+		g.POST("/api/lists/trash/:id/restore", hasID(a.RestoreList))
 		g.GET("/api/lists/:id", hasID(a.GetList))
 		g.POST("/api/lists/dynamic/preview", a.PreviewDynamicList)
 		g.GET("/api/lists/draws", a.GetListDraws)

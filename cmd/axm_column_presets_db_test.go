@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -157,6 +158,30 @@ func TestColumnPresetsPermissions(t *testing.T) {
 	}
 	if _, names := read(admin); names != 0 {
 		t.Fatal(names)
+	}
+
+	// Each change is in the audit log with who did it; a refused call leaves nothing.
+	var rows []struct {
+		Action string `db:"action"`
+		Name   string `db:"target_name"`
+		Count  *int   `db:"count"`
+		User   string `db:"username"`
+	}
+	if err := e.db.Select(&rows, `SELECT action, target_name, count, username FROM axm_audit_log WHERE action LIKE 'preset.%' ORDER BY id`); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	for _, r := range rows {
+		seen = append(seen, r.Action)
+		if r.User == "" {
+			t.Fatalf("%s has no user", r.Action)
+		}
+	}
+	if !reflect.DeepEqual(seen, []string{"preset.create", "preset.create", "preset.update", "preset.delete"}) {
+		t.Fatalf("audit rows: %v", seen)
+	}
+	if rows[3].Count == nil || *rows[3].Count != 1 || rows[3].Name != "Sales 2" {
+		t.Fatalf("delete row: %+v", rows[3])
 	}
 
 	// The server config carries the presets (built-in first, then the others).

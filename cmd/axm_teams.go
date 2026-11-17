@@ -174,6 +174,7 @@ func (a *App) CreateTeam(c echo.Context) error {
 		return err
 	}
 	a.refreshTeamUsers()
+	a.audit(c, auditTeamCreate, auditTarget{auditTargetTeam, out.ID, out.Name}, auditNoCount, nil)
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
@@ -183,20 +184,24 @@ func (a *App) UpdateTeam(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
+	before, _ := a.core.GetTeam(getID(c))
 	out, err := a.core.UpdateTeam(getID(c), req.Name, req.UserRoleID, req.ApplyToMembers)
 	if err != nil {
 		return err
 	}
 	a.refreshTeamUsers()
+	a.auditTeamUpdated(c, before, out)
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
 // DeleteTeam deletes an empty team.
 func (a *App) DeleteTeam(c echo.Context) error {
+	before, _ := a.core.GetTeam(getID(c))
 	if err := a.core.DeleteTeam(getID(c)); err != nil {
 		return err
 	}
 	a.refreshTeamUsers()
+	a.audit(c, auditTeamDelete, auditTarget{auditTargetTeam, getID(c), before.Name}, auditNoCount, nil)
 	return c.JSON(http.StatusOK, okResp{true})
 }
 
@@ -208,11 +213,13 @@ func (a *App) SetTeamMembers(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
+	before, _ := a.core.GetTeam(getID(c))
 	out, err := a.core.SetTeamMembers(getID(c), req.UserIDs)
 	if err != nil {
 		return err
 	}
 	a.refreshTeamUsers()
+	a.auditTeamMembers(c, before, out)
 	return c.JSON(http.StatusOK, okResp{out})
 }
 

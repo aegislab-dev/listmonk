@@ -20,6 +20,7 @@ export const models = Object.freeze({
   columnPresets: 'columnPresets',
   settings: 'settings',
   logs: 'logs',
+  audit: 'audit',
   maintenance: 'maintenance',
 });
 

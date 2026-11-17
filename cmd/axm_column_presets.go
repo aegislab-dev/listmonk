@@ -2,7 +2,9 @@ package main
 
 import (
 	"net/http"
+	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
@@ -40,6 +42,8 @@ func (a *App) CreateColumnPreset(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.audit(c, auditPresetCreate, auditTarget{auditTargetPreset, presetNumber(out.ID), out.Name}, auditNoCount,
+		map[string]any{"columns": out.Columns})
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
@@ -63,10 +67,22 @@ func (a *App) UpdateColumnPreset(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
+	before, err := a.core.GetColumnPreset("u" + strconv.Itoa(id))
+	if err != nil {
+		return err
+	}
 	out, err := a.core.UpdateColumnPreset(id, req.Name, req.Columns)
 	if err != nil {
 		return err
 	}
+	d := map[string]any{}
+	if before.Name != out.Name {
+		d["name"] = map[string]any{"from": before.Name, "to": out.Name}
+	}
+	if !reflect.DeepEqual(before.Columns, out.Columns) {
+		d["columns"] = map[string]any{"from": before.Columns, "to": out.Columns}
+	}
+	a.audit(c, auditPresetUpdate, auditTarget{auditTargetPreset, id, out.Name}, auditNoCount, d)
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
@@ -76,12 +92,25 @@ func (a *App) DeleteColumnPreset(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	before, err := a.core.GetColumnPreset("u" + strconv.Itoa(id))
+	if err != nil {
+		return err
+	}
 	n, err := a.core.DeleteColumnPreset(id)
 	if err != nil {
 		return err
 	}
+	// The count is the lists that went back to the default preset.
+	a.audit(c, auditPresetDelete, auditTarget{auditTargetPreset, id, before.Name}, n,
+		map[string]any{"columns": before.Columns})
 	return c.JSON(http.StatusOK, okResp{struct {
 		Lists   int    `json:"lists"`
 		Default string `json:"default"`
 	}{n, core.DefaultColumnPreset}})
+}
+
+// presetNumber is the row ID of a preset ID like "u12" (0 when it is not one).
+func presetNumber(id string) int {
+	n, _ := strconv.Atoi(strings.TrimPrefix(id, "u"))
+	return n
 }

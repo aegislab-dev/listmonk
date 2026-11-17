@@ -693,6 +693,8 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM list draws and exclude lists. Keep this block identical to V6_2_1_axm_7.", "-- End of AXM list draws and exclude lists.", "v6.2.1-axm.7.go"},
 		{"-- AXM team roles. Keep this block identical to V6_2_1_axm_8.", "-- End of AXM team roles.", "v6.2.1-axm.8.go"},
 		{"-- AXM suppressed addresses. Keep this block identical to V6_2_1_axm_9.", "-- End of AXM suppressed addresses.", "v6.2.1-axm.9.go"},
+		{"-- AXM audit log. Keep this block identical to V6_2_1_axm_10.", "-- End of AXM audit log.", "v6.2.1-axm.10.go"},
+		{"-- AXM list trash. Keep this block identical to V6_2_1_axm_11.", "-- End of AXM list trash.", "v6.2.1-axm.11.go"},
 		{"-- AXM column presets. Keep this block identical to V6_2_1_axm_12.", "-- End of AXM column presets.", "v6.2.1-axm.12.go"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
@@ -732,6 +734,7 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		DROP TRIGGER axm_keep_blocklist ON subscribers; DROP TRIGGER axm_block_subscription ON subscriber_lists;
 		DROP FUNCTION axm_suppress_new_subscriber(); DROP FUNCTION axm_track_blocklist(); DROP FUNCTION axm_keep_blocklist();
 		DROP FUNCTION axm_block_subscription(); DROP TABLE axm_suppressed_emails; DROP FUNCTION axm_email_hash(TEXT)`)
+	db.MustExec(`DROP TABLE axm_audit_log; DROP TABLE axm_deleted_list_subs; DROP TABLE axm_deleted_lists`)
 	db.MustExec(`DROP TRIGGER axm_team_lists_sync ON lists; DROP TRIGGER axm_team_role_sync ON roles;
 		DROP FUNCTION axm_team_lists_trigger(); DROP FUNCTION axm_team_role_trigger(); DROP FUNCTION axm_sync_team_lists(INT, INT);
 		DROP INDEX idx_roles_axm_team_tag; ALTER TABLE roles DROP COLUMN axm_team_user_role_id; ALTER TABLE roles DROP COLUMN axm_team_tag`)
@@ -756,6 +759,12 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := migrations.V6_2_1_axm_9(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_10(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_11(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
