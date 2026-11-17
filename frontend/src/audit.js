@@ -5,7 +5,8 @@ export const AUDIT_AREAS = ['list', 'subscriber', 'import', 'campaign', 'access'
 
 // The actions of each area, in the order the filter shows them.
 export const AUDIT_ACTIONS = {
-  list: ['list.create', 'list.update', 'list.team_change', 'list.delete', 'list.restore', 'list.purge'],
+  list: ['list.create', 'list.update', 'list.team_change', 'list.delete', 'list.restore', 'list.purge',
+    'preset.create', 'preset.update', 'preset.delete'],
   subscriber: ['subscriber.delete', 'subscriber.blocklist', 'subscriber.lists_add', 'subscriber.lists_remove',
     'subscriber.lists_unsubscribe', 'subscriber.gc'],
   import: ['import.start', 'import.stop', 'import.finish'],

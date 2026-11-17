@@ -31,6 +31,10 @@ const (
 	auditListRestore    = "list.restore"
 	auditListPurge      = "list.purge"
 
+	auditPresetCreate = "preset.create"
+	auditPresetUpdate = "preset.update"
+	auditPresetDelete = "preset.delete"
+
 	auditSubDelete           = "subscriber.delete"
 	auditSubBlocklist        = "subscriber.blocklist"
 	auditSubListsAdd         = "subscriber.lists_add"
@@ -66,6 +70,7 @@ const (
 // Target types.
 const (
 	auditTargetList       = "list"
+	auditTargetPreset     = "preset"
 	auditTargetSubscriber = "subscriber"
 	auditTargetCampaign   = "campaign"
 	auditTargetImport     = "import"
@@ -86,7 +91,7 @@ const (
 
 // auditAreas maps an area of the audit screen to the actions' first part.
 var auditAreas = map[string][]string{
-	"list":       {"list"},
+	"list":       {"list", "preset"},
 	"subscriber": {"subscriber"},
 	"import":     {"import"},
 	"campaign":   {"campaign"},

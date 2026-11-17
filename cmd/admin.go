@@ -51,6 +51,17 @@ type serverConfig struct {
 	AxmStandardAttribs []core.StandardAttrib `json:"axm_standard_attribs"`
 }
 
+// columnPresetsForConfig returns the presets the screens need. When the database cannot be
+// read, the built-in ones go out and the error is logged.
+func (a *App) columnPresetsForConfig() []core.ColumnPreset {
+	out, err := a.core.GetColumnPresets()
+	if err != nil {
+		a.log.Printf("error reading column presets: %v", err)
+		out = append([]core.ColumnPreset{}, core.ColumnPresets...)
+	}
+	return out
+}
+
 // GetServerConfig returns general server config.
 func (a *App) GetServerConfig(c echo.Context) error {
 	out := serverConfig{
@@ -64,7 +75,7 @@ func (a *App) GetServerConfig(c echo.Context) error {
 		Permissions:    a.cfg.PermissionsRaw,
 		HasLegacyUser:  a.cfg.HasLegacyUser,
 
-		AxmColumnPresets:       core.ColumnPresets,
+		AxmColumnPresets:       a.columnPresetsForConfig(),
 		AxmDefaultColumnPreset: core.DefaultColumnPreset,
 		AxmStandardAttribs:     core.StandardAttribs,
 		Privacy: struct {

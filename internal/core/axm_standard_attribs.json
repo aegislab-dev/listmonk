@@ -22,6 +22,26 @@
   {
     "key": "industry",
     "kind": "text",
-    "aliases": ["업종", "산업", "산업군", "industry", "sector"]
+    "aliases": ["업종", "산업", "산업군", "카테고리", "분류", "대분류", "industry", "sector", "category"]
+  },
+  {
+    "key": "brand",
+    "kind": "text",
+    "aliases": ["브랜드", "브랜드명", "브랜드 이름", "회사명(브랜드명)", "brand", "brand name"]
+  },
+  {
+    "key": "website",
+    "kind": "text",
+    "aliases": ["홈페이지", "웹사이트", "웹 사이트", "회사홈페이지", "회사 홈페이지", "브랜드 홈페이지", "website", "homepage", "web site"]
+  },
+  {
+    "key": "mail_status",
+    "kind": "text",
+    "aliases": ["메일 발송여부", "메일발송여부", "메일 발송", "메일발송", "발송여부", "발송 여부", "발송 상태", "회신", "회신여부", "회신 여부", "회신 상태", "mail status", "outreach status", "reply"]
+  },
+  {
+    "key": "owner",
+    "kind": "text",
+    "aliases": ["담당", "담당자", "담당자명", "담당자 이름", "영업 담당", "영업담당", "내부 담당", "owner", "account owner", "sales owner"]
   }
 ]

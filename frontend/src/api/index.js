@@ -147,6 +147,15 @@ export const queryLists = (params) => http.get(
 // The teams on the lists the user may read, with the number of lists without a team (admins).
 export const getListTeams = () => http.get('/api/lists/teams', { disableToast: true });
 
+// Column presets of the subscribers table (LST-17). Anybody reads them; lists:manage_all edits.
+export const getColumnPresets = () => http.get('/api/lists/presets', { loading: models.columnPresets });
+
+export const createColumnPreset = (data) => http.post('/api/lists/presets', data, { loading: models.columnPresets });
+
+export const updateColumnPreset = (id, data) => http.put(`/api/lists/presets/${id}`, data, { loading: models.columnPresets });
+
+export const deleteColumnPreset = (id) => http.delete(`/api/lists/presets/${id}`, { loading: models.columnPresets });
+
 export const getTeams = () => http.get('/api/teams', { loading: models.listRoles });
 
 export const createTeam = (data) => http.post('/api/teams', data, { loading: models.listRoles });

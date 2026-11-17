@@ -30,6 +30,12 @@ const routes = [
     component: () => import('../views/Forms.vue'),
   },
   {
+    path: '/lists/presets',
+    name: 'listPresets',
+    meta: { title: 'presets.title', group: 'lists' },
+    component: () => import('../views/ColumnPresets.vue'),
+  },
+  {
     path: '/lists/trash',
     name: 'listTrash',
     meta: { title: 'lists.trash.title', group: 'lists' },

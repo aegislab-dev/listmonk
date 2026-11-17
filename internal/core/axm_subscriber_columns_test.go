@@ -134,16 +134,21 @@ func TestExportAttribColumns(t *testing.T) {
 }
 
 func TestColumnPresets(t *testing.T) {
-	if !ValidColumnPreset(DefaultColumnPreset) {
+	if _, ok := builtinPreset(DefaultColumnPreset); !ok {
 		t.Fatal("default preset is not defined")
 	}
-	if ValidColumnPreset("") || ValidColumnPreset("nope") {
-		t.Fatal("unknown preset accepted")
+	for _, id := range []string{"", "nope", "u1", "U1"} {
+		if _, ok := builtinPreset(id); ok {
+			t.Fatalf("unknown preset %q accepted", id)
+		}
 	}
 	seen := map[string]bool{}
 	for _, p := range ColumnPresets {
-		if p.ID == "" || seen[p.ID] || len(p.Columns) == 0 {
+		if p.ID == "" || seen[p.ID] || len(p.Columns) == 0 || !p.Builtin || len(builtinPresetNames[p.ID]) != 2 {
 			t.Fatalf("bad preset %+v", p)
+		}
+		if _, ok := userPresetID(p.ID); ok {
+			t.Fatalf("built-in ID %q looks like a made preset", p.ID)
 		}
 		seen[p.ID] = true
 		for _, k := range p.Columns {
@@ -152,8 +157,24 @@ func TestColumnPresets(t *testing.T) {
 			}
 		}
 	}
-	// The preset agreed for this release.
-	if !reflect.DeepEqual(ColumnPresets[0], ColumnPreset{ID: "creator", Columns: []string{"country", "follower"}}) {
-		t.Fatal(ColumnPresets[0])
+	// The presets agreed for this release (B2B follows the NEWS-40 standard names).
+	if !reflect.DeepEqual(ColumnPresets, []ColumnPreset{
+		{ID: "creator", Columns: []string{"country", "follower"}, Builtin: true},
+		{ID: "b2b", Columns: []string{"company", "brand", "title", "industry", "mail_status", "owner"}, Builtin: true},
+	}) {
+		t.Fatal(ColumnPresets)
+	}
+}
+
+func TestUserPresetID(t *testing.T) {
+	for id, want := range map[string]int{"u1": 1, "u12": 12, "u2147483647": 2147483647} {
+		if n, ok := userPresetID(id); !ok || n != want {
+			t.Fatalf("%s: %d %v", id, n, ok)
+		}
+	}
+	for _, id := range []string{"", "u", "u0", "u01", "u-1", "u+1", "u1.0", "u 1", "x1", "creator", "u99999999999999999999"} {
+		if n, ok := userPresetID(id); ok {
+			t.Fatalf("%q accepted as %d", id, n)
+		}
 	}
 }

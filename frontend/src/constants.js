@@ -17,6 +17,7 @@ export const models = Object.freeze({
   profile: 'profile',
   userRoles: 'userRoles',
   listRoles: 'listRoles',
+  columnPresets: 'columnPresets',
   settings: 'settings',
   logs: 'logs',
   audit: 'audit',

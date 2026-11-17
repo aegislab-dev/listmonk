@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   FILTER_OPS, LONG_VALUE, attribKeys, attribText, cleanCondition, conditionError, conditionValueText, newCondition,
-  presetOf,
+  hiddenDateColumns, moveItem, presetLabel, presetOf, validatePresetForm,
 } from '../src/subscriber-columns.js';
 
 const messages = (lang) => JSON.parse(readFileSync(new URL(`../../i18n/${lang}.json`, import.meta.url), 'utf8'));
@@ -87,4 +87,51 @@ test('every condition and preset the screen can show has its messages', () => {
     assert.ok(m['lists.preset.creator'], `${lang} preset name`);
   });
   assert.equal(messages('ko')['subscribers.columns.chip.gte'].replace('{key}', 'follower').replace('{value}', '500,000'), 'follower 500,000 이상');
+});
+
+const t = (key) => ({ 'lists.preset.creator': '크리에이터', 'lists.preset.b2b': 'B2B 세일즈' }[key] || key);
+
+test('presetLabel: built-in presets use i18n, made ones their own name', () => {
+  assert.equal(presetLabel({ id: 'b2b', builtin: true }, t), 'B2B 세일즈');
+  assert.equal(presetLabel({ id: 'u3', name: 'Sales ops' }, t), 'Sales ops');
+  assert.equal(presetLabel({ id: 'creator' }, t), '크리에이터');
+  assert.equal(presetLabel({ id: '' }, t), '');
+  assert.equal(presetLabel(null, t), '');
+});
+
+test('hiddenDateColumns: dates give way as attribute columns grow', () => {
+  assert.deepEqual(hiddenDateColumns(0), { updated: false, created: false });
+  assert.deepEqual(hiddenDateColumns(2), { updated: false, created: false });
+  assert.deepEqual(hiddenDateColumns(3), { updated: true, created: false });
+  assert.deepEqual(hiddenDateColumns(4), { updated: true, created: false });
+  assert.deepEqual(hiddenDateColumns(5), { updated: true, created: true });
+  assert.deepEqual(hiddenDateColumns(8), { updated: true, created: true });
+});
+
+test('validatePresetForm: name and columns rules', () => {
+  const others = [{ id: 'creator', builtin: true }, { id: 'b2b', builtin: true }, { id: 'u1', name: 'Sales ops' }];
+  const ok = { name: 'New one', columns: ['company', 'title'] };
+  assert.equal(validatePresetForm(ok, others, '', t), '');
+  assert.equal(validatePresetForm({ ...ok, name: '   ' }, others, '', t), 'invalidName');
+  assert.equal(validatePresetForm({ ...ok, name: '가'.repeat(41) }, others, '', t), 'invalidName');
+  assert.equal(validatePresetForm({ ...ok, name: '가'.repeat(40) }, others, '', t), '');
+  // Names are unique ignoring case, built-in names included, but a preset may keep its own.
+  assert.equal(validatePresetForm({ ...ok, name: 'SALES OPS' }, others, '', t), 'exists');
+  assert.equal(validatePresetForm({ ...ok, name: 'SALES OPS' }, others, 'u1', t), '');
+  assert.equal(validatePresetForm({ ...ok, name: 'b2b 세일즈' }, others, '', t), 'exists');
+  assert.equal(validatePresetForm({ ...ok, columns: [] }, others, '', t), 'columnsRequired');
+  assert.equal(validatePresetForm({ ...ok, columns: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] }, others, '', t), '');
+  assert.equal(validatePresetForm({ ...ok, columns: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'] }, others, '', t), 'tooManyColumns');
+  assert.equal(validatePresetForm({ ...ok, columns: ['a', ' a '] }, others, '', t), 'duplicateColumn');
+  assert.equal(validatePresetForm({ ...ok, columns: ['a', ' '] }, others, '', t), 'invalidColumn');
+  assert.equal(validatePresetForm({ ...ok, columns: ['k'.repeat(65)] }, others, '', t), 'invalidColumn');
+});
+
+test('moveItem: swaps with the neighbour and stops at the ends', () => {
+  const items = ['a', 'b', 'c'];
+  assert.deepEqual(moveItem(items, 1, -1), ['b', 'a', 'c']);
+  assert.deepEqual(moveItem(items, 1, 1), ['a', 'c', 'b']);
+  assert.deepEqual(moveItem(items, 0, -1), ['a', 'b', 'c']);
+  assert.deepEqual(moveItem(items, 2, 1), ['a', 'b', 'c']);
+  assert.deepEqual(items, ['a', 'b', 'c']);
 });

@@ -44,6 +44,51 @@ export function presetOf(presets, id, defaultId) {
   return all.find((p) => p.id === id) || all.find((p) => p.id === defaultId) || { id: '', columns: [] };
 }
 
+// The name shown for a preset: a preset people made has its own name, a built-in one has an
+// i18n entry (lists.preset.<id>). t is the translate function.
+export const presetLabel = (preset, t) => {
+  if (!preset || !preset.id) return '';
+  return preset.builtin || !preset.name ? t(`lists.preset.${preset.id}`) : preset.name;
+};
+
+// Which of the date columns the table leaves out so that the attribute columns fit a 1440px
+// screen: with three or more attribute columns the updated date goes (it is in the subscriber
+// form), with five or more the created date goes as well. Mobile cards show everything.
+export const hiddenDateColumns = (attribColumnCount) => ({
+  updated: attribColumnCount >= 3,
+  created: attribColumnCount >= 5,
+});
+
+export const PRESET_NAME_MAX = 40;
+export const PRESET_COLUMNS_MAX = 8;
+
+// '' or the i18n key suffix (presets.<code>) of what is wrong with a preset form
+// { name, columns }. others are the presets that exist: names are unique ignoring letter
+// case, built-in names included. selfId is the preset being edited.
+export function validatePresetForm(form, others, selfId, t) {
+  const name = (form.name || '').trim();
+  if (!name) return 'invalidName';
+  if ([...name].length > PRESET_NAME_MAX) return 'invalidName';
+  const lower = name.toLowerCase();
+  const taken = (others || []).some((p) => p.id !== selfId && presetLabel(p, t).trim().toLowerCase() === lower);
+  if (taken) return 'exists';
+  const cols = (form.columns || []).map((c) => String(c).trim());
+  if (cols.length < 1) return 'columnsRequired';
+  if (cols.length > PRESET_COLUMNS_MAX) return 'tooManyColumns';
+  if (cols.some((c) => !c || [...c].length > 64)) return 'invalidColumn';
+  if (new Set(cols).size !== cols.length) return 'duplicateColumn';
+  return '';
+}
+
+// Moves the item at index by delta (-1 up, +1 down) and returns a new array.
+export function moveItem(items, index, delta) {
+  const to = index + delta;
+  if (to < 0 || to >= items.length) return items.slice();
+  const out = items.slice();
+  [out[index], out[to]] = [out[to], out[index]];
+  return out;
+}
+
 export const newCondition = (key = '') => ({ key, op: 'eq', value: '' });
 
 const asForm = (condition) => ({ base: { type: 'all' }, match: 'all', conditions: [condition] });

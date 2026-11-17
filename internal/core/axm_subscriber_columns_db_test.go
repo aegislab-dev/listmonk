@@ -226,17 +226,15 @@ func TestSubscriberColumnsDBFilter(t *testing.T) {
 func TestSubscriberColumnsDBPresets(t *testing.T) {
 	db, q, _ := dynamicTestDB(t)
 	c := columnsTestCore(t, db, q)
-	// A second preset exists only for this test, to cover choosing and inheriting one.
-	saved := ColumnPresets
-	ColumnPresets = append(append([]ColumnPreset{}, saved...), ColumnPreset{ID: "testb2b", Columns: []string{"company"}})
-	t.Cleanup(func() { ColumnPresets = saved })
+	// A second preset to cover choosing and inheriting one: the built-in b2b one.
+	const b2bPreset = "b2b"
 
 	plain, err := c.CreateList(models.List{Name: "plain"})
 	if err != nil || plain.AxmPreset != DefaultColumnPreset {
 		t.Fatal(plain.AxmPreset, err)
 	}
-	b2b, err := c.CreateList(models.List{Name: "b2b", AxmPreset: "testb2b"})
-	if err != nil || b2b.AxmPreset != "testb2b" {
+	b2b, err := c.CreateList(models.List{Name: "b2b", AxmPreset: b2bPreset})
+	if err != nil || b2b.AxmPreset != b2bPreset {
 		t.Fatal(b2b.AxmPreset, err)
 	}
 	if _, err := c.CreateList(models.List{Name: "bad", AxmPreset: "nope"}); err == nil {
@@ -258,7 +256,7 @@ func TestSubscriberColumnsDBPresets(t *testing.T) {
 		}
 		return out
 	}
-	if got := dyn("inherits", "", b2b.ID, plain.ID).AxmPreset; got != "testb2b" {
+	if got := dyn("inherits", "", b2b.ID, plain.ID).AxmPreset; got != b2bPreset {
 		t.Fatal(got)
 	}
 	if got := dyn("first base wins", "", plain.ID, b2b.ID).AxmPreset; got != DefaultColumnPreset {
@@ -272,7 +270,7 @@ func TestSubscriberColumnsDBPresets(t *testing.T) {
 	}
 	// Editing keeps the preset unless one is given, and refuses an unknown one.
 	up, err := c.UpdateList(b2b.ID, models.List{Name: "b2b renamed"})
-	if err != nil || up.AxmPreset != "testb2b" || up.Name != "b2b renamed" {
+	if err != nil || up.AxmPreset != b2bPreset || up.Name != "b2b renamed" {
 		t.Fatal(up.AxmPreset, up.Name, err)
 	}
 	up, err = c.UpdateList(b2b.ID, models.List{Name: "b2b renamed", AxmPreset: DefaultColumnPreset})
@@ -285,7 +283,7 @@ func TestSubscriberColumnsDBPresets(t *testing.T) {
 	// The base list changing later does not change the dynamic list.
 	var got string
 	db.Get(&got, `SELECT axm_preset FROM lists WHERE name='inherits'`)
-	if got != "testb2b" {
+	if got != b2bPreset {
 		t.Fatal(got)
 	}
 	// Lists read through the other list queries carry the preset too.
@@ -294,7 +292,7 @@ func TestSubscriberColumnsDBPresets(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, l := range all {
-		if !ValidColumnPreset(l.AxmPreset) {
+		if !c.ValidColumnPreset(l.AxmPreset) {
 			t.Fatalf("%s: %q", l.Name, l.AxmPreset)
 		}
 	}

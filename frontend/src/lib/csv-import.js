@@ -127,9 +127,9 @@ export function parseCSV(text, { delimiter = '', header = true } = {}) {
 }
 
 // Common Korean list headers. Spaces are ignored when a label is looked up. The standard
-// attributes (country, follower, company, title, industry) are not here: their column names
+// attributes (country, follower, company, title, industry, brand, website, mail_status, owner) are not here: their column names
 // come from the server's dictionary and are matched first.
-const FIELDS = { email: ['이메일', '메일', '메일주소', '이메일주소', 'e-mail', 'email'], name: ['이름', '성함', '성명', 'name'], discard: ['메모', '비고'] };
+const FIELDS = { email: ['이메일', '메일', '메일주소', '이메일주소', '대표이메일', '대표메일', '담당자이메일', 'e-mail', 'email'], name: ['이름', '성함', '성명', 'name'], discard: ['메모', '비고'] };
 const KEYS = {
   department: ['부서', '부서명'],
   phone: ['전화', '전화번호', '연락처', '휴대폰', '휴대폰번호', '휴대전화', '핸드폰'],
