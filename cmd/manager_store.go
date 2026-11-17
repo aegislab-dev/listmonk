@@ -61,11 +61,11 @@ func newManagerStore(q *models.Queries, c *core.Core, m media.Store, db *sqlx.DB
 }
 
 // NextCampaigns retrieves active campaigns ready to be processed excluding
-// campaigns that are also being processed. Additionally, it takes a map of campaignID:sentCount
-// of campaigns that are being processed and updates them in the DB.
-func (s *store) NextCampaigns(currentIDs []int64, sentCounts []int64) ([]*models.Campaign, error) {
+// campaigns that are also being processed. Progress saves own sent counts;
+// discovery must not update them, as Select can fail after the SQL commits.
+func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
 	var out []*models.Campaign
-	err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs), pq.Int64Array(sentCounts))
+	err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs))
 	return out, err
 }
 

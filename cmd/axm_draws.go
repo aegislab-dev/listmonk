@@ -76,6 +76,10 @@ func (a *App) DrawList(c echo.Context) error {
 		return err
 	}
 	a.refreshTeamUsers()
+	a.audit(c, auditListCreate, auditTarget{auditTargetList, list.ID, list.Name}, list.SubscriberCount, map[string]any{
+		"type": list.Type, "optin": list.Optin, "teams": teamNames(list.Tags),
+		"drawn_from": map[string]any{"id": getID(c), "name": draw.SourceName},
+	})
 	return c.JSON(http.StatusOK, okResp{struct {
 		List models.List     `json:"list"`
 		Draw models.ListDraw `json:"draw"`

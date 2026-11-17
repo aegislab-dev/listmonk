@@ -571,11 +571,11 @@ func (d *deadStore) ReleaseCampaignLock() {
 	}
 }
 
-func (d *deadStore) NextCampaigns(ids []int64, counts []int64) ([]*models.Campaign, error) {
+func (d *deadStore) NextCampaigns(ids []int64) ([]*models.Campaign, error) {
 	if d.dead.Load() {
 		return nil, errDead
 	}
-	return d.store.NextCampaigns(ids, counts)
+	return d.store.NextCampaigns(ids)
 }
 
 func (d *deadStore) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscriber, error) {
@@ -1506,7 +1506,7 @@ func TestSendRecordMigration(t *testing.T) {
 // The migration is registered last and the list stays in semver order.
 func TestSendRecordMigrationRegistered(t *testing.T) {
 	last := migList[len(migList)-1]
-	if last.version != "v6.2.1-axm.9" {
+	if last.version != "v6.2.1-axm.12" {
 		t.Fatalf("last migration is %s", last.version)
 	}
 	for i := 1; i < len(migList); i++ {

@@ -414,7 +414,7 @@ describe('CSV column mapping with the real Worker and import API', () => {
   it('suggests the standard names and stores country codes and follower numbers', () => {
     cy.request('/api/config').then(({ body }) => {
       expect(body.data.axm_standard_attribs.map(({ key, kind }) => `${key}:${kind}`)).to.deep.eq(
-        ['country:country', 'follower:integer', 'company:text', 'title:text', 'industry:text'],
+        ['country:country', 'follower:integer', 'company:text', 'title:text', 'industry:text', 'brand:text', 'website:text', 'mail_status:text', 'owner:text'],
       );
     });
     inlineFile([
@@ -463,7 +463,7 @@ describe('CSV column mapping with the real Worker and import API', () => {
     cy.get('[data-cy=map-preview] tbody tr').should('have.length', 7);
     cy.get('[data-cy=map-std-help]').should('not.have.attr', 'open');
     cy.get('[data-cy=map-std-help] summary').click();
-    cy.get('[data-cy=map-std-help] tbody tr').should('have.length', 5).first().should('contain', 'country').and('contain', 'region');
+    cy.get('[data-cy=map-std-help] tbody tr').should('have.length', 9).first().should('contain', 'country').and('contain', 'region');
     importRows(7);
     subscriber(`std-a-${listId}@example.invalid`).its('attribs').should('deep.eq', {
       country: 'US', follower: 14900, company: '(주)가상', title: '대표', industry: '뷰티',

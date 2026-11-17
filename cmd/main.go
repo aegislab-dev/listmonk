@@ -53,6 +53,10 @@ type App struct {
 	log        *log.Logger
 	bufLog     *buflog.BufLog
 
+	// Who started the import that runs now (see axm_import_audit.go).
+	importMu sync.Mutex
+	importBy importActor
+
 	about         about
 	fnOptinNotify func(models.Subscriber, []int) (int, error)
 
@@ -303,6 +307,8 @@ func main() {
 		// If there are no users, then the app needs to prompt for new user setup.
 		needsUserSetup: !hasUsers,
 	}
+
+	importAuditHook = app.auditImportFinish
 
 	// Star the update checker.
 	if ko.Bool("app.check_updates") {

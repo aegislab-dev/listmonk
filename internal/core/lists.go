@@ -218,7 +218,7 @@ func (c *Core) UpdateList(id int, l models.List) (models.List, error) {
 		}
 	}
 	// An empty preset keeps the one the list has.
-	if l.AxmPreset != "" && !ValidColumnPreset(l.AxmPreset) {
+	if l.AxmPreset != "" && !c.ValidColumnPreset(l.AxmPreset) {
 		return models.List{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("lists.preset.invalid"))
 	}
 	res, err := c.q.UpdateList.Exec(id, l.Name, l.Type, l.Optin, l.Status, pq.StringArray(normalizeTags(l.Tags)), l.Description, l.AxmFilter, l.AxmPreset)

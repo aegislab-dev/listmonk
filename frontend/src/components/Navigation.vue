@@ -8,6 +8,8 @@
       :label="$t('globals.terms.lists')">
       <b-menu-item :to="{ name: 'lists' }" tag="router-link" :active="activeItem.lists" data-cy="all-lists"
         icon="format-list-bulleted-square" :label="$t('menu.allLists')" />
+      <b-menu-item :to="{ name: 'listPresets' }" tag="router-link" :active="activeItem.listPresets"
+        data-cy="list-presets" icon="text" :label="$t('presets.title')" />
       <b-menu-item :to="{ name: 'forms' }" tag="router-link" :active="activeItem.forms" class="forms"
         icon="newspaper-variant-outline" :label="$t('menu.forms')" />
     </b-menu-item><!-- lists -->
@@ -64,6 +66,8 @@
         :active="activeItem.maintenance" data-cy="maintenance" icon="wrench-outline" :label="$t('menu.maintenance')" />
       <b-menu-item v-if="$can('settings:get')" :to="{ name: 'logs' }" tag="router-link" :active="activeItem.logs"
         data-cy="logs" icon="format-list-bulleted-square" :label="$t('menu.logs')" />
+      <b-menu-item v-if="$can('settings:get')" :to="{ name: 'audit' }" tag="router-link" :active="activeItem.audit"
+        data-cy="audit" icon="file-find-outline" :label="$t('menu.audit')" />
     </b-menu-item><!-- settings -->
   </b-menu-list>
 </template>

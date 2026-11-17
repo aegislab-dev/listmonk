@@ -1043,6 +1043,57 @@ section.lists {
     td.actions a {
       margin: 0 6px;
     }
+    /* Four or more attribute columns share the width: each may be a little narrower (9.5rem). */
+    &.attrib-many td.attrib-cell {
+      max-width: 9.5rem;
+    }
+    /* Five or more: narrower still, so that six columns (the B2B preset) fit in 1440px. */
+    &.attrib-most td.attrib-cell {
+      max-width: 8rem;
+    }
+    /* ... closer together and with a smaller filter button, so that six columns (the B2B
+       preset) fit in 1440px with room to spare even where the page has a classic scrollbar
+       (15px less, as on Windows). The room is checked by a browser test. */
+    &.attrib-most th.attrib-head, &.attrib-most td.attrib-cell {
+      padding-left: .5em;
+      padding-right: .5em;
+    }
+    &.attrib-most th.attrib-head .attrib-head-filter {
+      margin-left: 0;
+      padding: 0;
+
+      .axm-icon {
+        width: .9em;
+        height: .9em;
+      }
+    }
+  }
+
+  /* When the table still scrolls sideways, the row buttons (download, edit, delete) stay
+     at the right edge instead of scrolling away. */
+  @media screen and (min-width: 769px) {
+    /* With five or more attribute columns the count of lists is left out (the lists are the
+       tags under the e-mail): it is 55-65px that the attribute columns need. */
+    .subscribers-table.attrib-most {
+      th.cy-lists, td.sub-lists-cell {
+        display: none;
+      }
+    }
+    .subscribers-table.is-wide {
+      th:last-child, td.actions {
+        position: sticky;
+        right: 0;
+        z-index: 1;
+        background: #fff;
+        box-shadow: -8px 0 8px -8px rgba(0, 0, 0, .25);
+      }
+      tbody tr:hover td.actions {
+        background: #fafafa;
+      }
+      thead th:last-child {
+        background: #fafafa;
+      }
+    }
   }
 
   @media screen and (max-width: 768px) {
@@ -1810,5 +1861,49 @@ th.role-toggle-select a {
   .page-header .button {
     display: inline-block;
     width: auto;
+  }
+}
+
+/* Audit log and list trash (LST-27) */
+.audit {
+  .audit-filters {
+    margin-bottom: 0.5rem;
+  }
+
+  .audit-detail {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 1.25rem;
+    margin: 0;
+    font-size: 0.9em;
+
+    dt {
+      color: $grey;
+    }
+
+    dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  .tag.audit-list { background: #e8f1fb; color: #1d5fa8; }
+  .tag.audit-subscriber { background: #fdeee0; color: #a5560f; }
+  .tag.audit-import { background: #eee8fb; color: #5a3aa8; }
+  .tag.audit-campaign { background: #e3f6ec; color: #16724a; }
+  .tag.audit-access { background: #fbe8ee; color: #a8244f; }
+  .tag.audit-settings { background: #eceff3; color: #44505c; }
+}
+
+.other-team-warn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: #c8381a;
+  color: #fff;
+  font-size: 1.05em;
+
+  strong, .icon {
+    color: #fff;
   }
 }

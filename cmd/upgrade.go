@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -54,6 +55,9 @@ var migList = []migFunc{
 	{"v6.2.1-axm.7", migrations.V6_2_1_axm_7},
 	{"v6.2.1-axm.8", migrations.V6_2_1_axm_8},
 	{"v6.2.1-axm.9", migrations.V6_2_1_axm_9},
+	{"v6.2.1-axm.10", migrations.V6_2_1_axm_10},
+	{"v6.2.1-axm.11", migrations.V6_2_1_axm_11},
+	{"v6.2.1-axm.12", migrations.V6_2_1_axm_12},
 }
 
 // upgrade upgrades the database to the current version by running SQL migration files
@@ -129,41 +133,69 @@ func checkUpgrade(db *sqlx.DB) {
 		len(toRun), vers, lastVer)
 }
 
-// getPendingMigrations gets the pending migrations by comparing the last
-// recorded migration in the DB against all migrations listed in `migrations`.
+// getPendingMigrations gets the pending migrations by comparing the migrations recorded
+// in the DB against all migrations listed in `migrations`. It returns the highest recorded
+// semver and the migrations to run, in list order.
 func getPendingMigrations(db *sqlx.DB) (string, []migFunc, error) {
-	lastVer, err := getLastMigrationVersion(db)
+	recorded, err := getRecordedMigrations(db)
 	if err != nil {
 		return "", nil, err
 	}
-
-	// Iterate through the migration versions and get everything above the last
-	// upgraded semver.
-	var toRun []migFunc
-	for i, m := range migList {
-		if semver.Compare(m.version, lastVer) > 0 {
-			toRun = migList[i:]
-			break
+	last := "v0.0.0"
+	for _, v := range recorded {
+		if semver.Compare(v, last) > 0 {
+			last = v
 		}
 	}
-
-	return lastVer, toRun, nil
+	return last, pendingMigrations(migList, recorded), nil
 }
 
-// getLastMigrationVersion returns the last migration semver recorded in the DB.
-// If there isn't any, `v0.0.0` is returned.
-func getLastMigrationVersion(db *sqlx.DB) (string, error) {
-	var v string
-	if err := db.Get(&v, `
-		SELECT COALESCE(
-			(SELECT value->>-1 FROM settings WHERE key='migrations'),
-		'v0.0.0')`); err != nil {
-		if isTableNotExistErr(err) {
-			return "v0.0.0", nil
+// pendingMigrations picks the migrations to run. Upstream's rule is "everything above the
+// last recorded version". The fork keeps that and adds one more: a migration that was never
+// recorded and is above the oldest recorded version runs too, even if a higher number was
+// recorded first. Fork migration numbers are handed out per task (LST-17's .12 was released
+// before LST-27's .10 and .11, say), so a database at .12 must still get .10 and .11 when
+// they arrive. A migration below the oldest recorded version belongs to history from before
+// this database was installed and is skipped, as a new install records only its last version.
+func pendingMigrations(list []migFunc, recorded []string) []migFunc {
+	done := map[string]bool{}
+	oldest, newest := "", "v0.0.0"
+	for _, v := range recorded {
+		done[v] = true
+		if oldest == "" || semver.Compare(v, oldest) < 0 {
+			oldest = v
 		}
-		return v, err
+		if semver.Compare(v, newest) > 0 {
+			newest = v
+		}
 	}
-	return v, nil
+	if oldest == "" {
+		oldest = "v0.0.0"
+	}
+	var toRun []migFunc
+	for _, m := range list {
+		if semver.Compare(m.version, newest) > 0 || (!done[m.version] && semver.Compare(m.version, oldest) > 0) {
+			toRun = append(toRun, m)
+		}
+	}
+	return toRun
+}
+
+// getRecordedMigrations returns every migration version recorded in the DB, oldest first as
+// recorded. There is none before v0.7.0 or on a database that was never installed.
+func getRecordedMigrations(db *sqlx.DB) ([]string, error) {
+	var raw []byte
+	if err := db.Get(&raw, `SELECT COALESCE((SELECT value FROM settings WHERE key='migrations'), '[]'::JSONB)`); err != nil {
+		if isTableNotExistErr(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("error reading the recorded migrations: %v", err)
+	}
+	return out, nil
 }
 
 // isTableNotExistErr checks if the given error represents a Postgres/pq

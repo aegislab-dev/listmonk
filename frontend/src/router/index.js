@@ -30,6 +30,18 @@ const routes = [
     component: () => import('../views/Forms.vue'),
   },
   {
+    path: '/lists/presets',
+    name: 'listPresets',
+    meta: { title: 'presets.title', group: 'lists' },
+    component: () => import('../views/ColumnPresets.vue'),
+  },
+  {
+    path: '/lists/trash',
+    name: 'listTrash',
+    meta: { title: 'lists.trash.title', group: 'lists' },
+    component: () => import('../views/ListTrash.vue'),
+  },
+  {
     path: '/lists/:id',
     name: 'list',
     meta: { title: 'globals.terms.lists', group: 'lists' },
@@ -112,6 +124,12 @@ const routes = [
     name: 'logs',
     meta: { title: 'logs.title', group: 'settings' },
     component: () => import('../views/Logs.vue'),
+  },
+  {
+    path: '/settings/audit',
+    name: 'audit',
+    meta: { title: 'audit.title', group: 'settings' },
+    component: () => import('../views/Audit.vue'),
   },
   {
     path: '/users',

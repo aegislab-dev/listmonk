@@ -147,6 +147,15 @@ export const queryLists = (params) => http.get(
 // The teams on the lists the user may read, with the number of lists without a team (admins).
 export const getListTeams = () => http.get('/api/lists/teams', { disableToast: true });
 
+// Column presets of the subscribers table (LST-17). Anybody reads them; lists:manage_all edits.
+export const getColumnPresets = () => http.get('/api/lists/presets', { loading: models.columnPresets });
+
+export const createColumnPreset = (data) => http.post('/api/lists/presets', data, { loading: models.columnPresets });
+
+export const updateColumnPreset = (id, data) => http.put(`/api/lists/presets/${id}`, data, { loading: models.columnPresets });
+
+export const deleteColumnPreset = (id) => http.delete(`/api/lists/presets/${id}`, { loading: models.columnPresets });
+
 export const getTeams = () => http.get('/api/teams', { loading: models.listRoles });
 
 export const createTeam = (data) => http.post('/api/teams', data, { loading: models.listRoles });
@@ -182,6 +191,26 @@ export const deleteList = (id) => http.delete(
   `/api/lists/${id}`,
   { loading: models.lists },
 );
+
+// The lists a delete by search reaches: the server answers with the ones the delete itself would
+// delete (id, name), and the full rows (tags, subscriber counts) are read for those, for the
+// delete confirmation.
+export const getListsForDelete = async (params) => {
+  const hit = await http.get('/api/lists/delete-preview', { params, disableToast: true });
+  const ids = new Set(hit.map((l) => l.id));
+  const all = await http.get('/api/lists', { params: { per_page: 'all' }, disableToast: true });
+  return { results: all.results.filter((l) => ids.has(l.id)) };
+};
+
+// The list trash (LST-27).
+export const getListTrash = () => http.get('/api/lists/trash', { loading: models.lists });
+
+export const restoreList = (id) => http.post(`/api/lists/trash/${id}/restore`, null, { loading: models.lists });
+
+// The audit log (LST-27).
+export const getAudit = (params) => http.get('/api/audit', { params, loading: models.audit, camelCase: false });
+
+export const getAuditUsers = () => http.get('/api/audit/users', { camelCase: false, disableToast: true });
 
 export const deleteLists = (params) => http.delete(
   '/api/lists',

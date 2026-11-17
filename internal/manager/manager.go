@@ -55,7 +55,9 @@ var ErrCampaignNotRunning = errors.New("campaign is not running")
 // Store represents a data backend, such as a database,
 // that provides subscriber and campaign records.
 type Store interface {
-	NextCampaigns(currentIDs []int64, sentCounts []int64) ([]*models.Campaign, error)
+	// NextCampaigns discovers campaigns excluding currentIDs. Sent counts are
+	// saved separately; a query error may occur after its SQL has committed.
+	NextCampaigns(currentIDs []int64) ([]*models.Campaign, error)
 
 	// NextSubscribers returns the next batch of a running campaign's subscribers
 	// after the subscriber ID lastSubID, in ascending ID order. AXM (LST-20): the
@@ -620,8 +622,7 @@ func (m *Manager) scanCampaigns(tick time.Duration) {
 			continue
 		}
 
-		ids, counts := m.getCurrentCampaigns()
-		campaigns, err := m.store.NextCampaigns(ids, counts)
+		campaigns, err := m.nextCampaigns()
 		if err != nil {
 			m.log.Printf("error fetching campaigns: %v", err)
 			continue
@@ -754,6 +755,11 @@ func (m *Manager) worker() {
 				msg.pipe.prog.done(msg.Subscriber.ID, err == nil)
 				if err == nil {
 					msg.pipe.sent.Add(1)
+					msg.pipe.rate.Incr(1)
+				} else {
+					// Settle the error threshold before releasing cleanup. The
+					// last message may be the one that pauses the campaign.
+					msg.pipe.OnError()
 				}
 
 				// Test seam (AXM, LST-25): the point where the campaign's cleanup
@@ -764,14 +770,6 @@ func (m *Manager) worker() {
 
 				// Mark the message as done.
 				msg.pipe.wg.Done()
-
-				if err != nil {
-					// Call the error callback, which keeps track of the error count
-					// and stops the campaign if the error count exceeds the threshold.
-					msg.pipe.OnError()
-				} else {
-					msg.pipe.rate.Incr(1)
-				}
 			}
 			m.inflight.Add(-1)
 
@@ -789,28 +787,18 @@ func (m *Manager) worker() {
 	}
 }
 
-// getCurrentCampaigns returns the IDs of campaigns currently being processed
-// and their sent counts.
-func (m *Manager) getCurrentCampaigns() ([]int64, []int64) {
-	// Needs to return an empty slice in case there are no campaigns.
+// nextCampaigns discovers campaigns without taking any sent counts. The periodic
+// progress saver, cleanup and Close own those counts, so even a query that commits
+// and then fails while reading rows cannot lose or replay a sent increment.
+func (m *Manager) nextCampaigns() ([]*models.Campaign, error) {
 	m.pipesMut.RLock()
-	defer m.pipesMut.RUnlock()
-
-	var (
-		ids    = make([]int64, 0, len(m.pipes))
-		counts = make([]int64, 0, len(m.pipes))
-	)
+	// The query needs an empty slice rather than NULL when no campaigns run.
+	ids := make([]int64, 0, len(m.pipes))
 	for _, p := range m.pipes {
 		ids = append(ids, int64(p.camp.ID))
-
-		// Get the sent counts for campaigns and reset them to 0
-		// as in the database, they're stored cumulatively (sent += $newSent).
-		// AXM (LST-20): in one step. The progress saver takes the count the same
-		// way, and a separate load and store would let both write it.
-		counts = append(counts, p.sent.Swap(0))
 	}
-
-	return ids, counts
+	m.pipesMut.RUnlock()
+	return m.store.NextCampaigns(ids)
 }
 
 // trackLink register a URL and return its UUID to be used in message templates

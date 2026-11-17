@@ -45,9 +45,13 @@ describe('subscriber attribute columns', () => {
     cy.viewport(1440, 1000);
   });
 
-  it('gives every list the creator preset and offers no choice while there is only one', () => {
+  it('gives every list the creator preset and offers the choice of presets', () => {
     cy.request('/api/config').its('body.data').should((cfg) => {
-      expect(cfg.axm_column_presets).to.deep.eq([{ id: 'creator', columns: ['country', 'follower'] }]);
+      // The built-in presets come first; presets people made (column-presets.cy.js) follow.
+      expect(cfg.axm_column_presets.slice(0, 2).map(({ id, columns }) => ({ id, columns }))).to.deep.eq([
+        { id: 'creator', columns: ['country', 'follower'] },
+        { id: 'b2b', columns: ['company', 'brand', 'title', 'industry', 'mail_status', 'owner'] },
+      ]);
       expect(cfg.axm_default_column_preset).to.eq('creator');
     });
     cy.request(`/api/lists/${displayId}`).its('body.data.axm_preset').should('eq', 'creator');
@@ -70,11 +74,12 @@ describe('subscriber attribute columns', () => {
 
     cy.visit(`/admin/lists/${displayId}`);
     cy.get('[data-cy=btn-save]').should('be.visible');
-    cy.get('[data-cy=list-preset]').should('not.exist');
+    cy.get('[data-cy=list-preset]').should('have.value', 'creator');
+    cy.get('[data-cy=list-preset] option').should('have.length.at.least', 2);
     cy.visit('/admin/lists');
     cy.get('[data-cy=btn-new]').click();
     cy.get('[data-cy=list-composition]').select('dynamic');
-    cy.get('[data-cy=list-preset]').should('not.exist');
+    cy.get('[data-cy=list-preset]').should('have.value', 'creator');
   });
 
   it('shows the preset columns with a dash for missing values, before and after country is filled in', () => {
@@ -82,7 +87,8 @@ describe('subscriber attribute columns', () => {
     cy.get('[data-cy=count]').should('have.text', '5');
     cy.get('thead th.attrib-head').then(($th) => [...$th].map((th) => th.innerText.trim()))
       .should('deep.eq', ['country', 'follower']);
-    cy.get('[data-cy=column-preset]').should('not.exist');
+    // With more than one preset the page says which one the list has.
+    cy.get('[data-cy=column-preset] .column-preset-keys').should('have.text', 'country · follower');
     cy.get('[data-cy=btn-columns]').should('not.exist');
     // Nobody has a country yet: the column is there and every cell is a dash.
     cells('country').should('have.length', 5).each(($td) => {
@@ -295,7 +301,7 @@ describe('subscriber attribute columns', () => {
 
   it('offers the standard attributes for a condition and points at the country code', () => {
     cy.request('/api/config').its('body.data.axm_standard_attribs').should((dictionary) => {
-      expect(dictionary.map(({ key }) => key)).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
+      expect(dictionary.map(({ key }) => key)).to.deep.eq(['country', 'follower', 'company', 'title', 'industry', 'brand', 'website', 'mail_status', 'owner']);
       // Every column a preset shows is a standard attribute.
       expect(dictionary.find(({ key }) => key === 'follower').kind).to.eq('integer');
     });

@@ -83,11 +83,18 @@
         <p v-if="filterError" role="alert" class="help is-danger">{{ filterError }}</p>
         <!-- Shown only when there is a choice to make: with one preset every list has it. -->
         <b-field v-if="presets.length > 1" :label="$t('lists.preset.label')" label-position="on-border"
-          :message="presetHelp">
+          >
+          <template #message>
+            {{ presetHelp }}
+            <router-link v-if="$can('lists:manage_all')" :to="{ name: 'listPresets' }" data-cy="list-preset-manage"
+              @click.native="$parent.close()">
+              {{ $t('presets.manageLink') }}
+            </router-link>
+          </template>
           <b-select v-model="preset" expanded data-cy="list-preset" :disabled="!canSave"
             @input="presetTouched = true">
             <option v-for="p in presets" :key="p.id" :value="p.id">
-              {{ $t(`lists.preset.${p.id}`) }} — {{ p.columns.join(', ') }}
+              {{ presetName(p) }} — {{ p.columns.join(', ') }}
             </option>
           </b-select>
         </b-field>
@@ -182,6 +189,7 @@ import { recordSettings } from '../list-draw';
 import {
   NO_TEAM, plainTags, tagsForSave, teamName, teamTags,
 } from '../teams';
+import { presetLabel } from '../subscriber-columns';
 
 export default Vue.extend({
   name: 'ListForm',
@@ -224,6 +232,10 @@ export default Vue.extend({
   },
 
   methods: {
+    presetName(p) {
+      return presetLabel(p, this.$t.bind(this));
+    },
+
     loadDraws() {
       if (!this.isEditing || !this.data.id) return;
       this.$api.getListDraws({ source_id: this.data.id }).then((rows) => { this.sourceDraws = rows || []; }).catch(() => {});
@@ -395,6 +407,8 @@ export default Vue.extend({
 
   mounted() {
     this.form = { ...this.form, ...this.$props.data };
+    // A list whose preset was deleted meanwhile is shown with the default one.
+    if (this.preset && !this.presets.some((p) => p.id === this.preset)) this.preset = this.serverConfig.axm_default_column_preset;
     // The team tags are chosen in the team field, not typed in the tag input.
     this.form.tags = plainTags(this.data.tags);
     if (this.isEditing && this.currentTeamTags.length === 1) [this.teamChoice] = this.currentTeamTags;

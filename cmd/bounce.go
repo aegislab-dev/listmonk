@@ -113,9 +113,15 @@ func (a *App) DeleteBounce(c echo.Context) error {
 
 // BlocklistBouncedSubscribers handles blocklisting of all bounced subscribers.
 func (a *App) BlocklistBouncedSubscribers(c echo.Context) error {
+	n, err := a.core.CountBouncedSubscribers()
+	if err != nil {
+		a.log.Printf("error counting bounced subscribers for the audit log: %v", err)
+		n = auditNoCount
+	}
 	if err := a.core.BlocklistBouncedSubscribers(); err != nil {
 		return err
 	}
+	a.audit(c, auditSubBlocklist, auditTarget{Type: auditTargetSubscriber}, n, map[string]any{"via": "bounces"})
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
