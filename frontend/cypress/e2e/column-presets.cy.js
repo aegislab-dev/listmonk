@@ -222,6 +222,18 @@ describe('column presets', () => {
       cy.get('thead th.cy-created_at').should('not.exist');
       cy.get('[data-cy=table-wide-hint]').should('not.exist');
       wrapper().should(($w) => expect($w[0].scrollWidth).to.be.at.most($w[0].clientWidth + 1));
+      // The room that is left, whatever the fonts and the scrollbar (classic scrollbars take
+      // 15px): the narrowest the table can get is at least 40px under the width of its box.
+      wrapper().should(($w) => {
+        const table = $w.find('table')[0];
+        const before = table.style.width;
+        table.style.width = 'min-content';
+        const needed = table.getBoundingClientRect().width;
+        table.style.width = before;
+        expect(needed, 'narrowest width of the table').to.be.at.most($w[0].clientWidth - 40);
+      });
+      // With five or more attribute columns the count of lists is left out.
+      cy.get('thead th.cy-lists').should('not.be.visible');
       cy.get('td.actions').first().invoke('css', 'position').should('eq', 'static');
     });
 

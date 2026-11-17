@@ -234,7 +234,8 @@
         </a>
       </b-table-column>
 
-      <b-table-column v-slot="props" field="lists" :label="$t('globals.terms.lists')" header-class="cy-lists" centered>
+      <b-table-column v-slot="props" field="lists" :label="$t('globals.terms.lists')" header-class="cy-lists"
+        cell-class="sub-lists-cell" centered>
         {{ listCount(props.row.lists) }}
       </b-table-column>
 
