@@ -571,11 +571,11 @@ func (d *deadStore) ReleaseCampaignLock() {
 	}
 }
 
-func (d *deadStore) NextCampaigns(ids []int64, counts []int64) ([]*models.Campaign, error) {
+func (d *deadStore) NextCampaigns(ids []int64) ([]*models.Campaign, error) {
 	if d.dead.Load() {
 		return nil, errDead
 	}
-	return d.store.NextCampaigns(ids, counts)
+	return d.store.NextCampaigns(ids)
 }
 
 func (d *deadStore) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscriber, error) {
