@@ -176,6 +176,8 @@ SELECT EXISTS (
 -- to be processed. It updates the to_send count and max_subscriber_id of the campaign,
 -- that is, the total number of subscribers to be processed across all lists of a campaign.
 -- Thus, it has a sideaffect.
+-- Sent counts are saved separately by the manager's progress saver. Do not update
+-- them here: Go can fail to read the result rows after this statement commits.
 -- In addition, it finds the max_subscriber_id, the upper limit across all lists of
 -- a campaign. This is used to fetch and slice subscribers for the campaign in next-campaign-subscribers.
 WITH camps AS (
@@ -232,12 +234,6 @@ dynCounts AS (
     ) members ON TRUE
     WHERE EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = ca.id AND cl.is_dynamic)
     GROUP BY ca.id
-),
-updateCounts AS (
-    WITH uc (campaign_id, sent_count) AS (SELECT * FROM unnest($1::INT[], $2::INT[]))
-    UPDATE campaigns
-    SET sent = sent + uc.sent_count
-    FROM uc WHERE campaigns.id = uc.campaign_id
 ),
 u AS (
     -- For each campaign, update the to_send count and set the max_subscriber_id.

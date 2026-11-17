@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"path"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,7 +55,9 @@ var ErrCampaignNotRunning = errors.New("campaign is not running")
 // Store represents a data backend, such as a database,
 // that provides subscriber and campaign records.
 type Store interface {
-	NextCampaigns(currentIDs []int64, sentCounts []int64) ([]*models.Campaign, error)
+	// NextCampaigns discovers campaigns excluding currentIDs. Sent counts are
+	// saved separately; a query error may occur after its SQL has committed.
+	NextCampaigns(currentIDs []int64) ([]*models.Campaign, error)
 
 	// NextSubscribers returns the next batch of a running campaign's subscribers
 	// after the subscriber ID lastSubID, in ascending ID order. AXM (LST-20): the
@@ -786,48 +787,18 @@ func (m *Manager) worker() {
 	}
 }
 
-// nextCampaigns saves the running campaigns' sent counts while fetching the next
-// campaigns. A failed query returns the counts to their original pipes for retry.
+// nextCampaigns discovers campaigns without taking any sent counts. The periodic
+// progress saver, cleanup and Close own those counts, so even a query that commits
+// and then fails while reading rows cannot lose or replay a sent increment.
 func (m *Manager) nextCampaigns() ([]*models.Campaign, error) {
 	m.pipesMut.RLock()
-	pipes := make([]*pipe, 0, len(m.pipes))
+	// The query needs an empty slice rather than NULL when no campaigns run.
+	ids := make([]int64, 0, len(m.pipes))
 	for _, p := range m.pipes {
-		pipes = append(pipes, p)
+		ids = append(ids, int64(p.camp.ID))
 	}
 	m.pipesMut.RUnlock()
-
-	// Keep progress saves (including cleanup and Close) from passing a batch
-	// still owned by this scan. Otherwise a failed query could restore counts
-	// to a pipe whose final save has already run. Lock in campaign order so
-	// concurrent scans cannot deadlock, and leave workers free to add new sends.
-	sort.Slice(pipes, func(i, j int) bool { return pipes[i].camp.ID < pipes[j].camp.ID })
-	for _, p := range pipes {
-		p.saveMut.Lock()
-		defer p.saveMut.Unlock()
-	}
-
-	// The query needs empty slices rather than NULL when no campaigns run.
-	var (
-		ids    = make([]int64, 0, len(pipes))
-		counts = make([]int64, 0, len(pipes))
-	)
-	for _, p := range pipes {
-		ids = append(ids, int64(p.camp.ID))
-
-		// Get the sent counts for campaigns and reset them to 0
-		// as in the database, they're stored cumulatively (sent += $newSent).
-		// AXM (LST-20): in one step. The progress saver takes the count the same
-		// way, and a separate load and store would let both write it.
-		counts = append(counts, p.sent.Swap(0))
-	}
-
-	campaigns, err := m.store.NextCampaigns(ids, counts)
-	if err != nil {
-		for i, p := range pipes {
-			p.sent.Add(counts[i])
-		}
-	}
-	return campaigns, err
+	return m.store.NextCampaigns(ids)
 }
 
 // trackLink register a URL and return its UUID to be used in message templates

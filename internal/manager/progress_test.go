@@ -152,12 +152,7 @@ func (s *countStore) UpdateCampaignCounts(campID, toSend, sent, lastSubID int) e
 
 func (s *countStore) RecordCampaignSends([]models.CampaignSend) error { return nil }
 
-func (s *countStore) NextCampaigns(_, counts []int64) ([]*models.Campaign, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, count := range counts {
-		s.sent += int(count)
-	}
+func (s *countStore) NextCampaigns([]int64) ([]*models.Campaign, error) {
 	return nil, nil
 }
 
@@ -488,8 +483,8 @@ func TestWorkerSettlesErrorsBeforeMarkingItDone(t *testing.T) {
 	}
 }
 
-// The periodic scan, the pipe's periodic save and the campaign's cleanup all take the sent
-// count with a swap, so a count is written once whichever of them comes first (LST-25,
+// Scans leave the sent count to the pipe's progress saves and cleanup, so a count
+// is written once whichever of them comes first (LST-25,
 // defect 4 of LST-23: a last batch of 54 was counted as 108 when the scan overlapped the
 // cleanup). Both orders are tried, with the cleanup of a stopped pipe, which saves and
 // ends there.
@@ -535,8 +530,8 @@ func TestSentCountIsWrittenOnce(t *testing.T) {
 	}
 }
 
-// While messages are being counted, the scan and the pipe's save keep taking the count.
-// Every message ends up in exactly one of them (a load followed by a store of 0 would lose
+// While messages are counted, several progress saves run alongside scans.
+// Every message ends up saved once (a load followed by a store of 0 would lose
 // the ones counted in between). This one relies on chance for a non-atomic take, like any
 // race test; the tests above cover the order of the steps without it.
 func TestSentCountSurvivesConcurrentTakers(t *testing.T) {

@@ -13,16 +13,17 @@ import (
 // scanStore makes each scan succeed or fail at a controlled point.
 type scanStore struct {
 	countStore
-	next func([]int64, []int64) ([]*models.Campaign, error)
+	next func([]int64) ([]*models.Campaign, error)
 }
 
 func (s *scanStore) HoldCampaignLock() (bool, error) { return true, nil }
-func (s *scanStore) NextCampaigns(ids, counts []int64) ([]*models.Campaign, error) {
-	return s.next(ids, counts)
+func (s *scanStore) NextCampaigns(ids []int64) ([]*models.Campaign, error) {
+	return s.next(ids)
 }
 
 // No sleeps or race to win: the first query fails after new sends arrive; the
-// second must persist both the original batch and those new sends exactly once.
+// next scan must leave both the original batch and the new sends for progress
+// saves, without needing to know whether the failed query committed.
 func TestScanCampaignsRetainsCountsAfterFailure(t *testing.T) {
 	store := &scanStore{}
 	m := New(Config{}, store, nil, log.New(io.Discard, "", 0))
@@ -31,15 +32,14 @@ func TestScanCampaignsRetainsCountsAfterFailure(t *testing.T) {
 	p.sent.Add(54)
 	other.sent.Add(11)
 	calls := 0
-	saved := map[int64]int64{}
-	store.next = func(ids, counts []int64) ([]*models.Campaign, error) {
+	store.next = func(ids []int64) ([]*models.Campaign, error) {
 		calls++
+		if len(ids) != 2 || ids[0]+ids[1] != 16 {
+			t.Errorf("scan IDs = %v, want campaigns 7 and 9", ids)
+		}
 		if calls == 1 {
 			p.sent.Add(3)
 			return nil, errors.New("test scan failure")
-		}
-		for i, id := range ids {
-			saved[id] += counts[i]
 		}
 		m.closing.Store(true)
 		return nil, nil
@@ -56,19 +56,21 @@ func TestScanCampaignsRetainsCountsAfterFailure(t *testing.T) {
 		m.closing.Store(true)
 		t.Fatal("scanner did not stop")
 	}
-	if calls != 2 || saved[7] != 57 || saved[9] != 11 {
-		t.Fatalf("after %d scans: saved=%v, want map[7:57 9:11]", calls, saved)
+	if calls != 2 || p.sent.Load() != 57 || other.sent.Load() != 11 {
+		t.Fatalf("after %d scans: pending counts=%d and %d, want 57 and 11", calls, p.sent.Load(), other.sent.Load())
 	}
 	p.saveProgress()
 	other.saveProgress()
-	if sent, _, _ := store.get(); sent != 0 {
-		t.Fatalf("saved %d messages again after the successful scan", sent)
+	p.saveProgress()
+	other.saveProgress()
+	if sent, _, _ := store.get(); sent != 68 {
+		t.Fatalf("saved %d messages, want 68 without loss or duplication", sent)
 	}
 }
 
-// Cleanup must wait for an outstanding scan, so a failed query cannot return
-// counts to a pipe that has already saved for the last time and been removed.
-func TestFailedScanRestoresCountsBeforeCleanup(t *testing.T) {
+// Cleanup can save and remove the pipe while a scan is still outstanding. A
+// query error after that must not restore counts to a pipe that has gone away.
+func TestCleanupSavesCountsDuringFailedScan(t *testing.T) {
 	store := &scanStore{}
 	m := New(Config{}, store, nil, log.New(io.Discard, "", 0))
 	p := testPipe(m, &models.Campaign{Base: models.Base{ID: 7}, Name: "test"}, 0)
@@ -78,20 +80,20 @@ func TestFailedScanRestoresCountsBeforeCleanup(t *testing.T) {
 	p.prog.done(57, true)
 	cleaned := make(chan struct{})
 	queryErr := errors.New("test scan failure")
-	store.next = func(ids, counts []int64) ([]*models.Campaign, error) {
-		if len(ids) != 1 || ids[0] != 7 || counts[0] != 54 {
-			t.Errorf("scan received IDs %v and counts %v, want [7] and [54]", ids, counts)
-		}
-		// Observe the exclusion without relying on which goroutine runs first.
-		if p.saveMut.TryLock() {
-			p.saveMut.Unlock()
-			t.Error("cleanup can pass the outstanding scan")
+	store.next = func(ids []int64) ([]*models.Campaign, error) {
+		if len(ids) != 1 || ids[0] != 7 {
+			t.Errorf("scan received IDs %v, want [7]", ids)
 		}
 		p.sent.Add(3)
 		go func() {
 			defer close(cleaned)
 			p.cleanup()
 		}()
+		select {
+		case <-cleaned:
+		case <-time.After(5 * time.Second):
+			t.Error("cleanup blocked on the outstanding scan")
+		}
 		return nil, queryErr
 	}
 	if _, err := m.nextCampaigns(); !errors.Is(err, queryErr) {
@@ -108,7 +110,7 @@ func TestFailedScanRestoresCountsBeforeCleanup(t *testing.T) {
 	if m.HasRunningCampaigns() {
 		t.Fatal("cleanup did not remove the campaign")
 	}
-	// A later save must not count the restored batch twice.
+	// A later save must not count any of the batch twice.
 	p.saveProgress()
 	if sent, _, _ := store.get(); sent != 57 {
 		t.Fatalf("saved %d after retry, want 57", sent)
