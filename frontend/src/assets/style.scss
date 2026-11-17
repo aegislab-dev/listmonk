@@ -1843,3 +1843,16 @@ th.role-toggle-select a {
   .tag.audit-access { background: #fbe8ee; color: #a8244f; }
   .tag.audit-settings { background: #eceff3; color: #44505c; }
 }
+
+.other-team-warn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: #c8381a;
+  color: #fff;
+  font-size: 1.05em;
+
+  strong, .icon {
+    color: #fff;
+  }
+}

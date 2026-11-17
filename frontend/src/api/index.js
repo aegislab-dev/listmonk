@@ -183,6 +183,9 @@ export const deleteList = (id) => http.delete(
   { loading: models.lists },
 );
 
+// The lists a delete by search reaches (full rows with tags), for the delete confirmation.
+export const getListsForDelete = (params) => http.get('/api/lists', { params: { ...params, per_page: 'all' }, disableToast: true });
+
 // The list trash (LST-27).
 export const getListTrash = () => http.get('/api/lists/trash', { loading: models.lists });
 

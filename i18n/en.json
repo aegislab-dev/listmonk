@@ -1360,5 +1360,7 @@
     "lists.delete.typeName": "Type the list name '{name}' to confirm",
     "lists.delete.typeCount": "Type the number of lists ({num}) to confirm",
     "lists.delete.done": "Moved '{name}' to the trash ({days} days)",
-    "lists.delete.doneMany": "Moved {num} lists to the trash ({days} days)"
+    "lists.delete.doneMany": "Moved {num} lists to the trash ({days} days)",
+    "lists.delete.otherTeam": "This is another team's list ({teams}).",
+    "lists.delete.otherTeamMany": "{num} of these lists belong to other teams: {teams}."
 }

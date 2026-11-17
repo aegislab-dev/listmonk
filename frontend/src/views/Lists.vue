@@ -534,7 +534,18 @@ export default Vue.extend({
       };
 
       const byIDs = !this.bulk.all && this.bulk.checked.length > 0;
-      this.askDelete(byIDs ? this.bulk.checked : [], this.numSelectedLists, fn);
+      if (byIDs) {
+        this.askDelete(this.bulk.checked, this.numSelectedLists, fn);
+        return;
+      }
+
+      // Every list a search finds: read them, so the confirmation can name them.
+      const query = this.queryParams.query.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim();
+      this.$api.getListsForDelete({ query }).then((resp) => {
+        this.askDelete(resp.results, resp.results.length, fn);
+      }).catch(() => {
+        this.askDelete([], this.numSelectedLists, fn);
+      });
     },
 
     createOptinCampaign(list) {
