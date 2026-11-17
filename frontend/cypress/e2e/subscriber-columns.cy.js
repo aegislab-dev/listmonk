@@ -301,7 +301,7 @@ describe('subscriber attribute columns', () => {
 
   it('offers the standard attributes for a condition and points at the country code', () => {
     cy.request('/api/config').its('body.data.axm_standard_attribs').should((dictionary) => {
-      expect(dictionary.map(({ key }) => key)).to.deep.eq(['country', 'follower', 'company', 'title', 'industry']);
+      expect(dictionary.map(({ key }) => key)).to.deep.eq(['country', 'follower', 'company', 'title', 'industry', 'brand', 'website', 'mail_status', 'owner']);
       // Every column a preset shows is a standard attribute.
       expect(dictionary.find(({ key }) => key === 'follower').kind).to.eq('integer');
     });
