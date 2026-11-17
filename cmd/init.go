@@ -668,6 +668,10 @@ func initTxTemplates(m *manager.Manager, co *core.Core) {
 	}
 }
 
+// importAuditHook is set once the app exists; the importer's PostCB calls it when an import
+// ends so that the end is written to the audit log (AXM).
+var importAuditHook func(data any)
+
 // initImporter initializes the bulk subscriber importer.
 func initImporter(q *models.Queries, db *sqlx.DB, core *core.Core, i *i18n.I18n, ko *koanf.Koanf) *subimporter.Importer {
 	return subimporter.New(
@@ -683,6 +687,11 @@ func initImporter(q *models.Queries, db *sqlx.DB, core *core.Core, i *i18n.I18n,
 			PostCB: func(subject string, data any) error {
 				// Refresh cached subscriber counts and stats.
 				core.RefreshMatViews(true)
+
+				// Write the end of the import to the audit log (AXM).
+				if importAuditHook != nil {
+					importAuditHook(data)
+				}
 
 				// Send admin notification.
 				notifs.NotifySystem(subject, notifs.TplImport, data, nil)
@@ -1079,6 +1088,13 @@ func initCron(co *core.Core, db *sqlx.DB) {
 		lo.Printf("error initializing campaign send records cleanup cron: %v", err)
 	}
 	time.AfterFunc(time.Minute, purge)
+
+	// AXM (LST-27): the list trash and the audit log are cleaned on the same schedule.
+	purgeAudit := func() { purgeTrashAndAudit(co, lo) }
+	if _, err := c.Add("35 18 * * *", purgeAudit); err != nil {
+		lo.Printf("error initializing audit log and list trash cleanup cron: %v", err)
+	}
+	time.AfterFunc(time.Minute+10*time.Second, purgeAudit)
 
 	if len(c.Entries()) > 0 {
 		c.Start()

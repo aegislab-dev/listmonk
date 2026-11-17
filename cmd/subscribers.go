@@ -345,9 +345,13 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 		permittedLists = []int{}
 	}
 
+	wasBlocked := a.isBlocklisted(id, req.Status)
 	out, _, err := a.core.UpdateSubscriberWithLists(id, req.Subscriber, listIDs, nil, req.PreconfirmSubs, true, false, permittedLists, false)
 	if err != nil {
 		return err
+	}
+	if req.Status == models.SubscriberStatusBlockListed && !wasBlocked {
+		a.auditSubscribersByID(c, auditSubBlocklist, []int{id}, map[string]any{"via": "edit"})
 	}
 
 	maskRestrictedSubLists(user, &out)
@@ -421,6 +425,9 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	if req.Status == models.SubscriberStatusBlockListed && sub.Status != models.SubscriberStatusBlockListed {
+		a.auditSubscribersByID(c, auditSubBlocklist, []int{id}, map[string]any{"via": "edit"})
+	}
 
 	maskRestrictedSubLists(user, &out)
 
@@ -463,6 +470,7 @@ func (a *App) BlocklistSubscriber(c echo.Context) error {
 	if err := a.core.BlocklistSubscribers([]int{id}); err != nil {
 		return err
 	}
+	a.auditSubscribersByID(c, auditSubBlocklist, []int{id}, nil)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -489,6 +497,7 @@ func (a *App) BlocklistSubscribers(c echo.Context) error {
 	if err := a.core.BlocklistSubscribers(req.SubscriberIDs); err != nil {
 		return err
 	}
+	a.auditSubscribersByID(c, auditSubBlocklist, req.SubscriberIDs, nil)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -559,8 +568,22 @@ func (a *App) ManageSubscriberLists(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.auditSubscribersByID(c, subListsAction(req.Action), subIDs, map[string]any{
+		"lists": a.listRefs(listIDs), "status": req.Status,
+	})
 
 	return c.JSON(http.StatusOK, okResp{true})
+}
+
+// subListsAction is the audit action of an "add", "remove" or "unsubscribe" list change.
+func subListsAction(action string) string {
+	switch action {
+	case "add":
+		return auditSubListsAdd
+	case "remove":
+		return auditSubListsRemove
+	}
+	return auditSubListsUnsubscribe
 }
 
 // DeleteSubscriber handles deletion of a single subscriber.
@@ -576,6 +599,7 @@ func (a *App) DeleteSubscriber(c echo.Context) error {
 	if err := a.core.DeleteSubscribers([]int{id}, nil); err != nil {
 		return err
 	}
+	a.auditSubscribersByID(c, auditSubDelete, []int{id}, nil)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -603,6 +627,7 @@ func (a *App) DeleteSubscribers(c echo.Context) error {
 	if err := a.core.DeleteSubscribers(ids, nil); err != nil {
 		return err
 	}
+	a.auditSubscribersByID(c, auditSubDelete, ids, nil)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -645,10 +670,14 @@ func (a *App) DeleteSubscribersByQuery(c echo.Context) error {
 	// Filter list IDs against the current user's permitted lists.
 	listIDs := user.GetPermittedListIDs(req.ListIDs)
 
+	// Count the subscribers the conditions reach before they go (for the audit log).
+	bq := a.countBulkQuery(req, core.AndSQLExp(req.Query, attribExp), listIDs)
+
 	// Delete the subscribers from the DB.
 	if err := a.core.DeleteSubscribersByQuery(req.Search, core.AndSQLExp(req.Query, attribExp), listIDs, req.SubscriptionStatus); err != nil {
 		return err
 	}
+	a.auditBulkQuery(c, auditSubDelete, bq, nil)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -690,10 +719,14 @@ func (a *App) BlocklistSubscribersByQuery(c echo.Context) error {
 	// Filter list IDs against the current user's permitted lists.
 	listIDs := user.GetPermittedListIDs(req.ListIDs)
 
+	// Count the subscribers the conditions reach before they change (for the audit log).
+	bq := a.countBulkQuery(req, core.AndSQLExp(req.Query, attribExp), listIDs)
+
 	// Update the subscribers in the DB.
 	if err := a.core.BlocklistSubscribersByQuery(req.Search, core.AndSQLExp(req.Query, attribExp), listIDs, req.SubscriptionStatus); err != nil {
 		return err
 	}
+	a.auditBulkQuery(c, auditSubBlocklist, bq, nil)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -733,6 +766,9 @@ func (a *App) ManageSubscriberListsByQuery(c echo.Context) error {
 		return err
 	}
 
+	// Count the subscribers the conditions reach before they change (for the audit log).
+	bq := a.countBulkQuery(req, query, sourceListIDs)
+
 	// Run the action in the DB.
 	switch req.Action {
 	case "add":
@@ -751,6 +787,9 @@ func (a *App) ManageSubscriberListsByQuery(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	a.auditBulkQuery(c, subListsAction(req.Action), bq, map[string]any{
+		"target_lists": a.listRefs(targetListIDs), "status": req.Status,
+	})
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -1004,4 +1043,14 @@ func (a *App) checkUnblock(user auth.User, id int, status string) error {
 		return echo.NewHTTPError(http.StatusForbidden, a.i18n.T("subscribers.unblockAdminOnly"))
 	}
 	return nil
+}
+
+// isBlocklisted tells whether the subscriber is blocklisted now. It reads the subscriber
+// only when the request sets that status.
+func (a *App) isBlocklisted(id int, newStatus string) bool {
+	if newStatus != models.SubscriberStatusBlockListed {
+		return false
+	}
+	sub, err := a.core.GetSubscriber(id, "", "")
+	return err == nil && sub.Status == models.SubscriberStatusBlockListed
 }
