@@ -266,6 +266,9 @@ func TestAuditQueryFilters(t *testing.T) {
 	if n, got := get("per_page=2&page=2"); n != 5 || len(got) != 2 {
 		t.Fatalf("paging: %d %v", n, got)
 	}
+	if n, got := get("per_page=all"); n != 5 || len(got) != 5 {
+		t.Fatalf("all: %d %v", n, got)
+	}
 	if code, _ := e.call(e.a.GetAudit, admin, "GET", "/api/audit?area=nope", "", ""); code != http.StatusBadRequest {
 		t.Fatalf("a bad area: %d", code)
 	}

@@ -18,7 +18,7 @@ WHERE ($1::TIMESTAMPTZ IS NULL OR created_at >= $1)
     AND (CARDINALITY($5::TEXT[]) = 0 OR action = ANY($5))
     AND ($6::TEXT = '' OR strpos(lower(target_name), lower($6)) > 0)
 ORDER BY created_at DESC, id DESC
-OFFSET $7 LIMIT $8;
+OFFSET $7 LIMIT NULLIF($8::INT, 0);
 
 -- name: axm-audit-users
 -- The people who appear in the log (for the filter), by their last row.
