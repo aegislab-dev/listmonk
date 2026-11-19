@@ -358,13 +358,11 @@ SELECT subscribers.id,
 
 -- name: query-subscribers-template
 -- raw: true
--- This raw query is reused in multiple queries (blocklist, add to list, delete)
--- etc., so it's kept has a raw template to be injected into other raw queries,
--- and for the same reason, it is not terminated with a semicolon.
+-- Select IDs in a read-only transaction before applying bulk actions
+-- (blocklist, add to list, delete etc.). The bulk queries below receive only
+-- those IDs ($1=[]INT), never this query or the expression inside it.
 --
--- All queries that embed this query should expect
--- $1=true/false (dry-run or not) and $2=[]INT (option list IDs).
--- That is, their positional arguments should start from $4.
+-- $1=dry-run, $2=list IDs, $3=subscription status, $4=search.
 SELECT subscribers.id FROM subscribers
 LEFT JOIN subscriber_lists
 ON (
@@ -397,20 +395,20 @@ UPDATE subscriber_lists SET status='unsubscribed', updated_at=NOW()
 -- raw: true
 WITH subs AS (%query%)
 INSERT INTO subscriber_lists (subscriber_id, list_id, status)
-    (SELECT a, b, (CASE WHEN $6 != '' THEN $6::subscription_status ELSE 'unconfirmed' END) FROM UNNEST(ARRAY(SELECT id FROM subs)) a, UNNEST($5::INT[]) b)
+    (SELECT a, b, (CASE WHEN $3 != '' THEN $3::subscription_status ELSE 'unconfirmed' END) FROM UNNEST(ARRAY(SELECT id FROM subs)) a, UNNEST($2::INT[]) b)
     ON CONFLICT (subscriber_id, list_id) DO NOTHING;
 
 -- name: delete-subscriptions-by-query
 -- raw: true
 WITH subs AS (%query%)
 DELETE FROM subscriber_lists
-    WHERE (subscriber_id, list_id) = ANY(SELECT a, b FROM UNNEST(ARRAY(SELECT id FROM subs)) a, UNNEST($5::INT[]) b);
+    WHERE (subscriber_id, list_id) = ANY(SELECT a, b FROM UNNEST(ARRAY(SELECT id FROM subs)) a, UNNEST($2::INT[]) b);
 
 -- name: unsubscribe-subscribers-from-lists-by-query
 -- raw: true
 WITH subs AS (%query%)
 UPDATE subscriber_lists SET status='unsubscribed', updated_at=NOW()
-    WHERE (subscriber_id, list_id) = ANY(SELECT a, b FROM UNNEST(ARRAY(SELECT id FROM subs)) a, UNNEST($5::INT[]) b);
+    WHERE (subscriber_id, list_id) = ANY(SELECT a, b FROM UNNEST(ARRAY(SELECT id FROM subs)) a, UNNEST($2::INT[]) b);
 
 
 -- privacy

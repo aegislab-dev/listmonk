@@ -478,7 +478,7 @@ func (c *Core) BlocklistSubscribersByQuery(searchStr, queryExp string, listIDs [
 	if resolveErr != nil {
 		return resolveErr
 	}
-	if err := c.q.ExecSubQueryTpl(searchStr, sanitizeSQLExp(queryExp), c.q.BlocklistSubscribersByQuery, listIDs, c.db, subStatus); err != nil {
+	if err := c.execSubQueryTpl(searchStr, sanitizeSQLExp(queryExp), c.q.BlocklistSubscribersByQuery, listIDs, subStatus); err != nil {
 		c.log.Printf("error blocklisting subscribers: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("subscribers.errorBlocklisting", "error", pqErrMsg(err)))
@@ -512,7 +512,7 @@ func (c *Core) DeleteSubscribersByQuery(searchStr, queryExp string, listIDs []in
 	if resolveErr != nil {
 		return resolveErr
 	}
-	err := c.q.ExecSubQueryTpl(searchStr, sanitizeSQLExp(queryExp), c.q.DeleteSubscribersByQuery, listIDs, c.db, subStatus)
+	err := c.execSubQueryTpl(searchStr, sanitizeSQLExp(queryExp), c.q.DeleteSubscribersByQuery, listIDs, subStatus)
 	if err != nil {
 		c.log.Printf("error deleting subscribers: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
@@ -697,4 +697,62 @@ func traverseQueryPlan(node map[string]any, tables map[string]struct{}) {
 			}
 		}
 	}
+}
+
+// querySubscriberIDs resolves an arbitrary WHERE expression to subscriber IDs
+// inside a read-only transaction. Only these IDs may be used in a writable query.
+func (c *Core) querySubscriberIDs(searchStr, queryExp string, listIDs []int, subStatus string) ([]int, error) {
+	// There's an arbitrary query condition.
+	cond := "TRUE"
+	if queryExp != "" {
+		cond = queryExp
+	}
+
+	// Validate the same query and arguments used to select the IDs.
+	stmt := strings.ReplaceAll(c.q.QuerySubscribersTpl, "%query%", cond)
+	args := []any{false, pq.Array(listIDs), subStatus, searchStr}
+	if err := validateQueryTables(c.db, stmt, allowedSubQueryTables, args...); err != nil {
+		return nil, err
+	}
+
+	tx, err := c.db.BeginTxx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var ids []int
+	if err := tx.Select(&ids, stmt, args...); err != nil {
+		return nil, err
+	}
+
+	return ids, nil
+}
+
+// execSubQueryTpl takes an arbitrary WHERE expressions and a subscriber
+// query template that depends on the filter (eg: delete by query, blocklist by query etc.)
+// combines and executes them.
+func (c *Core) execSubQueryTpl(searchStr, queryExp, baseQueryTpl string, listIDs []int, subStatus string, args ...any) error {
+	if len(listIDs) == 0 {
+		listIDs = []int{}
+	}
+
+	ids, err := c.querySubscriberIDs(searchStr, queryExp, listIDs, subStatus)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// Never interpolate the user expression into a writable statement.
+	stmt := strings.ReplaceAll(baseQueryTpl, "%query%", "SELECT UNNEST($1::INT[]) AS id")
+	a := append([]any{pq.Array(ids)}, args...)
+
+	// Execute the query on the DB.
+	if _, err := c.db.Exec(stmt, a...); err != nil {
+		return err
+	}
+
+	return nil
 }
