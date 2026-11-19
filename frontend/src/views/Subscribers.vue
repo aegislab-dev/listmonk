@@ -211,6 +211,13 @@
             {{ otherTeamsText(props.row.otherTeams) }}
           </b-tag>
         </div>
+        <div v-else-if="props.row.editLocked" class="other-teams" data-cy="locked-record">
+          <b-tag type="is-light" :title="$t('teams.lockedRecordHelp')">
+            <svg class="lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 11h12v9H6zM8.5 11V7.5a3.5 3.5 0 0 1 7 0V11" />
+            </svg> {{ $t('teams.lockedRecord') }}
+          </b-tag>
+        </div>
         <b-taglist>
           <template v-for="l in props.row.lists">
             <router-link :to="`/subscribers/lists/${l.id}`" :key="l.id" style="padding-right:0.5em;">
@@ -288,7 +295,15 @@
               <b-icon icon="pencil-outline" size="is-small" />
             </b-tooltip>
           </a>
-          <a v-if="$can('subscribers:manage')" href="#" @click.prevent="deleteSubscriber(props.row)"
+          <span v-if="$can('subscribers:manage') && props.row.editLocked" class="locked-action" tabindex="0"
+            data-cy="btn-delete-locked" :aria-label="$t('teams.lockedRow')">
+            <b-tooltip :label="$t('teams.lockedRow')" type="is-dark" position="is-left" multilined>
+              <svg class="lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 11h12v9H6zM8.5 11V7.5a3.5 3.5 0 0 1 7 0V11" />
+            </svg>
+            </b-tooltip>
+          </span>
+          <a v-else-if="$can('subscribers:manage')" href="#" @click.prevent="deleteSubscriber(props.row)"
             data-cy="btn-delete" :aria-label="$t('globals.buttons.delete')">
             <b-tooltip :label="$t('globals.buttons.delete')" type="is-dark">
               <b-icon icon="trash-can-outline" size="is-small" />
@@ -590,42 +605,49 @@ export default Vue.extend({
       return teams.map((t) => this.$t('teams.otherTeamItem', { team: t.team || this.$t('teams.noTeam'), num: t.lists })).join(' / ');
     },
 
-    // The other teams of the checked subscribers, summed per team: "마케팅1팀 2개, 팀 없음 1개".
-    otherTeamsSummary(subs) {
-      const sum = {};
-      subs.forEach((s) => (s.otherTeams || []).forEach((t) => {
-        const name = t.team || this.$t('teams.noTeam');
-        sum[name] = (sum[name] || 0) + t.lists;
-      }));
-      return Object.entries(sum).map(([team, num]) => this.$t('teams.otherTeamItem', { team, num })).join(', ');
+    // A user who may not manage all lists changes only the people who are on their lists and
+    // nowhere else. The others are locked (editLocked from the server, which refuses them too).
+    openSubs(subs) {
+      return subs.filter((s) => !s.editLocked);
     },
 
-    // A subscriber is one person for every team, so deleting or blocking people who are on lists
-    // of other teams reaches those teams too. The warning says which teams (and for a selection
-    // of everything, which the page cannot count, that there may be some).
-    otherTeamsNotice(subs, all, action) {
-      const who = subs.filter((s) => s.otherTeams && s.otherTeams.length);
-      if (all && !this.$can('lists:get_all', 'lists:manage_all')) return this.$t('teams.bulkAllWarn');
-      if (!who.length) return '';
-      const teams = this.otherTeamsSummary(who);
-      if (subs.length === 1) return this.$t(`teams.${action}Warn`, { teams });
-      return this.$t(`teams.${action}WarnMany`, { num: who.length, teams });
+    // Asks before deleting or blocking the checked people. Locked people are left out of the
+    // request and the dialog says how many; when everybody is locked there is nothing to do.
+    // fn gets the people the action is for.
+    confirmChecked(action, fn) {
+      const subs = this.bulk.checked;
+      const open = this.openSubs(subs);
+      const skipped = subs.length - open.length;
+      if (!open.length) {
+        this.$utils.notice(this.$t(`teams.${action}NoneTitle`), this.$t('teams.bulkAllLocked', { num: skipped }));
+        return;
+      }
+      const question = this.$t(action === 'block' ? 'subscribers.confirmBlocklist' : 'subscribers.confirmDelete', { num: open.length });
+      if (!skipped) {
+        this.$utils.confirm(question, () => fn(open));
+        return;
+      }
+      this.$utils.confirmWarn(
+        question,
+        this.$t('teams.bulkSkip', { total: subs.length, num: skipped }),
+        this.$t(`teams.${action}Button`),
+        () => fn(open),
+      );
     },
 
-    // Asks before deleting or blocking: the plain question, or (people on other teams' lists) a
-    // titled warning with its own button.
-    confirmReach(subs, all, action, question, fn) {
-      const notice = this.otherTeamsNotice(subs, all, action);
-      if (!notice) {
+    // Asks before deleting or blocking everybody the conditions match. The page cannot count
+    // the locked people there, so a user who may not manage all lists is told that they are
+    // left out (the server leaves them out).
+    confirmAll(action, question, fn) {
+      if (this.$can('lists:manage_all')) {
         this.$utils.confirm(question, fn);
         return;
       }
-      const title = subs.length === 1 && !all ? this.$t(`teams.${action}Title`) : question;
-      this.$utils.confirmWarn(title, notice, this.$t(`teams.${action}Button`), fn);
+      this.$utils.confirmWarn(question, this.$t('teams.bulkAllWarn'), this.$t(`teams.${action}Button`), fn);
     },
 
     deleteSubscriber(sub) {
-      this.confirmReach([sub], false, 'delete', null, () => {
+      this.$utils.confirm(null, () => {
         this.$api.deleteSubscriber(sub.id).then(() => {
           this.querySubscribers();
 
@@ -635,17 +657,16 @@ export default Vue.extend({
     },
 
     blocklistSubscribers() {
-      let fn = null;
       if (!this.bulk.all && this.bulk.checked.length > 0) {
         // If 'all' is not selected, blocklist subscribers by IDs.
-        fn = () => {
-          const ids = this.bulk.checked.map((s) => s.id);
+        this.confirmChecked('block', (subs) => {
+          const ids = subs.map((s) => s.id);
           this.$api.blocklistSubscribers({ ids })
             .then(() => this.querySubscribers());
-        };
+        });
       } else {
         // 'All' is selected, blocklist by query.
-        fn = () => {
+        const fn = () => {
           this.$api.blocklistSubscribersByQuery({
             // Without any condition, `all=true` says that every subscriber of the list is meant.
             all: this.noConditions,
@@ -654,12 +675,15 @@ export default Vue.extend({
             query: this.queryParams.queryExp,
             list_ids: this.queryParams.listID ? [this.queryParams.listID] : null,
             subscription_status: this.queryParams.subStatus,
-          }).then(() => this.querySubscribers());
+          }).then(() => {
+            this.querySubscribers();
+            if (!this.$can('lists:manage_all')) {
+              this.$utils.toast(this.$t('teams.bulkAllDone'));
+            }
+          });
         };
+        this.confirmAll('block', this.$t('subscribers.confirmBlocklist', { num: this.numSelectedSubscribers }), fn);
       }
-
-      const question = this.$t('subscribers.confirmBlocklist', { num: this.numSelectedSubscribers });
-      this.confirmReach(this.bulk.all ? [] : this.bulk.checked, this.bulk.all, 'block', question, fn);
     },
 
     exportSubscribers() {
@@ -700,21 +724,21 @@ export default Vue.extend({
     },
 
     deleteSubscribers() {
-      let fn = null;
       if (!this.bulk.all && this.bulk.checked.length > 0) {
         // If 'all' is not selected, delete subscribers by IDs.
-        fn = () => {
-          const ids = this.bulk.checked.map((s) => s.id);
+        this.confirmChecked('delete', (subs) => {
+          const ids = subs.map((s) => s.id);
           this.$api.deleteSubscribers({ id: ids })
             .then(() => {
               this.querySubscribers();
 
-              this.$utils.toast(this.$t('subscribers.subscribersDeleted', { num: this.numSelectedSubscribers }));
+              this.$utils.toast(this.$t('subscribers.subscribersDeleted', { num: ids.length }));
             });
-        };
+        });
       } else {
         // 'All' is selected, delete by query.
-        fn = () => {
+        const num = this.numSelectedSubscribers;
+        const fn = () => {
           this.$api.deleteSubscribersByQuery({
             // If the query expression is empty, explicitly pass `all=true`
             // so that the backend deletes all records in the DB with an empty query string.
@@ -727,16 +751,15 @@ export default Vue.extend({
           }).then(() => {
             this.querySubscribers();
 
-            this.$utils.toast(this.$t(
-              'subscribers.subscribersDeleted',
-              { num: this.numSelectedSubscribers },
-            ));
+            // The server leaves out the people who are on other teams' lists too, so a user
+            // who may not manage all lists is not told a number that may be too high.
+            this.$utils.toast(this.$can('lists:manage_all')
+              ? this.$t('subscribers.subscribersDeleted', { num })
+              : this.$t('teams.bulkAllDone'));
           });
         };
+        this.confirmAll('delete', this.$t('subscribers.confirmDelete', { num }), fn);
       }
-
-      const question = this.$t('subscribers.confirmDelete', { num: this.numSelectedSubscribers });
-      this.confirmReach(this.bulk.all ? [] : this.bulk.checked, this.bulk.all, 'delete', question, fn);
     },
 
     bulkChangeLists(action, preconfirm, lists) {
@@ -898,4 +921,9 @@ export default Vue.extend({
 
 <style scoped>
 .other-teams { margin: 2px 0; }
+.lock-icon { width: 1.05em; height: 1.05em; vertical-align: -0.15em; fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linejoin: round; stroke-linecap: round; }
+.locked-action { color: #7a8791; cursor: help; display: inline-block; margin: 0 6px; }
+.locked-action .lock-icon { width: 1.2rem; height: 1.2rem; vertical-align: middle; }
+.locked-action:focus-visible { outline: 2px solid #0055d4; outline-offset: 2px; border-radius: 2px; }
 </style>

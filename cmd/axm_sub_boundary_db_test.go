@@ -549,6 +549,19 @@ func TestBoundaryOtherRoles(t *testing.T) {
 		t.Fatalf("get_all only, delete all: left %s", got)
 	}
 
+	// Somebody on no list at all is nobody's: a member cannot read them, and a role that reads
+	// every list changes them as before.
+	orphan := e.person("orphan")
+	if code, _ := e.call(e.a.DeleteSubscriber, e.as(e.ua), "DELETE", "/x", itoa(orphan), ""); code != http.StatusForbidden {
+		t.Fatalf("a member on a subscriber without lists: %d", code)
+	}
+	if code, data := e.call(e.a.GetSubscriber, ra, "GET", "/x", itoa(orphan), ""); code != 200 || lockedIn(data) {
+		t.Fatalf("a subscriber without lists is not locked: %d %s", code, data)
+	}
+	if code, _ := e.call(e.a.DeleteSubscriber, ra, "DELETE", "/x", itoa(orphan), ""); code != 200 {
+		t.Fatalf("get_all only, on a subscriber without lists: %d", code)
+	}
+
 	// Admin and Super Admin are not held back.
 	if code, _ := e.call(e.a.BlocklistSubscriber, e.as(e.admin), "PUT", "/x", itoa(e.s2), ""); code != 200 {
 		t.Fatalf("admin: %d", code)
