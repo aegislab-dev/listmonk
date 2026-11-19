@@ -7,6 +7,20 @@ export function senderMailbox(value) {
   return /^[^\s<>@,;]+@[^\s<>@,;]+$/.test(email) ? email.toLowerCase() : '';
 }
 
+// The address of a From value, with a quoted local part ("two words"@x) read
+// as the address without quotes, as the server does. Used to compare a From
+// with the From list.
+export function fromAddress(value) {
+  const s = (value || '').trim();
+  if (!s || /[\r\n]/.test(s)) return '';
+  const match = s.match(/^(?:[^<>]*)<([^<>]+)>$/);
+  const email = match ? match[1] : s;
+  const parts = email.match(/^(?:"((?:[^"\\]|\\.)+)"|([^\s<>@,;"]+))@([^\s<>@,;"]+)$/);
+  if (!parts) return '';
+  const local = parts[1] !== undefined ? parts[1].replace(/\\(.)/g, '$1') : parts[2];
+  return `${local}@${parts[3]}`.toLowerCase();
+}
+
 export function isSenderDomain(value, domains) {
   const email = senderMailbox(value);
   return !!email && (domains || []).includes(email.slice(email.lastIndexOf('@') + 1));
@@ -18,13 +32,13 @@ export function matchFromEntry(value, list) {
   const v = (value || '').trim();
   if (!v) return '';
   if ((list || []).includes(v)) return v;
-  const email = senderMailbox(v);
-  return email ? ((list || []).find((e) => senderMailbox(e) === email) || '') : '';
+  const email = fromAddress(v);
+  return email ? ((list || []).find((e) => fromAddress(e) === email) || '') : '';
 }
 
 // Mirrors the server's placeholder rule (change-me@..., reserved example domains).
 export function isPlaceholderFrom(value) {
-  const email = senderMailbox(value);
+  const email = fromAddress(value);
   if (!email) return false;
   const at = email.lastIndexOf('@');
   const local = email.slice(0, at);

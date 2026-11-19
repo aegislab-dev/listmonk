@@ -85,7 +85,7 @@ describe('Team From address list', () => {
   });
 
   it('refuses placeholders in the settings list', () => {
-    ['change-me@crevasse.ai', 'a@example.com', 'noreply@listmonk.yoursite.com', 'not an address'].forEach((v) => {
+    ['change-me@crevasse.ai', 'a@example.com', 'noreply@listmonk.yoursite.com', 'not an address', '"News Team"@example.org', '"change-me"@crevasse.ai'].forEach((v) => {
       cy.request({ method: 'PUT', url: '/api/settings/axm.from_addresses', body: [mine, v], failOnStatusCode: false })
         .then((r) => expect(r.status).to.eq(400));
     });
@@ -229,6 +229,36 @@ describe('Team From address list', () => {
     cy.get('select[name=from_email] option').then(($o) => {
       expect([...$o].map((o) => o.value).filter(Boolean)).to.deep.eq(['updated@crevasse.ai']);
     });
+  });
+
+  it('does not carry a From from an old config into a new campaign', () => {
+    setList([mine]);
+    cy.loginAndVisit('/admin/campaigns');
+    cy.get('[data-cy=btn-new]').should('exist');
+    setList([]);
+    cy.get('[data-cy=btn-new]').click();
+    cy.get('input[name=from_email]').should('have.value', savedSettings['app.from_email'].trim());
+  });
+
+  it('keeps the format check for the default From with account senders on', () => {
+    setList([]);
+    cy.request('PUT', '/api/settings/axm.sender_domains', ['crevasse.ai']);
+    cy.waitForBackend();
+    setKey('app.from_email', 'Newsletter');
+    cy.waitForBackend();
+    create().then((r) => refused(r));
+    setKey('app.from_email', savedSettings['app.from_email']);
+    cy.waitForBackend();
+    cy.request('PUT', '/api/settings/axm.sender_domains', savedSettings['axm.sender_domains']);
+    cy.waitForBackend();
+  });
+
+  it('takes a comma inside quotes as one address in the settings list', () => {
+    cy.visit('/admin/settings');
+    cy.get('[data-cy=from-addresses] input').type('"news,team"@crevasse.ai{enter}');
+    cy.get('[data-cy=from-addresses] .tag').should('have.length.at.least', 1)
+      .then(($t) => expect([...$t].map((t) => t.textContent.trim()).filter((x) => x.includes('news,team'))).to.have.length(1));
+    cy.get('[data-cy=from-addresses] .tag').should('not.contain', '"news');
   });
 
   it('goes back to free input when the list is emptied', () => {

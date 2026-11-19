@@ -31,6 +31,7 @@
     <b-field :label="$t('settings.general.fromAddresses')" label-position="on-border"
       :message="$t('settings.general.fromAddressesHelp')" class="mt-5">
       <b-taginput v-model="data['axm.from_addresses']" name="axm.from_addresses" data-cy="from-addresses"
+        :confirm-keys="['Enter', 'Tab']" :on-paste-separators="['\n']"
         :disabled="!$can('settings:manage')" :placeholder="$t('settings.general.fromAddressesPlaceholder')" />
     </b-field>
     <section class="sender-settings">

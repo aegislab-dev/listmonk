@@ -55,8 +55,11 @@ func addrOf(v string) string {
 // placeholderFrom reports whether a From value is a placeholder that was never
 // replaced (change-me@..., or an address on a domain reserved for examples).
 // It is a pure function so other checks can reuse it.
-func placeholderFrom(v string) bool {
-	addr := addrOf(v)
+func placeholderFrom(v string) bool { return placeholderAddress(addrOf(v)) }
+
+// placeholderAddress is placeholderFrom for an address that is already parsed
+// (quotes in the local part removed) and lowercased.
+func placeholderAddress(addr string) bool {
 	at := strings.LastIndexByte(addr, '@')
 	if at < 1 {
 		return false
@@ -80,11 +83,12 @@ func placeholderFrom(v string) bool {
 
 // placeholderListFrom is the stricter rule for the settings list: it also
 // rejects the stock install address (noreply@listmonk.yoursite.com).
-func placeholderListFrom(v string) bool {
-	if placeholderFrom(v) {
+func placeholderListFrom(v string) bool { return placeholderListAddress(addrOf(v)) }
+
+func placeholderListAddress(addr string) bool {
+	if placeholderAddress(addr) {
 		return true
 	}
-	addr := addrOf(v)
 	at := strings.LastIndexByte(addr, '@')
 	if at < 1 {
 		return false
@@ -143,7 +147,7 @@ func normalizeFromAddresses(in []string) ([]string, error) {
 			return nil, errors.New("invalid from address")
 		}
 		a, err := mail.ParseAddress(v)
-		if err != nil || placeholderListFrom(a.Address) {
+		if err != nil || placeholderListAddress(strings.ToLower(a.Address)) {
 			return nil, errors.New("invalid from address")
 		}
 		// Address.String quotes a local part that needs it ("two words"@x).

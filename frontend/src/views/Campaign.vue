@@ -929,15 +929,19 @@ export default Vue.extend({
     // Refresh the server config: the computed sender may have changed with the
     // profile, and another session may have replaced the From list since this
     // page was loaded. A new campaign then takes the refreshed default.
+    // Fill default form fields.
+    this.form.fromEmail = this.defaultFrom();
+    const initialFrom = this.form.fromEmail;
+
     this.$api.getServerConfig().then(() => {
-      if (this.isNew && !this.senderPolicyEnabled && this.fromList.length > 0
-        && !matchFromEntry(this.form.fromEmail, this.fromList)) {
+      if (!this.isNew || this.senderPolicyEnabled) return;
+      // Replace a From that came from the old config: the untouched default,
+      // or one that the refreshed list no longer has.
+      if (this.form.fromEmail === initialFrom
+        || (this.fromList.length > 0 && !matchFromEntry(this.form.fromEmail, this.fromList))) {
         this.form.fromEmail = this.defaultFrom();
       }
     });
-
-    // Fill default form fields.
-    this.form.fromEmail = this.defaultFrom();
     if (this.senderPolicyEnabled && !this.usesAccountFrom) this.form.replyTo = this.serverConfig.default_reply_to;
 
     // New campaign.

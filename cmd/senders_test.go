@@ -199,6 +199,7 @@ func TestNormalizeFromAddresses(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"", "   ", "not an address", "change-me@crevasse.ai", "a@example.com", "noreply@listmonk.yoursite.com",
+		`"News Team"@example.org`, `"change-me"@crevasse.ai`, `X <"a b"@foo.example>`,
 		"a@foo.yoursite.com", "a@crevasse.ai\r\nBcc: x@y.z", "Team <a@crevasse.ai\n>", "a@foo.invalid",
 	} {
 		if _, err := normalizeFromAddresses([]string{"ok@crevasse.ai", bad}); err == nil {

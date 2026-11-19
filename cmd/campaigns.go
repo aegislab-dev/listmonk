@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,7 +43,8 @@ type campReq struct {
 	// The From value stored for a paused campaign being updated. Set by
 	// UpdateCampaign (never bound from JSON): an unchanged From on a paused
 	// campaign is not re-checked against the From list.
-	storedFrom *string
+	storedFrom    *string
+	storedHeaders models.Headers
 }
 
 // campContentReq wraps params coming from API requests for converting
@@ -359,6 +361,7 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	}
 	if cm.Status == models.CampaignStatusPaused {
 		o.storedFrom = &cm.FromEmail
+		o.storedHeaders = cm.Headers
 	}
 
 	// Filter lists against the current user's permitted lists.
@@ -804,6 +807,9 @@ func (a *App) validateFrom(c campReq) (campReq, error) {
 		// No From sent: the app default, or with a list its closest entry.
 		// The default goes through the same checks, so a placeholder or a
 		// stray space in app.from_email is not saved into campaigns.
+		if strings.ContainsAny(a.cfg.FromEmail, "\r\n") {
+			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
+		}
 		c.FromEmail = strings.TrimSpace(a.cfg.FromEmail)
 		if len(fromList) > 0 {
 			c.FromEmail = defaultFromFor(c.FromEmail, fromList)
@@ -821,7 +827,10 @@ func (a *App) validateFrom(c campReq) (campReq, error) {
 	// A paused campaign (maybe already sending) keeps a From it was saved with.
 	unchanged := c.Status == models.CampaignStatusPaused && c.storedFrom != nil &&
 		c.FromEmail == strings.TrimSpace(*c.storedFrom)
-	if len(fromList) > 0 && c.Status != models.CampaignStatusPaused && hasFromHeader(c.Headers) {
+	// A paused campaign may keep a From header it already had, but not gain or
+	// change one: the header would decide the From it resumes with.
+	if len(fromList) > 0 && hasFromHeader(c.Headers) &&
+		!(c.Status == models.CampaignStatusPaused && c.storedFrom != nil && reflect.DeepEqual(c.Headers, c.storedHeaders)) {
 		return c, errors.New(a.i18n.T("campaigns.fromHeaderNotAllowed"))
 	}
 	if !unchanged {
@@ -866,6 +875,13 @@ func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error)
 		var err error
 		if c, err = a.validateFrom(c); err != nil {
 			return c, err
+		}
+	} else if c.FromEmail == "" {
+		c.FromEmail = a.cfg.FromEmail
+	} else if !reFromAddress.Match([]byte(c.FromEmail)) {
+		// The account-sender mode keeps the original format check.
+		if _, err := a.importer.SanitizeEmail(c.FromEmail); err != nil {
+			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
 		}
 	}
 
