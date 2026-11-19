@@ -6,6 +6,15 @@
 원저작자의 저작권 고지와 [AGPL-3.0 라이선스](LICENSE)를 유지한다.
 동적 리스트(LST-4), CSV 열 맞춤, 개인화, 사업자정보 푸터, 인증된 답장 주소, 구독자 목록의 추가 정보 열(LST-15), 표준 추가 정보 사전(LST-18)은 아래 범위로 구현했다.
 
+## 레포 경계
+
+**이 포크는 무엇을 만들었나를, 비공개 [`aegislab-dev/newsletter`](https://github.com/aegislab-dev/newsletter)는 어떻게 돌리고 누가 어떻게 쓰나를 적는다.**
+
+- 이 저장소: 앱 코드·마이그레이션·기능 문서(이 파일)·릴리스 태그와 GHCR 이미지 발행(태그·소스 커밋·digest·마이그레이션 번호).
+- newsletter: 운영 버전 고정·기록, 인프라(Terraform SES/SNS/DMARC/Route53), Railway 설정, 사이드카(`sns-webhook`·`campaign-monitor`), 백업·복원, 경보·대응, 사용자 안내·교육. 사이드카는 이 저장소로 옮기지 않는다.
+- 날짜가 붙은 운영 사실(언제 어디에 적용했나, 운영 수치, 서비스 ID, 백업 묶음)은 이 파일에 새로 적지 않는다. [운영 기록](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-production-log.md)과 [운영 버전 파일](https://github.com/aegislab-dev/newsletter/blob/main/infra/listmonk/production-version.json)에 적고, 경계와 배포 흐름은 [경계 문서](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-fork-boundary.md)에 있다. 이 저장소가 공개라 비공개 레포의 링크는 외부인에게 열리지 않는다.
+- 사이드카가 이 앱의 DB·API에 기대는 목록(DB 계약)은 newsletter의 [`db-contract.json`](https://github.com/aegislab-dev/newsletter/blob/main/infra/listmonk/db-contract.json)이 정본이다. 그 테이블·열·설정 키·API·메일 헤더를 바꾸는 PR은 본문에 영향을 적고, newsletter 쪽을 먼저 고친다.
+
 ## 브랜치와 upstream 추종
 
 - `master`: upstream 거울. 직접 커밋하거나 배포하지 않는다.
@@ -73,32 +82,28 @@ git push origin v6.2.0-axm.1
 
 ### 릴리스 기록
 
-| 릴리스 | 소스 커밋 | 이미지 digest | 마이그레이션 | 운영 적용 |
-|---|---|---|---|---|
-| `v6.2.0-axm.1` (2026-11-11 게시, GHCR public) | `fcba2d60cefde01e53d430516a554bff84a9132c` (#1–#8 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:0ed937465fe4cc582ecb6ac21be05d7df02281d545f892212d24e9143909da4c` (linux/amd64) | `v6.2.1-axm.1`, `.2`, `.3` | 2026-11-12 12:28 KST, lists.crevasse.ai(Railway 서비스 `8960c2f9-68c5-4ed9-9179-4fbc68be6da2`) |
-| `v6.2.0-axm.2` (2026-11-12 게시) | `e698d12617d59400ddc512828b22adcc4bdff6b8` (#10 가져오기 열 맞춤 화면 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:90bcf2fdf20dee75df1dc3ed00e6a32da44cb4f9f8e776af7bba4a258bca0b09` (linux/amd64) | 없음 (`v6.2.1-axm.3` 그대로) | 2026-11-12 14:52 KST, 같은 서비스. upgrade는 `no upgrades to run` |
-| `v6.2.0-axm.3` (2026-11-12 게시) | `54d199b446727103c8ff07fddc3a9fca0af3a20a` (#12 동적 리스트 숫자 비교 조건·뽑힌 구독자 미리보기 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:4a25d36925eb535c23325eea5da00c6a2f12de02b2f4b952d491504fdda40f48` (linux/amd64) | `v6.2.1-axm.4` (DB 함수 추가·교체뿐, 테이블·시퀀스·데이터 변경 없음) | 2026-11-12 16:49 KST, 같은 서비스. upgrade는 `v6.2.1-axm.4` 1회 |
-| `v6.2.0-axm.4` (2026-11-13 게시) | `80ab1ef9bb7c510ba15b9a5808cdeeeb40c06ee4` (#14 구독자 목록 추가 정보 열, #15 발송 기록, #16 가져오기 표준 항목 이름, #17 발송 중 재시작 결함 수정 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:ef42125fc6fc53dcf6f5573f9e81e832f3b5ddba6e414d1cc1bcabbe3b4cecf0` (linux/amd64) | `v6.2.1-axm.5` (`lists.axm_preset` 열), `v6.2.1-axm.6` (`axm_campaign_sends` 테이블, 시퀀스 없음) | 2026-11-13 11:39 KST, 같은 서비스. upgrade는 `.5`, `.6` 각 1회. 교체 뒤 백업 역할에 새 테이블 SELECT와 기본 권한을 줌(아래) |
-| `v6.2.0-axm.5` (2026-11-16 게시) | `365c1bdfca59f3eb6d874de9cc260b29dbbe4e4c` (#20 동적 리스트에서 N명 뽑기, #21 팀별 리스트 분류, #22 발송 결함 수정 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:ff56035c95afb0b4a46b541cacef325497b58f33a01e8e63cc0b0892b9a306f8` (linux/amd64) | `v6.2.1-axm.7` (뽑기 테이블 2개·시퀀스 1개·함수·트리거), `v6.2.1-axm.8` (`roles` 열 2개·함수·트리거), `v6.2.1-axm.9` (`axm_suppressed_emails` 테이블·트리거, 차단 구독자 주소 해시로 채움) | 2026-11-16 23:56 KST, 같은 서비스. upgrade는 `.7`, `.8`, `.9` 각 1회. 교체 전 백업 1회, 교체 뒤 백업 1회 성공 |
-| `v6.2.0-axm.6` (2026-11-17 게시) | `d492531bc493a62ac6f594eb5d94171432f8c95e` (#24 감사 기록·리스트 휴지통, #25 발송 결함 2건, #26 열 묶음 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:07696836bb3a2c6b04e92fde4c9bdf889567e730fa510cdb20bc2f155c78fd88` (linux/amd64) | `v6.2.1-axm.10` (감사 테이블·시퀀스), `.11` (휴지통 테이블 2개), `.12` (열 묶음 테이블·시퀀스) | 2026-11-17 23:50 KST, 같은 서비스. `.10`·`.11`·`.12` 각 1회. 교체 전 23:48·뒤 23:57 백업 EXITED·Backup committed 확인. 새 객체 6개 SELECT 가능·미열람 객체 0(코디네이터 Query 결과). 별도 GRANT 없음. #55의 11/18 03:00 예약은 승인된 예외로 유지, running·paused 0 확인 |
+| 릴리스 | 소스 커밋 | 이미지 digest | 마이그레이션 |
+|---|---|---|---|
+| `v6.2.0-axm.1` (2026-11-11 게시, GHCR public) | `fcba2d60cefde01e53d430516a554bff84a9132c` (#1–#8 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:0ed937465fe4cc582ecb6ac21be05d7df02281d545f892212d24e9143909da4c` (linux/amd64) | `v6.2.1-axm.1`, `.2`, `.3` |
+| `v6.2.0-axm.2` (2026-11-12 게시) | `e698d12617d59400ddc512828b22adcc4bdff6b8` (#10 가져오기 열 맞춤 화면 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:90bcf2fdf20dee75df1dc3ed00e6a32da44cb4f9f8e776af7bba4a258bca0b09` (linux/amd64) | 없음 (`v6.2.1-axm.3` 그대로) |
+| `v6.2.0-axm.3` (2026-11-12 게시) | `54d199b446727103c8ff07fddc3a9fca0af3a20a` (#12 동적 리스트 숫자 비교 조건·뽑힌 구독자 미리보기 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:4a25d36925eb535c23325eea5da00c6a2f12de02b2f4b952d491504fdda40f48` (linux/amd64) | `v6.2.1-axm.4` (DB 함수 추가·교체뿐, 테이블·시퀀스·데이터 변경 없음) |
+| `v6.2.0-axm.4` (2026-11-13 게시) | `80ab1ef9bb7c510ba15b9a5808cdeeeb40c06ee4` (#14 구독자 목록 추가 정보 열, #15 발송 기록, #16 가져오기 표준 항목 이름, #17 발송 중 재시작 결함 수정 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:ef42125fc6fc53dcf6f5573f9e81e832f3b5ddba6e414d1cc1bcabbe3b4cecf0` (linux/amd64) | `v6.2.1-axm.5` (`lists.axm_preset` 열), `v6.2.1-axm.6` (`axm_campaign_sends` 테이블, 시퀀스 없음) |
+| `v6.2.0-axm.5` (2026-11-16 게시) | `365c1bdfca59f3eb6d874de9cc260b29dbbe4e4c` (#20 동적 리스트에서 N명 뽑기, #21 팀별 리스트 분류, #22 발송 결함 수정 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:ff56035c95afb0b4a46b541cacef325497b58f33a01e8e63cc0b0892b9a306f8` (linux/amd64) | `v6.2.1-axm.7` (뽑기 테이블 2개·시퀀스 1개·함수·트리거), `v6.2.1-axm.8` (`roles` 열 2개·함수·트리거), `v6.2.1-axm.9` (`axm_suppressed_emails` 테이블·트리거, 차단 구독자 주소 해시로 채움) |
+| `v6.2.0-axm.6` (2026-11-17 게시) | `d492531bc493a62ac6f594eb5d94171432f8c95e` (#24 감사 기록·리스트 휴지통, #25 발송 결함 2건, #26 열 묶음 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:07696836bb3a2c6b04e92fde4c9bdf889567e730fa510cdb20bc2f155c78fd88` (linux/amd64) | `v6.2.1-axm.10` (감사 테이블·시퀀스), `.11` (휴지통 테이블 2개), `.12` (열 묶음 테이블·시퀀스) |
 
-이미지 롤백 기준은 직전 운영 이미지다. 지금은 **`v6.2.0-axm.5`**의 digest `ghcr.io/aegislab-dev/listmonk@sha256:ff56035c95afb0b4a46b541cacef325497b58f33a01e8e63cc0b0892b9a306f8`다. 서비스 이미지를 이 digest로 바꾸고 재배포한다. axm.5는 더 높은 migrations 기록(`v6.2.1-axm.12`)을 보고 `no upgrades to run`으로 기동한다(dev에서 axm.6 → axm.5 → axm.6 왕복, health 200·기존 데이터 동일 확인). 기존 시작 명령은 유지하며 옛 이미지로 `--upgrade`를 별도로 실행하지 않는다(이전 이미지는 새 pending 규칙을 모른다).
+이 표는 포크가 **무엇을 발행했나**(태그·소스 커밋·digest·마이그레이션)만 적는다. 운영에 언제 어디에 적용했는지는 비공개 `aegislab-dev/newsletter`의 [운영 기록](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-production-log.md)과 [운영 버전 파일](https://github.com/aegislab-dev/newsletter/blob/main/infra/listmonk/production-version.json)에 있다.
 
-되돌려도 `axm_audit_log`·`axm_deleted_lists`·`axm_deleted_list_subs`·`axm_column_presets` 테이블 4개와 시퀀스 2개, 그 안의 감사·휴지통·직접 만든 묶음 데이터는 DB에 남는다. axm.5의 리스트 삭제는 휴지통 없이 즉시 삭제되고 감사 기록도 남지 않는다. 휴지통 정리는 멈추며 axm.6으로 다시 올리면 14일 지난 행이 첫 정리에서 삭제된다. `b2b`·`u<id>` 리스트를 axm.5에서 편집 저장하면 400이 될 수 있다. 오래 롤백해 쓸 때 `UPDATE lists SET axm_preset='creator' WHERE axm_preset <> 'creator'`가 필요할 수 있으며, 이는 사람이 실행하는 운영 쓰기다. 교체 전후에는 모든 운영 리스트가 `creator` 23개였다. 데이터 자체를 되돌려야 하면 교체 전 백업 `bundles/2026/11/17/144858-0c4de91b8b554218ad0459cbec6092aa`를 기준으로 한다(복원 시험은 하지 않음). 교체 뒤 백업은 `bundles/2026/11/17/145702-3511a369d75a4384a7cc61b88056ca66`이다.
+이미지 롤백은 직전 운영 이미지의 digest로 서비스 이미지를 바꾸고 재배포하는 것이다. **지금 롤백 대상이 무엇인지**, 교체 전후 백업 묶음, 되돌릴 때의 운영 쓰기는 newsletter [운영 기록](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-production-log.md)과 [운영 버전 파일](https://github.com/aegislab-dev/newsletter/blob/main/infra/listmonk/production-version.json)에 있다. 이미지의 호환 사실: 더 높은 migrations 기록(예: `v6.2.1-axm.12`)을 보면 `no upgrades to run`으로 기동한다(dev에서 `v6.2.0-axm.6` → `v6.2.0-axm.5` → `v6.2.0-axm.6` 왕복, health 200·기존 데이터 동일 확인). 기존 시작 명령은 유지하며 옛 이미지로 `--upgrade`를 별도로 실행하지 않는다(이전 이미지는 새 pending 규칙을 모른다).
 
-이전 롤백 기준은 `v6.2.0-axm.4`(`sha256:ef42125fc6fc53dcf6f5573f9e81e832f3b5ddba6e414d1cc1bcabbe3b4cecf0`)였다. 그 이미지의 `.9` DB 기동도 이전 릴리스에서 dev 왕복으로 확인했다. `.7`~`.9` 테이블·열·함수·트리거는 남아 차단 주소 차단·팀 역할 연결이 계속되며, axm.4 화면·API는 팀·뽑기·버전 2 동적 리스트를 다루지 못한다. `v6.2.0-axm.3` 이하로 되돌릴 때는 실행 중인 캠페인을 먼저 일시정지한다(아래 LST-20 절).
+되돌려도 `axm_audit_log`·`axm_deleted_lists`·`axm_deleted_list_subs`·`axm_column_presets` 테이블 4개와 시퀀스 2개, 그 안의 감사·휴지통·직접 만든 묶음 데이터는 DB에 남는다. axm.5의 리스트 삭제는 휴지통 없이 즉시 삭제되고 감사 기록도 남지 않는다. 휴지통 정리는 멈추며 axm.6으로 다시 올리면 14일 지난 행이 첫 정리에서 삭제된다. `b2b`·`u<id>` 리스트를 axm.5에서 편집 저장하면 400이 될 수 있다. 오래 롤백해 쓸 때 `lists.axm_preset`을 `creator`로 되돌리는 쓰기가 필요할 수 있으며, 이는 사람이 실행하는 운영 쓰기다. 교체 전후의 운영 리스트 수와 백업 묶음 경로는 운영 기록에 있다.
 
-**백업 역할의 기본 권한 (2026-11-13 운영 적용).** 운영 DB의 테이블·시퀀스는 앱이 접속하는 역할 `postgres`가 만든다. 그 역할이 `public`에 새로 만드는 테이블과 시퀀스에는 `newsletter_backup`의 SELECT가 자동으로 붙는다.
+`v6.2.0-axm.4`로 되돌릴 때의 DB 기동(`.9`까지)도 이전 릴리스에서 dev 왕복으로 확인했다. `.7`~`.9` 테이블·열·함수·트리거는 남아 차단 주소 차단·팀 역할 연결이 계속되며, axm.4 화면·API는 팀·뽑기·버전 2 동적 리스트를 다루지 못한다. `v6.2.0-axm.3` 이하로 되돌릴 때는 실행 중인 캠페인을 먼저 일시정지한다(아래 LST-20 절).
 
-```sql
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON TABLES TO newsletter_backup;
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON SEQUENCES TO newsletter_backup;
-```
+**백업 역할의 기본 권한.** 운영 DB의 테이블·시퀀스는 앱이 접속하는 역할 `postgres`가 만든다. 그 역할이 `public`에 새로 만드는 테이블과 시퀀스에는 백업 역할 `newsletter_backup`의 SELECT가 기본 권한으로 자동으로 붙는다는 것이 전제다. 적용 사실과 SQL은 newsletter [운영 기록](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-production-log.md)에 있다.
 
-그래서 다음 릴리스부터는 마이그레이션이 테이블을 만들어도 따로 GRANT할 필요가 없다. 그래도 교체 뒤에는 백업 역할이 못 읽는 테이블·시퀀스가 0개인지 조회하고 백업을 한 번 돌린다. 앱의 접속 역할을 바꾸거나 다른 스키마에 테이블을 만들면 이 설정이 닿지 않는다.
-포크 이전으로 되돌릴 때의 기준은 `listmonk/listmonk@sha256:f535d59e14991337a9f2d570273685378ae86b0d7698c3e00da444e3bc205286`(공식 v6.2.0)이다.
-공식 이미지는 더 높은 migrations 기록을 보고 upgrade 없이 기동하며, 포크 컬럼·함수·트리거는 남는다(운영 백업 사본과 합성 DB에서 확인).
-운영 Railway 시작 명령이 기동마다 `--upgrade --yes`를 실행하므로 이미지 교체가 곧 마이그레이션 실행이다. 교체 전에 발송·가져오기 중지와 백업을 확인한다.
+그래서 마이그레이션이 테이블을 만들어도 따로 GRANT할 필요가 없다. 그래도 교체 뒤에는 백업 역할이 못 읽는 테이블·시퀀스가 0개인지 조회하고 백업을 한 번 돌린다. 앱의 접속 역할을 바꾸거나 다른 스키마에 테이블을 만들면 이 설정이 닿지 않는다.
+공식 이미지(v6.2.0)로 되돌리면 더 높은 migrations 기록을 보고 upgrade 없이 기동하며, 포크 컬럼·함수·트리거는 남는다(운영 백업 사본과 합성 DB에서 확인). 포크 이전으로 되돌릴 때의 공식 이미지 digest는 운영 기록에 있다.
+시작 명령이 기동마다 `--upgrade --yes`를 실행하는 환경에서는 이미지 교체가 곧 마이그레이션 실행이다. 교체 전에 발송·가져오기 중지와 백업을 확인한다. 운영의 시작 명령과 교체 절차는 newsletter 문서를 따른다.
 
 ## 로컬 빌드와 검증
 
@@ -134,7 +139,7 @@ CI는 빈 Postgres 17에 `--install --idempotent --yes` 후 `/health`, `/admin/l
 - 소스 링크·기존 저작권·라이선스 고지를 지우지 않는다. 이미지에는 LICENSE·README·이 문서를 포함한다. 배포한 버전의 태그·소스·빌드 스크립트·lockfile을 보존한다.
 - 비밀값, 실제 명단·이메일·속성값을 저장소에 넣지 않는다. 공개 키 카탈로그에도 공개하면 안 되는 내부 용어를 넣지 않는다.
 - `--static-dir`로 공개 템플릿을 덮어쓰면 해당 템플릿에도 소스 링크가 필요하다.
-- Railway 이미지 교체는 별도 승인 범위다. 이전 deployment와 이미지 digest·환경·시작 명령을 기록하고, DB·미디어 백업과 폐기용 환경 검증 후 진행한다. 기존 Custom JS/CSS의 중복 기능도 확인한다.
+- Railway 이미지 교체는 별도 승인 범위다. 절차(이전 deployment·이미지 digest 기록, 백업, 폐기용 환경 검증)와 교체 기록은 newsletter의 [C11 절차](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-operations.md#c11-업그레이드복귀-절차)와 [운영 기록](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-production-log.md)를 따른다. 기존 Custom JS/CSS의 중복 기능도 확인한다.
 - 이미지 롤백은 가져온 구독자 데이터·해지·차단 상태를 되돌리지 않는다. DB에 저장된 Custom JS/CSS도 이미지 교체만으로 복원되지 않는다.
 
 ## 공개 콘텐츠 크롤러 정책 (LST-6)
@@ -378,7 +383,7 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 구독자 수와 무관한 작업은 리스트·역할 행만 만진다.
 
 ### 운영 반영 때
-2026-11-17 17:11 KST(08:11 UTC), LST-28에서 기존 수신거부자를 **B안**으로 한 번 정리했다. 구독 행이 하나 이상이고 모두 `unsubscribed`인 `enabled` 구독자 **1명만 차단**했으며 `disabled`는 제외했다. 백업 1회 성공 뒤 B 조건과 보관한 ID로 차단 API를 1회 실행했다. B 대상은 1→0명, enabled는 397,584→397,583명, 차단은 387→388명이며 일부 수신거부 13명·구독 없는 enabled 1명과 대상의 구독 행은 그대로다. 이후에도 「구독 설정 관리」에서 전부 끄거나 관리자가 리스트에서 구독을 해지한 사람은 `enabled`로 남는다. 이번 처리는 일회 정리이며 이 경로들의 동작이나 반송 설정을 바꾸지 않았다.
+기존 수신거부자 일회 정리(LST-28)의 운영 실행 기록은 newsletter [운영 기록](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-production-log.md)으로 옮겼다. 정리 기준은 구독 행이 하나 이상이고 모두 `unsubscribed`인 `enabled` 구독자(B안)였고 `disabled`는 제외했다. 이후에도 「구독 설정 관리」에서 전부 끄거나 관리자가 리스트에서 구독을 해지한 사람은 `enabled`로 남는다. 이번 처리는 일회 정리이며 이 경로들의 동작이나 반송 설정을 바꾸지 않았다.
 
 - 이미지 교체 = `--upgrade` = `.8`·`.9`. `.9`가 테이블 하나(`axm_suppressed_emails`)를 만든다. 기본 권한으로 백업 역할이 읽지만 교체 뒤 「못 읽는 테이블·시퀀스 0개」를 확인하고 백업을 1회 돌린다.
 - 순서: 이미지 교체 → 팀 화면에서 팀 만들기(팀 이름은 `팀:` 뒤 글자가 태그와 정확히 같아야 한다) → 리스트에 팀 태그 붙이기(리스트 편집 창) → 팀원용 사용자 역할(`*_all` 없는 것)을 만들어 팀의 기본 사용자 역할로 지정 → 팀원 넣기. 되돌리기: 사용자 역할을 `operator`로 돌리면 즉시 전부 보인다.
@@ -585,7 +590,7 @@ GRANT SELECT ON TABLE public.axm_campaign_sends TO newsletter_backup;
 SELECT has_table_privilege('newsletter_backup', 'public.axm_campaign_sends', 'SELECT');
 ```
 
-그 뒤 백업 작업(listmonk-backup-cron)을 한 번 돌려 성공을 확인한다. 운영에는 2026-11-13 `v6.2.0-axm.4` 교체 때 이 GRANT와 기본 권한(위 「릴리스 기록」)을 함께 적용했다. 기본 권한이 이미 있는 DB라면 GRANT 없이 확인 조회만 `t`인지 본다. 교체 순서는 다른 마이그레이션과 같다: **발송·가져오기 중지 확인 → DB 백업 → 새 이미지 기동(`--upgrade --yes`) → 위 GRANT와 확인 → 백업 1회**.
+그 뒤 백업 작업(listmonk-backup-cron)을 한 번 돌려 성공을 확인한다. 운영 적용 기록은 newsletter [운영 기록](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-production-log.md)에 있다. 기본 권한이 이미 있는 DB라면 GRANT 없이 확인 조회만 `t`인지 본다. 교체 순서는 다른 마이그레이션과 같다: **발송·가져오기 중지 확인 → DB 백업 → 새 이미지 기동(`--upgrade --yes`) → 위 GRANT와 확인 → 백업 1회**.
 
 이전 포크 이미지(`v6.2.0-axm.3` 이하)나 공식 v6.2.0으로 되돌리면 더 높은 마이그레이션 기록을 보고 upgrade 없이 뜬다. 테이블은 남지만 그 이미지들은 쓰지도 읽지도 않으므로, 되돌린 동안 나간 캠페인은 발송 기록이 없다. 테이블을 지우려면 `DROP TABLE axm_campaign_sends`이고, 다시 이 이미지로 올 때는 기록 번호가 이미 `.6`이라 `--upgrade`가 테이블을 만들지 않으므로 마이그레이션의 SQL을 직접 실행해야 한다.
 
@@ -626,7 +631,7 @@ upstream은 수신자를 한 묶음(기본 1,000명) 읽는 순간 `campaigns.la
 
 ### 운영에서 알 것
 
-- **Railway는 기본값으로 SIGTERM 직후 SIGKILL을 보낸다**(`RAILWAY_DEPLOYMENT_DRAINING_SECONDS` 기본 0, Railway 문서 기준). 6번의 정리가 돌 시간이 없으면 강제 종료와 같아진다. 빠지는 사람은 없지만 위 예외만큼 중복이 생길 수 있다. 서비스 변수 `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=10`을 주면 정리한 뒤에 내려간다. 운영 설정 변경이므로 사람이 정한다. 2026-11-13 dev 환경(Railway, 이 변수 없음)에서 400명 발송 도중 재배포했을 때는 이전 컨테이너가 종료 신호를 받고 0.02초 만에 정리를 마쳤고 400명이 한 번씩 받았다. 메일 수신기(Mailpit)가 바로 답한 경우이고, 실제 메일 서버에 넘기던 메시지가 있을 때 Railway가 얼마나 기다려 주는지는 확인하지 못했다.
+- **Railway는 기본값으로 SIGTERM 직후 SIGKILL을 보낸다**(`RAILWAY_DEPLOYMENT_DRAINING_SECONDS` 기본 0, Railway 문서 기준). 6번의 정리가 돌 시간이 없으면 강제 종료와 같아진다. 빠지는 사람은 없지만 위 예외만큼 중복이 생길 수 있다. 서비스 변수 `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=10`을 주면 정리한 뒤에 내려간다. 운영 설정 변경이므로 적용 여부는 사람이 정하고, 권고와 적용 상태는 newsletter [운영 기록](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-production-log.md)에 둔다. 2026-11-13 dev 환경(Railway, 이 변수 없음)에서 400명 발송 도중 재배포했을 때는 이전 컨테이너가 종료 신호를 받고 0.02초 만에 정리를 마쳤고 400명이 한 번씩 받았다. 메일 수신기(Mailpit)가 바로 답한 경우이고, 실제 메일 서버에 넘기던 메시지가 있을 때 Railway가 얼마나 기다려 주는지는 확인하지 못했다.
 - **이 변경이 든 이미지로 처음 바꿀 때와 이전 이미지로 되돌릴 때는 실행 중인 캠페인을 먼저 일시정지한다.** 이전 이미지는 잠금을 모르고 읽기 위치를 DB에서 읽는다. 새 이미지와 겹쳐 뜨는 동안 같은 캠페인을 함께 보내면 중복이 생긴다. 릴리스 절차의 「발송 중지 확인」이 이 경우를 막는다. 새 이미지끼리의 재배포는 캠페인이 실행 중이어도 된다.
 - 잠금은 DB 연결 하나를 계속 잡고 있다. 세션 잠금이므로 트랜잭션 단위 풀러(PgBouncer transaction 모드)를 사이에 두면 동작하지 않는다. 운영은 Postgres에 직접 붙는다.
 - 마이그레이션과 새 테이블이 없으므로 백업 역할에 줄 권한은 없다.
