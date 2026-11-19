@@ -16,11 +16,9 @@ import (
 // LST-41: which addresses may receive a campaign test message, and as what.
 func TestClassifyTestRecipients(t *testing.T) {
 	var (
-		me      = auth.User{Type: auth.UserTypeUser, Name: "Me", Email: null.StringFrom("Me@Outside.example")}
-		api     = auth.User{Type: auth.UserTypeAPI, Name: "API", Email: null.StringFrom("api@outside.example")}
-		noEmail = auth.User{Type: auth.UserTypeUser, Name: "No mail"}
-		// A password account can type any address into its profile: it has no own address.
-		typed   = auth.User{Type: auth.UserTypeUser, Name: "Typed", PasswordLogin: true, Email: null.StringFrom("typed@outside.example")}
+		// The own address is what ownTestAddress found: a confirmed mailbox, or none.
+		me      = "me@outside.example"
+		noEmail = ""
 		domains = []string{"corp.example"}
 		sub     = models.Subscriber{Email: "known@partner.example", Name: "Known"}
 		staff   = models.Subscriber{Email: "staff@corp.example"}
@@ -34,17 +32,15 @@ func TestClassifyTestRecipients(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		email   string
-		user    auth.User
+		user    string
 		subs    map[string]models.Subscriber
 		domains []string
 		want    want
 	}{
 		{"a subscriber the user may see", "known@partner.example", me, subs, domains, want{kind: testKindSubscriber}},
-		{"the user's own address, in another case", "me@outside.example", me, subs, domains, want{kind: testKindOwn}},
-		{"an API user has no address of its own", "api@outside.example", api, subs, domains, want{rejected: true}},
-		{"a user without an address", "someone@outside.example", noEmail, subs, domains, want{rejected: true}},
-		{"a password account's profile address", "typed@outside.example", typed, subs, domains, want{rejected: true}},
-		{"a password account in a test domain", "anyone@corp.example", typed, subs, domains, want{kind: testKindInternal}},
+		{"the user's own confirmed address", "me@outside.example", me, subs, domains, want{kind: testKindOwn}},
+		{"a user without a confirmed address", "someone@outside.example", noEmail, subs, domains, want{rejected: true}},
+		{"a user without a confirmed address, in a test domain", "anyone@corp.example", noEmail, subs, domains, want{kind: testKindInternal}},
 		{"a test domain", "anyone@corp.example", me, subs, domains, want{kind: testKindInternal}},
 		{"a subdomain of a test domain", "anyone@a.corp.example", me, subs, domains, want{rejected: true}},
 		{"a domain that only ends like a test domain", "anyone@notcorp.example", me, subs, domains, want{rejected: true}},
@@ -206,70 +202,103 @@ func TestTestSendLimiter(t *testing.T) {
 
 	// Up to the limit goes through, in requests of several messages.
 	for i := 0; i < testRateLimit/10; i++ {
-		if ok, _ := l.take(1, 10); !ok {
+		if slot, _ := l.take(1, 10); slot == 0 {
 			t.Fatalf("request %d was refused below the limit", i)
 		}
 		now = now.Add(time.Minute)
 	}
 	// The next message does not, and nothing is reserved by a refused request.
-	ok, wait := l.take(1, 1)
-	if ok {
+	slot, wait := l.take(1, 1)
+	if slot != 0 {
 		t.Fatalf("message %d went through", testRateLimit+1)
 	}
 	// The first ten were sent at 9:00 and leave the window at 9:10; it is 9:03 now.
 	if want := testRateWindow - 3*time.Minute; wait != want {
 		t.Errorf("wait %s, want %s", wait, want)
 	}
-	if ok, _ := l.take(1, 1); ok {
+	if slot, _ := l.take(1, 1); slot != 0 {
 		t.Fatal("a refused request made room")
 	}
 	// Another user is counted apart.
-	if ok, _ := l.take(2, 10); !ok {
+	if slot, _ := l.take(2, 10); slot == 0 {
 		t.Fatal("another user was refused")
 	}
 	// A request that needs more room than the oldest messages free waits for the later ones.
-	if ok, wait := l.take(1, 10); ok || wait != testRateWindow-3*time.Minute {
-		t.Errorf("ten more: ok %v wait %s", ok, wait)
+	if slot, wait := l.take(1, 10); slot != 0 || wait != testRateWindow-3*time.Minute {
+		t.Errorf("ten more: slot %v wait %s", slot, wait)
 	}
-	if ok, wait := l.take(1, 11); ok || wait != testRateWindow-2*time.Minute {
-		t.Errorf("eleven more: ok %v wait %s", ok, wait)
+	if slot, wait := l.take(1, 11); slot != 0 || wait != testRateWindow-2*time.Minute {
+		t.Errorf("eleven more: slot %v wait %s", slot, wait)
 	}
 	// Just before the first messages leave the window: still refused. At that moment: allowed.
 	now = time.Date(2026, 11, 19, 9, 9, 59, 0, time.UTC)
-	if ok, _ := l.take(1, 1); ok {
+	if slot, _ := l.take(1, 1); slot != 0 {
 		t.Fatal("allowed before the window moved")
 	}
 	now = time.Date(2026, 11, 19, 9, 10, 0, 0, time.UTC)
-	if ok, _ := l.take(1, 10); !ok {
+	if slot, _ := l.take(1, 10); slot == 0 {
 		t.Fatal("refused after the window moved")
 	}
-	if ok, _ := l.take(1, 1); ok {
+	if slot, _ := l.take(1, 1); slot != 0 {
 		t.Fatal("the window let through more than the limit")
-	}
-	// Messages that were reserved but not sent are given back, the newest first.
-	l.giveBack(1, 4)
-	if ok, _ := l.take(1, 5); ok {
-		t.Fatal("more was given back than asked")
-	}
-	if ok, _ := l.take(1, 4); !ok {
-		t.Fatal("the messages given back were not free")
-	}
-	l.giveBack(1, 0)
-	l.giveBack(1, 1000)
-	l.giveBack(99, 1)
-	if ok, _ := l.take(1, 1); ok {
-		t.Fatal("a wrong give-back made room")
 	}
 	// Long after, everything is allowed again.
 	now = now.Add(time.Hour)
-	if ok, _ := l.take(1, testMaxRecipients); !ok {
+	if slot, _ := l.take(1, testMaxRecipients); slot == 0 {
 		t.Fatal("refused after an hour")
 	}
 
 	// The zero value works with the real clock.
 	var z testSendLimiter
-	if ok, _ := z.take(1, 1); !ok {
+	if slot, _ := z.take(1, 1); slot == 0 {
 		t.Fatal("zero limiter refused the first message")
+	}
+}
+
+// A request gives back only what it reserved itself, also when another request of the same
+// user reserved in between: the other request's messages keep their own times.
+func TestTestSendLimiterGiveBack(t *testing.T) {
+	now := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+	l := &testSendLimiter{now: func() time.Time { return now }}
+	first, _ := l.take(1, 10)
+	now = now.Add(2 * time.Second)
+	second, _ := l.take(1, 10)
+	if first == 0 || second == 0 || first == second {
+		t.Fatalf("reservations %d %d", first, second)
+	}
+	// The first request failed after 3 messages; the second one sent everything.
+	l.giveBack(1, first, 7)
+	times := map[uint64]int{}
+	for _, s := range l.sent[1] {
+		times[s.req]++
+		if s.req == second && !s.at.Equal(now) {
+			t.Fatalf("a message of the second request has the time %s", s.at)
+		}
+	}
+	if times[first] != 3 || times[second] != 10 {
+		t.Fatalf("left: %v, want 3 of the first and 10 of the second", times)
+	}
+	// 17 are free. The window frees the first request's 3 at 9:10:00 and the second's at 9:10:02.
+	if slot, _ := l.take(1, 10); slot == 0 {
+		t.Fatal("the messages given back were not free")
+	}
+	l.giveBack(1, first, 100)
+	l.giveBack(1, 0, 5)
+	l.giveBack(1, 999, 5)
+	l.giveBack(99, first, 5)
+	if n := len(l.sent[1]); n != 20 {
+		t.Fatalf("%d messages after give-backs of nothing, want 20", n)
+	}
+	now = time.Date(2026, 11, 19, 9, 10, 1, 0, time.UTC)
+	if slot, _ := l.take(1, 10); slot == 0 {
+		t.Fatal("10 did not fit one second before the second request leaves the window")
+	}
+	if slot, _ := l.take(1, 1); slot != 0 {
+		t.Fatal("the second request left the window early")
+	}
+	now = now.Add(time.Second)
+	if slot, _ := l.take(1, 10); slot == 0 {
+		t.Fatal("the second request did not leave the window in time")
 	}
 }
 

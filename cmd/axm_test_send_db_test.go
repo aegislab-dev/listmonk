@@ -107,6 +107,8 @@ func newTestSendEnvTracking(t *testing.T, individual bool) *testSendEnv {
 	e.db.MustExec(`UPDATE subscribers SET name='이바다', attribs='{"company":"바다물산"}' WHERE id=$1`, e.foreign)
 	e.get(&e.mineEmail, `SELECT email FROM subscribers WHERE id=$1`, e.mine)
 	e.get(&e.foreignEmail, `SELECT email FROM subscribers WHERE id=$1`, e.foreign)
+	// The member's own mailbox has confirmed its address.
+	e.confirmOwn(e.ua, "ua@example.invalid")
 	return e
 }
 
@@ -164,6 +166,14 @@ func (e *testSendEnv) send(user auth.User, emails []string, sample string) (int,
 		return he.Code, rejected
 	}
 	return he.Code, nil
+}
+
+// confirmOwn records that the mailbox email confirmed a verification request of the user
+// (the reply address verification of the sender settings).
+func (e *testSendEnv) confirmOwn(userID int, email string) {
+	e.t.Helper()
+	e.db.MustExec(`INSERT INTO sender_addresses (email, status, requested_by, verified_at) VALUES ($1, 'verified', $2, NOW())
+		ON CONFLICT (email) DO UPDATE SET status='verified', requested_by=$2`, email, userID)
 }
 
 func (e *testSendEnv) count(query string, args ...any) int {
@@ -612,29 +622,68 @@ func TestSampleMessageIsNotTracked(t *testing.T) {
 	}
 }
 
-// A password account types its own address into its profile and nothing checks that it owns
-// it, so that address is no reason to send it a test. An account of the identity provider
-// cannot edit its address.
-func TestTestSendOwnAddressNeedsAnUneditableProfile(t *testing.T) {
+// A profile address is no reason to send it a test: a password account types it in freely
+// and an identity provider may pass on an address nobody checked. It counts only when the
+// mailbox confirmed a verification request of this very user, whatever the kind of account.
+func TestTestSendOwnAddressNeedsAConfirmedMailbox(t *testing.T) {
 	e := newTestSendEnv(t)
 	own := "ua@example.invalid"
-	if code, rejected := e.send(e.as(e.ua), []string{own}, ""); code != 200 || rejected != nil {
-		t.Fatalf("identity provider account: %d %v", code, rejected)
-	}
-	e.waitSent(1)
-	e.db.MustExec(`UPDATE users SET password_login=true WHERE id=$1`, e.ua)
-	e.db.MustExec(`UPDATE users SET email='victim@outside.invalid' WHERE id=$1`, e.ua)
-	typed := e.as(e.ua)
-	for _, to := range []string{"victim@outside.invalid", own} {
-		if code, rejected := e.send(typed, []string{to}, ""); code != http.StatusBadRequest || !reflect.DeepEqual(rejected, []string{to}) {
-			t.Errorf("password account to %s: %d %v", to, code, rejected)
+	send := func(want int, to string) {
+		t.Helper()
+		code, rejected := e.send(e.as(e.ua), []string{to}, "")
+		if code != want || (want == 400 && !reflect.DeepEqual(rejected, []string{to})) {
+			t.Errorf("to %s: %d %v, want %d", to, code, rejected, want)
 		}
 	}
-	// A test domain address and a subscriber still work for it.
-	if code, _ := e.send(typed, []string{"design@" + testSendDomain, e.mineEmail}, ""); code != 200 {
-		t.Errorf("password account, test domain and subscriber: %d", code)
+	ownAddr := func() string { return e.a.ownTestAddress(e.as(e.ua)) }
+
+	// Confirmed on this user's request: allowed, for an account with and without a password.
+	send(200, own)
+	e.db.MustExec(`UPDATE users SET password_login=true, password=CRYPT('synthetic-password', GEN_SALT('bf')) WHERE id=$1`, e.ua)
+	send(200, own)
+	if got := ownAddr(); got != own {
+		t.Errorf("own address of the password account: %q", got)
 	}
-	e.waitSent(3)
+	e.waitSent(2)
+
+	// The profile now names a mailbox that never confirmed anything.
+	e.db.MustExec(`UPDATE users SET email='victim@outside.invalid' WHERE id=$1`, e.ua)
+	send(400, "victim@outside.invalid")
+	send(400, own)
+	// A request that is still pending does not count.
+	e.db.MustExec(`INSERT INTO sender_addresses (email, status, requested_by, token_hash, token_expires_at) VALUES ('victim@outside.invalid', 'pending', $1, 'x', NOW() + INTERVAL '1 day')`, e.ua)
+	send(400, "victim@outside.invalid")
+	// Confirmed, but on another user's request (or the requester is gone).
+	e.db.MustExec(`UPDATE sender_addresses SET status='verified', verified_at=NOW(), requested_by=$1 WHERE email='victim@outside.invalid'`, e.ub)
+	send(400, "victim@outside.invalid")
+	e.db.MustExec(`UPDATE sender_addresses SET requested_by=NULL WHERE email='victim@outside.invalid'`)
+	send(400, "victim@outside.invalid")
+	if got := ownAddr(); got != "" {
+		t.Errorf("own address without a confirmation of its own: %q", got)
+	}
+	// Confirmed on this user's request: allowed again.
+	e.confirmOwn(e.ua, "victim@outside.invalid")
+	send(200, "victim@outside.invalid")
+
+	// An account without a password (as the identity provider makes them) is held to the
+	// same rule: its address counts only when confirmed.
+	e.db.MustExec(`UPDATE users SET password_login=false, password=NULL, email='sso@outside.invalid' WHERE id=$1`, e.ua)
+	send(400, "sso@outside.invalid")
+	e.confirmOwn(e.ua, "sso@outside.invalid")
+	send(200, "SSO@outside.invalid")
+	// An API user never has one.
+	e.db.MustExec(`UPDATE users SET type='api' WHERE id=$1`, e.ua)
+	if got := ownAddr(); got != "" {
+		t.Errorf("own address of an API user: %q", got)
+	}
+	e.db.MustExec(`UPDATE users SET type='user' WHERE id=$1`, e.ua)
+
+	// A test domain address and a subscriber never needed any of this.
+	e.db.MustExec(`DELETE FROM sender_addresses`)
+	if code, _ := e.send(e.as(e.ua), []string{"design@" + testSendDomain, e.mineEmail}, ""); code != 200 {
+		t.Errorf("test domain and subscriber: %d", code)
+	}
+	e.waitSent(6)
 }
 
 // The login name of an account made by the identity provider is its e-mail address. A test

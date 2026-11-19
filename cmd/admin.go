@@ -15,13 +15,15 @@ import (
 )
 
 type serverConfig struct {
-	SenderDomains      []string `json:"sender_domains"`
-	TestDomains        []string `json:"test_domains"`
-	DefaultFrom        string   `json:"default_from"`
-	DefaultReplyTo     string   `json:"default_reply_to"`
-	ResolvedFrom       string   `json:"resolved_from"`
-	RootURL            string   `json:"root_url"`
-	FromEmail          string   `json:"from_email"`
+	SenderDomains []string `json:"sender_domains"`
+	TestDomains   []string `json:"test_domains"`
+	// The signed-in user's own address when it may receive a campaign test, or "".
+	TestOwnAddress     string `json:"test_own_address"`
+	DefaultFrom        string `json:"default_from"`
+	DefaultReplyTo     string `json:"default_reply_to"`
+	ResolvedFrom       string `json:"resolved_from"`
+	RootURL            string `json:"root_url"`
+	FromEmail          string `json:"from_email"`
 	PublicSubscription struct {
 		Enabled          bool        `json:"enabled"`
 		CaptchaEnabled   bool        `json:"captcha_enabled"`
@@ -68,6 +70,7 @@ func (a *App) GetServerConfig(c echo.Context) error {
 	out := serverConfig{
 		SenderDomains:  append([]string{}, a.cfg.SenderDomains...),
 		TestDomains:    append([]string{}, a.cfg.TestDomains...),
+		TestOwnAddress: a.ownTestAddress(auth.GetUser(c)),
 		DefaultFrom:    a.cfg.DefaultFrom,
 		DefaultReplyTo: a.cfg.DefaultReplyTo,
 		ResolvedFrom:   resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains),

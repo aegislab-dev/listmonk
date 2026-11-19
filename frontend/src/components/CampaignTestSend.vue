@@ -27,7 +27,10 @@
         <b-icon icon="plus" size="is-small" /> {{ $t('campaigns.testSend.addOwn') }}
       </a>
     </p>
-    <p class="help" data-cy="test-help">{{ $t(helpKey, { domains: domains.join(', '), max: maxRecipients }) }}</p>
+    <p class="help" data-cy="test-help">
+      {{ $t(helpKey, { domains: domains.join(', '), max: maxRecipients }) }}
+      <template v-if="showOwnHint"> {{ $t('campaigns.testSend.ownHint') }}</template>
+    </p>
 
     <div class="sample">
       <div class="sample-head">
@@ -123,8 +126,9 @@ import { mapState } from 'vuex';
 
 import CampaignPreview from './CampaignPreview.vue';
 import {
-  TEST_MAX_RECIPIENTS, addressKind, attribsTemplate, cleanEmail, ownAddress, sampleLabel, samplePayload,
+  TEST_MAX_RECIPIENTS, addressKind, attribsTemplate, cleanEmail, sampleLabel, samplePayload,
 } from '../test-send';
+import { isSenderDomain } from '../senders';
 
 // The test box of the campaign page (LST-41): who receives the test, and the sample values
 // for the addresses that are not subscribers.
@@ -164,7 +168,18 @@ export default {
 
     domains() { return this.serverConfig.test_domains || []; },
 
-    ownEmail() { return ownAddress(this.profile); },
+    // The user's own address counts only after its mailbox confirmed it (the server says so).
+    ownEmail() { return cleanEmail(this.serverConfig.test_own_address); },
+
+    // How to get there, for someone whose address is not confirmed yet and is not covered by
+    // a test domain. Reply addresses are verified by mail only when the sender policy is on.
+    showOwnHint() {
+      const email = cleanEmail(this.profile.email);
+      return !this.ownEmail && !!email && this.profile.type !== 'api'
+        && (this.serverConfig.sender_domains || []).length > 0
+        && !isSenderDomain(email, this.serverConfig.sender_domains)
+        && addressKind(email, '', this.domains) !== 'internal';
+    },
 
     canAddOwn() {
       return !this.disabled && !!this.ownEmail && this.value.length < this.maxRecipients

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   SAMPLE_CUSTOM, SAMPLE_DEFAULT, SAMPLE_MAX_ATTRIBS, SAMPLE_MAX_NAME, SAMPLE_SUBSCRIBER,
-  addressKind, attribsTemplate, newSample, ownAddress, rejectedOf, sampleLabel, samplePayload,
+  addressKind, attribsTemplate, newSample, rejectedOf, sampleLabel, samplePayload,
 } from '../src/test-send.js';
 
 test('an address is the own one, in a test domain, or left for the server to check', () => {
@@ -76,15 +76,6 @@ test('the attribute template holds every standard key', () => {
   assert.ok(Object.keys(tpl).includes('country') && Object.keys(tpl).includes('follower'));
   assert.ok(Object.values(tpl).every((v) => v === ''));
   assert.equal(attribsTemplate(undefined), '{}');
-});
-
-test('only an account that cannot edit its address has an own address', () => {
-  assert.equal(ownAddress({ type: 'user', email: ' Me@Corp.example ', passwordLogin: false }), 'me@corp.example');
-  assert.equal(ownAddress({ type: 'user', email: 'me@corp.example', passwordLogin: true }), '');
-  assert.equal(ownAddress({ type: 'user', email: 'me@corp.example', password_login: true }), '');
-  assert.equal(ownAddress({ type: 'api', email: 'api@corp.example' }), '');
-  assert.equal(ownAddress({ type: 'user', email: null }), '');
-  assert.equal(ownAddress(undefined), '');
 });
 
 test('the refused addresses are read from the error of a test request', () => {

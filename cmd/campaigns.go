@@ -621,7 +621,7 @@ func (a *App) TestCampaign(c echo.Context) error {
 	// AXM (LST-41): upstream sent only to subscribers the user may see and silently dropped
 	// every other address. The user's own address and the test domains may receive a test
 	// too, as a sample subscriber, and an address that may not receive one stops the request.
-	recips, sample, err := a.testRecipients(c, &req, auth.GetUser(c))
+	recips, sample, slot, err := a.testRecipients(c, &req, auth.GetUser(c))
 	if err != nil {
 		return err
 	}
@@ -635,7 +635,7 @@ func (a *App) TestCampaign(c echo.Context) error {
 	tplID, _ := strconv.Atoi(c.FormValue("template_id"))
 	camp, err := a.core.GetCampaignForPreview(id, tplID)
 	if err != nil {
-		a.testLimiter.giveBack(auth.GetUser(c).ID, len(recips))
+		a.testLimiter.giveBack(auth.GetUser(c).ID, slot, len(recips))
 		return err
 	}
 
@@ -673,7 +673,7 @@ func (a *App) TestCampaign(c echo.Context) error {
 			a.log.Printf("error sending test message: %v", err)
 			// AXM (LST-41): the messages that did go out are on the audit log, and the
 			// ones that did not do not count towards the limit.
-			a.testLimiter.giveBack(auth.GetUser(c).ID, len(recips)-i)
+			a.testLimiter.giveBack(auth.GetUser(c).ID, slot, len(recips)-i)
 			if i > 0 {
 				a.auditTestSend(c, id, savedName, recips[:i], sample)
 			}

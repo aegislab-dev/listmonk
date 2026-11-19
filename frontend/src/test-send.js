@@ -11,15 +11,6 @@ export const SAMPLE_CUSTOM = 'custom';
 
 export const cleanEmail = (email) => String(email || '').trim().toLowerCase();
 
-// ownAddress is the address of the signed-in user that may receive a test without being a
-// subscriber, or ''. A password account can edit its address freely, so the server does not
-// take it as proof of anything; only an account of the identity provider has one.
-export function ownAddress(profile) {
-  const p = profile || {};
-  if (p.type === 'api' || p.passwordLogin || p.password_login) return '';
-  return cleanEmail(p.email);
-}
-
 // addressKind says how an address is expected to receive a test: 'own' (the signed-in user's
 // own address), 'internal' (a test domain, exact match) or 'check' (the server has to find a
 // subscriber the user may see).

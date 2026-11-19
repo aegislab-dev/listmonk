@@ -97,15 +97,28 @@ func cleanTestEmails(in []string) []string {
 	return out
 }
 
-// ownTestAddress is the signed-in user's own address, or "" when there is none that can be
-// trusted. An API user has no address of its own. A password account can type any address
-// into its own profile and nothing checks that it owns it, so only an account that signs in
-// through the identity provider (and cannot edit its address) has one.
-func ownTestAddress(user auth.User) string {
-	if user.Type == auth.UserTypeAPI || user.PasswordLogin || !user.Email.Valid {
+// ownTestAddress is the address the signed-in user may send a test to as their own, or "".
+// The profile address alone proves nothing: a password account can type any address into
+// its profile, and an identity provider may hand over an address it never checked. It only
+// counts once the mailbox has confirmed it: the address is a verified reply address
+// (sender_addresses) that this same user asked to verify. An API user has none.
+func (a *App) ownTestAddress(user auth.User) string {
+	if user.Type == auth.UserTypeAPI || !user.Email.Valid {
 		return ""
 	}
-	return strings.ToLower(strings.TrimSpace(user.Email.String))
+	email := strings.ToLower(strings.TrimSpace(user.Email.String))
+	if email == "" || !plainAddress(email) {
+		return ""
+	}
+	ok, err := a.core.SenderAddressVerifiedBy(email, user.ID)
+	if err != nil {
+		a.log.Printf("error checking the user's own test address: %v", err)
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	return email
 }
 
 // plainAddress says whether s is one bare e-mail address (no display name, no brackets).
@@ -117,19 +130,19 @@ func plainAddress(s string) bool {
 // classifyTestRecipients decides, address by address, whether a test may go there:
 //
 //  1. a subscriber the user may see receives it as that subscriber,
-//  2. the user's own address receives it as a sample,
+//  2. the user's own address (own, see ownTestAddress; "" when there is none) receives it
+//     as a sample,
 //  3. an address in a test domain (exact match, no subdomains) receives it as a sample,
 //  4. anything else is rejected.
 //
 // emails must have gone through cleanTestEmails. subs holds the subscribers the user may see,
 // by address. A subscriber the user may not see is not in subs, so it is handled like any
 // other address and the answer never tells whether it is a subscriber.
-func classifyTestRecipients(emails []string, subs map[string]models.Subscriber, user auth.User, domains []string) ([]testRecipient, []string, error) {
+func classifyTestRecipients(emails []string, subs map[string]models.Subscriber, own string, domains []string) ([]testRecipient, []string, error) {
 	if len(emails) > testMaxRecipients {
 		return nil, nil, errTestTooMany
 	}
 	var (
-		own      = ownTestAddress(user)
 		out      = make([]testRecipient, 0, len(emails))
 		rejected = []string{}
 	)
@@ -246,21 +259,36 @@ func buildTestSample(v testSampleValues, email string, own bool, user auth.User)
 type testSendLimiter struct {
 	mu   sync.Mutex
 	now  func() time.Time
-	sent map[int][]time.Time
+	seq  uint64
+	sent map[int][]testSendSlot
 }
 
-// giveBack returns the last n reserved messages of a user that were not sent after all.
-func (l *testSendLimiter) giveBack(userID, n int) {
+// testSendSlot is one reserved message: when, and by which request.
+type testSendSlot struct {
+	at  time.Time
+	req uint64
+}
+
+// giveBack returns n messages that the request req (as take named it) reserved and did not
+// send after all. Only that request's own messages are touched: another request of the same
+// user may have reserved in between.
+func (l *testSendLimiter) giveBack(userID int, req uint64, n int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if list := l.sent[userID]; n > 0 && n <= len(list) {
-		l.sent[userID] = list[:len(list)-n]
+	list := l.sent[userID]
+	for i := len(list) - 1; i >= 0 && n > 0; i-- {
+		if list[i].req == req {
+			list = append(list[:i], list[i+1:]...)
+			n--
+		}
 	}
+	l.sent[userID] = list
 }
 
-// take reserves n messages for a user. When they do not fit, nothing is reserved and wait
-// says how long until they would.
-func (l *testSendLimiter) take(userID, n int) (bool, time.Duration) {
+// take reserves n messages for a user and returns the number of the reservation, for
+// giveBack. When they do not fit, nothing is reserved (the number is 0) and wait says how
+// long until they would.
+func (l *testSendLimiter) take(userID, n int) (uint64, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
@@ -268,42 +296,44 @@ func (l *testSendLimiter) take(userID, n int) (bool, time.Duration) {
 		now = l.now()
 	}
 	if l.sent == nil {
-		l.sent = map[int][]time.Time{}
+		l.sent = map[int][]testSendSlot{}
 	}
 	// Forget what has left the window (times are in order).
 	list := l.sent[userID]
-	for len(list) > 0 && !list[0].After(now.Add(-testRateWindow)) {
+	for len(list) > 0 && !list[0].at.After(now.Add(-testRateWindow)) {
 		list = list[1:]
 	}
 	if over := len(list) + n - testRateLimit; over > 0 {
 		l.sent[userID] = list
 		if over > len(list) {
 			// More than the limit in one request can never fit.
-			return false, testRateWindow
+			return 0, testRateWindow
 		}
-		return false, list[over-1].Add(testRateWindow).Sub(now)
+		return 0, list[over-1].at.Add(testRateWindow).Sub(now)
 	}
+	l.seq++
 	for i := 0; i < n; i++ {
-		list = append(list, now)
+		list = append(list, testSendSlot{at: now, req: l.seq})
 	}
 	l.sent[userID] = list
-	return true, 0
+	return l.seq, 0
 }
 
 // testRecipients reads the addresses and the sample of a test request and returns the
 // subscriber each message is rendered for. It answers 400 with the rejected addresses when
 // any address may not receive a test (nothing is sent then), and 429 when the user is over
 // the limit.
-func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]testRecipient, testSampleValues, error) {
+// The last value is the number of the limiter reservation, for giving back what is not sent.
+func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]testRecipient, testSampleValues, uint64, error) {
 	var none testSampleValues
 	emails := cleanTestEmails(req.SubscriberEmails)
 	if len(emails) == 0 {
-		return nil, none, echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.noSubsToTest"))
+		return nil, none, 0, echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.noSubsToTest"))
 	}
 	tooMany := echo.NewHTTPError(http.StatusBadRequest,
 		a.i18n.Ts("campaigns.testTooMany", "max", strconv.Itoa(testMaxRecipients)))
 	if len(emails) > testMaxRecipients {
-		return nil, none, tooMany
+		return nil, none, 0, tooMany
 	}
 
 	// The subscribers among the addresses that the user may see. The core answers 400 when
@@ -311,7 +341,7 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 	found, err := a.core.GetSubscribersByEmail(emails)
 	if err != nil {
 		if he, ok := err.(*echo.HTTPError); !ok || he.Code != http.StatusBadRequest {
-			return nil, none, err
+			return nil, none, 0, err
 		}
 		found = nil
 	}
@@ -322,14 +352,15 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 		}
 	}
 
-	recips, rejected, err := classifyTestRecipients(emails, subs, user, a.cfg.TestDomains)
+	own := a.ownTestAddress(user)
+	recips, rejected, err := classifyTestRecipients(emails, subs, own, a.cfg.TestDomains)
 	if err == errTestTooMany {
-		return nil, none, tooMany
+		return nil, none, 0, tooMany
 	}
 	if len(rejected) > 0 {
 		// The screen marks these addresses. Whether one of them is a subscriber of a list
 		// the user may not see is not told.
-		return nil, none, echo.NewHTTPError(http.StatusBadRequest, map[string]any{
+		return nil, none, 0, echo.NewHTTPError(http.StatusBadRequest, map[string]any{
 			"message": a.i18n.T("campaigns.testRejected"),
 			"data":    map[string]any{"rejected": rejected},
 		})
@@ -337,29 +368,29 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 
 	sample, err := a.resolveTestSample(req.Sample, user)
 	if err != nil {
-		return nil, none, err
+		return nil, none, 0, err
 	}
 
-	if ok, wait := a.testLimiter.take(user.ID, len(recips)); !ok {
+	slot, wait := a.testLimiter.take(user.ID, len(recips))
+	if slot == 0 {
 		mins := int(math.Ceil(wait.Minutes()))
 		if mins < 1 {
 			mins = 1
 		}
 		a.log.Printf("test send refused: user %d is over %d messages in %s", user.ID, testRateLimit, testRateWindow)
 		c.Response().Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
-		return nil, none, echo.NewHTTPError(http.StatusTooManyRequests,
+		return nil, none, 0, echo.NewHTTPError(http.StatusTooManyRequests,
 			a.i18n.Ts("campaigns.testRateLimited", "minutes", strconv.Itoa(mins)))
 	}
 
 	// A chosen sample goes to every recipient, so that all of them see the same message.
 	// With the default sample a subscriber keeps their own values.
-	own := ownTestAddress(user)
 	for i, r := range recips {
 		if r.Kind != testKindSubscriber || sample.Kind != testSampleDefault {
 			recips[i].Sub = buildTestSample(sample, r.Email, r.Email == own, user)
 		}
 	}
-	return recips, sample, nil
+	return recips, sample, slot, nil
 }
 
 // auditTestSend writes the campaign.test row of a test request: how many messages went to

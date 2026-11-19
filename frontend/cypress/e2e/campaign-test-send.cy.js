@@ -53,8 +53,8 @@ describe('Campaign test send to addresses that are not subscribers', () => {
   it('marks each address by how it may receive the test', () => {
     open();
     box().find('[data-cy=test-help]').should('contain', domain);
-    // The account of this spec signs in with a password and can edit its own address, so
-    // that address is not offered and counts like any other.
+    // The mailbox of this spec's account never confirmed its address, so that address is
+    // not offered and counts like any other.
     box().find('[data-cy=test-add-own]').should('not.exist');
     addEmail(ownEmail);
     tag(ownEmail).should('have.attr', 'data-kind', 'check');
