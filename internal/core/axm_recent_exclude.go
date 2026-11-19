@@ -58,12 +58,9 @@ func (c *Core) recentError(err error) error {
 }
 
 // RecentExcludeCounts reads the audience, history coverage and team tags at one snapshot.
+// The caller validates the rule and can pass an empty source set after removing deleted campaigns.
 func (c *Core) RecentExcludeCounts(ctx context.Context, lists []int, rule models.RecentRule, selfID int) (models.RecentCounts, error) {
 	var out models.RecentCounts
-	rule.Enabled = true
-	if err := c.ValidateRecentRule(&rule); err != nil {
-		return out, err
-	}
 	tx, err := c.db.BeginTxx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return out, c.recentError(err)
@@ -102,6 +99,15 @@ func (c *Core) GetRecentCampaign(id int) (models.Campaign, error) {
 		return campaign, c.recentError(err)
 	}
 	return campaign, nil
+}
+
+// GetRecentSourceCampaigns returns the type and ID of each source that still exists.
+func (c *Core) GetRecentSourceCampaigns(ctx context.Context, ids pq.Int64Array) (models.Campaigns, error) {
+	var sources models.Campaigns
+	if err := c.q.AxmRecentSourceCamps.SelectContext(ctx, &sources, ids); err != nil {
+		return nil, c.recentError(err)
+	}
+	return sources, nil
 }
 
 func (c *Core) recentCampaignNotFound() error {

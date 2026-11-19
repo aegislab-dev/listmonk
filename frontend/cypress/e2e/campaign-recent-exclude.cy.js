@@ -16,7 +16,9 @@ const rulePath = () => `/api/campaigns/${campaignId}/recent-exclude`;
 describe('Recent-send exclusion settings', () => {
   before(() => {
     cy.loginAndVisit('/admin/campaigns');
-    cy.request('POST', '/api/lists', { name: listName, type: 'private', optin: 'single' }).then(({ body }) => {
+    cy.request('POST', '/api/lists', {
+      name: listName, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => {
       cy.request('POST', '/api/subscribers', {
         name: 'Synthetic recipient',
         email: `recent-${stamp}@example.invalid`,
@@ -24,7 +26,9 @@ describe('Recent-send exclusion settings', () => {
         lists: [body.data.id],
       });
     });
-    cy.request('POST', '/api/lists', { name: `Opt-in ${stamp}`, type: 'private', optin: 'double' }).then(({ body }) => {
+    cy.request('POST', '/api/lists', {
+      name: `Opt-in ${stamp}`, type: 'private', optin: 'double', no_team: true,
+    }).then(({ body }) => {
       cy.request('POST', '/api/campaigns', {
         name: `Opt-in campaign ${stamp}`, subject: 'Opt-in', type: 'optin', lists: [body.data.id],
       }).then(({ body: campaign }) => { optinId = campaign.data.id; });

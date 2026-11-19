@@ -302,6 +302,7 @@
     "campaigns.recent.invalidDays": "Choose an exclusion period of 7, 14, or 30 days.",
     "campaigns.recent.invalidScope": "Choose a valid exclusion scope.",
     "campaigns.recent.invalidCampaigns": "Select between 1 and 20 previous campaigns.",
+    "campaigns.recent.invalidSource": "Select a regular campaign other than the one you are editing.",
     "campaigns.recent.regularOnly": "Recent-send exclusion is only available for regular campaigns.",
     "campaigns.recent.error": "Could not calculate or save recent-send exclusion.",
     "campaigns.recent.loadError": "Could not load the saved rule. Reload the page to edit the rule.",

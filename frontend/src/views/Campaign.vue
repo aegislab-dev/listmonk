@@ -610,8 +610,9 @@ export default Vue.extend({
       if (!this.recentRuleDirty) return;
       const payload = recentRulePayload(this.recentRule);
       try {
-        await this.$api.saveRecentRule(id, payload);
-        this.savedRecentRule = JSON.stringify(payload);
+        const rule = await this.$api.saveRecentRule(id, payload);
+        this.recentRule = { ...defaultRecentRule(), ...rule };
+        this.savedRecentRule = this.recentRuleKey;
         this.recentRuleError = '';
       } catch (err) {
         this.recentRuleError = this.$t('campaigns.recent.saveError');
@@ -715,7 +716,10 @@ export default Vue.extend({
       // Save and propagate errors before starting or scheduling a campaign.
       this.savingCampaign = true;
       try {
-        const d = await this.$api.updateCampaign(this.data.id, data);
+        const d = await this.$api.updateCampaign(this.data.id, data).catch((err) => {
+          if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
+          throw err;
+        });
         this.data = d;
         this.form.fromEmail = d.fromEmail;
         this.form.replyTo = d.replyTo;
@@ -724,9 +728,6 @@ export default Vue.extend({
         await this.saveRecentRule(d.id);
         this.$utils.toast(this.$t(typMsg, { name: d.name }));
         return d;
-      } catch (err) {
-        if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
-        throw err;
       } finally {
         this.savingCampaign = false;
       }
@@ -775,10 +776,10 @@ export default Vue.extend({
 
             return this.$api.changeCampaignStatus(this.data.id, status).then(() => {
               this.$router.push({ name: 'campaigns' });
+            }).catch((err) => {
+              if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
             });
-          }).catch((err) => {
-            if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
-          });
+          }).catch(() => {});
         },
       );
     },

@@ -24,6 +24,7 @@ type Queries struct {
 	AxmDeleteRecentRule    *sqlx.Stmt `query:"axm-delete-recent-rule"`
 	AxmRecentTeamTags      *sqlx.Stmt `query:"axm-recent-team-tags"`
 	AxmGetRecentCampaign   *sqlx.Stmt `query:"axm-get-recent-campaign"`
+	AxmRecentSourceCamps   *sqlx.Stmt `query:"axm-recent-source-campaigns"`
 	AxmLockRecentCampaign  *sqlx.Stmt `query:"axm-lock-recent-campaign"`
 	AxmRecentCampaignLists *sqlx.Stmt `query:"axm-recent-campaign-lists"`
 

@@ -15,7 +15,8 @@ type recentPreviewRequest struct {
 	CampaignID int   `json:"campaign_id"`
 }
 
-func (a *App) checkRecentSources(rule models.RecentRule, c echo.Context) error {
+// resolveRecentSources drops deleted campaigns and checks access to each remaining source.
+func (a *App) resolveRecentSources(rule *models.RecentRule, selfID int, c echo.Context) error {
 	if !rule.Enabled || rule.Scope != models.RecentScopeCampaigns {
 		return nil
 	}
@@ -23,16 +24,19 @@ func (a *App) checkRecentSources(rule models.RecentRule, c echo.Context) error {
 	if !user.HasPerm(auth.PermCampaignsGetAll) && !user.HasPerm(auth.PermCampaignsGet) {
 		return auth.ErrPermDenied
 	}
-	for _, id := range rule.CampaignIDs {
-		if err := a.checkCampaignPerm(auth.PermTypeGet, int(id), c); err != nil {
+	sources, err := a.core.GetRecentSourceCampaigns(c.Request().Context(), rule.CampaignIDs)
+	if err != nil {
+		return err
+	}
+	rule.CampaignIDs = rule.CampaignIDs[:0]
+	for _, source := range sources {
+		if err := a.checkCampaignPerm(auth.PermTypeGet, source.ID, c); err != nil {
 			return err
 		}
-		if _, err := a.core.GetRecentCampaign(int(id)); err != nil {
-			if he, ok := err.(*echo.HTTPError); ok && he.Code == http.StatusBadRequest {
-				return auth.ErrPermDenied
-			}
-			return err
+		if source.ID == selfID || source.Type != models.CampaignTypeRegular {
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.recent.invalidSource"))
 		}
+		rule.CampaignIDs = append(rule.CampaignIDs, int64(source.ID))
 	}
 	return nil
 }
@@ -61,7 +65,7 @@ func (a *App) PreviewRecentExclusion(c echo.Context) error {
 			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.recent.regularOnly"))
 		}
 	}
-	if err := a.checkRecentSources(req.RecentRule, c); err != nil {
+	if err := a.resolveRecentSources(&req.RecentRule, req.CampaignID, c); err != nil {
 		return err
 	}
 	for _, id := range req.ListIDs {
@@ -112,8 +116,11 @@ func (a *App) PutRecentRule(c echo.Context) error {
 	if err := a.core.ValidateRecentRule(&rule); err != nil {
 		return err
 	}
-	if err := a.checkRecentSources(rule, c); err != nil {
+	if err := a.resolveRecentSources(&rule, id, c); err != nil {
 		return err
+	}
+	if rule.Scope == models.RecentScopeCampaigns && len(rule.CampaignIDs) == 0 {
+		rule = models.RecentRule{}
 	}
 	out, err := a.core.SaveRecentRule(c.Request().Context(), id, rule, auth.GetUser(c).ID)
 	if err != nil {

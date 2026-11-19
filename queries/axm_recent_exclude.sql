@@ -6,8 +6,16 @@ FROM axm_recent_exclusion($1, $2, $3, $4, $5);
 SELECT MIN(sent_at) FROM axm_campaign_sends;
 
 -- name: axm-get-recent-rule
-SELECT TRUE AS enabled, days, scope, campaign_ids, updated_by, updated_at
-FROM axm_campaign_recent_rules WHERE campaign_id = $1;
+SELECT TRUE AS enabled, rule.days, rule.scope, sources.ids AS campaign_ids, rule.updated_by, rule.updated_at
+FROM axm_campaign_recent_rules rule
+CROSS JOIN LATERAL (
+    SELECT ARRAY(
+        SELECT c.id FROM campaigns c
+        WHERE c.id = ANY(rule.campaign_ids) AND c.type = 'regular' AND c.id <> rule.campaign_id
+        ORDER BY c.id
+    ) AS ids
+) sources
+WHERE rule.campaign_id = $1 AND (rule.scope <> 'campaigns' OR cardinality(sources.ids) > 0);
 
 -- name: axm-upsert-recent-rule
 INSERT INTO axm_campaign_recent_rules (campaign_id, days, scope, campaign_ids, updated_by)
@@ -28,6 +36,9 @@ ORDER BY tag;
 
 -- name: axm-get-recent-campaign
 SELECT name, status, type FROM campaigns WHERE id = $1;
+
+-- name: axm-recent-source-campaigns
+SELECT id, type FROM campaigns WHERE id = ANY($1::INT[]) ORDER BY id;
 
 -- name: axm-lock-recent-campaign
 SELECT status, type FROM campaigns WHERE id = $1 FOR UPDATE;

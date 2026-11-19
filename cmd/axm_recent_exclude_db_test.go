@@ -129,6 +129,26 @@ func TestRecentExclusionMatchesSendAudienceAndDoesNotChangeSending(t *testing.T)
 	if got.Target != 5 || got.Excluded != 1 || got.WillSend != 4 {
 		t.Fatalf("mixed audience: %+v", got)
 	}
+	want := append(append([]int{}, e.eligible...), doubleOnly, dynamicOnly)
+	assertRecentRuleSends(t, e, control, rule, want)
+}
+
+func TestRecentRuleDoesNotChangeOrdinaryListSending(t *testing.T) {
+	e := newSendsEnv(t, 3)
+	e.setStatus("draft")
+	control, _ := e.addCampaign("draft")
+	prior, _ := e.addCampaign("finished")
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES ($1,$2)`, prior, e.eligible[0])
+	rule := models.RecentRule{Enabled: true, Days: 7, Scope: models.RecentScopeAll}
+	counts, err := e.core.RecentExcludeCounts(context.Background(), []int{e.listID}, rule, e.campID)
+	if err != nil || counts.Target != 3 || counts.Excluded != 1 || counts.WillSend != 2 {
+		t.Fatalf("ordinary audience %+v: %v", counts, err)
+	}
+	assertRecentRuleSends(t, e, control, rule, e.eligible)
+}
+
+func assertRecentRuleSends(t *testing.T, e *sendsEnv, control int, rule models.RecentRule, want []int) {
+	t.Helper()
 	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, rule, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -140,14 +160,94 @@ func TestRecentExclusionMatchesSendAudienceAndDoesNotChangeSending(t *testing.T)
 	waitFor(t, "both campaign send records", func() bool {
 		return strings.Count(logs.String(), "send records:") == 2
 	})
-	want := append(append([]int{}, e.eligible...), doubleOnly, dynamicOnly)
 	for _, id := range []int{e.campID, control} {
 		delivered := e.ids(`SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1 ORDER BY subscriber_id`, id)
 		wantSame(t, fmt.Sprintf("campaign %d", id), delivered, want)
-		if len(delivered) != got.Target {
-			t.Fatalf("campaign %d sent to %d people, preview target was %d", id, len(delivered), got.Target)
+	}
+}
+
+func TestRecentRuleIgnoresDeletedSources(t *testing.T) {
+	e := newTeamsEnv(t)
+	member := e.as(e.ua)
+	draft, _ := e.addCampaign("draft")
+	first, _ := e.addCampaign("finished")
+	second, _ := e.addCampaign("finished")
+	optin, _ := e.addCampaign("finished")
+	e.db.MustExec(`UPDATE campaigns SET type='optin' WHERE id=$1`, optin)
+	e.db.MustExec(`UPDATE campaign_lists SET list_id=$1 WHERE campaign_id IN ($2,$3,$4,$5)`, e.aList, draft, first, second, optin)
+	for _, campaignID := range []int{first, second} {
+		sub := e.addSub("enabled", "confirmed")
+		e.db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES ($1,$2,'confirmed')`, sub, e.aList)
+		e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES ($1,$2)`, campaignID, sub)
+	}
+
+	body := func(days int, sourceIDs ...int) string {
+		ids, err := json.Marshal(sourceIDs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf(`{"enabled":true,"scope":"campaigns","days":%d,"campaign_ids":%s,"list_ids":[%d],"campaign_id":%d}`,
+			days, ids, e.aList, draft)
+	}
+	checkRule := func(code int, data json.RawMessage, days int, ids ...int) {
+		t.Helper()
+		if code != http.StatusOK {
+			t.Fatalf("rule returned HTTP %d: %s", code, data)
+		}
+		if len(ids) == 0 {
+			if string(data) != `{"enabled":false}` {
+				t.Fatalf("rule was not disabled: %s", data)
+			}
+			return
+		}
+		var rule models.RecentRule
+		if err := json.Unmarshal(data, &rule); err != nil {
+			t.Fatal(err)
+		}
+		if !rule.Enabled || rule.Days != days || rule.Scope != models.RecentScopeCampaigns {
+			t.Fatalf("unexpected rule: %s", data)
+		}
+		got := make([]int, len(rule.CampaignIDs))
+		for i, id := range rule.CampaignIDs {
+			got[i] = int(id)
+		}
+		wantSame(t, "rule sources", got, ids)
+	}
+	checkPreview := func(excluded int) {
+		t.Helper()
+		code, data := e.call(e.a.PreviewRecentExclusion, member, "POST", "/x", "", body(14, first, second))
+		var counts models.RecentCounts
+		if err := json.Unmarshal(data, &counts); err != nil || code != 200 ||
+			counts.Target != 2 || counts.Excluded != excluded || counts.WillSend != 2-excluded {
+			t.Fatalf("preview HTTP %d %s: %v", code, data, err)
 		}
 	}
+
+	for _, invalid := range []int{draft, optin} {
+		if code, _ := e.call(e.a.PutRecentRule, member, "PUT", "/x", itoa(draft), body(14, invalid)); code != http.StatusBadRequest {
+			t.Fatalf("saving source %d returned HTTP %d", invalid, code)
+		}
+		if code, _ := e.call(e.a.PreviewRecentExclusion, member, "POST", "/x", "", body(14, invalid)); code != http.StatusBadRequest {
+			t.Fatalf("previewing source %d returned HTTP %d", invalid, code)
+		}
+	}
+	code, data := e.call(e.a.PutRecentRule, member, "PUT", "/x", itoa(draft), body(14, first, second))
+	checkRule(code, data, 14, first, second)
+	checkPreview(2)
+
+	e.db.MustExec(`DELETE FROM campaigns WHERE id=$1`, second)
+	code, data = e.call(e.a.GetRecentRule, member, "GET", "/x", itoa(draft), "")
+	checkRule(code, data, 14, first)
+	checkPreview(1)
+	code, data = e.call(e.a.PutRecentRule, member, "PUT", "/x", itoa(draft), body(30, first, second))
+	checkRule(code, data, 30, first)
+
+	e.db.MustExec(`DELETE FROM campaigns WHERE id=$1`, first)
+	code, data = e.call(e.a.GetRecentRule, member, "GET", "/x", itoa(draft), "")
+	checkRule(code, data, 0)
+	checkPreview(0)
+	code, data = e.call(e.a.PutRecentRule, member, "PUT", "/x", itoa(draft), body(7, first, second))
+	checkRule(code, data, 0)
 }
 
 func TestRecentRulePermissionsAndPersistence(t *testing.T) {
