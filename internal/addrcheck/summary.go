@@ -93,9 +93,13 @@ type ClassSummary struct {
 	Count int `json:"count"`
 	// Samples are the first MaxSamples addresses.
 	Samples []string `json:"samples,omitempty"`
-	// IDs and Emails are the first MaxDetail addresses, in the same order.
+	// IDs, Emails, Direct and Tags describe the first MaxDetail addresses, in the same order.
 	IDs    []int    `json:"ids,omitempty"`
 	Emails []string `json:"emails,omitempty"`
+	// Direct says whether the caller marked the address as one it can act on.
+	Direct []bool `json:"direct,omitempty"`
+	// Tags are all the classes of the address, not only this one.
+	Tags [][]string `json:"tags,omitempty"`
 	// Truncated says the class has more addresses than IDs lists.
 	Truncated bool `json:"truncated"`
 }
@@ -116,9 +120,10 @@ type Summary struct {
 	Classes map[string]*ClassSummary `json:"classes"`
 }
 
-// Summarize counts the verdicts by class. ids[i] is the subscriber of verdicts[i]; it can
-// be nil. With detail, each class also carries example addresses and the listed IDs.
-func Summarize(verdicts []Verdict, ids []int, detail bool) Summary {
+// Summarize counts the verdicts by class. ids[i] is the subscriber of verdicts[i] and
+// direct[i] a mark the caller gives it; both can be nil. With detail, each class also
+// carries example addresses and the listed IDs.
+func Summarize(verdicts []Verdict, ids []int, direct []bool, detail bool) Summary {
 	out := Summary{Total: len(verdicts), Classes: make(map[string]*ClassSummary, len(Classes))}
 	for _, c := range Classes {
 		out.Classes[c] = &ClassSummary{}
@@ -136,7 +141,8 @@ func Summarize(verdicts []Verdict, ids []int, detail bool) Summary {
 		case StatusPending:
 			out.Pending++
 		}
-		for _, c := range v.Classes() {
+		classes := v.Classes()
+		for _, c := range classes {
 			cs := out.Classes[c]
 			cs.Count++
 			if !detail {
@@ -151,6 +157,10 @@ func Summarize(verdicts []Verdict, ids []int, detail bool) Summary {
 			if len(cs.IDs) < MaxDetail {
 				cs.IDs = append(cs.IDs, ids[i])
 				cs.Emails = append(cs.Emails, v.Email)
+				cs.Tags = append(cs.Tags, classes)
+				if direct != nil {
+					cs.Direct = append(cs.Direct, direct[i])
+				}
 			} else {
 				cs.Truncated = true
 			}

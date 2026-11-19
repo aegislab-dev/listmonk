@@ -163,9 +163,11 @@
         <p class="help">{{ $t('import.mapDuplicateHelp') }}</p>
         <div v-if="address" class="map-address" data-cy="map-address">
           <h4 class="title is-6">{{ $t('import.addr.title') }} <span class="tag is-light">{{ $t('import.addr.server') }}</span></h4>
-          <p v-if="address.state === 'checking'" class="help" role="status" data-cy="map-address-busy">{{ $t('import.addr.checking') }}</p>
-          <p v-else-if="address.state === 'error'" class="help" data-cy="map-address-error">{{ $t('import.addr.failed') }}</p>
-          <template v-else>
+          <p v-if="address.busy" class="help" role="status" data-cy="map-address-busy">
+            {{ $t('import.addr.checking') }} {{ $t('import.addr.wait') }}
+          </p>
+          <p v-if="address.state === 'error'" class="help" data-cy="map-address-error">{{ $t('import.addr.failed') }}</p>
+          <template v-else-if="address.state === 'done'">
             <p class="map-address-line" data-cy="map-address-summary">
               <template v-if="!address.risky">{{ $t('import.addr.clean', { total: address.total }) }}</template>
               <template v-else>

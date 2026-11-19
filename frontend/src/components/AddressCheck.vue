@@ -45,7 +45,7 @@
             <button type="button" class="ac-link" :data-cy="`address-list-${row.name}`" @click="shown = row.name">
               {{ $t('addressCheck.showList') }}
             </button>
-            <template v-if="canUnsubscribe && group.kind !== 'unknown'">
+            <template v-if="canUnsubscribe && group.kind !== 'unknown' && unsubIds(row.name).length">
               <b-button v-if="group.kind === 'confirmed'" size="is-small" type="is-danger" outlined :loading="busy === row.name"
                 :disabled="!!busy" :data-cy="`address-unsub-${row.name}`" @click="askUnsubscribe(row.name)">
                 {{ $t('addressCheck.unsubscribe') }}
@@ -64,6 +64,7 @@
         <template v-if="result.detail && $can('subscribers:manage')">
           {{ $t(targetIds.length ? 'addressCheck.unsubscribeNote' : 'addressCheck.dynamicOnly') }}
           <template v-if="targetIds.length && hasDynamic"> {{ $t('addressCheck.dynamicMixed') }}</template>
+          <template v-if="targetIds.length && linkedText"> {{ $t('addressCheck.linked', { lists: linkedText }) }}</template>
         </template>
         <template v-else-if="!result.detail"> {{ $t('addressCheck.noDetail') }}</template>
       </p>
@@ -97,6 +98,7 @@
                     <span v-for="c in row.classes" :key="c" class="ac-chip" :class="`is-${kindOf(c)}`">
                       {{ $t(`addressCheck.class.${c}`) }}
                     </span>
+                    <small v-if="canUnsubscribe && !row.direct" class="ac-indirect">{{ $t('addressCheck.indirect') }}</small>
                   </td>
                 </tr>
               </tbody>
@@ -105,9 +107,9 @@
         </section>
         <footer class="modal-card-foot">
           <b-button @click="shown = ''">{{ $t('globals.buttons.close') }}</b-button>
-          <b-button v-if="canUnsubscribe && shown !== 'unknown'" type="is-danger" outlined :disabled="!!busy"
-            data-cy="address-modal-unsub" @click="askUnsubscribe(shown)">
-            {{ $t('addressCheck.unsubscribeCount', { count: n(shownRows.length) }) }}
+          <b-button v-if="canUnsubscribe && shown !== 'unknown' && unsubIds(shown).length" type="is-danger" outlined
+            :disabled="!!busy" data-cy="address-modal-unsub" @click="askUnsubscribe(shown)">
+            {{ $t('addressCheck.unsubscribeCount', { count: n(unsubIds(shown).length) }) }}
           </b-button>
         </footer>
       </div>
@@ -202,17 +204,21 @@ export default {
       return this.result.detail && this.$can('subscribers:manage') && this.targetIds.length > 0;
     },
 
-    // Every listed address of the shown class, with all the classes it is in.
+    // Every listed address of the shown class, with all the classes the server found for it.
     shownRows() {
       const cls = this.result.classes[this.shown];
-      const all = {};
-      Object.entries(this.result.classes).forEach(([name, { ids }]) => (ids || []).forEach((id) => {
-        (all[id] = all[id] || []).push(name);
-      }));
-      const order = [...CONFIRMED, ...WARNING, 'unknown'];
       return (cls.ids || []).map((id, i) => ({
-        id, email: cls.emails[i], classes: order.filter((name) => all[id].includes(name)),
+        id, email: cls.emails[i], classes: (cls.tags || [])[i] || [this.shown], direct: !cls.direct || cls.direct[i],
       }));
+    },
+
+    // The other lists an unsubscribe here also reaches because a draw ties them (from the server).
+    linkedText() {
+      const names = this.result.linked || [];
+      const more = names.length - 5 + (this.result.linkedHidden || 0);
+      const shown = names.slice(0, 5).join(', ');
+      if (!shown) return more > 0 ? this.$t('addressCheck.linkedHidden', { count: this.n(more) }) : '';
+      return more > 0 ? this.$t('addressCheck.linkedMore', { lists: shown, count: this.n(more) }) : shown;
     },
   },
 
@@ -278,13 +284,21 @@ export default {
       }
     },
 
+    // The listed people of a class who have a subscription of their own in the chosen ordinary
+    // lists. Someone who is in only through a dynamic list cannot be unsubscribed here.
+    unsubIds(name) {
+      const cls = this.result.classes[name] || {};
+      return (cls.ids || []).filter((id, i) => !cls.direct || cls.direct[i]);
+    },
+
     askUnsubscribe(name) {
-      const ids = [...(this.result.classes[name].ids || [])];
+      const ids = this.unsubIds(name);
       if (!ids.length || this.busy) return;
       const count = this.n(ids.length);
       const lists = this.chosen.filter((l) => !l.axmFilter).map((l) => l.name).join(', ');
       const warning = [
         this.$t('addressCheck.confirm.body', { lists, count }),
+        this.linkedText ? this.$t('addressCheck.confirm.linked', { lists: this.linkedText }) : '',
         WARNING.includes(name) ? this.$t(`addressCheck.confirm.${name}`) : '',
         this.result.classes[name].truncated ? this.$t('addressCheck.confirm.truncated') : '',
         this.$t('addressCheck.confirm.undo'),
@@ -353,6 +367,7 @@ export default {
 .ac-modal .modal-card-head .title { margin: 0; }
 .ac-modal .modal-card-body { padding: 8px 20px 12px; }
 .ac-table-scroll { max-height: 55vh; overflow-y: auto; margin-top: 10px; }
+.ac-indirect { color: #616161; white-space: nowrap; }
 .ac-table td, .ac-table th { font-size: .875rem; vertical-align: middle; overflow-wrap: anywhere; }
 @media (max-width: 480px) {
   .ac-head { flex-wrap: wrap; }

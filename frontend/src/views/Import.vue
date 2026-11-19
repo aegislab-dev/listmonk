@@ -153,7 +153,7 @@
       </p>
       <br />
 
-      <address-check v-if="isSuccessful() && importLists.length" :list-ids="importLists.map(({ id }) => id)"
+      <address-check v-if="showImportCheck" :list-ids="importLists.map(({ id }) => id)"
         :lists="lists.results || importLists"
         :scope-note="$t('addressCheck.listScope', { lists: importLists.map(({ name }) => name).join(', ') })" />
 
@@ -175,9 +175,6 @@ import {
   LIMITS, readMemory, rememberMapping, ADDRESS_CONFIRMED, ADDRESS_WARNING, addressExcludedRows, excludedRowsCSV,
 } from '../lib/csv-import';
 
-// The lists of the import that runs or has just finished, kept for the address check in the
-// finished box across a reload of the page.
-const IMPORT_LISTS_KEY = 'listmonk.axm.importLists';
 // While DNS lookups are unfinished the address check is asked again, this often and this many times.
 const ADDRESS_POLL_MS = 3000;
 const ADDRESS_MAX_POLLS = 10;
@@ -255,7 +252,10 @@ export default Vue.extend({
       // The address check of the rows to import, and the two switches of what it leaves out.
       addr: addressState(),
       addrExclude: { confirmed: true, warning: false },
+      // The lists and file name of the import this page started. The finished box checks
+      // those lists only while the server still shows that same file.
       importLists: [],
+      importName: '',
       sentCount: null,
       isProcessing: false,
       status: { status: '' },
@@ -343,7 +343,8 @@ export default Vue.extend({
       if (!emails) return;
       this.addrInput = { emails, rows };
       if (this.form.mode !== 'subscribe') return;
-      const key = emails.join('\n');
+      // The rows are part of the key: the same addresses in other rows are another file to check.
+      const key = `${emails.join('\n')}\n\n${rows.join(',')}`;
       if (key === this.addrKey) return;
       this.resetAddressCheck();
       this.addrKey = key;
@@ -375,8 +376,11 @@ export default Vue.extend({
           this.addrTimer = setTimeout(() => this.runAddressCheck(key), ADDRESS_POLL_MS);
         }
       } catch (_) {
-        // A failed check never blocks the upload.
-        if (!controller.signal.aborted && key === this.addrKey && this.addr.state !== 'done') this.addr.state = 'error';
+        // A failed check never blocks the upload: without an answer it is an error, and with
+        // one the unfinished lookups are given up on.
+        if (controller.signal.aborted || key !== this.addrKey) return;
+        if (this.addr.state === 'done') this.addr = { ...this.addr, polls: ADDRESS_MAX_POLLS + 1 };
+        else this.addr.state = 'error';
       }
     },
 
@@ -413,12 +417,9 @@ export default Vue.extend({
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     },
 
-    rememberImportLists(lists) {
+    rememberImport(lists = [], name = '') {
       this.importLists = lists;
-      try {
-        if (lists.length) window.sessionStorage.setItem(IMPORT_LISTS_KEY, JSON.stringify(lists));
-        else window.sessionStorage.removeItem(IMPORT_LISTS_KEY);
-      } catch (_) { /* Optional: without it the finished box has no address check after a reload. */ }
+      this.importName = name;
     },
 
     async parseCSV(initial = false, manualDelimiter = false) {
@@ -722,7 +723,7 @@ export default Vue.extend({
         this.pollStatus();
         this.form.file = null;
         this.sentCount = null;
-        this.rememberImportLists([]);
+        this.rememberImport();
       });
     },
 
@@ -764,7 +765,8 @@ export default Vue.extend({
         } catch (_) { /* Remembering assignments is optional. */ }
       }
       this.isProcessing = true;
-      this.rememberImportLists(this.form.mode === 'subscribe' ? this.form.lists.map(({ id, name }) => ({ id, name })) : []);
+      this.rememberImport();
+      const importLists = this.form.mode === 'subscribe' ? this.form.lists.map(({ id, name }) => ({ id, name })) : [];
 
       // Prepare the upload payload.
       const params = new FormData();
@@ -780,6 +782,8 @@ export default Vue.extend({
 
       // Post.
       this.$api.importSubscribers(params).then(() => {
+        // Only an import this page really started has its lists checked when it ends.
+        this.rememberImport(importLists, file.name);
         // On file upload, show a confirmation.
         this.$utils.toast(this.$t('import.importStarted'));
 
@@ -806,6 +810,8 @@ export default Vue.extend({
       if (!this.form.file || this.isProcessing || this.form.delim.length !== 1) return false;
       if (!this.isCSV) return true;
       if (this.csv.busy || this.csv.error) return false;
+      // Uploading before the check answers would let the rows it leaves out through.
+      if (this.csv.mode === 'mapping' && this.addressBusy) return false;
       return this.csv.mode === 'raw' ? this.csv.rawReady : this.csv.parsed && this.csv.ready;
     },
     displayColumns() {
@@ -836,6 +842,17 @@ export default Vue.extend({
       const count = this.csv.summary ? this.csv.summary.empty + this.csv.summary.invalid : 0;
       return count ? { [this.csv.mapping.findIndex(({ role }) => role === 'email')]: this.$t('import.mapEmailErrors', { count }) } : {};
     },
+    addressPolling() {
+      const { state, result, polls } = this.addr;
+      return state === 'done' && result.pending > 0 && polls <= ADDRESS_MAX_POLLS;
+    },
+    // The check has not answered for every row yet (first answer, or lookups still running).
+    addressBusy() {
+      return this.form.mode === 'subscribe' && (this.addr.state === 'checking' || this.addressPolling);
+    },
+    showImportCheck() {
+      return this.isSuccessful() && this.importLists.length > 0 && this.status.name === this.importName;
+    },
     // What the column mapper shows of the address check: counts, one line per class with the
     // first source rows, and how many rows each switch leaves out.
     addressView() {
@@ -843,11 +860,12 @@ export default Vue.extend({
         state, result, issues, emails,
       } = this.addr;
       if (state === 'idle' || this.form.mode !== 'subscribe') return null;
-      if (state !== 'done') return { state };
+      if (state !== 'done') return { state, busy: this.addressBusy };
       const rows = Object.keys(issues).map(Number).sort((a, b) => a - b);
       const has = (row, classes) => issues[row].some((c) => classes.includes(c));
       const confirmed = rows.filter((row) => has(row, ADDRESS_CONFIRMED));
-      const polling = result.pending > 0 && this.addr.polls <= ADDRESS_MAX_POLLS;
+      const confirmedSet = new Set(confirmed);
+      const polling = this.addressPolling;
       const lines = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING, 'unknown'].map((name) => {
         const found = rows.filter((row) => issues[row].includes(name));
         let kind = 'unknown';
@@ -873,8 +891,10 @@ export default Vue.extend({
         warning: result.warning,
         pending: polling ? result.pending : 0,
         unknown: result.unknown + (polling ? 0 : result.pending),
+        busy: this.addressBusy,
         confirmedRows: confirmed.length,
-        warningRows: rows.filter((row) => has(row, ADDRESS_WARNING) && !confirmed.includes(row)).length,
+        // What the second switch adds: with the first one on, rows it already leaves out are not counted again.
+        warningRows: rows.filter((row) => has(row, ADDRESS_WARNING) && !(this.addrExclude.confirmed && confirmedSet.has(row))).length,
         excludeConfirmed: this.addrExclude.confirmed,
         excludeWarning: this.addrExclude.warning,
       };
@@ -900,12 +920,6 @@ export default Vue.extend({
   },
 
   mounted() {
-    try {
-      const saved = JSON.parse(window.sessionStorage.getItem(IMPORT_LISTS_KEY) || '[]');
-      this.importLists = saved.filter((l) => l && Number.isInteger(l.id) && typeof l.name === 'string');
-    } catch (_) {
-      this.importLists = [];
-    }
     this.renderExample();
     this.pollStatus();
 

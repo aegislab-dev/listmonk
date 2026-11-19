@@ -12,8 +12,16 @@ let listId;
 let campaignId;
 const ids = [];
 
-const cls = (rows) => ({
-  count: rows.length, samples: rows.map((n) => emails[n]), ids: rows.map((n) => ids[n]), emails: rows.map((n) => emails[n]), truncated: false,
+// Recipient 2 is in two classes. The tags come from the server, as the lists can be cut short.
+const tags = { 1: ['dead'], 2: ['dead', 'role'], 3: ['role'] };
+const cls = (rows, direct = () => true) => ({
+  count: rows.length,
+  samples: rows.map((n) => emails[n]),
+  ids: rows.map((n) => ids[n]),
+  emails: rows.map((n) => emails[n]),
+  tags: rows.map((n) => tags[n]),
+  direct: rows.map(direct),
+  truncated: false,
 });
 const empty = { count: 0, truncated: false };
 // Four recipients: 0 is fine, 1 has a dead domain, 2 is dead and a role address, 3 is a role address.
@@ -27,6 +35,8 @@ const risky = () => ({
   too_large: false,
   limit: 500000,
   detail: true,
+  linked: ['Tied source list'],
+  linked_hidden: 2,
   classes: {
     format: empty, dead: cls([1, 2]), nullmx: empty, disposable: empty, role: cls([2, 3]), unknown: empty,
   },
@@ -103,8 +113,10 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=address-modal]').should('not.exist');
 
     // Cancelling changes nothing; confirming sends the listed IDs for the chosen list.
+    // The confirmation names the chosen list and the lists a draw ties to it.
+    cy.get('[data-cy=address-note]').should('contain', 'Tied source list');
     cy.get('[data-cy=address-unsub-dead]').click();
-    cy.get('.modal.dialog [data-cy=warn-box]').should('contain', listName);
+    cy.get('.modal.dialog [data-cy=warn-box]').should('contain', listName).and('contain', 'Tied source list').and('contain', '2');
     cy.get('.modal.dialog footer button').first().click();
     cy.get('.modal.dialog').should('not.exist');
 
@@ -160,6 +172,25 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=address-toggle]').click();
     cy.get('[data-cy=address-row-dead]').should('contain', '2').and('not.contain', '@');
     cy.get('[data-cy=address-list-dead], [data-cy=address-unsub-dead]').should('not.exist');
+
+    // Someone who is in only through a dynamic list cannot be unsubscribed here: no button
+    // for a class with nobody else, and only the others are sent for a mixed class.
+    cy.intercept('POST', listCheck, {
+      data: { ...risky(), classes: { ...clean(4).classes, dead: cls([1, 2], () => false), role: cls([2, 3], (n) => n === 3) } },
+    }).as('indirect');
+    cy.intercept('PUT', '/api/subscribers/lists', { data: true }).as('unsubscribe');
+    cy.visit(`/admin/campaigns/${campaignId}`);
+    cy.wait('@indirect');
+    cy.get('[data-cy=address-toggle]').click();
+    cy.get('[data-cy=address-list-dead]').should('exist');
+    cy.get('[data-cy=address-unsub-dead]').should('not.exist');
+    cy.get('[data-cy=address-list-dead]').click();
+    cy.get('[data-cy=address-modal] .ac-indirect').should('have.length', 2);
+    cy.get('[data-cy=address-modal-unsub]').should('not.exist');
+    cy.get('[data-cy=address-modal] footer button').first().click();
+    cy.get('[data-cy=address-unsub-role]').click();
+    cy.get('.modal.dialog footer button.is-danger').click();
+    cy.wait('@unsubscribe').its('request.body.ids').should('deep.equal', [ids[3]]);
 
     // A failed check is one grey line and nothing else.
     cy.intercept('POST', listCheck, { statusCode: 500, body: { message: 'Synthetic failure' } }).as('failed');
@@ -252,15 +283,16 @@ describe('Address check before sending and on import', () => {
         .its('body.data.results').should('have.length', 0);
     });
 
-    // The finished box checks the whole list that was imported into, also after a reload.
+    // The finished box checks the whole list that was imported into. A page that did not
+    // start this import (here: after a reload) cannot know its lists and shows no check.
     cy.wait('@listCheck').its('request.body.list_ids').should('have.length', 1);
     cy.get('.status [data-cy=address-check]').should('have.class', 'is-ok');
     cy.get('.status [data-cy=address-scope]').should('contain', importListName);
     cy.reload();
-    cy.get('.status [data-cy=address-scope]').should('contain', importListName);
+    cy.get('.status .has-text-success').should('contain', 'finished');
+    cy.get('[data-cy=address-check]').should('not.exist');
     cy.get('.status button').first().click();
     cy.get('form.box').should('be.visible');
-    cy.get('[data-cy=address-check]').should('not.exist');
   });
 
   it('does not block the upload when the check fails, and has no check for a blocklist import', () => {
@@ -284,5 +316,99 @@ describe('Address check before sending and on import', () => {
 
     cy.get('[data-cy=check-blocklist]').click();
     cy.get('[data-cy=map-address]').should('not.exist');
+  });
+
+  const openImport = (contents, fileName) => {
+    cy.visit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('.list-selector input').type(importListName);
+    cy.contains('.list-selector .autocomplete a', importListName).click();
+    cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(contents), fileName, mimeType: 'text/csv' }, { force: true });
+  };
+  const found = (email, count) => cy.request({ url: '/api/subscribers', qs: { query: `email = '${email}'`, per_page: 1 } })
+    .its('body.data.results').should('have.length', count);
+
+  it('cannot be uploaded before the check has answered', () => {
+    const bad = `early-${stamp}-bad@example.invalid`;
+    const good = `early-${stamp}-good@example.invalid`;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    cy.intercept('POST', importCheck, (req) => held.then(() => req.reply({
+      data: {
+        total: 2, risky: 1, confirmed: 1, warning: 0, unknown: 0, pending: 0, classes: {}, issues: { 0: ['dead'] },
+      },
+    }))).as('importCheck');
+    openImport(`Mail,Person\n${bad},Synthetic\n${good},Synthetic\n`, 'early.csv');
+    cy.get('[data-cy=map-address-busy]').should('be.visible');
+    cy.get('[data-cy=map-busy]').should('not.exist');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
+    cy.get('button[type=submit]').should('be.disabled');
+    cy.then(() => release());
+    cy.wait('@importCheck');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '1');
+    cy.get('button[type=submit]').should('not.be.disabled').click();
+    cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+    found(good, 1);
+    found(bad, 0);
+    cy.get('.status button').first().click();
+  });
+
+  it('checks again when another column becomes the address, and leaves out the rows of that column', () => {
+    // The same two addresses, one row lower in the second column.
+    const bad = `shift-${stamp}-bad@example.invalid`;
+    const good = `shift-${stamp}-good@example.invalid`;
+    cy.intercept('POST', importCheck, (req) => req.reply({
+      data: {
+        total: req.body.emails.length,
+        risky: 1,
+        confirmed: 1,
+        warning: 0,
+        unknown: 0,
+        pending: 0,
+        classes: {},
+        issues: { [req.body.emails.indexOf(bad)]: ['dead'] },
+      },
+    })).as('importCheck');
+    openImport(`First,Second\n${bad},\n${good},${bad}\n,${good}\n`, 'shift.csv');
+    cy.get('[data-cy=map-role-0]').select('email');
+    cy.get('[data-cy=map-role-1]').select('discard');
+    cy.wait('@importCheck');
+    cy.get('[data-cy=map-address-dead]').should('contain', `2 (${bad})`);
+    cy.get('[data-cy=map-preview]').should('contain', good).and('not.contain', bad);
+
+    cy.get('[data-cy=map-role-0]').select('discard');
+    cy.get('[data-cy=map-role-1]').select('email');
+    cy.wait('@importCheck');
+    cy.get('[data-cy=map-address-dead]').should('contain', `3 (${bad})`);
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '1');
+    cy.get('[data-cy=map-preview]').should('contain', good).and('not.contain', bad);
+    cy.get('button[type=submit]').should('not.be.disabled').click();
+    cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+    found(good, 1);
+    found(bad, 0);
+    cy.get('.status button').first().click();
+  });
+
+  it('lets the warning switch leave out a row that is both confirmed and a role address', () => {
+    const both = `info@both-${stamp}.invalid`;
+    cy.intercept('POST', importCheck, {
+      data: {
+        total: 2, risky: 1, confirmed: 1, warning: 0, unknown: 0, pending: 0, classes: {}, issues: { 0: ['dead', 'role'] },
+      },
+    }).as('importCheck');
+    openImport(`Mail,Person\n${both},Synthetic\nboth-${stamp}@example.invalid,Synthetic\n`, 'both.csv');
+    cy.wait('@importCheck');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '1');
+    // With the first switch on the row is already out, so the second has nothing to add.
+    cy.get('[data-cy=map-address-exclude-warning] input').should('be.disabled');
+    cy.get('[data-cy=map-address-exclude-confirmed] .check').click();
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
+    cy.get('[data-cy=map-address-exclude-warning] input').should('not.be.disabled');
+    cy.get('[data-cy=map-address-exclude-warning]').should('contain', '1');
+    cy.get('[data-cy=map-address-exclude-warning] .check').click();
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '1');
+    cy.get('[data-cy=map-issue-address]').should('contain', '1');
   });
 });

@@ -388,7 +388,7 @@ func TestCheckAndSummarize(t *testing.T) {
 		}
 	}
 
-	s := Summarize(verdicts, ids, true)
+	s := Summarize(verdicts, ids, []bool{true, true, true, false, true, true, true, true, true}, true)
 	if s.Total != 9 || s.Confirmed != 4 || s.Warning != 3 || s.Risky != 7 || s.Unknown != 2 || s.Pending != 0 {
 		t.Fatalf("summary %+v", s)
 	}
@@ -403,14 +403,16 @@ func TestCheckAndSummarize(t *testing.T) {
 	role := s.Classes[ClassRole]
 	if !reflect.DeepEqual(role.IDs, []int{4, 7, 9}) ||
 		!reflect.DeepEqual(role.Emails, []string{"info@gone.test", "sales@ok.test", "help@slow.test"}) ||
-		!reflect.DeepEqual(role.Samples, role.Emails) || role.Truncated {
+		!reflect.DeepEqual(role.Samples, role.Emails) || role.Truncated ||
+		!reflect.DeepEqual(role.Direct, []bool{false, true, true}) ||
+		!reflect.DeepEqual(role.Tags, [][]string{{ClassDead, ClassRole}, {ClassRole}, {ClassRole, ClassUnknown}}) {
 		t.Fatalf("role detail %+v", role)
 	}
 
 	// Without detail there are only counts.
-	plain := Summarize(verdicts, ids, false)
+	plain := Summarize(verdicts, ids, nil, false)
 	for name, cs := range plain.Classes {
-		if cs.Count != want[name] || cs.Samples != nil || cs.IDs != nil || cs.Emails != nil {
+		if cs.Count != want[name] || cs.Samples != nil || cs.IDs != nil || cs.Emails != nil || cs.Tags != nil || cs.Direct != nil {
 			t.Fatalf("%s without detail: %+v", name, cs)
 		}
 	}
@@ -424,14 +426,19 @@ func TestSummarizeLimitsDetailAndCountsPending(t *testing.T) {
 		verdicts[i] = Verdict{Result: Result{Email: "info@x.test", Domain: "x.test", Role: true}, Status: StatusPending}
 		ids[i] = i + 1
 	}
-	s := Summarize(verdicts, ids, true)
+	// The last address is also on a dead domain: its tags say so although the role list is cut.
+	verdicts[n-1].Status = StatusDead
+	s := Summarize(verdicts, ids, nil, true)
+	if dead := s.Classes[ClassDead]; dead.Count != 1 || !reflect.DeepEqual(dead.Tags, [][]string{{ClassDead, ClassRole}}) || dead.Direct != nil {
+		t.Fatalf("dead detail %+v", dead)
+	}
 	role := s.Classes[ClassRole]
 	if role.Count != n || len(role.IDs) != MaxDetail || len(role.Emails) != MaxDetail ||
-		len(role.Samples) != MaxSamples || !role.Truncated {
+		len(role.Samples) != MaxSamples || len(role.Tags) != MaxDetail || !role.Truncated {
 		t.Fatalf("count %d ids %d emails %d samples %d truncated %v",
 			role.Count, len(role.IDs), len(role.Emails), len(role.Samples), role.Truncated)
 	}
-	if s.Pending != n || s.Warning != n || s.Risky != n || s.Unknown != 0 || s.Classes[ClassUnknown].Count != 0 {
+	if s.Pending != n-1 || s.Warning != n-1 || s.Confirmed != 1 || s.Risky != n || s.Unknown != 0 || s.Classes[ClassUnknown].Count != 0 {
 		t.Fatalf("summary %+v", s)
 	}
 }

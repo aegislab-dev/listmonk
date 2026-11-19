@@ -54,6 +54,10 @@ type addrCheckListResp struct {
 	Limit    int  `json:"limit"`
 	// Detail: the classes carry example addresses and subscriber IDs.
 	Detail bool `json:"detail"`
+	// Linked are the other lists that unsubscribing someone from the chosen ordinary lists
+	// also reaches, because a draw ties them. LinkedHidden counts those the user cannot see.
+	Linked       []string `json:"linked"`
+	LinkedHidden int      `json:"linked_hidden"`
 }
 
 // CheckImportAddresses checks the addresses of a file that is about to be imported.
@@ -68,7 +72,7 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 	}
 
 	verdicts := a.addrCheck.Check(c.Request().Context(), req.Emails, addrCheckBudget)
-	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, false), Issues: map[int][]string{}}
+	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}}
 	for i, v := range verdicts {
 		classes := v.Classes()
 		if v.Status == addrcheck.StatusPending {
@@ -83,7 +87,9 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 
 // CheckListAddresses checks the addresses a campaign to the given lists would reach.
 // Lists the user cannot see are ignored. Addresses and subscriber IDs are included only
-// for a user who can read subscribers.
+// for a user who can read those subscribers: with a dynamic list among them that is the
+// rule of its preview (read access to its base lists, and subscribers:get_all when the
+// base is every list).
 func (a *App) CheckListAddresses(c echo.Context) error {
 	var req addrCheckListReq
 	if err := c.Bind(&req); err != nil {
@@ -103,27 +109,54 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 	out := addrCheckListResp{
 		Limit:  addrCheckMaxAudience,
 		Detail: user.HasPerm(auth.PermSubscribersGetAll) || user.HasPerm(auth.PermSubscribersGet),
+		Linked: []string{},
 	}
 	if len(lists) == 0 {
-		out.Summary = addrcheck.Summarize(nil, nil, false)
+		out.Summary = addrcheck.Summarize(nil, nil, nil, false)
 		return c.JSON(http.StatusOK, okResp{out})
 	}
 
-	total, rows, err := a.core.AddressCheckAudience(c.Request().Context(), lists, addrCheckMaxAudience)
+	ctx := c.Request().Context()
+	dynamic, err := a.core.AddressCheckDynamicFilters(ctx, lists)
+	if err != nil {
+		return err
+	}
+	ordinary := make([]int, 0, len(lists))
+	for _, id := range lists {
+		f, ok := dynamic[id]
+		if !ok {
+			ordinary = append(ordinary, id)
+		} else if a.checkDynamicBasePerm(c, f) != nil || !canSampleDynamic(user, f) {
+			out.Detail = false
+		}
+	}
+	linked, err := a.core.AddressCheckLinked(ctx, ordinary)
+	if err != nil {
+		return err
+	}
+	for _, l := range linked {
+		if len(user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, []int{l.ID})) == 1 {
+			out.Linked = append(out.Linked, l.Name)
+		} else {
+			out.LinkedHidden++
+		}
+	}
+
+	total, rows, err := a.core.AddressCheckAudience(ctx, lists, addrCheckMaxAudience)
 	if err != nil {
 		return err
 	}
 	if total > addrCheckMaxAudience {
-		out.Summary = addrcheck.Summarize(nil, nil, false)
+		out.Summary = addrcheck.Summarize(nil, nil, nil, false)
 		out.Total, out.TooLarge = total, true
 		return c.JSON(http.StatusOK, okResp{out})
 	}
 
-	emails, ids := make([]string, len(rows)), make([]int, len(rows))
+	emails, ids, direct := make([]string, len(rows)), make([]int, len(rows)), make([]bool, len(rows))
 	for i, r := range rows {
-		emails[i], ids[i] = r.Email, r.ID
+		emails[i], ids[i], direct[i] = r.Email, r.ID, r.Direct
 	}
-	verdicts := a.addrCheck.Check(c.Request().Context(), emails, addrCheckBudget)
-	out.Summary = addrcheck.Summarize(verdicts, ids, out.Detail)
+	verdicts := a.addrCheck.Check(ctx, emails, addrCheckBudget)
+	out.Summary = addrcheck.Summarize(verdicts, ids, direct, out.Detail)
 	return c.JSON(http.StatusOK, okResp{out})
 }

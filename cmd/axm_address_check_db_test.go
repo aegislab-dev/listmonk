@@ -74,9 +74,11 @@ func (e *addrEnv) sub(email, status string, list int, subscription string) int {
 
 type addrListAnswer struct {
 	addrcheck.Summary
-	TooLarge bool `json:"too_large"`
-	Limit    int  `json:"limit"`
-	Detail   bool `json:"detail"`
+	TooLarge     bool     `json:"too_large"`
+	Limit        int      `json:"limit"`
+	Detail       bool     `json:"detail"`
+	Linked       []string `json:"linked"`
+	LinkedHidden int      `json:"linked_hidden"`
 }
 
 func (e *addrEnv) check(user auth.User, lists ...int) (addrListAnswer, string) {
@@ -332,5 +334,100 @@ func TestAddressCheckImport(t *testing.T) {
 	// A team member has no import permission.
 	if code, _ = e.call(h, e.as(e.ua), "POST", route, "", body); code != http.StatusForbidden {
 		t.Fatalf("member import check: HTTP %d", code)
+	}
+}
+
+// A dynamic list shows addresses only under the rule of its preview: read access to its
+// base lists, and subscribers:get_all when its base is every list.
+func TestAddressCheckDynamicDetailFollowsBasePermission(t *testing.T) {
+	e := newAddrEnv(t)
+	member := e.as(e.ua) // subscribers:get and the lists of team 가
+	inA := e.sub("a@gone.test", "enabled", e.aList, "confirmed")
+	e.sub("b@gone.test", "enabled", e.bList, "confirmed")
+	dyn := func(name, base string) int {
+		var id int
+		e.get(&id, `INSERT INTO lists(uuid,name,type,optin,tags,axm_filter)
+			VALUES (gen_random_uuid(),$1,'private','single','{팀:가}',$2::jsonb) RETURNING id`, name,
+			`{"version":2,"base":`+base+`,"match":"all","conditions":[]}`)
+		return id
+	}
+	own := dyn("Own base", fmt.Sprintf(`{"type":"lists","lists":[%d]}`, e.aList))
+	foreign := dyn("Foreign base", fmt.Sprintf(`{"type":"lists","lists":[%d]}`, e.bList))
+	everyone := dyn("Every list", `{"type":"all"}`)
+	e.a.refreshTeamUsers()
+	member = e.as(e.ua)
+
+	got, raw := e.check(member, own)
+	if !got.Detail || got.Total != 1 || !reflect.DeepEqual(got.Classes["dead"].IDs, []int{inA}) {
+		t.Fatalf("own base: %s", raw)
+	}
+	// In only through the dynamic list: not someone an unsubscribe from the chosen lists reaches.
+	if !reflect.DeepEqual(got.Classes["dead"].Direct, []bool{false}) {
+		t.Fatalf("own base direct: %s", raw)
+	}
+	for name, id := range map[string]int{"foreign base": foreign, "every list": everyone} {
+		got, raw := e.check(member, id)
+		if got.Detail || got.Total == 0 || got.Confirmed != got.Total || strings.Contains(raw, "@") || strings.Contains(raw, `"ids"`) {
+			t.Fatalf("%s: %s", name, raw)
+		}
+	}
+	// One list without the right hides the addresses of the whole answer.
+	if got, raw := e.check(member, e.aList, foreign); got.Detail || got.Total != 2 || strings.Contains(raw, "@") {
+		t.Fatalf("mixed with a foreign base: %s", raw)
+	}
+	// With the ordinary list chosen too, its own member is marked direct.
+	if got, raw := e.check(member, e.aList, own); !got.Detail || !reflect.DeepEqual(got.Classes["dead"].Direct, []bool{true}) {
+		t.Fatalf("ordinary and dynamic: %s", raw)
+	}
+	// subscribers:get_all reads every base.
+	if got, raw := e.check(e.as(e.admin), everyone, foreign); !got.Detail || got.Total != 2 || len(got.Classes["dead"].IDs) != 2 {
+		t.Fatalf("operator: %s", raw)
+	}
+}
+
+// Unsubscribing from a list that a draw ties to others also unsubscribes there (the
+// axm_propagate_draw_unsub trigger). The answer names those lists so the screen can say so.
+func TestAddressCheckNamesListsLinkedByDraws(t *testing.T) {
+	e := newAddrEnv(t)
+	admin := e.as(e.admin)
+	mk := func(name string, tags string) int {
+		var id int
+		e.get(&id, `INSERT INTO lists(uuid,name,type,optin,tags) VALUES(gen_random_uuid(),$1,'private','single',$2::varchar[]) RETURNING id`, name, tags)
+		return id
+	}
+	source, sample, other := mk("Draw source", "{팀:가}"), mk("Draw sample", "{팀:가}"), mk("Second sample", "{팀:나}")
+	e.db.MustExec(`INSERT INTO axm_list_draws(list_id, source_list_id, source_name, list_name) VALUES ($1,$2,'Draw source','Draw sample'), ($3,$2,'Draw source','Second sample')`,
+		sample, source, other)
+	sub := e.sub("a@gone.test", "enabled", source, "confirmed")
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1,$2,'confirmed')`, sub, sample)
+
+	got, raw := e.check(admin, sample)
+	if !reflect.DeepEqual(got.Linked, []string{"Draw source", "Second sample"}) || got.LinkedHidden != 0 {
+		t.Fatalf("drawn list: %s", raw)
+	}
+	if got, raw := e.check(admin, source); !reflect.DeepEqual(got.Linked, []string{"Draw sample", "Second sample"}) {
+		t.Fatalf("source list: %s", raw)
+	}
+	if got, raw := e.check(admin, source, sample, other); len(got.Linked) != 0 {
+		t.Fatalf("all chosen: %s", raw)
+	}
+	if got, raw := e.check(admin, e.aList); len(got.Linked) != 0 || got.Linked == nil {
+		t.Fatalf("no draw: %s", raw)
+	}
+	// A list the user cannot see is counted, not named.
+	e.a.refreshTeamUsers()
+	if got, raw := e.check(e.as(e.ua), sample); !reflect.DeepEqual(got.Linked, []string{"Draw source"}) || got.LinkedHidden != 1 {
+		t.Fatalf("team member: %s", raw)
+	}
+
+	// What the answer names is what the unsubscribe really reaches.
+	body, _ := json.Marshal(map[string]any{"ids": []int{sub}, "action": "unsubscribe", "target_list_ids": []int{sample}})
+	if code, data := e.call(e.a.ManageSubscriberLists, admin, "PUT", "/api/subscribers/lists", "", string(body)); code != http.StatusOK {
+		t.Fatalf("unsubscribe HTTP %d %s", code, data)
+	}
+	var n int
+	e.get(&n, `SELECT COUNT(*) FROM subscriber_lists WHERE subscriber_id=$1 AND list_id IN ($2,$3) AND status='unsubscribed'`, sub, source, sample)
+	if n != 2 {
+		t.Fatalf("%d of the two tied subscriptions unsubscribed", n)
 	}
 }

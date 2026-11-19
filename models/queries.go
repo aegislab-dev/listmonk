@@ -30,6 +30,8 @@ type Queries struct {
 
 	AxmAddressCheckCount    *sqlx.Stmt `query:"axm-address-check-count"`
 	AxmAddressCheckAudience *sqlx.Stmt `query:"axm-address-check-audience"`
+	AxmAddressCheckDynamic  *sqlx.Stmt `query:"axm-address-check-dynamic"`
+	AxmAddressCheckLinked   *sqlx.Stmt `query:"axm-address-check-linked"`
 
 	AxmDrawLock                    *sqlx.Stmt `query:"axm-draw-lock"`
 	AxmDrawSource                  *sqlx.Stmt `query:"axm-draw-source"`
