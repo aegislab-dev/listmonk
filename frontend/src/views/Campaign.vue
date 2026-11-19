@@ -145,13 +145,28 @@
                   </div>
                   <div class="column">
                     <br />
-                    <b-field v-if="form.sendLater" data-cy="send_at"
-                      :message="form.sendAtDate ? $utils.duration(Date(), form.sendAtDate) : ''">
-                      <b-datetimepicker v-model="form.sendAtDate" :disabled="!canEdit" required editable mobile-native
-                        position="is-top-right" :placeholder="$t('campaigns.dateAndTime')" icon="calendar-clock"
-                        :timepicker="{ hourFormat: '24' }" :datetime-formatter="formatDateTime"
-                        horizontal-time-picker />
-                    </b-field>
+                    <div v-if="form.sendLater" data-cy="send_at">
+                      <b-field class="send-at-row">
+                        <b-datetimepicker v-model="sendAtPicker" :disabled="!canEdit" required editable mobile-native expanded
+                          position="is-top-right" :placeholder="$t('campaigns.dateAndTime')" icon="calendar-clock"
+                          :timepicker="{ hourFormat: '24' }" :datetime-formatter="formatDateTime"
+                          horizontal-time-picker />
+                        <timezone-picker v-model="form.sendTz" :instant="form.sendAtDate" :disabled="!canEdit" />
+                      </b-field>
+                      <p v-if="form.sendAtDate" class="help send-at-duration">
+                        {{ $utils.duration(Date(), form.sendAtDate) }}
+                      </p>
+                      <p v-if="form.sendAtDate" class="send-at-zones" data-cy="send-at-zones">
+                        <template v-for="(z, i) in sendAtZones">
+                          <span v-if="i > 0" :key="`s-${z.tz}`" class="sep">|</span>
+                          <span :key="z.tz" class="zone" :data-tz="z.tz">
+                            <b v-if="z.kst" class="kst">{{ $t('campaigns.sendTz.kst') }}</b><span v-else class="city">{{ z.city }}</span>
+                            <b>{{ z.parts.md }} ({{ $t(`globals.days.${z.parts.wd + 1}`) }}) {{ z.parts.hm }}</b>
+                          </span>
+                        </template>
+                      </p>
+                      <p v-if="sendAtBrowserNote" class="send-at-note" data-cy="send-at-browser-note">{{ sendAtBrowserNote }}</p>
+                    </div>
                   </div>
                 </div>
 
@@ -353,10 +368,14 @@ import CopyText from '../components/CopyText.vue';
 import Editor from '../components/Editor.vue';
 import ListSelector from '../components/ListSelector.vue';
 import RecentSendExclude from '../components/RecentSendExclude.vue';
+import TimezonePicker from '../components/TimezonePicker.vue';
 import Media from './Media.vue';
 import SenderAddressInput from '../components/SenderAddressInput.vue';
 import { isSenderDomain } from '../senders';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
+import {
+  browserDiffers, browserZoneName, instantToWall, KST, mergeAttribs, otherZoneLines, splitAttribs, wallToInstant,
+} from '../schedule-time';
 
 export default Vue.extend({
   components: {
@@ -367,6 +386,7 @@ export default Vue.extend({
     CampaignPreview,
     SenderAddressInput,
     RecentSendExclude,
+    TimezonePicker,
   },
 
   data() {
@@ -424,6 +444,8 @@ export default Vue.extend({
 
         // Parsed Date() version of send_at from the API.
         sendAtDate: null,
+        // The time zone the picker is read in (LST-50); kept in the campaign's attribs.
+        sendTz: KST,
         sendLater: false,
         archive: false,
         archiveMetaStr: '{}',
@@ -551,7 +573,8 @@ export default Vue.extend({
           return;
         }
       }
-      this.form.attribs = attribs;
+      const scheduled = !!(this.form.sendLater && this.form.sendAtDate);
+      this.form.attribs = attribs === null && !scheduled ? null : mergeAttribs(attribs, this.form.sendTz, scheduled);
 
       switch (typ) {
         case 'create':
@@ -569,12 +592,14 @@ export default Vue.extend({
     getCampaign(id) {
       return this.$api.getCampaign(id).then(async (data) => {
         this.data = data;
+        const { tz, rest } = splitAttribs(data.attribs);
         this.form = {
           ...this.form,
           ...data,
+          sendTz: tz,
           headersStr: JSON.stringify(data.headers, null, 4),
           archiveMetaStr: data.archiveMeta ? JSON.stringify(data.archiveMeta, null, 4) : '{}',
-          attribsStr: data.attribs ? JSON.stringify(data.attribs, null, 4) : '{}',
+          attribsStr: data.attribs ? JSON.stringify(rest, null, 4) : '{}',
 
           // The structure that is populated by editor input event.
           content: {
@@ -724,7 +749,7 @@ export default Vue.extend({
         this.form.fromEmail = d.fromEmail;
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
-        this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
+        this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
         await this.saveRecentRule(d.id);
         this.$utils.toast(this.$t(typMsg, { name: d.name }));
         return d;
@@ -793,6 +818,27 @@ export default Vue.extend({
 
   computed: {
     ...mapState(['serverConfig', 'loading', 'lists', 'templates', 'profile']),
+
+    // The picker works on local fields, so it gets the moment as a clock time in the chosen zone.
+    sendAtPicker: {
+      get() {
+        return this.form.sendAtDate ? instantToWall(this.form.sendAtDate, this.form.sendTz) : null;
+      },
+      set(v) {
+        this.form.sendAtDate = v ? wallToInstant(v, this.form.sendTz) : null;
+      },
+    },
+
+    // KST first, then the frequent zones, for the same moment.
+    sendAtZones() {
+      return this.form.sendAtDate ? otherZoneLines(this.form.sendAtDate, this.form.sendTz) : [];
+    },
+
+    sendAtBrowserNote() {
+      const t = this.form.sendAtDate;
+      if (!t || !browserDiffers(t, this.form.sendTz)) return '';
+      return this.$t('campaigns.sendTz.browserNote', { zone: browserZoneName(), time: dayjs(t).format('MM/DD HH:mm') });
+    },
 
     canShowRecentRule() {
       return this.isNew || this.data.type === 'regular';
@@ -960,6 +1006,15 @@ export default Vue.extend({
 </script>
 
 <style scoped>
+.send-at-row { margin-bottom: 0; }
+.send-at-duration { margin-top: .5rem; }
+.send-at-zones { font-size: .8125rem; color: #6b7280; margin-top: .25rem; line-height: 1.7; }
+.send-at-zones .zone { white-space: nowrap; }
+.send-at-zones .zone b { color: #374151; font-weight: 600; }
+.send-at-zones .zone b.kst { color: #1d4ed8; }
+.send-at-zones .zone > :first-child { margin-right: .3em; }
+.send-at-zones .sep { margin: 0 .4rem; color: #c4c9d1; }
+.send-at-note { margin-top: .5rem; padding: .5rem .75rem; background: #fff8e1; border: 1px solid #f1dc9a; border-radius: 6px; font-size: .8125rem; color: #614600; line-height: 1.5; }
 .sender-readonly {
   background: #f7f8fa; border: 1px solid #ddd; border-radius: 4px; padding: 12px; font-size: 14px;
   display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; overflow-wrap: anywhere;
