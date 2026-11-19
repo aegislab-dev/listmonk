@@ -71,6 +71,10 @@ describe('proof summary (fixed answers)', () => {
     const day = Math.floor(new Date('2026-11-18T00:00:00Z').getTime() / 1000);
     cy.visit(`/admin/campaigns/analytics?id=52&from=${day}&to=${day + 3600}`);
     cy.get('[data-cy=btn-proof-summary]').should('not.be.disabled');
+    // The screen loads its own charts for the picked dates; the summary asks again for the whole life.
+    cy.wait('@views').its('request.url').then((url) => {
+      expect(new URL(url).searchParams.get('from')).to.eq(new Date(day * 1000).toISOString());
+    });
     cy.get('[data-cy=btn-proof-summary]').click();
 
     cy.wait('@views').its('request.url').then((url) => {
@@ -196,7 +200,10 @@ describe('proof summary (a team member, a real server)', () => {
   });
 
   it('gives a member the block of their own team campaign, with the team name', () => {
-    loginAs(user, pass, `/admin/campaigns/analytics?id=${campA.id}`);
+    // The login keeps no query string of the page it goes to: log in, then open the page.
+    loginAs(user, pass, '/admin/campaigns/analytics');
+    cy.get('[data-cy=btn-proof-summary]').should('exist');
+    cy.visit(`/admin/campaigns/analytics?id=${campA.id}`);
     cy.get('[data-cy=btn-proof-summary]').should('not.be.disabled').click();
     cy.get('[data-cy=proof-summary-text]').invoke('val').then((text) => {
       const lines = text.split('\n');
@@ -212,7 +219,10 @@ describe('proof summary (a team member, a real server)', () => {
   it('refuses the other team campaign: the server says 403 and no block is made', () => {
     cy.request({ url: `/api/campaigns/analytics/views?id=${campB.id}&from=2020-01-01T00:00:00Z&to=2099-01-01T00:00:00Z`, failOnStatusCode: false })
       .its('status').should('eq', 403);
-    loginAs(user, pass, `/admin/campaigns/analytics?id=${campB.id}`);
+    loginAs(user, pass, '/admin/campaigns/analytics');
+    cy.get('[data-cy=btn-proof-summary]').should('exist');
+    cy.visit(`/admin/campaigns/analytics?id=${campB.id}`);
+    cy.location('search').should('contain', `id=${campB.id}`);
     cy.get('[data-cy=btn-proof-summary]').should('be.disabled');
     cy.get('[data-cy=proof-summary-text]').should('not.exist');
   });
