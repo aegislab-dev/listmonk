@@ -195,8 +195,8 @@ func (a *App) trackingSendState(c echo.Context, camp *models.Campaign, req track
 // that is checked sets it (LST-44 review: a template that adds the pixel for one sender
 // only). A test send takes the sender from the request and, with sender domains, from
 // the account of the person who sends the test (TestCampaign), not the stored one.
-// Saving binds the request over the stored campaign (UpdateCampaign); the start then
-// sets the sender again (trackingSendState).
+// Otherwise the sender is the stored one (a reply-to on the page counts, as saving it
+// does); the start of a draft then sets the starter's (trackingSendState).
 func (a *App) trackingSender(c echo.Context, camp *models.Campaign, req trackingCheckReq) error {
 	user := auth.GetUser(c)
 	var s campReq
@@ -224,9 +224,17 @@ func (a *App) trackingSender(c echo.Context, camp *models.Campaign, req tracking
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
-	camp.FromEmail, camp.ReplyTo = s.FromEmail, s.ReplyTo
-	if req.Mode == "test" && len(a.cfg.SenderDomains) > 0 {
+	camp.ReplyTo = s.ReplyTo
+	switch {
+	case req.Mode == "test" && len(a.cfg.SenderDomains) > 0:
 		camp.FromEmail = resolveFrom(user, a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+	case req.Mode == "test" || len(a.cfg.SenderDomains) == 0:
+		camp.FromEmail = s.FromEmail
+	default:
+		// With sender domains, saving would set the sender of the person who saves, but
+		// a campaign that is only looked at (a reader, or a scheduled campaign that is
+		// not saved again) is sent with the stored sender. Keep it; the start of a draft
+		// sets the starter's (trackingSendState), and the page checks again after a save.
 	}
 	return nil
 }

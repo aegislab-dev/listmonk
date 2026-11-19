@@ -768,6 +768,9 @@ export default Vue.extend({
         this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
         await this.saveRecentRule(d.id);
         if (!quiet) this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        // Saving can change what the check reads beyond the page (the sender of the
+        // person who saves, merged headers): check again (LST-44).
+        if (this.$refs.tracking) this.$refs.tracking.run();
         return d;
       } finally {
         this.savingCampaign = false;

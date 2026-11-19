@@ -239,6 +239,27 @@ func TestCampaignTrackingCheck(t *testing.T) {
 			t.Fatalf("mode %q, another editor: %+v", mode, rep)
 		}
 	}
+	// A campaign the author scheduled is sent with the stored sender, whoever looks at
+	// it: another person's check (stored or with the page) must not read theirs.
+	e.db.MustExec(`UPDATE campaigns SET status='scheduled', send_at=NOW() + INTERVAL '30 days' WHERE id=$1`, e.campID)
+	delete(byFrom, "mode")
+	for _, body := range []map[string]any{{}, {"status": "scheduled"}, byFrom} {
+		probe := map[string]any{}
+		for k, v := range body {
+			probe[k] = v
+		}
+		probe["content_type"], probe["template_id"], probe["body"] = "html", bare, byFrom["body"]
+		if len(body) == 0 {
+			// The stored body: put the probe there.
+			e.db.MustExec(`UPDATE campaigns SET content_type='html', body=$2 WHERE id=$1`, e.campID, byFrom["body"])
+			probe = map[string]any{}
+		}
+		if rep = checkAs(editor, probe); rep.View != "manual" {
+			t.Fatalf("scheduled by the author, %v checked by another person: %+v", body, rep)
+		}
+	}
+	e.db.MustExec(`UPDATE campaigns SET status='draft', send_at=NULL, content_type='richtext', body=$2 WHERE id=$1`, e.campID, stored)
+
 	// The reply-to of a test send is the one in the request, read as the send reads it;
 	// none in the request is none, not the stored one.
 	byReply := map[string]any{"content_type": "html", "template_id": bare, "mode": "test",
