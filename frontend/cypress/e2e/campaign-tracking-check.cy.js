@@ -234,8 +234,12 @@ describe('Pre-send tracking check', () => {
     cy.get('.b-tabs nav a').eq(2).click();
     cy.get('.b-tabs .tab-item:visible textarea').clear().type('{"track": true}', { parseSpecialCharSequences: false });
     cy.get('[data-cy=btn-start]').click();
-    cy.wait('@attribs');
-    cy.get('@attribs.last').its('request.body.attribs.track').should('eq', true);
+    cy.get('.modal.is-active').should('be.visible');
+    cy.get('@attribs.all').then((calls) => {
+      const last = calls[calls.length - 1];
+      expect(last.request.body.attribs.track).to.equal(true);
+      expect(last.response.body.data.view).to.equal('manual');
+    });
     cy.get('.modal.is-active [data-cy=warn-box]').should('not.exist');
     cy.get('.modal.is-active button.is-primary').click();
     cy.wait('@save').its('request.body.attribs.track').should('eq', true);
