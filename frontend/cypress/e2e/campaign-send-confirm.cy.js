@@ -164,11 +164,15 @@ describe('Pre-send confirmation window', () => {
     });
     cy.get('[data-cy=send-ok]').click();
     cy.wait('@status').its('response.statusCode').should('eq', 409);
-    cy.get('[data-cy=send-stale]').should('be.visible');
-    cy.get('[data-cy=send-stale-count]').should('contain', 'from 3 to 4');
     ready();
+    // The title says that it changed (approved design A7); the counts say what changed, in place.
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy=send-sub]').should('contain', 'loaded again');
+    cy.get(`${win} .notification`).should('not.exist');
+    cy.get('[data-cy=send-recipients]').should('contain', '4 in all');
+    cy.get('[data-cy=send-recipients-was]').should('have.text', 'before: 3');
     cy.get('[data-cy=send-subject]').should('contain', 'Send stale changed');
-    cy.get('[data-cy=send-title]').should('contain', 'Send to 4 people now');
+    cy.get('[data-cy=send-ok]').should('contain', 'Send to 4 people');
     cy.request(`/api/campaigns/${camp.stale}`).its('body.data.status').should('eq', 'draft');
 
     // Confirming what is now shown goes through.
@@ -230,11 +234,29 @@ describe('Pre-send confirmation window', () => {
     // Which campaign it would go on for is still said.
     cy.get('[data-cy=send-error] [data-cy=send-campaign]').should('contain', `Send resume ${stamp}`);
     cy.get('[data-cy=send-error] [data-cy=send-subject]').should('contain', 'Send resume subject');
-    cy.get('[data-cy=send-error]').should('contain', 'Could not get the number of recipients');
-    cy.get('[data-cy=send-retry]').should('exist');
+    // The box keeps its heading (approved design A6), with the reason and a retry button.
+    cy.get('[data-cy=send-error] [data-cy=send-checks] .send-checks-head').should('have.text', 'Checks before sending');
+    cy.get('[data-cy=send-error] [data-cy=send-checks]').should('contain', 'Could not get the number of recipients');
+    cy.get('[data-cy=send-error-reason]').should('have.text', 'boom');
+    cy.get('[data-cy=send-retry]').should('match', 'button');
     cy.get('[data-cy=send-ok]').should('contain', 'Go on without the count').click();
     // Without what was read, nothing is compared.
     cy.wait('@status').its('request.body').should('deep.equal', { status: 'running' });
+  });
+
+  it('reads the checks again with the retry button', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('GET', preflight, { statusCode: 503, body: { message: 'Service unavailable' } }).as('pfDown');
+    row('resume').find('[data-cy=btn-start]').click();
+    cy.wait('@pfDown');
+    cy.get(`${win}[data-state=error]`).should('exist');
+    cy.intercept('GET', preflight, (req) => { req.continue(); }).as('pfUp');
+    cy.get('[data-cy=send-retry]').click();
+    cy.wait('@pfUp');
+    ready();
+    cy.get('[data-cy=send-title]').should('contain', 'Resume sending to about 12 remaining people');
+    cy.get('[data-cy=send-cancel]').click();
+    cy.get(win).should('not.exist');
   });
 
   it('says which campaign it is while it reads, and does not call a plain text mail tracked', () => {

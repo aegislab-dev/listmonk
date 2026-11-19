@@ -2,7 +2,7 @@
   <div class="modal-card send-confirm" style="width: auto" data-cy="send-confirm" :data-state="state" :data-mode="model ? model.mode : ''">
     <header class="modal-card-head">
       <div>
-        <h4 class="send-title" data-cy="send-title" role="status">{{ headTitle }}</h4>
+        <h4 class="send-title" data-cy="send-title" role="status" :data-stale="stale ? 'yes' : null">{{ headTitle }}</h4>
         <p class="help mt-1" data-cy="send-sub">{{ headSub }}</p>
       </div>
     </header>
@@ -31,26 +31,23 @@
           <div class="send-k">{{ $t('campaigns.sendConfirm.row.subject') }}</div>
           <div class="send-v">{{ campaignSubject }}</div>
         </div>
-        <div class="send-checks">
-          <p class="send-line">
-<span class="send-icon lv-warn">!</span>
-            <span>
-              {{ $t('campaigns.sendConfirm.checkFailed') }} <span class="has-text-grey">{{ error }}</span>
-              <a href="#" class="ml-2" data-cy="send-retry" @click.prevent="load">{{ $t('campaigns.sendConfirm.retry') }}</a>
+        <div class="send-checks" data-cy="send-checks">
+          <div class="send-checks-head">{{ $t('campaigns.sendConfirm.checks') }}</div>
+          <div class="send-line">
+            <span class="send-icon lv-warn">!</span>
+            <span class="send-line-text">
+              {{ $t('campaigns.sendConfirm.checkFailed') }}
+              <span v-if="error" class="has-text-grey" data-cy="send-error-reason">{{ error }}</span>
             </span>
-          </p>
+            <b-button size="is-small" class="send-retry" data-cy="send-retry" @click="load">
+              {{ $t('campaigns.sendConfirm.retry') }}
+            </b-button>
+          </div>
         </div>
         <p class="help">{{ $t('campaigns.sendConfirm.blindHelp') }}</p>
       </div>
 
       <template v-else-if="model">
-        <p v-if="stale" class="notification is-warning is-light" role="alert" data-cy="send-stale">
-          {{ $t('campaigns.sendConfirm.stale') }}
-          <span v-if="countChange" data-cy="send-stale-count">
-            {{ $t('campaigns.sendConfirm.staleCount', countChange) }}
-          </span>
-        </p>
-
         <div class="send-rows">
           <div class="send-row" data-cy="send-campaign">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.campaign') }}</div>
@@ -81,7 +78,10 @@
                   {{ $t('campaigns.sendConfirm.was', { n: wasCount(l) }) }}
                 </span>
               </div>
-              <div v-if="!isResume && sumParts.length" class="send-sum" data-cy="send-recipients">{{ sumParts.join(' · ') }}</div>
+              <div v-if="!isResume && (sumParts.length || totalWas !== null)" class="send-sum" data-cy="send-recipients">
+                {{ sumParts.length ? sumParts.join(' · ') : $t('campaigns.sendConfirm.total', { n: pf.recipients }) }}
+                <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
+              </div>
               <div v-if="model.zero" class="send-sum lv-block-text" data-cy="send-zero">{{ $t('campaigns.sendConfirm.zeroSummary') }}</div>
             </div>
           </div>
@@ -109,7 +109,10 @@
             <div class="send-v">
               <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(pf.toSend, pf.sent, 1)" />
               <div class="has-text-grey" data-cy="send-progress-text">{{ progressText }}</div>
-              <div class="send-sum" data-cy="send-recipients">{{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}</div>
+              <div class="send-sum" data-cy="send-recipients">
+                {{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}
+                <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -230,17 +233,30 @@ export default Vue.extend({
       return { before: this.prev.count, after: this.model.count };
     },
 
+    // The count before the change, shown next to the total. With one list that kept its
+    // place, the list's own "before" already says it.
+    totalWas() {
+      const ch = this.countChange;
+      if (!ch) return null;
+      const lists = this.pf.lists || [];
+      if (!this.isResume && lists.length === 1 && this.wasCount(lists[0]) !== null) return null;
+      return ch.before;
+    },
+
     asOfText() { return this.model && this.model.asOf ? dayjs(this.model.asOf).format('YYYY-MM-DD HH:mm') : ''; },
 
     headTitle() {
       if (this.state === 'loading') return this.$t('campaigns.sendConfirm.title.loading');
       if (this.state === 'error') return this.$t('campaigns.sendConfirm.title.error');
+      // Read again after the campaign changed under the window (approved design A7).
+      if (this.stale) return this.$t('campaigns.sendConfirm.title.stale');
       return this.$t(this.model.title.key, this.model.title.params);
     },
 
     headSub() {
       if (this.state === 'loading') return this.$t('campaigns.sendConfirm.sub.loading');
       if (this.state === 'error') return this.$t('campaigns.sendConfirm.sub.error');
+      if (this.stale) return this.$t('campaigns.sendConfirm.sub.stale');
       return this.$t(this.model.sub.key, this.model.sub.params);
     },
 
@@ -348,7 +364,9 @@ export default Vue.extend({
 .send-tz-other { margin-top: 0.4rem; padding: 0.4rem 0.6rem; background: #fffaeb; border: 1px solid #ffe08a; border-radius: 6px; font-size: 0.875rem; }
 .send-checks { border: 1px solid #dbdbdb; border-radius: 8px; padding: 0.5rem 0.75rem; margin: 0.75rem 0 0.5rem; }
 .send-checks-head { font-weight: 700; margin-bottom: 0.25rem; }
-.send-line { display: flex; gap: 0.6rem; padding: 0.15rem 0; }
+.send-line { display: flex; gap: 0.6rem; padding: 0.15rem 0; align-items: baseline; }
+.send-line-text { min-width: 0; }
+.send-retry { flex: none; }
 .send-line.lv-block { background: #feecf0; border-radius: 6px; padding: 0.4rem 0.5rem; }
 .send-ok-warn.button.is-primary { background-color: #b25e00; }
 .send-icon { flex: none; width: 1rem; font-weight: 700; text-align: center; }
