@@ -330,11 +330,12 @@ describe('Pre-send tracking check', () => {
       cy.location('pathname').should('eq', `/admin/campaigns/${ids[key]}`);
       cy.get(box, { timeout: 10000 }).should('have.attr', 'data-state').and('not.eq', 'checking');
     };
+    // The draft may have a send time from an earlier test: its button is then "Schedule".
     cy.visit('/admin/campaigns');
     openFromList('warn');
 
     // Leave for the list and open another draft while the window is still reading.
-    cy.get('[data-cy=btn-start]').click();
+    cy.get('[data-cy=btn-start], [data-cy=btn-schedule]').first().click();
     cy.get('[data-cy=send-loading]').should('be.visible');
     cy.window().then((win) => win.history.back());
     cy.location('pathname').should('eq', '/admin/campaigns');
@@ -349,7 +350,7 @@ describe('Pre-send tracking check', () => {
     cy.window().then((win) => win.history.back());
     cy.location('pathname').should('eq', '/admin/campaigns');
     openFromList('warn');
-    cy.get('[data-cy=btn-start]').click();
+    cy.get('[data-cy=btn-start], [data-cy=btn-schedule]').first().click();
     ready();
     cy.window().then((win) => win.history.back());
     cy.location('pathname').should('eq', '/admin/campaigns');

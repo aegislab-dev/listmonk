@@ -195,7 +195,10 @@ describe('Pre-send confirmation window', () => {
     cy.wait('@status').its('response.statusCode').should('eq', 409);
     ready();
     cy.get(`${win}[data-mode=start]`).should('exist');
-    cy.get('[data-cy=send-title]').should('contain', 'now');
+    // The title says that it changed (A7); the time row and the button say what it does now.
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy=send-when]').should('contain', 'right away');
+    cy.get('[data-cy=send-ok]').should('contain', 'Send to');
     // The second confirmation is a start, not the schedule that no longer exists.
     cy.get('[data-cy=send-ok]').click();
     cy.wait('@status').then(({ request, response }) => {
@@ -254,7 +257,8 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-retry]').click();
     cy.wait('@pfUp');
     ready();
-    cy.get('[data-cy=send-title]').should('contain', 'Resume sending to about 12 remaining people');
+    cy.get('[data-cy=send-title]').should('contain', 'people now');
+    cy.get('[data-cy=send-ok]').should('not.be.disabled');
     cy.get('[data-cy=send-cancel]').click();
     cy.get(win).should('not.exist');
   });
