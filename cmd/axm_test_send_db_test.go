@@ -1,0 +1,645 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"regexp"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/manager"
+	"github.com/knadh/listmonk/internal/migrations"
+	"github.com/knadh/listmonk/models"
+	"github.com/labstack/echo/v4"
+)
+
+// LST-41: campaign test messages to addresses that are not subscribers, with the real
+// handlers, queries and manager against the disposable Postgres of AXM_TEST_DB_URL.
+
+// listMessenger keeps every message it is given.
+type listMessenger struct {
+	mu   sync.Mutex
+	sent []models.Message
+}
+
+func (l *listMessenger) Name() string { return "email" }
+func (l *listMessenger) Flush() error { return nil }
+func (l *listMessenger) Close() error { return nil }
+
+func (l *listMessenger) Push(m models.Message) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sent = append(l.sent, m)
+	return nil
+}
+
+func (l *listMessenger) all() []models.Message {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]models.Message{}, l.sent...)
+}
+
+// to returns the messages that went to an address.
+func (l *listMessenger) to(email string) []models.Message {
+	out := []models.Message{}
+	for _, m := range l.all() {
+		if len(m.To) == 1 && m.To[0] == email {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+const (
+	testSendDomain = "corp.example.invalid"
+	testSendBody   = `<p>{{ .Subscriber.Name }} / {{ .Subscriber.Attribs.company }} / {{ .Subscriber.Email }}</p>` +
+		`<a href="{{ TrackLink "https://example.invalid/offer" }}">offer</a>{{ TrackView }}<a href="{{ UnsubscribeURL }}">unsub</a>`
+)
+
+// testSendEnv is teamsEnv with a manager that sends to a listMessenger, a draft campaign on
+// team 가's list and three subscribers: one on that list, one on team 나's list and one on both.
+type testSendEnv struct {
+	*teamsEnv
+	msgr *listMessenger
+	now  time.Time
+
+	camp     int
+	campUUID string
+	// Subscribers and their addresses.
+	mine, foreign           int
+	mineEmail, foreignEmail string
+}
+
+func newTestSendEnv(t *testing.T) *testSendEnv {
+	e := &testSendEnv{teamsEnv: newTeamsEnv(t), msgr: &listMessenger{}, now: time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)}
+	m := e.startManagerWith(e.store, e.msgr, io.Discard, func(c *manager.Config) { c.ScanCampaigns = false })
+	t.Cleanup(m.Close)
+	e.a.manager = m
+	e.a.log = log.New(io.Discard, "", 0)
+	e.a.cfg = &Config{TestDomains: []string{testSendDomain}, FromEmail: "Sender <sender@example.invalid>"}
+	e.a.cfg.Privacy.IndividualTracking = true
+	e.a.testLimiter.now = func() time.Time { return e.now }
+
+	e.camp, e.campUUID = e.addCampaign("draft")
+	e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.camp, e.aList)
+	e.mine, e.foreign = e.addSub("enabled", "confirmed"), e.addSub("enabled", "confirmed")
+	e.db.MustExec(`UPDATE subscriber_lists SET list_id=$2 WHERE subscriber_id=$1`, e.mine, e.aList)
+	e.db.MustExec(`UPDATE subscriber_lists SET list_id=$2 WHERE subscriber_id=$1`, e.foreign, e.bList)
+	e.db.MustExec(`UPDATE subscribers SET name='김하늘', attribs='{"company":"하늘상사"}' WHERE id=$1`, e.mine)
+	e.db.MustExec(`UPDATE subscribers SET name='이바다', attribs='{"company":"바다물산"}' WHERE id=$1`, e.foreign)
+	e.get(&e.mineEmail, `SELECT email FROM subscribers WHERE id=$1`, e.mine)
+	e.get(&e.foreignEmail, `SELECT email FROM subscribers WHERE id=$1`, e.foreign)
+	return e
+}
+
+// do runs a handler as a user. For an error answer it returns the echo error, whose message
+// is what the client would get as JSON.
+func (e *testSendEnv) do(h echo.HandlerFunc, user auth.User, req *http.Request, id int, params map[string]string) (*httptest.ResponseRecorder, *echo.HTTPError) {
+	e.t.Helper()
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(req, rec)
+	c.Set(auth.UserHTTPCtxKey, user)
+	if id > 0 {
+		c.Set("id", id)
+	}
+	names, values := []string{}, []string{}
+	for k, v := range params {
+		names, values = append(names, k), append(values, v)
+	}
+	c.SetParamNames(names...)
+	c.SetParamValues(values...)
+	if err := h(c); err != nil {
+		he, ok := err.(*echo.HTTPError)
+		if !ok {
+			e.t.Fatal(err)
+		}
+		return rec, he
+	}
+	return rec, nil
+}
+
+// send asks for a test of the campaign and returns the status and, when addresses were
+// rejected, those addresses.
+func (e *testSendEnv) send(user auth.User, emails []string, sample string) (int, []string) {
+	e.t.Helper()
+	body := map[string]any{
+		"name": "시험 캠페인", "subject": "{{ .Subscriber.Name }} 님께", "lists": []int{e.aList},
+		"from_email": "Sender <sender@example.invalid>", "messenger": "email", "content_type": "html",
+		"body": testSendBody, "subscribers": emails,
+	}
+	if sample != "" {
+		body["sample"] = json.RawMessage(sample)
+	}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(string(b)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec, he := e.do(e.a.TestCampaign, user, req, e.camp, nil)
+	if he == nil {
+		return rec.Code, nil
+	}
+	if m, ok := he.Message.(map[string]any); ok {
+		data, _ := m["data"].(map[string]any)
+		rejected, _ := data["rejected"].([]string)
+		if m["message"] == nil || rejected == nil {
+			e.t.Fatalf("a rejection without message or addresses: %v", he.Message)
+		}
+		return he.Code, rejected
+	}
+	return he.Code, nil
+}
+
+func (e *testSendEnv) count(query string, args ...any) int {
+	e.t.Helper()
+	var n int
+	e.get(&n, query, args...)
+	return n
+}
+
+// waitSent waits until the messenger holds n messages, and fails when more arrive.
+func (e *testSendEnv) waitSent(n int) {
+	e.t.Helper()
+	waitFor(e.t, fmt.Sprintf("%d messages", n), func() bool { return len(e.msgr.all()) >= n })
+	time.Sleep(30 * time.Millisecond)
+	if got := len(e.msgr.all()); got != n {
+		e.t.Fatalf("%d messages were sent, want %d", got, n)
+	}
+}
+
+// An address in a test domain and the user's own address receive a test without becoming
+// subscribers, and the test is on the audit log without any address.
+func TestTestSendToNonSubscribers(t *testing.T) {
+	e := newTestSendEnv(t)
+	member := e.as(e.ua)
+	subsBefore, linksBefore := e.count(`SELECT COUNT(*) FROM subscribers`), e.count(`SELECT COUNT(*) FROM subscriber_lists`)
+
+	internal := "design.team@" + testSendDomain
+	if code, rejected := e.send(member, []string{" Design.Team@" + strings.ToUpper(testSendDomain) + " "}, ""); code != 200 || rejected != nil {
+		t.Fatalf("test domain address: %d %v", code, rejected)
+	}
+	e.waitSent(1)
+	got := e.msgr.to(internal)
+	if len(got) != 1 {
+		t.Fatalf("messages to %s: %d", internal, len(got))
+	}
+	// The default sample: the part before the "@" as the name, the demo attributes.
+	if body := string(got[0].Body); !strings.HasPrefix(body, "<p>design.team /  / "+internal+"</p>") || got[0].Subject != "design.team 님께" {
+		t.Errorf("subject %q body %q", got[0].Subject, body)
+	}
+	if got[0].Subscriber.ID != 0 || got[0].Subscriber.UUID != dummyUUID {
+		t.Errorf("rendered for subscriber %d %s", got[0].Subscriber.ID, got[0].Subscriber.UUID)
+	}
+	// Every link of the message carries the dummy subscriber UUID.
+	if strings.Count(string(got[0].Body), "/"+dummyUUID) != 3 {
+		t.Errorf("tracking links: %s", got[0].Body)
+	}
+
+	// The user's own address, the test domain and a subscriber in one request.
+	own := "ua@example.invalid"
+	if code, rejected := e.send(member, []string{own, internal, e.mineEmail}, ""); code != 200 || rejected != nil {
+		t.Fatalf("own, internal and subscriber: %d %v", code, rejected)
+	}
+	e.waitSent(4)
+	if m := e.msgr.to(own); len(m) != 1 || !strings.HasPrefix(string(m[0].Body), "<p>ua /  / "+own+"</p>") || m[0].Subscriber.UUID != dummyUUID {
+		t.Errorf("own address: %+v", m)
+	}
+	// With the default sample a subscriber gets their own values and links.
+	if m := e.msgr.to(e.mineEmail); len(m) != 1 || !strings.HasPrefix(string(m[0].Body), "<p>김하늘 / 하늘상사 / "+e.mineEmail+"</p>") ||
+		m[0].Subscriber.ID != e.mine || m[0].Subscriber.UUID != e.subUUID(e.mine) {
+		t.Errorf("subscriber: %+v", m)
+	}
+
+	// Nobody became a subscriber.
+	if a, b := e.count(`SELECT COUNT(*) FROM subscribers`), e.count(`SELECT COUNT(*) FROM subscriber_lists`); a != subsBefore || b != linksBefore {
+		t.Errorf("subscribers %d → %d, subscriptions %d → %d", subsBefore, a, linksBefore, b)
+	}
+	// No test message is a send record of the campaign.
+	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id=$1`, e.camp); n != 0 {
+		t.Errorf("%d send records", n)
+	}
+
+	// The audit log: one row per request, the count and the kinds, and no address anywhere.
+	var rows []struct {
+		Count  int    `db:"count"`
+		Detail string `db:"detail"`
+		Name   string `db:"target_name"`
+		UserID int    `db:"user_id"`
+	}
+	if err := e.db.Select(&rows, `SELECT count, detail::TEXT AS detail, target_name, user_id FROM axm_audit_log
+		WHERE action='campaign.test' AND target_type='campaign' AND target_id=$1 ORDER BY id`, e.camp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("%d audit rows, want 2", len(rows))
+	}
+	wantDetail := []map[string]any{
+		{"subscribers": 0.0, "own": 0.0, "internal": 1.0, "domains": []any{testSendDomain}, "sample": "default"},
+		{"subscribers": 1.0, "own": 1.0, "internal": 1.0, "domains": []any{testSendDomain, "example.invalid"}, "sample": "default"},
+	}
+	for i, r := range rows {
+		var d map[string]any
+		json.Unmarshal([]byte(r.Detail), &d)
+		if r.Count != []int{1, 3}[i] || !reflect.DeepEqual(d, wantDetail[i]) || r.UserID != member.ID || !strings.HasPrefix(r.Name, "Synthetic ") {
+			t.Errorf("audit row %d: count %d detail %s name %q user %d", i, r.Count, r.Detail, r.Name, r.UserID)
+		}
+	}
+	if n := e.count(`SELECT COUNT(*) FROM axm_audit_log l WHERE action='campaign.test' AND row_to_json(l)::TEXT LIKE '%@%'`); n != 0 {
+		t.Errorf("%d audit rows hold an address", n)
+	}
+}
+
+// One address that may not receive a test stops the whole request and is named. Upstream
+// dropped such an address silently and sent to the others.
+func TestTestSendRejectsOtherAddresses(t *testing.T) {
+	e := newTestSendEnv(t)
+	member := e.as(e.ua)
+	internal := "design@" + testSendDomain
+
+	for name, tc := range map[string]struct {
+		emails []string
+		want   []string
+	}{
+		"an outside address":             {[]string{internal, "stranger@outside.invalid"}, []string{"stranger@outside.invalid"}},
+		"a subscriber of another team":   {[]string{e.mineEmail, e.foreignEmail}, []string{e.foreignEmail}},
+		"a subdomain":                    {[]string{"a@sub." + testSendDomain}, []string{"a@sub." + testSendDomain}},
+		"another user's address":         {[]string{"ub@example.invalid"}, []string{"ub@example.invalid"}},
+		"several, in the order given":    {[]string{"x@outside.invalid", internal, "y@outside.invalid"}, []string{"x@outside.invalid", "y@outside.invalid"}},
+		"only an outside address":        {[]string{"stranger@outside.invalid"}, []string{"stranger@outside.invalid"}},
+		"an address with a display name": {[]string{"Name <design@" + testSendDomain + ">"}, []string{"name <design@" + testSendDomain + ">"}},
+	} {
+		if code, rejected := e.send(member, tc.emails, ""); code != http.StatusBadRequest || !reflect.DeepEqual(rejected, tc.want) {
+			t.Errorf("%s: %d %v, want 400 %v", name, code, rejected, tc.want)
+		}
+	}
+	// No addresses at all, and too many.
+	if code, rejected := e.send(member, []string{" ", ""}, ""); code != http.StatusBadRequest || rejected != nil {
+		t.Errorf("no addresses: %d %v", code, rejected)
+	}
+	many := []string{}
+	for i := 0; i <= testMaxRecipients; i++ {
+		many = append(many, fmt.Sprintf("u%d@%s", i, testSendDomain))
+	}
+	if code, rejected := e.send(member, many, ""); code != http.StatusBadRequest || rejected != nil {
+		t.Errorf("%d addresses: %d %v", len(many), code, rejected)
+	}
+	// A user of the other team may not test this campaign at all.
+	if code, _ := e.send(e.as(e.ub), []string{internal}, ""); code != http.StatusForbidden {
+		t.Errorf("other team: %d", code)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if n := len(e.msgr.all()); n != 0 {
+		t.Errorf("%d messages were sent", n)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM axm_audit_log WHERE action='campaign.test'`); n != 0 {
+		t.Errorf("%d audit rows", n)
+	}
+	// A refused request does not use up the limit: thirty messages still fit.
+	for i := 0; i < testRateLimit/testMaxRecipients; i++ {
+		if code, _ := e.send(member, many[:testMaxRecipients], ""); code != 200 {
+			t.Fatalf("request %d after the refusals: %d", i, code)
+		}
+	}
+	e.waitSent(testRateLimit)
+
+	// Without test domains only the own address and subscribers are left.
+	e.a.cfg.TestDomains = nil
+	e.now = e.now.Add(time.Hour)
+	if code, rejected := e.send(member, []string{"ua@example.invalid", internal}, ""); code != http.StatusBadRequest || !reflect.DeepEqual(rejected, []string{internal}) {
+		t.Errorf("no test domains: %d %v", code, rejected)
+	}
+	if code, _ := e.send(member, []string{"ua@example.invalid", e.mineEmail}, ""); code != 200 {
+		t.Errorf("no test domains, own address and subscriber: %d", code)
+	}
+	e.waitSent(testRateLimit + 2)
+}
+
+// A chosen sample goes to every recipient, a subscriber's values can only be borrowed by
+// someone who may open that subscriber, and the sample is on the audit log.
+func TestTestSendSamples(t *testing.T) {
+	e := newTestSendEnv(t)
+	member := e.as(e.ua)
+	internal := "design@" + testSendDomain
+
+	// Typed-in values: also the subscriber among the recipients gets them, as a stand-in.
+	if code, _ := e.send(member, []string{internal, e.mineEmail}, `{"name":"홍길동","attribs":{"company":"크레바스"}}`); code != 200 {
+		t.Fatalf("custom sample: %d", code)
+	}
+	e.waitSent(2)
+	for _, to := range []string{internal, e.mineEmail} {
+		m := e.msgr.to(to)
+		if len(m) != 1 || !strings.HasPrefix(string(m[0].Body), "<p>홍길동 / 크레바스 / "+to+"</p>") || m[0].Subject != "홍길동 님께" ||
+			m[0].Subscriber.ID != 0 || m[0].Subscriber.UUID != dummyUUID || strings.Contains(string(m[0].Body), e.subUUID(e.mine)) {
+			t.Errorf("custom sample to %s: %+v", to, m)
+		}
+	}
+
+	// A subscriber's values, borrowed: they go to the address asked for and not to the subscriber.
+	if code, _ := e.send(member, []string{internal}, fmt.Sprintf(`{"subscriber_id":%d}`, e.mine)); code != 200 {
+		t.Fatalf("borrowed sample: %d", code)
+	}
+	e.waitSent(3)
+	if m := e.msgr.to(internal); len(m) != 2 || !strings.HasPrefix(string(m[1].Body), "<p>김하늘 / 하늘상사 / "+internal+"</p>") || m[1].Subscriber.UUID != dummyUUID {
+		t.Errorf("borrowed sample: %+v", m)
+	}
+	if len(e.msgr.to(e.mineEmail)) != 1 {
+		t.Error("the subscriber whose values were borrowed got a message")
+	}
+
+	// Not allowed: a subscriber of another team, one that does not exist, a user who may
+	// not read subscribers, and values that are not a sample.
+	noSubs := e.as(e.ua)
+	delete(noSubs.PermissionsMap, auth.PermSubscribersGet)
+	for name, tc := range map[string]struct {
+		user   auth.User
+		sample string
+		want   int
+	}{
+		"another team's subscriber": {member, fmt.Sprintf(`{"subscriber_id":%d}`, e.foreign), http.StatusForbidden},
+		"no subscribers:get":        {noSubs, fmt.Sprintf(`{"subscriber_id":%d}`, e.mine), http.StatusForbidden},
+		"a negative ID":             {member, `{"subscriber_id":-1}`, http.StatusBadRequest},
+		"attribs that are a list":   {member, `{"attribs":[1]}`, http.StatusBadRequest},
+		"a name that is too long":   {member, `{"name":"` + strings.Repeat("가", testSampleMaxName+1) + `"}`, http.StatusBadRequest},
+		"attribs that are too long": {member, `{"attribs":{"a":"` + strings.Repeat("x", testSampleMaxAttribs) + `"}}`, http.StatusBadRequest},
+	} {
+		if code, _ := e.send(tc.user, []string{internal}, tc.sample); code != tc.want {
+			t.Errorf("%s: %d, want %d", name, code, tc.want)
+		}
+	}
+	// The user without subscribers:get can still test with typed-in values.
+	if code, _ := e.send(noSubs, []string{internal}, `{"name":"홍길동"}`); code != 200 {
+		t.Errorf("custom sample without subscribers:get: %d", code)
+	}
+	e.waitSent(4)
+
+	var details []string
+	if err := e.db.Select(&details, `SELECT detail::TEXT FROM axm_audit_log WHERE action='campaign.test' ORDER BY id`); err != nil {
+		t.Fatal(err)
+	}
+	want := []map[string]any{
+		{"subscribers": 1.0, "own": 0.0, "internal": 1.0, "domains": []any{testSendDomain}, "sample": "custom"},
+		{"subscribers": 0.0, "own": 0.0, "internal": 1.0, "domains": []any{testSendDomain}, "sample": "subscriber", "sample_subscriber_id": float64(e.mine)},
+		{"subscribers": 0.0, "own": 0.0, "internal": 1.0, "domains": []any{testSendDomain}, "sample": "custom"},
+	}
+	if len(details) != len(want) {
+		t.Fatalf("%d audit rows, want %d: %v", len(details), len(want), details)
+	}
+	for i, raw := range details {
+		var d map[string]any
+		json.Unmarshal([]byte(raw), &d)
+		if !reflect.DeepEqual(d, want[i]) {
+			t.Errorf("audit row %d: %s", i, raw)
+		}
+		// Neither the typed-in values nor the borrowed ones are on the log.
+		if strings.Contains(raw, "홍길동") || strings.Contains(raw, "김하늘") || strings.Contains(raw, "@") {
+			t.Errorf("audit row %d holds sample values: %s", i, raw)
+		}
+	}
+}
+
+// One user sends at most testRateLimit test messages in testRateWindow. A refused request
+// sends nothing and is not on the audit log.
+func TestTestSendRateLimit(t *testing.T) {
+	e := newTestSendEnv(t)
+	member, other := e.as(e.ua), e.as(e.superAdmin)
+	internal := "design@" + testSendDomain
+
+	for i := 0; i < testRateLimit; i++ {
+		if code, _ := e.send(member, []string{internal}, ""); code != 200 {
+			t.Fatalf("message %d: %d", i+1, code)
+		}
+		e.now = e.now.Add(time.Second)
+	}
+	e.waitSent(testRateLimit)
+
+	b, _ := json.Marshal(map[string]any{"name": "n", "subject": "s", "lists": []int{e.aList}, "messenger": "email",
+		"content_type": "html", "body": "<p>x</p>", "subscribers": []string{internal}})
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(string(b)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec, he := e.do(e.a.TestCampaign, member, req, e.camp, nil)
+	if he == nil || he.Code != http.StatusTooManyRequests {
+		t.Fatalf("message %d: %v", testRateLimit+1, he)
+	}
+	// The first message was sent 30 s ago: it leaves the window in 9 min 30 s.
+	if got := rec.Header().Get("Retry-After"); got != "570" {
+		t.Errorf("Retry-After %q, want 570", got)
+	}
+	// Another user is not held back, and the first one is let through when the window moved.
+	if code, _ := e.send(other, []string{internal}, ""); code != 200 {
+		t.Errorf("another user: %d", code)
+	}
+	e.now = e.now.Add(testRateWindow - 30*time.Second)
+	if code, _ := e.send(member, []string{internal}, ""); code != 200 {
+		t.Errorf("after the window: %d", code)
+	}
+	e.waitSent(testRateLimit + 2)
+	if n := e.count(`SELECT COUNT(*) FROM axm_audit_log WHERE action='campaign.test'`); n != testRateLimit+2 {
+		t.Errorf("%d audit rows, want %d", n, testRateLimit+2)
+	}
+}
+
+// The preview renders with the sample of the test box, under the same rules.
+func TestPreviewWithSample(t *testing.T) {
+	e := newTestSendEnv(t)
+	member := e.as(e.ua)
+	preview := func(user auth.User, sample *string) (int, string) {
+		form := url.Values{"content_type": {"html"}, "body": {testSendBody}}
+		if sample != nil {
+			form.Set("sample", *sample)
+		}
+		req := httptest.NewRequest("POST", "/x", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec, he := e.do(e.a.PreviewCampaign, user, req, e.camp, nil)
+		if he != nil {
+			return he.Code, ""
+		}
+		return rec.Code, rec.Body.String()
+	}
+	s := func(v string) *string { return &v }
+	demo := "<p>Demo Subscriber /  / demo@listmonk.app</p>"
+
+	for name, tc := range map[string]struct {
+		sample *string
+		want   string
+	}{
+		"no sample":             {nil, demo},
+		"an empty sample":       {s(""), demo},
+		"the default sample":    {s("{}"), demo},
+		"typed-in values":       {s(`{"name":"홍길동","attribs":{"company":"크레바스"}}`), "<p>홍길동 / 크레바스 / demo@listmonk.app</p>"},
+		"typed-in attribs only": {s(`{"attribs":{"company":"크레바스"}}`), "<p>Demo Subscriber / 크레바스 / demo@listmonk.app</p>"},
+		"a borrowed subscriber": {s(fmt.Sprintf(`{"subscriber_id":%d}`, e.mine)), "<p>김하늘 / 하늘상사 / demo@listmonk.app</p>"},
+	} {
+		code, body := preview(member, tc.sample)
+		if code != 200 || !strings.HasPrefix(body, tc.want) {
+			t.Errorf("%s: %d %q, want %q", name, code, body, tc.want)
+		}
+		// A preview never carries a real UUID: neither the campaign's nor a subscriber's.
+		if strings.Contains(body, e.campUUID) || strings.Contains(body, e.subUUID(e.mine)) || strings.Count(body, dummyUUID) != 6 {
+			t.Errorf("%s: UUIDs in %q", name, body)
+		}
+	}
+	noSubs := e.as(e.ua)
+	delete(noSubs.PermissionsMap, auth.PermSubscribersGet)
+	for name, tc := range map[string]struct {
+		user   auth.User
+		sample string
+		want   int
+	}{
+		"another team's subscriber": {member, fmt.Sprintf(`{"subscriber_id":%d}`, e.foreign), http.StatusForbidden},
+		"no subscribers:get":        {noSubs, fmt.Sprintf(`{"subscriber_id":%d}`, e.mine), http.StatusForbidden},
+		"not JSON":                  {member, `{name}`, http.StatusBadRequest},
+		"attribs that are a text":   {member, `{"attribs":"x"}`, http.StatusBadRequest},
+	} {
+		if code, _ := preview(tc.user, &tc.sample); code != tc.want {
+			t.Errorf("%s: %d, want %d", name, code, tc.want)
+		}
+	}
+	// A preview is neither a send nor on the audit log.
+	if n := len(e.msgr.all()) + e.count(`SELECT COUNT(*) FROM axm_audit_log`); n != 0 {
+		t.Errorf("%d messages and audit rows", n)
+	}
+}
+
+var reTestSendLink = regexp.MustCompile(`/link/([0-9a-f-]{36})/([0-9a-f-]{36})/([0-9a-f-]{36})`)
+
+// The links and the pixel of a sample test message, and of a preview, record nothing: no
+// click, no view, no send record. Upstream recorded such a click on the real campaign.
+func TestSampleMessageIsNotTracked(t *testing.T) {
+	e := newTestSendEnv(t)
+	member := e.as(e.ua)
+	internal := "design@" + testSendDomain
+	if code, _ := e.send(member, []string{internal, e.mineEmail}, ""); code != 200 {
+		t.Fatal(code)
+	}
+	e.waitSent(2)
+	link := func(email string) (linkUUID, subUUID string) {
+		m := reTestSendLink.FindStringSubmatch(string(e.msgr.to(email)[0].Body))
+		if m == nil || m[2] != e.campUUID {
+			t.Fatalf("no tracked link of the campaign in the message to %s", email)
+		}
+		return m[1], m[3]
+	}
+	linkUUID, sampleSub := link(internal)
+	_, realSub := link(e.mineEmail)
+	if sampleSub != dummyUUID || realSub != e.subUUID(e.mine) {
+		t.Fatalf("subscriber UUIDs in the links: %s %s", sampleSub, realSub)
+	}
+
+	click := func(camp, sub string) int {
+		rec, he := e.do(e.a.LinkRedirect, auth.User{}, httptest.NewRequest("GET", "/x", nil), 0,
+			map[string]string{"linkUUID": linkUUID, "campUUID": camp, "subUUID": sub})
+		if he != nil {
+			t.Fatalf("link: %v", he)
+		}
+		if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "https://example.invalid/offer" {
+			t.Fatalf("link: %d %q", rec.Code, rec.Header().Get("Location"))
+		}
+		return e.count(`SELECT COUNT(*) FROM link_clicks`)
+	}
+	view := func(camp, sub string) int {
+		rec, he := e.do(e.a.RegisterCampaignView, auth.User{}, httptest.NewRequest("GET", "/x", nil), 0,
+			map[string]string{"campUUID": camp, "subUUID": sub})
+		if he != nil || rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" {
+			t.Fatalf("pixel: %v %d", he, rec.Code)
+		}
+		return e.count(`SELECT COUNT(*) FROM campaign_views`)
+	}
+
+	for _, individual := range []bool{true, false} {
+		e.a.cfg.Privacy.IndividualTracking = individual
+		e.db.MustExec(`DELETE FROM link_clicks; DELETE FROM campaign_views`)
+		name := fmt.Sprintf("individual tracking %v", individual)
+
+		// The sample message, and a preview (dummy campaign UUID).
+		if n := click(e.campUUID, dummyUUID); n != 0 {
+			t.Errorf("%s: a click on the sample message made %d click rows", name, n)
+		}
+		if n := click(dummyUUID, dummyUUID); n != 0 {
+			t.Errorf("%s: a click in a preview made %d click rows", name, n)
+		}
+		if n := view(e.campUUID, dummyUUID); n != 0 {
+			t.Errorf("%s: the pixel of the sample message made %d view rows", name, n)
+		}
+		if n := view(dummyUUID, dummyUUID); n != 0 {
+			t.Errorf("%s: the pixel of a preview made %d view rows", name, n)
+		}
+		// A real subscriber's message is counted as before.
+		if n := click(e.campUUID, realSub); n != 1 {
+			t.Errorf("%s: a real click made %d click rows", name, n)
+		}
+		if n := view(e.campUUID, realSub); n != 1 {
+			t.Errorf("%s: a real view made %d view rows", name, n)
+		}
+		want := 0
+		if individual {
+			want = 1
+		}
+		if n := e.count(`SELECT COUNT(*) FROM link_clicks WHERE subscriber_id=$1`, e.mine); n != want {
+			t.Errorf("%s: %d clicks with the subscriber, want %d", name, n, want)
+		}
+	}
+	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends`); n != 0 {
+		t.Errorf("%d send records", n)
+	}
+
+	// With tracking off entirely the link still resolves.
+	e.a.cfg.Privacy.DisableTracking = true
+	e.db.MustExec(`DELETE FROM link_clicks`)
+	if n := click(e.campUUID, realSub) + click(e.campUUID, dummyUUID); n != 0 {
+		t.Errorf("tracking disabled: %d click rows", n)
+	}
+}
+
+// The migration gives a database the test domains setting as a copy of its sender domains,
+// once: a later run leaves a changed value alone.
+func TestTestDomainsMigration(t *testing.T) {
+	e := newSendsEnv(t, 0)
+	value := func() string {
+		var v string
+		e.get(&v, `SELECT value::TEXT FROM settings WHERE key='axm.test_domains'`)
+		return v
+	}
+	// A new install has the key, empty.
+	if v := value(); v != "[]" {
+		t.Fatalf("new install: %s", v)
+	}
+	run := func() {
+		t.Helper()
+		if err := migrations.V6_2_1_axm_14(e.db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A database from before: no key, sender domains set.
+	e.db.MustExec(`DELETE FROM settings WHERE key='axm.test_domains'`)
+	e.db.MustExec(`UPDATE settings SET value='["corp.example.invalid", "other.example.invalid"]' WHERE key='axm.sender_domains'`)
+	run()
+	run()
+	if v := value(); v != `["corp.example.invalid", "other.example.invalid"]` {
+		t.Fatalf("copied: %s", v)
+	}
+	// Changed afterwards (here: emptied), then migrated again by a later release.
+	e.db.MustExec(`UPDATE settings SET value='[]' WHERE key='axm.test_domains'`)
+	run()
+	if v := value(); v != "[]" {
+		t.Fatalf("a changed value was overwritten: %s", v)
+	}
+	// A database that never had sender domains (official v6.2.0).
+	e.db.MustExec(`DELETE FROM settings WHERE key IN ('axm.test_domains', 'axm.sender_domains')`)
+	run()
+	if v := value(); v != "[]" {
+		t.Fatalf("without sender domains: %s", v)
+	}
+	// The app reads the setting as a list.
+	set, err := e.core.GetSettings()
+	if err != nil || set.AxmTestDomains == nil || len(set.AxmTestDomains) != 0 {
+		t.Fatalf("settings: %v %v", set.AxmTestDomains, err)
+	}
+}

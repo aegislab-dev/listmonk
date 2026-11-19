@@ -232,6 +232,7 @@ CREATE TABLE settings (
 DROP INDEX IF EXISTS idx_settings_key; CREATE INDEX idx_settings_key ON settings(key);
 INSERT INTO settings (key, value) VALUES
     ('axm.sender_domains', '[]'),
+    ('axm.test_domains', '[]'),
     ('axm.default_from', '""'),
     ('axm.default_reply_to', '""'),
     ('axm.business_footer', '{"enabled": false, "company_name": "", "representative": "", "registration_no": "", "address": "", "phone": "", "email": "", "extra": ""}'),

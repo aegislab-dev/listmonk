@@ -563,7 +563,11 @@ func (a *App) LinkRedirect(c echo.Context) error {
 	)
 
 	// If tracking is globally disabled, resolve the URL without recording a click.
-	if a.cfg.Privacy.DisableTracking {
+	// AXM (LST-41): the same goes for the dummy UUIDs of previews and sample test messages.
+	// Upstream recorded such a click on the real campaign, without a subscriber. The path
+	// parameter is looked at here because the subscriber UUID is blanked below when
+	// individual tracking is off.
+	if a.cfg.Privacy.DisableTracking || campUUID == dummyUUID || c.Param("subUUID") == dummyUUID {
 		url, err := a.core.GetLinkURL(linkUUID)
 		if err != nil {
 			e := err.(*echo.HTTPError)
@@ -613,8 +617,10 @@ func (a *App) RegisterCampaignView(c echo.Context) error {
 	}
 
 	// Exclude dummy hits from template previews.
+	// AXM (LST-41): the path parameter is compared as well. With individual tracking off
+	// subUUID is already blank here, and a sample test message was counted as a view.
 	campUUID := c.Param("campUUID")
-	if campUUID != dummyUUID && subUUID != dummyUUID {
+	if campUUID != dummyUUID && subUUID != dummyUUID && c.Param("subUUID") != dummyUUID {
 		if err := a.core.RegisterCampaignView(campUUID, subUUID); err != nil {
 			a.log.Printf("error registering campaign view: %s", err)
 		}

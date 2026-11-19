@@ -59,6 +59,7 @@ var migList = []migFunc{
 	{"v6.2.1-axm.11", migrations.V6_2_1_axm_11},
 	{"v6.2.1-axm.12", migrations.V6_2_1_axm_12},
 	{"v6.2.1-axm.13", migrations.V6_2_1_axm_13},
+	{"v6.2.1-axm.14", migrations.V6_2_1_axm_14},
 }
 
 // upgrade upgrades the database to the current version by running SQL migration files

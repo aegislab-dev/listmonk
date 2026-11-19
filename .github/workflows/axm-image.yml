@@ -237,7 +237,7 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.13
+          test "$migration" = v6.2.1-axm.14
           sends=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_campaign_sends')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_campaign_sends')::text")
           test "$sends" = 13:3
           draws=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename IN ('axm_list_draws', 'axm_list_draw_campaigns'))::text || ':' || (SELECT count(*) FROM pg_proc WHERE proname IN ('axm_list_target', 'axm_draw_candidates')) || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname IN ('axm_propagate_draw_unsub', 'axm_keep_draw_campaigns', 'axm_guard_exclude_list_delete') AND NOT tgisinternal)")

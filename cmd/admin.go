@@ -16,6 +16,7 @@ import (
 
 type serverConfig struct {
 	SenderDomains      []string `json:"sender_domains"`
+	TestDomains        []string `json:"test_domains"`
 	DefaultFrom        string   `json:"default_from"`
 	DefaultReplyTo     string   `json:"default_reply_to"`
 	ResolvedFrom       string   `json:"resolved_from"`
@@ -66,6 +67,7 @@ func (a *App) columnPresetsForConfig() []core.ColumnPreset {
 func (a *App) GetServerConfig(c echo.Context) error {
 	out := serverConfig{
 		SenderDomains:  append([]string{}, a.cfg.SenderDomains...),
+		TestDomains:    append([]string{}, a.cfg.TestDomains...),
 		DefaultFrom:    a.cfg.DefaultFrom,
 		DefaultReplyTo: a.cfg.DefaultReplyTo,
 		ResolvedFrom:   resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains),

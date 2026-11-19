@@ -53,6 +53,9 @@ type App struct {
 	log        *log.Logger
 	bufLog     *buflog.BufLog
 
+	// Counts each user's campaign test messages (see axm_test_send.go).
+	testLimiter testSendLimiter
+
 	// Who started the import that runs now (see axm_import_audit.go).
 	importMu sync.Mutex
 	importBy importActor
