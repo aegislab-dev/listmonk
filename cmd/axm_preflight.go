@@ -10,6 +10,7 @@ import (
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/manager"
+	"github.com/knadh/listmonk/internal/messenger/email"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 	"gopkg.in/volatiletech/null.v6"
@@ -77,6 +78,10 @@ type preflightFacts struct {
 
 	// A saved rule that excludes recent recipients (LST-34) is only recorded, not applied.
 	// RecentExcluded is how many it would exclude; -1: could not be counted.
+	// HeadersVary: the SMTP servers that may send the mail set different From, Subject or
+	// Reply-To headers, so what the recipient sees depends on the server.
+	HeadersVary bool
+
 	RecentEnabled  bool
 	RecentDays     int
 	RecentExcluded int
@@ -164,6 +169,10 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		}
 	}
 
+	if f.HeadersVary {
+		add("mail.headers", models.PreflightWarn, nil)
+	}
+
 	if f.RecentEnabled && f.CampType == models.CampaignTypeRegular {
 		p := map[string]any{"days": f.RecentDays}
 		if f.RecentExcluded >= 0 {
@@ -180,14 +189,23 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 // replaces the field; of several header sets the first that has it counts), and under the
 // sender policy the campaign's reply address is set after them. Other messengers do not
 // use the headers.
-func sendEnvelope(subject, from, replyTo, messenger string, headers models.Headers, policy bool) (string, string, string) {
+func sendEnvelope(subject, from, replyTo, messenger string, server map[string]string, headers models.Headers, policy bool) (string, string, string) {
 	email := messenger == "email" || strings.HasPrefix(messenger, "email-")
 	if !email {
 		return subject, from, ""
 	}
-	if !policy {
-		// The reply address of a campaign is only used under the sender policy.
-		replyTo = ""
+	// The reply address of a campaign is only used under the sender policy.
+	campReply := replyTo
+	replyTo = ""
+	// The SMTP server sets its headers first and the campaign's replace them.
+	if v, ok := server["Subject"]; ok {
+		subject = v
+	}
+	if v, ok := server["From"]; ok {
+		from = v
+	}
+	if v, ok := server["Reply-To"]; ok {
+		replyTo = v
 	}
 	first := func(name string) (string, bool) {
 		for _, set := range headers {
@@ -205,8 +223,12 @@ func sendEnvelope(subject, from, replyTo, messenger string, headers models.Heade
 	if v, ok := first("From"); ok {
 		from = v
 	}
-	if v, ok := first("Reply-To"); ok && !(policy && replyTo != "") {
+	if v, ok := first("Reply-To"); ok {
 		replyTo = v
+	}
+	// Under the sender policy the campaign's reply address is set after all of them.
+	if policy && campReply != "" {
+		replyTo = campReply
 	}
 	return subject, from, replyTo
 }
@@ -262,12 +284,20 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	}
 
 	// What the recipients will see, with the custom headers applied.
-	subject, from, replyTo := sendEnvelope(camp.Subject, from, camp.ReplyTo, camp.Messenger, camp.Headers, len(a.cfg.SenderDomains) > 0)
+	// The SMTP servers of the messenger set headers too, before the campaign's own.
+	var server map[string]string
+	headersVary := false
+	for _, m := range a.messengers {
+		if em, ok := m.(*email.Emailer); ok && m.Name() == camp.Messenger {
+			server, headersVary = em.ServerHeaders(from, "From", "Subject", "Reply-To")
+		}
+	}
+	subject, from, replyTo := sendEnvelope(camp.Subject, from, camp.ReplyTo, camp.Messenger, server, camp.Headers, len(a.cfg.SenderDomains) > 0)
 
 	facts := preflightFacts{
 		Mode: mode, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
 		Total: aud.Total, Remaining: aud.Remaining, ListCount: len(lists),
-		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1,
+		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1, HeadersVary: headersVary,
 	}
 	// Whether the e-mail that is rendered has the link to leave, as the recipient gets it.
 	if has, err := a.manager.HasUnsubscribeLink(&camp, dummySubscriber); err == nil {

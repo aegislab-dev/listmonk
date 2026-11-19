@@ -463,6 +463,20 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 	if got := level(read().Checks, "unsubscribe.missing"); got != "ok" {
 		t.Fatalf("shown link: %q", got)
 	}
+	// The mail is rendered as it is when sent (a running campaign), and only an <a> counts.
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News {{ if eq .Campaign.Status "draft" }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}</p>' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
+		t.Fatalf("link only while draft: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET body='<p data-unsubscribe="{{ UnsubscribeURL }}">News</p>' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
+		t.Fatalf("address in an attribute: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET content_type='plain', body='News {{ UnsubscribeURL }}' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "ok" {
+		t.Fatalf("plain text with the address: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET content_type='richtext' WHERE id=$1`, e.campID)
 	// A body that cannot be rendered says nothing about it.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>{{ .Subscriber.NoSuchField }}</p>' WHERE id=$1`, e.campID)
 	if got := level(read().Checks, "unsubscribe.missing"); got != "" {
@@ -500,6 +514,11 @@ func TestCampaignPreflightResume(t *testing.T) {
 		if c.Key == "schedule.past" {
 			t.Fatalf("a time ahead: %+v", o.Checks)
 		}
+	}
+	// Resumed since the pause, then stopped by the sender: the audit row is no longer the pause.
+	e.db.MustExec(`INSERT INTO axm_audit_log(action,target_type,target_id,created_at) VALUES('campaign.start','campaign',$1,'2026-01-03 00:00:00+00')`, e.campID)
+	if o = read(); o.PausedAt == nil || strings.HasPrefix(*o.PausedAt, "2026-01-02") {
+		t.Fatalf("paused again by the sender: %+v", o.PausedAt)
 	}
 	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() - INTERVAL '1 hour' WHERE id=$1`, e.campID)
 	found := false
@@ -583,10 +602,14 @@ func TestCampaignStatusSeenUpdatedAt(t *testing.T) {
 		t.Fatalf("schedule removed: %d", code)
 	}
 
-	// An unreadable value is a bad request, not a server error.
-	e.db.MustExec(`UPDATE campaigns SET status='draft' WHERE id=$1`, e.campID)
-	if code, s := status(`{"status":"running","updated_at":"not-a-time"}`); code != http.StatusBadRequest || s != "draft" {
-		t.Fatalf("garbage: %d %s", code, s)
+	// An unreadable value is a bad request, not a server error. A campaign of its own: the
+	// sender of the test app may still be finishing the one above.
+	bad := e.pfCampaign("regular", "draft", e.aList)
+	code, _ = e.call(e.a.UpdateCampaignStatus, member, http.MethodPut, "/", strconv.Itoa(bad), `{"status":"running","updated_at":"not-a-time"}`)
+	var st string
+	e.get(&st, `SELECT status FROM campaigns WHERE id=$1`, bad)
+	if code != http.StatusBadRequest || st != "draft" {
+		t.Fatalf("garbage: %d %s", code, st)
 	}
 }
 

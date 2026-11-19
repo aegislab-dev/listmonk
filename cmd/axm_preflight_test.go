@@ -34,26 +34,31 @@ func TestPlaceholderFrom(t *testing.T) {
 
 func TestSendEnvelope(t *testing.T) {
 	hdr := func(sets ...map[string]string) models.Headers { return models.Headers(sets) }
+	type srv = map[string]string
 	for _, c := range []struct {
-		name                             string
-		messenger                        string
-		headers                          models.Headers
-		replyTo                          string
-		policy                           bool
-		wantSubject, wantFrom, wantReply string
+		name      string
+		messenger string
+		headers   models.Headers
+		server    srv
+		replyTo   string
+		policy    bool
+		want      [3]string // subject, from, reply-to
 	}{
-		{"stored values", "email", nil, "", false, "S", "F <f@x.test>", ""},
-		{"the reply address is only used under the sender policy", "email", nil, "r@x.test", false, "S", "F <f@x.test>", ""},
-		{"under the policy it is used", "email", nil, "r@x.test", true, "S", "F <f@x.test>", "r@x.test"},
-		{"headers replace the fields (any letter case)", "email", hdr(map[string]string{"from": "E <e@x.test>", "SUBJECT": "H", "Reply-to": "h@x.test"}), "", false, "H", "E <e@x.test>", "h@x.test"},
-		{"under the policy the campaign's reply address wins over a header", "email", hdr(map[string]string{"Reply-To": "h@x.test"}), "r@x.test", true, "S", "F <f@x.test>", "r@x.test"},
-		{"a header reply address counts when the campaign has none", "email", hdr(map[string]string{"Reply-To": "h@x.test"}), "", true, "S", "F <f@x.test>", "h@x.test"},
-		{"the first set that has it counts", "email-alt", hdr(map[string]string{"X-A": "1"}, map[string]string{"Subject": "one"}, map[string]string{"Subject": "two"}), "", false, "one", "F <f@x.test>", ""},
-		{"another messenger ignores the headers", "webhook", hdr(map[string]string{"From": "E <e@x.test>", "Subject": "H"}), "r@x.test", true, "S", "F <f@x.test>", ""},
+		{"stored values", "email", nil, nil, "", false, [3]string{"S", "F <f@x.test>", ""}},
+		{"the reply address is only used under the sender policy", "email", nil, nil, "r@x.test", false, [3]string{"S", "F <f@x.test>", ""}},
+		{"under the policy it is used", "email", nil, nil, "r@x.test", true, [3]string{"S", "F <f@x.test>", "r@x.test"}},
+		{"headers replace the fields (any letter case)", "email", hdr(srv{"from": "E <e@x.test>", "SUBJECT": "H", "Reply-to": "h@x.test"}), nil, "", false, [3]string{"H", "E <e@x.test>", "h@x.test"}},
+		{"under the policy the campaign's reply address wins over a header", "email", hdr(srv{"Reply-To": "h@x.test"}), nil, "r@x.test", true, [3]string{"S", "F <f@x.test>", "r@x.test"}},
+		{"a header reply address counts when the campaign has none", "email", hdr(srv{"Reply-To": "h@x.test"}), nil, "", true, [3]string{"S", "F <f@x.test>", "h@x.test"}},
+		{"the first set that has it counts", "email-alt", hdr(srv{"X-A": "1"}, srv{"Subject": "one"}, srv{"Subject": "two"}), nil, "", false, [3]string{"one", "F <f@x.test>", ""}},
+		{"the SMTP server's headers replace the fields", "email", nil, srv{"Subject": "SMTP subject", "From": "T <t@x.test>", "Reply-To": "tr@x.test"}, "", false, [3]string{"SMTP subject", "T <t@x.test>", "tr@x.test"}},
+		{"a header of the campaign replaces the server's", "email", hdr(srv{"Subject": "Own"}), srv{"Subject": "SMTP subject", "From": "T <t@x.test>"}, "", false, [3]string{"Own", "T <t@x.test>", ""}},
+		{"the sender policy's reply address is set after the server's", "email", nil, srv{"Reply-To": "tr@x.test"}, "r@x.test", true, [3]string{"S", "F <f@x.test>", "r@x.test"}},
+		{"another messenger ignores the headers", "webhook", hdr(srv{"From": "E <e@x.test>", "Subject": "H"}), srv{"Subject": "X"}, "r@x.test", true, [3]string{"S", "F <f@x.test>", ""}},
 	} {
-		subject, from, reply := sendEnvelope("S", "F <f@x.test>", c.replyTo, c.messenger, c.headers, c.policy)
-		if subject != c.wantSubject || from != c.wantFrom || reply != c.wantReply {
-			t.Errorf("%s: got %q %q %q, want %q %q %q", c.name, subject, from, reply, c.wantSubject, c.wantFrom, c.wantReply)
+		subject, from, reply := sendEnvelope("S", "F <f@x.test>", c.replyTo, c.messenger, c.server, c.headers, c.policy)
+		if got := [3]string{subject, from, reply}; got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 }
@@ -109,6 +114,8 @@ func TestPreflightChecks(t *testing.T) {
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"no list left on resume only warns", with(func(f *preflightFacts) { f.Mode, f.LiveLists, f.Remaining = "resume", 0, 0 }),
 			map[string]string{"lists.none": "warn", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
+		{"servers that disagree about a header", with(func(f *preflightFacts) { f.HeadersVary = true }),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "mail.headers": "warn"}},
 		{"scheduled ahead", with(func(f *preflightFacts) { f.Mode, f.SendAt = "schedule", null.TimeFrom(now.Add(time.Hour)) }),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"stock from", with(func(f *preflightFacts) { f.From = "noreply@listmonk.yoursite.com" }),

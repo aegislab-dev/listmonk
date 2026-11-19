@@ -64,11 +64,18 @@ func (c *Core) checkCampaignSeen(tx *sqlx.Tx, id int, seenAt string) error {
 }
 
 // GetCampaignPausedAt is when campaign id was last paused by a person (the audit log), else
-// fallback, the campaign's last change. A campaign the sender paused on its own (too many
-// errors) has no audit row.
+// fallback, the campaign's last change. The audit row only counts while nothing started the
+// campaign again after it: a campaign that was resumed and then stopped by the sender (too many
+// errors) has no audit row for that stop, and its last change is the better answer.
 func (c *Core) GetCampaignPausedAt(id int, fallback null.Time) null.Time {
 	var at null.Time
-	err := c.db.Get(&at, `SELECT MAX(created_at) FROM axm_audit_log WHERE action = 'campaign.pause' AND target_type = 'campaign' AND target_id = $1`, id)
+	err := c.db.Get(&at, `SELECT p.at FROM (
+		SELECT MAX(created_at) AS at FROM axm_audit_log
+		WHERE action = 'campaign.pause' AND target_type = 'campaign' AND target_id = $1
+	) p WHERE NOT EXISTS (
+		SELECT 1 FROM axm_audit_log
+		WHERE action IN ('campaign.start', 'campaign.schedule') AND target_type = 'campaign' AND target_id = $1 AND created_at > p.at
+	)`, id)
 	if err != nil || !at.Valid {
 		return fallback
 	}

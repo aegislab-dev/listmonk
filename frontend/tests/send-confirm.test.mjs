@@ -208,6 +208,18 @@ test('every i18n key the window can use exists in Korean and English, with the s
     assert.ok(en[k], `${k} is missing in English`);
     assert.equal(params(en[k]), params(ko[k]), `${k}: parameters differ`);
   });
+  // Every check the server can send, at every level it can send it.
+  const combos = [
+    ['from.placeholder', 'ok'], ['from.placeholder', 'warn'], ['lists.none', 'block'], ['lists.none', 'warn'],
+    ['recipients.zero', 'block'], ['recipients.zero', 'warn'], ['schedule.past', 'warn'], ['unsubscribe.missing', 'ok'],
+    ['unsubscribe.missing', 'warn'], ['recent.notApplied', 'warn'], ['mail.headers', 'warn'],
+  ];
+  combos.forEach(([key, level]) => {
+    ['start', 'resume'].forEach((mode) => {
+      const line = checkLines(pf({ mode, checks: [{ key, level, params: { days: 7, excluded: 1 } }] }))[0];
+      assert.ok(ko[line.key] && en[line.key], `${key}.${level} (${mode}) has no text: ${line.key}`);
+    });
+  });
   // The keys the model returns.
   const used = new Set();
   const take = (i) => used.add(i.key);

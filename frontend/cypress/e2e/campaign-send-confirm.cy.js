@@ -53,6 +53,7 @@ describe('Pre-send confirmation window', () => {
       create('later', { lists: [listX], send_at: new Date(Date.now() + 86400000 * 20).toISOString() });
       create('rule', { lists: [listX] });
       create('stale', { lists: [listX] });
+      create('unsched', { lists: [listX], send_at: new Date(Date.now() + 86400000 * 25).toISOString() });
       create('resume', { lists: [listX] });
       create('plain', { lists: [listX], content_type: 'plain', body: 'Plain text with no links {{ UnsubscribeURL }}' });
     });
@@ -173,6 +174,30 @@ describe('Pre-send confirmation window', () => {
     // Confirming what is now shown goes through.
     cy.get('[data-cy=send-ok]').click();
     cy.wait('@status').its('response.statusCode').should('eq', 200);
+    cy.get(win).should('not.exist');
+  });
+
+  it('asks for what the campaign is now when the schedule was taken off under the window', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('unsched').find('[data-cy=btn-schedule]').click();
+    ready();
+    cy.get(`${win}[data-mode=schedule]`).should('exist');
+    cy.request('PUT', `/api/campaigns/${camp.unsched}`, {
+      name: `Send unsched ${stamp}`, subject: 'Send unsched subject', type: 'regular', messenger: 'email', lists: [listX],
+      content_type: 'richtext', body: '<p>Hello <a href="{{ UnsubscribeURL }}">leave</a></p>', send_at: null,
+    });
+    cy.get('[data-cy=send-ok]').click();
+    cy.wait('@status').its('response.statusCode').should('eq', 409);
+    ready();
+    cy.get(`${win}[data-mode=start]`).should('exist');
+    cy.get('[data-cy=send-title]').should('contain', 'now');
+    // The second confirmation is a start, not the schedule that no longer exists.
+    cy.get('[data-cy=send-ok]').click();
+    cy.wait('@status').then(({ request, response }) => {
+      expect(request.body.status).to.equal('running');
+      expect(response.statusCode).to.equal(200);
+    });
     cy.get(win).should('not.exist');
   });
 

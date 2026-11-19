@@ -258,6 +258,14 @@ export default Vue.extend({
       return was === undefined || was === l.count ? null : was;
     },
 
+    // The status to ask for. What was read decides: a campaign that was changed under the window
+    // (a schedule taken off, or put on) is started or scheduled as it is now, not as it was
+    // when the window was opened. Without a reading, the one the caller asked for.
+    statusToAsk(blind) {
+      if (blind || !this.pf) return this.status;
+      return this.pf.mode === 'schedule' ? 'scheduled' : 'running';
+    },
+
     lineParts(c) {
       return richParts(this.$t(c.key, c.params));
     },
@@ -288,7 +296,7 @@ export default Vue.extend({
       try {
         const out = await this.$api.changeCampaignStatus(
           this.campaignId,
-          this.status,
+          this.statusToAsk(blind),
           blind ? undefined : this.pf.updatedAt,
           { disableToast: true },
         );

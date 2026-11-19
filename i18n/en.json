@@ -522,6 +522,8 @@
     "campaigns.sendConfirm.asOf": "The count is as of {time}; blocked and unsubscribed people are left out again when sending starts, so it may differ a little.",
     "campaigns.sendConfirm.stale": "The campaign changed in the meantime and was loaded again. Please check what changed.",
     "campaigns.sendConfirm.changed": "The campaign changed in the meantime. Please check it again.",
+    "campaigns.sendConfirm.check.lists.none.warn": "**The campaign has no list.** It was deleted, so there is nobody left to send to.",
+    "campaigns.sendConfirm.check.mail.headers.warn": "**The SMTP servers set different From, Subject or Reply-To headers,** so what recipients see depends on the server the mail takes.",
     "campaigns.sendConfirm.title.resumeAt": "Resume sending to about {n} remaining people on {month}/{day} at {time}",
     "campaigns.sendConfirm.sub.resumeAt": "The paused campaign goes on when the scheduled time comes.",
     "campaigns.sendConfirm.check.tracking.viewOnly": "Views are tracked (the body has no links)",
