@@ -95,7 +95,8 @@
                 <list-selector v-model="form.lists" :selected="form.lists" :all="lists.results" :disabled="!canEdit"
                   :label="$t('globals.terms.lists')" :placeholder="$t('campaigns.sendToLists')" />
 
-                <address-check v-if="canShowRecentRule" :list-ids="recentListIds" :lists="lists.results || []" />
+                <address-check v-if="canShowAddressCheck" :list-ids="recentListIds" :lists="lists.results || []"
+                  :optin="data.type === 'optin'" />
 
                 <recent-send-exclude v-if="canShowRecentRule" v-model="recentRule" :campaign-id="data.id || createdDraftId"
                   :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || !recentRuleLoaded || savingCampaign" />
@@ -800,6 +801,11 @@ export default Vue.extend({
 
     canShowRecentRule() {
       return this.isNew || this.data.type === 'regular';
+    },
+    // An opt-in campaign also mails people: its audience (the unconfirmed subscribers of the
+    // double opt-in lists) is checked too.
+    canShowAddressCheck() {
+      return this.canShowRecentRule || this.data.type === 'optin';
     },
     recentListIds() {
       return this.form.lists.map(({ id }) => id).filter((id) => id > 0);

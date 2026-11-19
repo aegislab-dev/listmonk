@@ -139,6 +139,9 @@ export default {
     // Lists of the same send that were left out before the check was asked (the import
     // status gives only the lists this user may see). They count as not checked.
     hiddenLists: { type: Number, default: 0 },
+    // Check the audience of an opt-in campaign: the unconfirmed subscribers of the double
+    // opt-in lists, as the sender picks them.
+    optin: { type: Boolean, default: false },
   },
 
   data() {
@@ -157,7 +160,8 @@ export default {
 
   computed: {
     key() {
-      return [...new Set(this.listIds)].sort((a, b) => a - b).join(',');
+      const ids = [...new Set(this.listIds)].sort((a, b) => a - b).join(',');
+      return ids && `${ids}${this.optin ? ':optin' : ''}`;
     },
 
     polling() {
@@ -289,7 +293,7 @@ export default {
       this.controller = controller;
       this.loading = true;
       try {
-        const result = await this.$api.checkListAddresses({ list_ids: key.split(',').map(Number) }, controller.signal);
+        const result = await this.$api.checkListAddresses({ list_ids: key.split(':')[0].split(',').map(Number), optin: key.endsWith(':optin') }, controller.signal);
         if (controller.signal.aborted || this.key !== key) return;
         this.result = result;
         this.error = '';

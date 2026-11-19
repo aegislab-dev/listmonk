@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"reflect"
@@ -12,10 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/addrcheck"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/subimporter"
+	"github.com/knadh/listmonk/models"
+	"github.com/lib/pq"
 )
 
 // addrFakeDNS answers the address check from a table, so the tests never touch real
@@ -88,7 +92,12 @@ type addrListAnswer struct {
 
 func (e *addrEnv) check(user auth.User, lists ...int) (addrListAnswer, string) {
 	e.t.Helper()
-	body, _ := json.Marshal(map[string]any{"list_ids": lists})
+	return e.check2(user, map[string]any{"list_ids": lists})
+}
+
+func (e *addrEnv) check2(user auth.User, req map[string]any) (addrListAnswer, string) {
+	e.t.Helper()
+	body, _ := json.Marshal(req)
 	code, data := e.call(e.a.CheckListAddresses, user, "POST", "/api/lists/address-check", "", string(body))
 	if code != http.StatusOK {
 		e.t.Fatalf("list check HTTP %d %s", code, data)
@@ -238,6 +247,61 @@ func TestAddressCheckDoubleOptinAndDynamicLists(t *testing.T) {
 	}
 	if got, raw := e.check(admin, doubleID, dynamicID, baseID); got.Total != 2 || got.Risky != 2 {
 		t.Fatalf("mixed: %s", raw)
+	}
+}
+
+// An opt-in campaign goes to the unconfirmed subscribers of its double opt-in lists. The
+// check of {optin: true} has the same people as the sender's batch queries.
+func TestAddressCheckOptinAudienceMatchesSender(t *testing.T) {
+	e := newAddrEnv(t)
+	admin := e.as(e.admin)
+	var doubleID, singleID, baseID, dynamicID int
+	e.get(&doubleID, `INSERT INTO lists(uuid,name,type,optin) VALUES(gen_random_uuid(),'Double','private','double') RETURNING id`)
+	e.get(&singleID, `INSERT INTO lists(uuid,name,type,optin) VALUES(gen_random_uuid(),'Single','private','single') RETURNING id`)
+	e.get(&baseID, `INSERT INTO lists(uuid,name,type,optin) VALUES(gen_random_uuid(),'Optin base','private','double') RETURNING id`)
+	filter := fmt.Sprintf(`{"version":2,"base":{"type":"lists","lists":[%d]},"match":"all","conditions":[]}`, baseID)
+	e.get(&dynamicID, `INSERT INTO lists(uuid,name,type,optin,axm_filter)
+		VALUES (gen_random_uuid(),'Optin dynamic','private','single',$1::jsonb) RETURNING id`, filter)
+
+	dead := e.sub("new@gone.test", "enabled", doubleID, "unconfirmed")
+	role := e.sub("info@ok.test", "enabled", doubleID, "unconfirmed")
+	e.sub("done@gone.test", "enabled", doubleID, "confirmed")    // already confirmed: no opt-in mail
+	e.sub("left@gone.test", "enabled", doubleID, "unsubscribed") // unsubscribed
+	e.sub("blocked@gone.test", "blocklisted", doubleID, "unconfirmed")
+	e.sub("single@gone.test", "enabled", singleID, "unconfirmed") // single opt-in list: no opt-in mail
+	e.sub("base@gone.test", "enabled", baseID, "confirmed")       // only through the dynamic list
+
+	got, raw := e.check2(admin, map[string]any{"list_ids": []int{doubleID, singleID, dynamicID}, "optin": true})
+	if got.Total != 2 || got.Confirmed != 1 || got.Warning != 1 ||
+		!reflect.DeepEqual(got.Classes["dead"].IDs, []int{dead}) || !reflect.DeepEqual(got.Classes["role"].IDs, []int{role}) {
+		t.Fatalf("opt-in: %s", raw)
+	}
+	// The regular check of the same lists is a different audience.
+	if reg, raw := e.check(admin, doubleID, singleID, dynamicID); reg.Total != 3 {
+		t.Fatalf("regular: %s", raw)
+	}
+
+	// What the sender reads for an opt-in campaign to these lists.
+	var campID int
+	e.get(&campID, `INSERT INTO campaigns (uuid, name, subject, from_email, body, content_type, type, status, messenger, template_id)
+		VALUES (gen_random_uuid(), 'Opt-in', 'Confirm', 'a@ok.test', '', 'richtext', 'optin', 'draft', 'email',
+		(SELECT id FROM templates WHERE is_default LIMIT 1)) RETURNING id`)
+	lists := []int{doubleID, singleID, dynamicID}
+	for _, l := range lists {
+		e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name) SELECT $1, id, name FROM lists WHERE id = $2`, campID, l)
+	}
+	for name, q := range map[string]*sqlx.Stmt{"plain": e.q.NextCampaignSubscribers, "dynamic": e.q.NextCampaignSubscribersDynamic} {
+		var subs []models.Subscriber
+		if err := q.Select(&subs, campID, "optin", 0, math.MaxInt32, pq.Array(lists), 1000); err != nil {
+			t.Fatal(err)
+		}
+		ids := []int{}
+		for _, s := range subs {
+			ids = append(ids, s.ID)
+		}
+		if !reflect.DeepEqual(ids, []int{dead, role}) {
+			t.Fatalf("%s sender reads %v, the check counts %v", name, ids, []int{dead, role})
+		}
 	}
 }
 

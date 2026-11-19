@@ -93,7 +93,7 @@ describe('Address check before sending and on import', () => {
     cy.intercept('POST', listCheck, (req) => req.reply({ data: answer() })).as('check');
     cy.intercept('PUT', '/api/subscribers/lists').as('unsubscribe');
     cy.visit(`/admin/campaigns/${campaignId}`);
-    cy.wait('@check').its('request.body').should('deep.equal', { list_ids: [listId] });
+    cy.wait('@check').its('request.body').should('deep.equal', { list_ids: [listId], optin: false });
 
     // The panel sits between the list selector and the recent-send exclusion.
     cy.get('[data-cy=address-check]').should('have.class', 'is-risk').then(($panel) => {
@@ -344,6 +344,93 @@ describe('Address check before sending and on import', () => {
     cy.get('form.box').should('be.visible');
     cy.get('[data-cy=address-check]').should('not.exist');
     cy.request('/api/import/subscribers').its('body.data.axm_lists').should('have.length', 0);
+  });
+
+  it('checks the audience of an opt-in campaign: the unconfirmed subscribers of its double opt-in lists', () => {
+    const name = `Address optin ${stamp}`;
+    const pending = `optin-${stamp}@example.invalid`;
+    cy.request('POST', '/api/lists', {
+      name, type: 'private', optin: 'double', no_team: true,
+    }).then(({ body }) => {
+      const id = body.data.id;
+      // Not confirmed yet: this is who an opt-in campaign mails. The check is not stubbed,
+      // and DNS has no .invalid domain.
+      cy.request('POST', '/api/subscribers', {
+        name: 'Synthetic optin', email: pending, status: 'enabled', lists: [id],
+      });
+      cy.request('POST', '/api/campaigns', {
+        name: `Address optin campaign ${stamp}`, subject: 'Confirm', type: 'optin', lists: [id],
+      }).then(({ body: campaign }) => {
+        cy.intercept('POST', listCheck).as('optinCheck');
+        cy.visit(`/admin/campaigns/${campaign.data.id}`);
+        cy.wait('@optinCheck').its('request.body').should('deep.equal', { list_ids: [id], optin: true });
+        cy.get('[data-cy=address-check]', { timeout: 20000 }).should('have.class', 'is-risk');
+        cy.get('[data-cy=address-summary]').should('contain', 'Of 1 recipients');
+        cy.get('[data-cy=address-toggle]').click();
+        cy.get('[data-cy=address-row-dead]').should('contain', pending);
+      });
+    });
+  });
+
+  it('starts every new file with the default switches, also right after an import in the same tab', () => {
+    const file = (name, emails) => ({
+      contents: Cypress.Buffer.from(`email,name\n${emails.map((email, n) => `${email},Synthetic ${n}`).join('\n')}\n`),
+      fileName: name,
+      mimeType: 'text/csv',
+    });
+    const first = [0, 1, 2].map((n) => `first-${stamp}-${n}@example.invalid`);
+    const second = [`second-${stamp}@example.invalid`, `info+second-${stamp}@example.invalid`, `ok-second-${stamp}@example.invalid`];
+    // Row 2 (the second address) of each file is dead, row 3 is a role address.
+    cy.intercept('POST', importCheck, (req) => {
+      req.reply({
+        data: {
+          total: 3, risky: 2, confirmed: 1, warning: 1, unknown: 0, pending: 0, classes: {}, issues: { 0: ['dead'], 1: ['role'] },
+        },
+      });
+    }).as('importCheck');
+    cy.intercept('POST', listCheck, { data: clean(3) }).as('listCheck');
+
+    cy.visit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('form.box').should('be.visible');
+    cy.get('.list-selector input').type(importListName);
+    cy.contains('.list-selector .autocomplete a', importListName).click();
+    cy.get('input[type=file]').selectFile(file('first.csv', first), { force: true });
+    cy.get('[data-cy=map-busy]').should('not.exist');
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.wait('@importCheck');
+    // The first file: confirmed rows let in, role rows left out.
+    cy.get('[data-cy=map-address-exclude-confirmed] .check').click();
+    cy.get('[data-cy=map-address-exclude-warning] .check').click();
+    cy.get('[data-cy=map-address-exclude-confirmed] input').should('not.be.checked');
+    cy.get('[data-cy=map-address-exclude-warning] input').should('be.checked');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('button[type=submit]').should('not.be.disabled').click();
+    cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+
+    // Done, and the next file in the same tab: back to the defaults, without touching anything.
+    cy.get('.status button').first().click();
+    cy.get('form.box').should('be.visible');
+    cy.get('input[type=file]').selectFile(file('second.csv', second), { force: true });
+    cy.get('[data-cy=map-busy]').should('not.exist');
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.wait('@importCheck');
+    cy.get('[data-cy=map-address-exclude-confirmed] input').should('be.checked');
+    cy.get('[data-cy=map-address-exclude-warning] input').should('not.be.checked');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('.list-selector .tag').should('contain', importListName);
+    cy.get('button[type=submit]').should('not.be.disabled').click();
+    cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+    cy.request('/api/import/subscribers').its('body.data.imported').should('eq', 2);
+    const found = (email, n) => cy.request({ url: '/api/subscribers', qs: { query: `email = '${email}'`, per_page: 1 } })
+      .its('body.data.results').should('have.length', n);
+    found(second[0], 0);
+    found(second[1], 1);
+    found(second[2], 1);
+    cy.get('.status button').first().click();
   });
 
   it('does not block the upload when the check fails, and has no check for a blocklist import', () => {

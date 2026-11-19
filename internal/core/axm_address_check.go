@@ -14,7 +14,9 @@ import (
 // AddressCheckAudience returns how many subscribers a campaign to the lists would reach
 // and, unless there are more than max, their IDs and addresses. Both are read at one
 // snapshot. A row is marked direct when the subscriber is subscribed to one of targets.
-func (c *Core) AddressCheckAudience(ctx context.Context, lists, targets []int, max int) (int, []models.AddressCheckRow, error) {
+// With optin it is the audience of an opt-in campaign: the unconfirmed subscribers of the
+// double opt-in lists.
+func (c *Core) AddressCheckAudience(ctx context.Context, lists, targets []int, max int, optin bool) (int, []models.AddressCheckRow, error) {
 	fail := func(err error) (int, []models.AddressCheckRow, error) {
 		c.log.Printf("error reading the audience for an address check: %v", err)
 		return 0, nil, echo.NewHTTPError(http.StatusInternalServerError, c.i18n.T("addressCheck.error")).SetInternal(err)
@@ -29,15 +31,19 @@ func (c *Core) AddressCheckAudience(ctx context.Context, lists, targets []int, m
 	for i, id := range lists {
 		listIDs[i] = int64(id)
 	}
+	countQ, audienceQ := c.q.AxmAddressCheckCount, c.q.AxmAddressCheckAudience
+	if optin {
+		countQ, audienceQ = c.q.AxmAddressCheckCountOptin, c.q.AxmAddressCheckAudienceOptin
+	}
 	var total int
-	if err := tx.Stmtx(c.q.AxmAddressCheckCount).GetContext(ctx, &total, listIDs); err != nil {
+	if err := tx.Stmtx(countQ).GetContext(ctx, &total, listIDs); err != nil {
 		return fail(err)
 	}
 	if total == 0 || total > max {
 		return total, nil, nil
 	}
 	rows := make([]models.AddressCheckRow, 0, total)
-	if err := tx.Stmtx(c.q.AxmAddressCheckAudience).SelectContext(ctx, &rows, listIDs, pq.Array(targets)); err != nil {
+	if err := tx.Stmtx(audienceQ).SelectContext(ctx, &rows, listIDs, pq.Array(targets)); err != nil {
 		return fail(err)
 	}
 	return len(rows), rows, nil

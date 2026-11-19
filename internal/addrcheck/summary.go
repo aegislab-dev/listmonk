@@ -71,6 +71,11 @@ func (c *Checker) Check(ctx context.Context, emails []string, budget time.Durati
 	for i, email := range emails {
 		out[i].Result = Classify(email)
 		d := out[i].Domain
+		if out[i].Literal {
+			// Not a name: there is nothing to look up and no way to tell here.
+			out[i].Status = StatusUnknown
+			continue
+		}
 		if d == "" {
 			continue
 		}
@@ -81,7 +86,7 @@ func (c *Checker) Check(ctx context.Context, emails []string, budget time.Durati
 	}
 	statuses := c.CheckDomains(ctx, domains, budget)
 	for i := range out {
-		if out[i].Domain != "" {
+		if out[i].Domain != "" && !out[i].Literal {
 			out[i].Status = statuses[out[i].Domain]
 		}
 	}

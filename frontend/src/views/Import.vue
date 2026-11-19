@@ -180,6 +180,12 @@ import {
 const ADDRESS_POLL_MS = 3000;
 const ADDRESS_MAX_POLLS = 10;
 
+// What the address check leaves out of a new file until someone changes it: the confirmed
+// risky rows, not the role and disposable ones.
+function addressExcludeDefaults() {
+  return { confirmed: true, warning: false };
+}
+
 function addressState() {
   return {
     state: 'idle', result: null, issues: Object.freeze({}), emails: Object.freeze({}), polls: 0,
@@ -252,7 +258,7 @@ export default Vue.extend({
       existingKeys: [],
       // The address check of the rows to import, and the two switches of what it leaves out.
       addr: addressState(),
-      addrExclude: { confirmed: true, warning: false },
+      addrExclude: addressExcludeDefaults(),
       sentCount: null,
       isProcessing: false,
       status: { status: '' },
@@ -265,6 +271,9 @@ export default Vue.extend({
     'form.file': function fileChanged(file) {
       this.stopCSV();
       this.csv = csvState();
+      // Every file starts with the default switches: what was chosen for an earlier file
+      // must not leave rows out of (or let them into) this one without being seen.
+      this.addrExclude = addressExcludeDefaults();
       if (file && /\.csv$/i.test(file.name)) {
         this.sentCount = null;
         this.parseCSV(true);

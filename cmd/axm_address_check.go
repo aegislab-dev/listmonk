@@ -46,6 +46,9 @@ type addrCheckImportResp struct {
 
 type addrCheckListReq struct {
 	ListIDs []int `json:"list_ids"`
+	// Optin: check the audience of an opt-in campaign (the unconfirmed subscribers of the
+	// double opt-in lists) instead of a regular one.
+	Optin bool `json:"optin"`
 }
 
 type addrCheckListResp struct {
@@ -163,7 +166,7 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 		}
 	}
 
-	total, rows, err := a.core.AddressCheckAudience(ctx, lists, out.Targets, addrCheckMaxAudience)
+	total, rows, err := a.core.AddressCheckAudience(ctx, lists, out.Targets, addrCheckMaxAudience, req.Optin)
 	if err != nil {
 		return err
 	}

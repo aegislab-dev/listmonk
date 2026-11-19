@@ -442,3 +442,33 @@ func TestSummarizeLimitsDetailAndCountsPending(t *testing.T) {
 		t.Fatalf("summary %+v", s)
 	}
 }
+
+// An address literal such as [192.0.2.17] is not a name: it is never looked up and is
+// reported as unknown, not as a dead domain (RFC 5321 §4.1.3).
+func TestAddressLiteralIsUnknownAndNotLookedUp(t *testing.T) {
+	f := newFake()
+	c := NewChecker(Options{Resolver: f})
+	emails := []string{"qa@[192.0.2.17]", "Info@[192.0.2.18]", "ops@[IPv6:2001:db8::1]"}
+	verdicts := c.Check(context.Background(), emails, time.Second)
+	want := [][]string{{ClassUnknown}, {ClassRole, ClassUnknown}}
+	for i, v := range verdicts {
+		if v.Format {
+			// The address rules of listmonk may refuse a literal; then it is malformed.
+			continue
+		}
+		if !v.Literal || v.Confirmed() {
+			t.Fatalf("%s: %+v", emails[i], v)
+		}
+		if i < len(want) && !reflect.DeepEqual(v.Classes(), want[i]) {
+			t.Fatalf("%s: classes %v, want %v", emails[i], v.Classes(), want[i])
+		}
+	}
+	if verdicts[0].Format {
+		t.Fatalf("an IPv4 literal is malformed: %+v", verdicts[0])
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.mxN) != 0 || len(f.ipN) != 0 {
+		t.Fatalf("looked up %v %v", f.mxN, f.ipN)
+	}
+}

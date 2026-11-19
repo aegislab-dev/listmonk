@@ -22,6 +22,9 @@ type Result struct {
 	Format     bool // malformed: listmonk would refuse it
 	Role       bool // a shared mailbox name such as info@ or support@
 	Disposable bool // a throwaway mailbox provider
+	// Literal: the domain is an address literal such as [192.0.2.17] (RFC 5321 §4.1.3).
+	// Mail to it goes to that host without DNS, so DNS says nothing about it.
+	Literal bool
 }
 
 // Classify cleans an address the way listmonk does when it stores one and reports
@@ -32,7 +35,11 @@ func Classify(email string) Result {
 		return Result{Email: strings.TrimSpace(email), Format: true}
 	}
 	at := strings.LastIndexByte(clean, '@')
-	local, domain := clean[:at], asciiDomain(clean[at+1:])
+	local, host := clean[:at], clean[at+1:]
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		return Result{Email: clean, Domain: strings.ToLower(host), Role: isRole(local), Literal: true}
+	}
+	domain := asciiDomain(host)
 	return Result{
 		Email:      clean,
 		Domain:     domain,
