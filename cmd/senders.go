@@ -135,21 +135,28 @@ func normalizeFromAddresses(in []string) ([]string, error) {
 	out := []string{}
 	seen := map[string]bool{}
 	for _, v := range in {
+		if strings.ContainsAny(v, "\r\n") {
+			return nil, errors.New("invalid from address")
+		}
 		v = strings.TrimSpace(v)
-		if v == "" || len(v) > 200 || strings.ContainsAny(v, "\r\n") {
+		if v == "" || len(v) > 200 {
 			return nil, errors.New("invalid from address")
 		}
 		a, err := mail.ParseAddress(v)
 		if err != nil || placeholderListFrom(a.Address) {
 			return nil, errors.New("invalid from address")
 		}
+		// Address.String quotes a local part that needs it ("two words"@x).
 		e := strings.ToLower(a.Address)
+		bare := strings.TrimSuffix(strings.TrimPrefix((&mail.Address{Address: e}).String(), "<"), ">")
 		if a.Name != "" {
 			name := a.Name
 			if reFromNameSpecial.MatchString(name) {
 				name = strconv.Quote(name)
 			}
-			e = name + " <" + e + ">"
+			e = name + " <" + bare + ">"
+		} else {
+			e = bare
 		}
 		if !seen[e] {
 			seen[e] = true
@@ -194,6 +201,19 @@ func replyToAllowed(addr string, user auth.User, domains []string, verifiedLooku
 		return true, nil
 	}
 	return verifiedLookup(strings.ToLower(a.Address))
+}
+
+// hasFromHeader reports a custom From header, which would replace the From
+// that was checked against the From list when the mail is sent.
+func hasFromHeader(headers []map[string]string) bool {
+	for _, set := range headers {
+		for k := range set {
+			if strings.EqualFold(strings.TrimSpace(k), "from") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasReservedHeader(headers []map[string]string) bool {

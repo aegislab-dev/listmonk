@@ -205,6 +205,20 @@ func TestNormalizeFromAddresses(t *testing.T) {
 			t.Errorf("%q must be refused", bad)
 		}
 	}
+	// A local part that needs quotes keeps them, so the entry is still a valid From.
+	got, err = normalizeFromAddresses([]string{`"two words"@crevasse.ai`, `Kim <"a b"@crevasse.ai>`})
+	if err != nil || len(got) != 2 || got[0] != `"two words"@crevasse.ai` || got[1] != `Kim <"a b"@crevasse.ai>` {
+		t.Fatalf("%q %v", got, err)
+	}
+	if a, ok := matchFromAddress(`"two words"@crevasse.ai`, got); !ok || a != got[0] {
+		t.Fatal(a, ok)
+	}
+	// A line break anywhere, also at either end, is refused rather than trimmed.
+	for _, bad := range []string{"a@crevasse.ai\n", "\na@crevasse.ai", "a@crevasse.ai\r\n"} {
+		if _, err := normalizeFromAddresses([]string{bad}); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
 	// The settings normalizer applies it too.
 	set := models.Settings{AxmFromAddresses: []string{" A@crevasse.ai "}}
 	if err := normalizeSenderSettings(&set); err != nil || set.AxmFromAddresses[0] != "a@crevasse.ai" {
@@ -213,5 +227,22 @@ func TestNormalizeFromAddresses(t *testing.T) {
 	set = models.Settings{AxmFromAddresses: []string{"change-me@crevasse.ai"}}
 	if normalizeSenderSettings(&set) == nil {
 		t.Fatal("placeholder must be refused in settings")
+	}
+}
+
+func TestHasFromHeader(t *testing.T) {
+	for _, tc := range []struct {
+		h    []map[string]string
+		want bool
+	}{
+		{nil, false},
+		{[]map[string]string{{"X-Team": "a"}}, false},
+		{[]map[string]string{{"Reply-To": "a@crevasse.ai"}}, false},
+		{[]map[string]string{{"From": "a@crevasse.ai"}}, true},
+		{[]map[string]string{{"X-Team": "a"}, {" fRom ": "a@crevasse.ai"}}, true},
+	} {
+		if got := hasFromHeader(tc.h); got != tc.want {
+			t.Errorf("%v: %v", tc.h, got)
+		}
 	}
 }

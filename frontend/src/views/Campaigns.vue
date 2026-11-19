@@ -460,6 +460,9 @@ export default Vue.extend({
         sendAt = dayjs(c.sendAt).isAfter(now) ? c.sendAt : now.add(7, 'day');
       }
 
+      // The From list may have changed in another session.
+      await this.$api.getServerConfig();
+
       // A From that the From list does not allow (or a placeholder) is left
       // out so the server fills in the default instead of refusing the copy.
       const list = this.serverConfig.from_addresses || [];

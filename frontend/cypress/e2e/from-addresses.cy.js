@@ -5,6 +5,7 @@ describe('Team From address list', () => {
   const team = 'AEGIS 팀 <team@crevasse.ai>';
   let listId;
   let saved;
+  let savedSettings;
   const campaigns = [];
   const fields = (from, name) => ({
     name: name || `Synthetic from list ${stamp}`, subject: 'Synthetic from list', lists: [listId],
@@ -28,7 +29,14 @@ describe('Team From address list', () => {
   before(() => {
     cy.loginAndVisit('/admin/campaigns');
     cy.location('pathname').should('eq', '/admin/campaigns');
-    cy.request('/api/settings').then(({ body }) => { saved = body.data['axm.from_addresses'] || []; });
+    cy.request('/api/settings').then(({ body }) => {
+      saved = body.data['axm.from_addresses'] || [];
+      savedSettings = {
+        'app.from_email': body.data['app.from_email'],
+        'axm.sender_domains': body.data['axm.sender_domains'],
+        'axm.default_from': body.data['axm.default_from'],
+      };
+    });
     cy.request('POST', '/api/lists', {
       name: `Synthetic from list ${stamp}`, type: 'private', optin: 'single', tags: [],
     }).then(({ body }) => { listId = body.data.id; });
@@ -41,6 +49,14 @@ describe('Team From address list', () => {
       cy.request({ method: 'DELETE', url: `/api/campaigns?id=${id}`, failOnStatusCode: false });
     });
     if (listId) cy.request('DELETE', `/api/lists?id=${listId}`);
+    if (savedSettings) {
+      cy.request('PUT', '/api/settings/axm.sender_domains', savedSettings['axm.sender_domains']);
+      cy.waitForBackend();
+      cy.request('PUT', '/api/settings/axm.default_from', savedSettings['axm.default_from']);
+      cy.waitForBackend();
+      cy.request('PUT', '/api/settings/app.from_email', savedSettings['app.from_email']);
+      cy.waitForBackend();
+    }
     if (saved) setList(saved);
   });
 
@@ -130,6 +146,84 @@ describe('Team From address list', () => {
       expect(body.data.results).to.have.length(1);
       campaigns.push(body.data.results[0].id);
       expect(body.data.results[0].from_email).to.eq(mine);
+    });
+  });
+
+  it('applies the same checks to the app default From when none is sent', () => {
+    setList([]);
+    cy.request('PUT', '/api/settings/app.from_email', 'change-me@crevasse.ai');
+    cy.waitForBackend();
+    create().then((r) => refused(r, 'change-me@crevasse.ai'));
+    cy.request('PUT', '/api/settings/app.from_email', ' Team <team@crevasse.ai> ');
+    cy.waitForBackend();
+    create().then((r) => expect(r.body.data.from_email).to.eq('Team <team@crevasse.ai>'));
+    cy.request('PUT', '/api/settings/app.from_email', savedSettings['app.from_email']);
+    cy.waitForBackend();
+  });
+
+  it('keeps quotes in a local part and refuses a custom From header while a list is in use', () => {
+    setList(['"two words"@crevasse.ai', mine]);
+    cy.request('/api/settings').then(({ body }) => expect(body.data['axm.from_addresses']).to.deep.eq(['"two words"@crevasse.ai', mine]));
+    create('"two words"@crevasse.ai').then((r) => expect(r.body.data.from_email).to.eq('"two words"@crevasse.ai'));
+    cy.request({
+      method: 'POST', url: '/api/campaigns', failOnStatusCode: false,
+      body: { ...fields(mine), headers: [{ From: 'other@crevasse.ai' }] },
+    }).then((r) => refused(r));
+    cy.request({
+      method: 'PUT', url: '/api/settings/axm.from_addresses', failOnStatusCode: false, body: [`${mine}\n`],
+    }).then((r) => expect(r.status).to.eq(400));
+  });
+
+  it('writes the list spelling when a draft with another spelling is scheduled', () => {
+    setList([]);
+    let id;
+    cy.request({
+      method: 'POST', url: '/api/campaigns',
+      body: { ...fields(' Legacy Team <TEAM@crevasse.ai> '), send_at: '2099-01-01T00:00:00Z' },
+    }).then((r) => {
+      id = r.body.data.id;
+      campaigns.push(id);
+      expect(r.body.data.from_email).to.eq('Legacy Team <TEAM@crevasse.ai>');
+    });
+    setList(['Approved Team <team@crevasse.ai>']);
+    cy.then(() => cy.request('PUT', `/api/campaigns/${id}/status`, { status: 'scheduled' }));
+    cy.then(() => cy.request(`/api/campaigns/${id}`)).then(({ body }) => {
+      expect(body.data.status).to.eq('scheduled');
+      expect(body.data.from_email).to.eq('Approved Team <team@crevasse.ai>');
+    });
+  });
+
+  it('leaves account senders alone, and warns about a placeholder draft once the list is empty', () => {
+    setList([]);
+    cy.request('PUT', '/api/settings/axm.sender_domains', ['crevasse.ai']);
+    cy.waitForBackend();
+    cy.request('PUT', '/api/settings/axm.default_from', 'change-me@crevasse.ai');
+    cy.waitForBackend();
+    let id;
+    create().then((r) => {
+      expect(r.status).to.eq(200);
+      id = r.body.data.id;
+    });
+    cy.request('PUT', '/api/settings/axm.default_from', savedSettings['axm.default_from']);
+    cy.waitForBackend();
+    cy.request('PUT', '/api/settings/axm.sender_domains', savedSettings['axm.sender_domains']);
+    cy.waitForBackend();
+    cy.then(() => cy.request(`/api/campaigns/${id}`)).then(({ body }) => expect(body.data.from_email).to.eq('change-me@crevasse.ai'));
+    cy.then(() => cy.visit(`/admin/campaigns/${id}`));
+    cy.get('[data-cy=from-warning]').should('be.visible').and('contain', 'change-me@crevasse.ai');
+    cy.get('input[name=from_email]').should('have.value', 'change-me@crevasse.ai');
+  });
+
+  it('shows a list changed in another session on a page that was already open', () => {
+    setList([mine]);
+    cy.loginAndVisit('/admin/campaigns');
+    cy.get('[data-cy=btn-new]').should('exist');
+    cy.request('PUT', '/api/settings/axm.from_addresses', ['updated@crevasse.ai']);
+    cy.waitForBackend();
+    cy.get('[data-cy=btn-new]').click();
+    cy.get('select[name=from_email]').find('option:selected').should('have.value', 'updated@crevasse.ai');
+    cy.get('select[name=from_email] option').then(($o) => {
+      expect([...$o].map((o) => o.value).filter(Boolean)).to.deep.eq(['updated@crevasse.ai']);
     });
   });
 
