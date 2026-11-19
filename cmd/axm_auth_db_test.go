@@ -389,6 +389,11 @@ func (e *authEnv) reset(link *url.URL, token, password string) *httptest.Respons
 // useResetMailTemplate makes the reset mail's body the bare link.
 func useResetMailTemplate(t *testing.T) {
 	t.Helper()
+	// newSendsEnv initializes notifs once per process, which resets the templates.
+	// Do that first so that it cannot undo the template set here.
+	initTestNotifs.Do(func() {
+		notifs.Initialize(notifs.Opt{}, nil, nil, log.New(io.Discard, "", 0))
+	})
 	old := notifs.Tpls
 	notifs.Tpls = template.Must(template.New(notifs.TplForgotPassword).Parse("{{ .ResetURL }}"))
 	t.Cleanup(func() { notifs.Tpls = old })
