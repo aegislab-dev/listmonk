@@ -11,8 +11,8 @@ let listY;
 let listEmpty;
 const camp = {};
 
-const person = (n, lists) => cy.request('POST', '/api/subscribers', {
-  email: `send-${n}-${stamp}@example.invalid`, name: `Send ${n}`, status: 'enabled', lists, preconfirm_subscriptions: true,
+const person = (n, lists, status = 'enabled') => cy.request('POST', '/api/subscribers', {
+  email: `send-${n}-${stamp}@example.invalid`, name: `Send ${n}`, status, lists, preconfirm_subscriptions: true,
 });
 
 const create = (key, data) => cy.request('POST', '/api/campaigns', {
@@ -45,6 +45,8 @@ describe('Pre-send confirmation window', () => {
       person(2, [listX]);
       person(3, [listX, listY]);
       person(4, [listY]);
+      // Blocked: on a list but never sent to, and said so in the window.
+      person(5, [listX], 'blocklisted');
       create('page', { lists: [listX] });
       create('list', { lists: [listX, listY] });
       create('empty', { lists: [listEmpty] });
@@ -52,6 +54,7 @@ describe('Pre-send confirmation window', () => {
       create('rule', { lists: [listX] });
       create('stale', { lists: [listX] });
       create('resume', { lists: [listX] });
+      create('plain', { lists: [listX], content_type: 'plain', body: 'Plain text with no links {{ UnsubscribeURL }}' });
     });
     cy.then(() => {
       cy.request('PUT', `/api/campaigns/${camp.rule}/recent-exclude`, { enabled: true, days: 14, scope: 'all' });
@@ -73,7 +76,8 @@ describe('Pre-send confirmation window', () => {
     cy.get(`[data-cy=send-list-${listX}]`).should('contain', `Send X ${stamp}`).and('contain', '3');
     cy.get(`[data-cy=send-list-${listY}]`).should('contain', `Send Y ${stamp}`).and('contain', '2');
     // 3 + 2 on the lists, one person is on both: counted once.
-    cy.get('[data-cy=send-recipients]').should('contain', '1 on more than one list counted once, 4 in all');
+    cy.get('[data-cy=send-recipients]').should('contain', '1 on more than one list counted once, 4 in all')
+      .and('contain', '1 blocked, unsubscribed or unconfirmed already left out');
     cy.get('[data-cy=send-check-unsubscribe\\.missing]').should('have.attr', 'data-level', 'ok');
     cy.get('[data-cy=send-ok]').should('contain', 'Send to 4 people').and('not.be.disabled');
 
@@ -114,6 +118,9 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-title]').should('contain', 'There is nobody to send to');
     cy.get('[data-cy="send-check-recipients.zero"]').should('have.attr', 'data-level', 'block');
     cy.get('[data-cy=send-ok]').should('be.disabled');
+    // The summary says it, and the reason is the only line of the checks.
+    cy.get('[data-cy=send-zero]').should('contain', 'Nobody can receive it');
+    cy.get('[data-cy=send-checks] li').should('have.length', 1);
     cy.get('[data-cy=send-cancel]').click();
     cy.request(`/api/campaigns/${camp.empty}`).its('body.data.status').should('eq', 'draft');
   });
@@ -157,6 +164,7 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-ok]').click();
     cy.wait('@status').its('response.statusCode').should('eq', 409);
     cy.get('[data-cy=send-stale]').should('be.visible');
+    cy.get('[data-cy=send-stale-count]').should('contain', 'from 3 to 4');
     ready();
     cy.get('[data-cy=send-subject]').should('contain', 'Send stale changed');
     cy.get('[data-cy=send-title]').should('contain', 'Send to 4 people now');
@@ -194,10 +202,26 @@ describe('Pre-send confirmation window', () => {
     row('resume').find('[data-cy=btn-start]').click();
     cy.wait('@pf');
     cy.get(`${win}[data-state=error]`).should('exist');
+    // Which campaign it would go on for is still said.
+    cy.get('[data-cy=send-error] [data-cy=send-campaign]').should('contain', `Send resume ${stamp}`);
+    cy.get('[data-cy=send-error] [data-cy=send-subject]').should('contain', 'Send resume subject');
     cy.get('[data-cy=send-error]').should('contain', 'Could not get the number of recipients');
     cy.get('[data-cy=send-retry]').should('exist');
     cy.get('[data-cy=send-ok]').should('contain', 'Go on without the count').click();
     // Without what was read, nothing is compared.
     cy.wait('@status').its('request.body').should('deep.equal', { status: 'running' });
+  });
+
+  it('says which campaign it is while it reads, and does not call a plain text mail tracked', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('GET', preflight, (req) => { req.on('response', (res) => { res.setDelay(1500); }); }).as('slow');
+    row('plain').find('[data-cy=btn-start]').click();
+    cy.get('[data-cy=send-loading] [data-cy=send-campaign]').should('contain', `Send plain ${stamp}`);
+    cy.get('[data-cy=send-ok]').should('be.disabled');
+    ready();
+    cy.get('[data-cy=send-check-tracking]').should('have.length', 1).and('have.attr', 'data-level', 'info')
+      .and('contain', 'plain text e-mail records no views');
+    cy.get('[data-cy=send-checks]').should('not.contain', 'are tracked');
+    cy.get('[data-cy=send-cancel]').click();
   });
 });

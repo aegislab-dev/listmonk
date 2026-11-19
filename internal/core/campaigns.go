@@ -253,6 +253,18 @@ func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs
 // as text exactly as it was read. When it is not empty and the campaign was changed since,
 // nothing is changed and the error is a 409.
 func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt string) (models.Campaign, error) {
+	// AXM (LST-48): the campaign is locked and compared with what the confirmation showed
+	// before anything else is judged, so a campaign changed in the meantime is a 409 and not
+	// whatever its new state would be refused with.
+	tx, err := c.db.Beginx()
+	if err != nil {
+		return models.Campaign{}, err
+	}
+	defer tx.Rollback()
+	if err := c.checkCampaignSeen(tx, id, seenAt); err != nil {
+		return models.Campaign{}, err
+	}
+
 	cm, err := c.GetCampaign(id, "", "")
 	if err != nil {
 		return models.Campaign{}, err
@@ -290,14 +302,6 @@ func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt s
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, errMsg)
 	}
 
-	tx, err := c.db.Beginx()
-	if err != nil {
-		return models.Campaign{}, err
-	}
-	defer tx.Rollback()
-	if err := c.checkCampaignSeen(tx, id, seenAt); err != nil {
-		return models.Campaign{}, err
-	}
 	if from != "" && cm.Status == models.CampaignStatusDraft {
 		if _, err := tx.Stmtx(c.q.UpdateCampaignFrom).Exec(id, from); err != nil {
 			return models.Campaign{}, err

@@ -11,14 +11,16 @@ import (
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"gopkg.in/volatiletech/null.v6"
 )
 
 // GetPreflightAudience counts, for the pre-send confirmation (LST-48), who campaign id
 // would reach: each list alone and all lists together with every person counted once.
-// afterID is the campaign's sending checkpoint. Both counts are read at one snapshot.
-func (c *Core) GetPreflightAudience(ctx context.Context, id, afterID int) ([]models.PreflightList, models.PreflightAudience, error) {
+// afterID is the campaign's sending checkpoint, used when resume is true. Everything comes
+// from one statement, so it is one snapshot.
+func (c *Core) GetPreflightAudience(ctx context.Context, id, afterID int, resume bool) ([]models.PreflightList, models.PreflightAudience, error) {
 	var rows []models.PreflightRow
-	if err := c.q.AxmPreflightAudience.SelectContext(ctx, &rows, id, afterID); err != nil {
+	if err := c.q.AxmPreflightAudience.SelectContext(ctx, &rows, id, afterID, resume); err != nil {
 		c.log.Printf("error counting the recipients of campaign %d: %v", id, err)
 		return nil, models.PreflightAudience{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
@@ -59,4 +61,16 @@ func (c *Core) checkCampaignSeen(tx *sqlx.Tx, id int, seenAt string) error {
 		return echo.NewHTTPError(http.StatusConflict, c.i18n.T("campaigns.sendConfirm.changed"))
 	}
 	return nil
+}
+
+// GetCampaignPausedAt is when campaign id was last paused by a person (the audit log), else
+// fallback, the campaign's last change. A campaign the sender paused on its own (too many
+// errors) has no audit row.
+func (c *Core) GetCampaignPausedAt(id int, fallback null.Time) null.Time {
+	var at null.Time
+	err := c.db.Get(&at, `SELECT MAX(created_at) FROM axm_audit_log WHERE action = 'campaign.pause' AND target_type = 'campaign' AND target_id = $1`, id)
+	if err != nil || !at.Valid {
+		return fallback
+	}
+	return at
 }

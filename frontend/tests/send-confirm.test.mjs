@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  checkLines, offsetLabel, overlap, richParts, scheduleDisplay, sendConfirmModel, timeUntil, untilKey,
+  checkLines, offsetLabel, richParts, scheduleDisplay, sendConfirmModel, timeUntil, untilKey,
 } from '../src/send-confirm.js';
 
 const NOW = new Date('2026-11-19T12:00:00Z');
@@ -100,12 +100,26 @@ test('resume: the number is who is left, not the whole', () => {
   assert.equal(m.confirm.key, 'campaigns.sendConfirm.confirm.resume');
 });
 
+test('resume with a send time: the time is shown, the title says when, a passed time does not', () => {
+  const ahead = model({ mode: 'resume', remaining: 12, sendAt: '2026-11-20T00:00:00Z' });
+  assert.equal(ahead.title.key, 'campaigns.sendConfirm.title.resumeAt');
+  assert.deepEqual(ahead.title.params, { n: 12, month: '11', day: '20', time: '09:00' });
+  assert.equal(ahead.sub.key, 'campaigns.sendConfirm.sub.resumeAt');
+  assert.equal(ahead.when.text, '2026-11-20 (금) 09:00');
+  assert.deepEqual(ahead.until, { days: 0, hours: 12, minutes: 0 });
+  const passed = model({ mode: 'resume', remaining: 12, sendAt: '2026-11-19T10:00:00Z' });
+  assert.equal(passed.title.key, 'campaigns.sendConfirm.title.resume');
+  assert.equal(passed.until, null);
+  assert.equal(model({ mode: 'resume', remaining: 12 }).when, null);
+});
+
 test('nobody: a regular campaign cannot be confirmed, the reason leads the checks', () => {
   const m = model({ recipients: 0, checks: [{ key: 'recipients.zero', level: 'block' }, { key: 'from.placeholder', level: 'ok' }] });
   assert.equal(m.disabled, true);
   assert.equal(m.title.key, 'campaigns.sendConfirm.title.zero');
   assert.equal(m.sub.key, 'campaigns.sendConfirm.sub.blocked');
-  assert.equal(m.checks[0].name, 'recipients.zero');
+  assert.deepEqual(m.checks.map((c) => `${c.level}:${c.name}`), ['block:recipients.zero'], 'the reason is the only line');
+  assert.equal(m.zero, true);
 });
 
 test('a blocked window keeps the plain button text: there is nothing to go ahead anyway with', () => {
@@ -154,6 +168,14 @@ test('tracking: ok adds a passed line, a missing pixel and untracked links are t
   const two = checkLines(pf({ tracking: { ...trackingOk, state: 'warn', view: 'missing', links: { ...trackingOk.links, untracked: 3 } } })).filter((l) => l.name === 'tracking');
   assert.deepEqual(two.map((l) => l.key), ['campaigns.tracking.confirm.viewMissing', 'campaigns.tracking.confirm.untracked']);
   assert.deepEqual(two[1].params, { n: 3 });
+  // What is not tracked is not said to be: plain text has no views, no links no clicks.
+  const track = (over) => checkLines(pf({ tracking: { ...trackingOk, ...over } })).filter((l) => l.name === 'tracking').map((l) => `${l.level}:${l.key.split('.').pop()}`);
+  assert.deepEqual(track({ view: 'unsupported', links: { ...trackingOk.links, total: 0 } }), ['info:viewUnsupported']);
+  assert.deepEqual(track({ view: 'unsupported', links: { ...trackingOk.links, total: 2, manual: 2 } }), ['ok:clickOnly', 'info:viewUnsupported']);
+  assert.deepEqual(track({ view: 'manual', links: { ...trackingOk.links, total: 0 } }), ['ok:viewOnly']);
+  assert.deepEqual(track({ view: 'auto' }), ['ok:ok']);
+  assert.deepEqual(track({ view: 'n/a', applicable: false }), ['info:notApplicable']);
+  assert.deepEqual(track({ state: 'off', view: 'off' }), ['warn:off']);
   const failed = checkLines(pf({ tracking: null, trackingError: 'boom' })).find((l) => l.name === 'tracking');
   assert.equal(failed.level, 'warn');
   assert.equal(failed.key, 'campaigns.sendConfirm.check.tracking.failed');
@@ -166,12 +188,6 @@ test('the recent rule line says the number only when there is one; the unsubscri
   assert.equal(b.key, 'campaigns.sendConfirm.check.recent.notApplied.noCount');
   const c = checkLines(pf({ checks: [{ key: 'unsubscribe.missing', level: 'warn' }] }))[0];
   assert.equal(c.params.tag, '{{ UnsubscribeURL }}');
-});
-
-test('overlap: people on more than one list are counted once', () => {
-  assert.equal(overlap(pf()), 20);
-  assert.equal(overlap(pf({ recipients: 320 })), 0);
-  assert.equal(overlap(pf({ recipients: 999 })), 0);
 });
 
 test('rich parts: bold and code marks', () => {

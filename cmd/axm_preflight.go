@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/mail"
+	"net/textproto"
 	"regexp"
 	"strings"
 	"time"
@@ -22,17 +23,24 @@ type preflightResponse struct {
 	Status    string    `json:"status"`
 	Type      string    `json:"type"`
 	Name      string    `json:"name"`
-	Subject   string    `json:"subject"`
 	Messenger string    `json:"messenger"`
 	Mode      string    `json:"mode"`
 
-	// The address that the campaign will really be sent from.
+	// What the recipients will really see: the stored values, replaced by what the custom
+	// headers of an e-mail campaign set, which the mail goes out with (see sendEnvelope).
+	Subject   string    `json:"subject"`
 	FromEmail string    `json:"from_email"`
 	ReplyTo   string    `json:"reply_to"`
 	SendAt    null.Time `json:"send_at"`
+	// PausedAt is when a paused campaign was paused (the last pause in the audit log, else
+	// the campaign's last change).
+	PausedAt null.Time `json:"paused_at"`
 
 	Lists      []models.PreflightList `json:"lists"`
 	Recipients int                    `json:"recipients"`
+	// Overlap: people on more than one list; Excluded: people on the lists who are left out.
+	Overlap  int `json:"overlap"`
+	Excluded int `json:"excluded"`
 	// Resume: the people still to be sent, the number sent so far and the total counted at the start.
 	Remaining int       `json:"remaining"`
 	Sent      int       `json:"sent"`
@@ -63,7 +71,9 @@ type preflightFacts struct {
 	// The address the campaign will be sent from, as stored.
 	From string
 
-	Body, TemplateBody string
+	// Unsubscribe: whether the rendered e-mail has the link to leave. UnsubscribeKnown false:
+	// it could not be rendered, so nothing is said.
+	Unsubscribe, UnsubscribeKnown bool
 
 	// A saved rule that excludes recent recipients (LST-34) is only recorded, not applied.
 	// RecentExcluded is how many it would exclude; -1: could not be counted.
@@ -99,34 +109,6 @@ func placeholderFrom(from string) bool {
 	return rePlaceholderLocal.MatchString(addr) || placeholderHosts[addr[i+1:]]
 }
 
-// unsubscribeLink tells whether the saved body or the template carries a link to leave.
-// known=false: a template calls other templates, which this does not follow, so the
-// answer is not certain. The business footer (LST-7) adds no unsubscribe link.
-func unsubscribeLink(f preflightFacts) (has, known bool) {
-	if strings.Contains(f.Body, "UnsubscribeURL") {
-		return true, true
-	}
-	if f.ContentType == models.CampaignContentTypeVisual {
-		return false, true
-	}
-	if f.TemplateBody == "" {
-		return false, false
-	}
-	if strings.Contains(f.TemplateBody, "UnsubscribeURL") {
-		return true, true
-	}
-	for _, src := range []string{f.Body, f.TemplateBody} {
-		for _, m := range reTemplateCall.FindAllStringSubmatch(src, -1) {
-			if m[1] != "content" {
-				return false, false
-			}
-		}
-	}
-	return false, true
-}
-
-var reTemplateCall = regexp.MustCompile(`\{\{-?\s*(?:template|block)\s+"([^"]*)"`)
-
 // preflightChecks decides the lines of "checks before sending", in the order the screen
 // shows them. The tracking lines come from the tracking check and are not here. Only
 // "block" stops the confirmation, and only for a regular campaign that would reach nobody.
@@ -138,7 +120,12 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 
 	switch {
 	case f.LiveLists == 0:
-		add("lists.none", models.PreflightBlock, nil)
+		// A resumed campaign with nothing left only warns, like one with nobody left.
+		level := models.PreflightBlock
+		if f.Mode == models.PreflightModeResume {
+			level = models.PreflightWarn
+		}
+		add("lists.none", level, nil)
 	default:
 		count := f.Total
 		if f.Mode == models.PreflightModeResume {
@@ -155,7 +142,9 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		}
 	}
 
-	if f.Mode == models.PreflightModeSchedule && f.SendAt.Valid && !f.SendAt.Time.After(f.Now) {
+	// A campaign with a send time is scheduled by the status change, whether it is a draft or
+	// a paused one that is resumed: a time that has passed means it goes out right away.
+	if (f.Mode == models.PreflightModeSchedule || f.Mode == models.PreflightModeResume) && f.SendAt.Valid && !f.SendAt.Time.After(f.Now) {
 		add("schedule.past", models.PreflightWarn, nil)
 	}
 
@@ -166,10 +155,12 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 	}
 
 	if (f.Messenger == "email" || strings.HasPrefix(f.Messenger, "email-")) && f.CampType != models.CampaignTypeOptin {
-		if has, known := unsubscribeLink(f); has {
-			add("unsubscribe.missing", models.PreflightOK, nil)
-		} else if known {
-			add("unsubscribe.missing", models.PreflightWarn, nil)
+		if f.UnsubscribeKnown {
+			if f.Unsubscribe {
+				add("unsubscribe.missing", models.PreflightOK, nil)
+			} else {
+				add("unsubscribe.missing", models.PreflightWarn, nil)
+			}
 		}
 	}
 
@@ -181,6 +172,43 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		add("recent.notApplied", models.PreflightWarn, p)
 	}
 	return out
+}
+
+// sendEnvelope is what a recipient of the campaign sees as the subject, the sender and the
+// reply address. An e-mail goes out with the campaign's custom headers set over the values
+// of the campaign (internal/messenger/email: a header named From, Subject or Reply-To
+// replaces the field; of several header sets the first that has it counts), and under the
+// sender policy the campaign's reply address is set after them. Other messengers do not
+// use the headers.
+func sendEnvelope(subject, from, replyTo, messenger string, headers models.Headers, policy bool) (string, string, string) {
+	email := messenger == "email" || strings.HasPrefix(messenger, "email-")
+	if !email {
+		return subject, from, ""
+	}
+	if !policy {
+		// The reply address of a campaign is only used under the sender policy.
+		replyTo = ""
+	}
+	first := func(name string) (string, bool) {
+		for _, set := range headers {
+			for k, v := range set {
+				if textproto.CanonicalMIMEHeaderKey(k) == name {
+					return v, true
+				}
+			}
+		}
+		return "", false
+	}
+	if v, ok := first("Subject"); ok {
+		subject = v
+	}
+	if v, ok := first("From"); ok {
+		from = v
+	}
+	if v, ok := first("Reply-To"); ok && !(policy && replyTo != "") {
+		replyTo = v
+	}
+	return subject, from, replyTo
 }
 
 // preflightMode is what the status change will do with a campaign in this state. The
@@ -222,7 +250,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	if mode == models.PreflightModeResume {
 		afterID = camp.LastSubscriberID
 	}
-	lists, aud, err := a.core.GetPreflightAudience(ctx, id, afterID)
+	lists, aud, err := a.core.GetPreflightAudience(ctx, id, afterID, mode == models.PreflightModeResume)
 	if err != nil {
 		return err
 	}
@@ -233,11 +261,17 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		from = resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
 	}
 
+	// What the recipients will see, with the custom headers applied.
+	subject, from, replyTo := sendEnvelope(camp.Subject, from, camp.ReplyTo, camp.Messenger, camp.Headers, len(a.cfg.SenderDomains) > 0)
+
 	facts := preflightFacts{
 		Mode: mode, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
 		Total: aud.Total, Remaining: aud.Remaining, ListCount: len(lists),
-		SendAt: camp.SendAt, Now: time.Now(), From: from,
-		Body: camp.Body, TemplateBody: camp.TemplateBody, RecentExcluded: -1,
+		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1,
+	}
+	// Whether the e-mail that is rendered has the link to leave, as the recipient gets it.
+	if has, err := a.manager.HasUnsubscribeLink(&camp, dummySubscriber); err == nil {
+		facts.Unsubscribe, facts.UnsubscribeKnown = has, true
 	}
 	var listIDs []int
 	for _, l := range lists {
@@ -262,14 +296,18 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: camp.Subject, Messenger: camp.Messenger, Mode: mode,
-		FromEmail: from, ReplyTo: camp.ReplyTo, SendAt: camp.SendAt,
-		Lists: lists, Recipients: aud.Total, Remaining: aud.Remaining,
+		Subject: subject, Messenger: camp.Messenger, Mode: mode,
+		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
+		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
 		Checks: preflightChecks(facts),
 	}
 	if out.Lists == nil {
 		out.Lists = []models.PreflightList{}
+	}
+
+	if mode == models.PreflightModeResume {
+		out.PausedAt = a.core.GetCampaignPausedAt(id, camp.UpdatedAt)
 	}
 
 	// The tracking of the saved campaign, as the tracking check reports it.

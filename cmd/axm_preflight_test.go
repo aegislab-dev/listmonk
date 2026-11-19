@@ -32,24 +32,28 @@ func TestPlaceholderFrom(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeLink(t *testing.T) {
-	const link = `<a href="{{ UnsubscribeURL }}">x</a>`
+func TestSendEnvelope(t *testing.T) {
+	hdr := func(sets ...map[string]string) models.Headers { return models.Headers(sets) }
 	for _, c := range []struct {
-		name       string
-		f          preflightFacts
-		has, known bool
+		name                             string
+		messenger                        string
+		headers                          models.Headers
+		replyTo                          string
+		policy                           bool
+		wantSubject, wantFrom, wantReply string
 	}{
-		{"in the body", preflightFacts{Body: link, TemplateBody: `{{ template "content" . }}`}, true, true},
-		{"in the template", preflightFacts{Body: "hi", TemplateBody: `{{ template "content" . }}` + link}, true, true},
-		{"nowhere", preflightFacts{Body: "hi", TemplateBody: `<html>{{ template "content" . }}</html>`}, false, true},
-		{"visual body decides alone", preflightFacts{ContentType: models.CampaignContentTypeVisual, Body: "hi", TemplateBody: link}, false, true},
-		{"template unknown", preflightFacts{Body: "hi"}, false, false},
-		{"template calls another template", preflightFacts{Body: "hi", TemplateBody: `{{ template "footer" . }}`}, false, false},
-		{"a body that calls another one", preflightFacts{Body: `{{ template "footer" . }}`, TemplateBody: "x"}, false, false},
+		{"stored values", "email", nil, "", false, "S", "F <f@x.test>", ""},
+		{"the reply address is only used under the sender policy", "email", nil, "r@x.test", false, "S", "F <f@x.test>", ""},
+		{"under the policy it is used", "email", nil, "r@x.test", true, "S", "F <f@x.test>", "r@x.test"},
+		{"headers replace the fields (any letter case)", "email", hdr(map[string]string{"from": "E <e@x.test>", "SUBJECT": "H", "Reply-to": "h@x.test"}), "", false, "H", "E <e@x.test>", "h@x.test"},
+		{"under the policy the campaign's reply address wins over a header", "email", hdr(map[string]string{"Reply-To": "h@x.test"}), "r@x.test", true, "S", "F <f@x.test>", "r@x.test"},
+		{"a header reply address counts when the campaign has none", "email", hdr(map[string]string{"Reply-To": "h@x.test"}), "", true, "S", "F <f@x.test>", "h@x.test"},
+		{"the first set that has it counts", "email-alt", hdr(map[string]string{"X-A": "1"}, map[string]string{"Subject": "one"}, map[string]string{"Subject": "two"}), "", false, "one", "F <f@x.test>", ""},
+		{"another messenger ignores the headers", "webhook", hdr(map[string]string{"From": "E <e@x.test>", "Subject": "H"}), "r@x.test", true, "S", "F <f@x.test>", ""},
 	} {
-		has, known := unsubscribeLink(c.f)
-		if has != c.has || known != c.known {
-			t.Errorf("%s: got has=%v known=%v, want %v %v", c.name, has, known, c.has, c.known)
+		subject, from, reply := sendEnvelope("S", "F <f@x.test>", c.replyTo, c.messenger, c.headers, c.policy)
+		if subject != c.wantSubject || from != c.wantFrom || reply != c.wantReply {
+			t.Errorf("%s: got %q %q %q, want %q %q %q", c.name, subject, from, reply, c.wantSubject, c.wantFrom, c.wantReply)
 		}
 	}
 }
@@ -77,7 +81,7 @@ func TestPreflightChecks(t *testing.T) {
 	good := preflightFacts{
 		Mode: "start", CampType: "regular", Messenger: "email", ContentType: "richtext",
 		Total: 300, Remaining: 300, ListCount: 2, LiveLists: 2, Now: now,
-		From: "Team <team@crevasse.ai>", Body: `{{ UnsubscribeURL }}`, RecentExcluded: -1,
+		From: "Team <team@crevasse.ai>", Unsubscribe: true, UnsubscribeKnown: true, RecentExcluded: -1,
 	}
 	with := func(f func(*preflightFacts)) preflightFacts { c := good; f(&c); return c }
 
@@ -99,17 +103,23 @@ func TestPreflightChecks(t *testing.T) {
 			map[string]string{"lists.none": "block", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"scheduled in the past", with(func(f *preflightFacts) { f.Mode, f.SendAt = "schedule", null.TimeFrom(now.Add(-time.Minute)) }),
 			map[string]string{"schedule.past": "warn", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
+		{"resumed with a time that has passed", with(func(f *preflightFacts) { f.Mode, f.SendAt = "resume", null.TimeFrom(now.Add(-time.Minute)) }),
+			map[string]string{"schedule.past": "warn", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
+		{"resumed with a time ahead", with(func(f *preflightFacts) { f.Mode, f.SendAt = "resume", null.TimeFrom(now.Add(time.Hour)) }),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok"}},
+		{"no list left on resume only warns", with(func(f *preflightFacts) { f.Mode, f.LiveLists, f.Remaining = "resume", 0, 0 }),
+			map[string]string{"lists.none": "warn", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"scheduled ahead", with(func(f *preflightFacts) { f.Mode, f.SendAt = "schedule", null.TimeFrom(now.Add(time.Hour)) }),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"stock from", with(func(f *preflightFacts) { f.From = "noreply@listmonk.yoursite.com" }),
 			map[string]string{"from.placeholder": "warn", "unsubscribe.missing": "ok"}},
-		{"no unsubscribe link", with(func(f *preflightFacts) { f.Body, f.TemplateBody = "hi", "{{ template \"content\" . }}" }),
+		{"no unsubscribe link", with(func(f *preflightFacts) { f.Unsubscribe = false }),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "warn"}},
-		{"unsubscribe link not known", with(func(f *preflightFacts) { f.Body = "hi" }),
+		{"unsubscribe link not known", with(func(f *preflightFacts) { f.UnsubscribeKnown = false }),
 			map[string]string{"from.placeholder": "ok"}},
-		{"another messenger has no such line", with(func(f *preflightFacts) { f.Messenger, f.Body = "webhook", "hi" }),
+		{"another messenger has no such line", with(func(f *preflightFacts) { f.Messenger, f.Unsubscribe = "webhook", false }),
 			map[string]string{"from.placeholder": "ok"}},
-		{"opt-in campaigns have no such line", with(func(f *preflightFacts) { f.CampType, f.Body = "optin", "hi" }),
+		{"opt-in campaigns have no such line", with(func(f *preflightFacts) { f.CampType, f.Unsubscribe = "optin", false }),
 			map[string]string{"from.placeholder": "ok"}},
 		{"recent rule with the number", with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentExcluded = true, 14, 42 }),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.notApplied": "warn"}},

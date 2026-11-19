@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,8 @@ func TestPreflightAudienceMatchesSend(t *testing.T) {
 		name  string
 		build func() (camp int, lists map[int]int) // the campaign and each list's expected own count
 		total int
+		// multi: people on more than one list; excluded: people on the lists who are left out.
+		multi, excluded int
 	}
 	cases := []tc{
 		{"single list: unconfirmed counts, unsubscribed and blocklisted do not", func() (int, map[int]int) {
@@ -109,7 +112,7 @@ func TestPreflightAudienceMatchesSend(t *testing.T) {
 			e.pfSub("enabled", "", map[int]string{l: "unsubscribed"})
 			e.pfSub("blocklisted", "", map[int]string{l: "confirmed"})
 			return e.pfCampaign("regular", "draft", l), map[int]int{l: 4}
-		}, 4},
+		}, 4, 0, 2},
 		{"two lists overlap: counted once", func() (int, map[int]int) {
 			a, b := e.pfList("single", ""), e.pfList("single", "")
 			for i := 0; i < 3; i++ {
@@ -119,7 +122,7 @@ func TestPreflightAudienceMatchesSend(t *testing.T) {
 			e.pfSub("enabled", "", map[int]string{b: "unconfirmed"})
 			e.pfSub("enabled", "", map[int]string{b: "confirmed"})
 			return e.pfCampaign("regular", "draft", a, b), map[int]int{a: 4, b: 5}
-		}, 6},
+		}, 6, 3, 0},
 		{"double opt-in list: only confirmed", func() (int, map[int]int) {
 			l := e.pfList("double", "")
 			e.pfSub("enabled", "", map[int]string{l: "confirmed"})
@@ -127,7 +130,7 @@ func TestPreflightAudienceMatchesSend(t *testing.T) {
 			e.pfSub("enabled", "", map[int]string{l: "unconfirmed"})
 			e.pfSub("enabled", "", map[int]string{l: "unsubscribed"})
 			return e.pfCampaign("regular", "draft", l), map[int]int{l: 2}
-		}, 2},
+		}, 2, 0, 2},
 		{"opt-in campaign: unconfirmed of double lists only", func() (int, map[int]int) {
 			d, s := e.pfList("double", ""), e.pfList("single", "")
 			e.pfSub("enabled", "", map[int]string{d: "unconfirmed"})
@@ -136,7 +139,7 @@ func TestPreflightAudienceMatchesSend(t *testing.T) {
 			e.pfSub("enabled", "", map[int]string{s: "unconfirmed"})
 			e.pfSub("blocklisted", "", map[int]string{d: "unconfirmed"})
 			return e.pfCampaign("optin", "draft", d, s), map[int]int{d: 2, s: 0}
-		}, 2},
+		}, 2, 0, 0},
 		{"dynamic list", func() (int, map[int]int) {
 			base := e.pfList("single", "")
 			for _, p := range []string{"pro", "pro", "free", "pro"} {
@@ -146,7 +149,7 @@ func TestPreflightAudienceMatchesSend(t *testing.T) {
 			e.pfSub("blocklisted", "pro", map[int]string{base: "confirmed"})
 			d := e.pfList("single", dynFilter(base))
 			return e.pfCampaign("regular", "draft", d), map[int]int{d: 3}
-		}, 3},
+		}, 3, 0, 0},
 		{"dynamic and regular lists overlap", func() (int, map[int]int) {
 			base, other := e.pfList("single", ""), e.pfList("single", "")
 			e.pfSub("enabled", "pro", map[int]string{base: "confirmed", other: "confirmed"})
@@ -155,36 +158,42 @@ func TestPreflightAudienceMatchesSend(t *testing.T) {
 			e.pfSub("enabled", "free", map[int]string{other: "unsubscribed"})
 			d := e.pfList("single", dynFilter(base))
 			return e.pfCampaign("regular", "draft", other, d), map[int]int{other: 2, d: 2}
-		}, 3},
+		}, 3, 1, 1},
 		{"opt-in campaign never reaches a dynamic list", func() (int, map[int]int) {
 			base, dbl := e.pfList("single", ""), e.pfList("double", "")
 			e.pfSub("enabled", "pro", map[int]string{base: "confirmed"})
 			e.pfSub("enabled", "pro", map[int]string{dbl: "unconfirmed"})
 			d := e.pfList("single", dynFilter(base))
 			return e.pfCampaign("optin", "draft", d, dbl), map[int]int{d: 0, dbl: 1}
-		}, 1},
+		}, 1, 0, 0},
+		{"one person on three lists is one overlapping person, a blocklisted one is excluded", func() (int, map[int]int) {
+			a, b, c := e.pfList("single", ""), e.pfList("single", ""), e.pfList("single", "")
+			e.pfSub("enabled", "", map[int]string{a: "confirmed", b: "confirmed", c: "confirmed"})
+			e.pfSub("blocklisted", "", map[int]string{a: "confirmed", b: "confirmed", c: "confirmed"})
+			return e.pfCampaign("regular", "draft", a, b, c), map[int]int{a: 1, b: 1, c: 1}
+		}, 1, 1, 1},
 		{"nobody", func() (int, map[int]int) {
 			l := e.pfList("single", "")
 			e.pfSub("enabled", "", map[int]string{l: "unsubscribed"})
 			return e.pfCampaign("regular", "draft", l), map[int]int{l: 0}
-		}, 0},
+		}, 0, 0, 1},
 		{"a list that was deleted keeps its name and counts zero", func() (int, map[int]int) {
 			l, gone := e.pfList("single", ""), e.pfList("single", "")
 			e.pfSub("enabled", "", map[int]string{l: "confirmed", gone: "confirmed"})
 			camp := e.pfCampaign("regular", "draft", l, gone)
 			e.db.MustExec(`DELETE FROM lists WHERE id=$1`, gone)
 			return camp, map[int]int{l: 1}
-		}, 1},
+		}, 1, 0, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			camp, wantLists := c.build()
-			lists, aud, err := e.core.GetPreflightAudience(ctx, camp, 0)
+			lists, aud, err := e.core.GetPreflightAudience(ctx, camp, 0, false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if aud.Total != c.total {
-				t.Fatalf("total %d, want %d", aud.Total, c.total)
+			if aud.Total != c.total || aud.Multi != c.multi || aud.Excluded != c.excluded {
+				t.Fatalf("total %d multi %d excluded %d, want %d %d %d", aud.Total, aud.Multi, aud.Excluded, c.total, c.multi, c.excluded)
 			}
 			for _, l := range lists {
 				if l.Deleted {
@@ -237,7 +246,7 @@ func TestPreflightRemainingMatchesResume(t *testing.T) {
 	e.pfSub("blocklisted", "", map[int]string{l: "confirmed"})
 	e.db.MustExec(`UPDATE subscriber_lists SET status='unsubscribed' WHERE subscriber_id=$1`, subs[9])
 
-	_, aud, err := e.core.GetPreflightAudience(ctx, camp, subs[4])
+	_, aud, err := e.core.GetPreflightAudience(ctx, camp, subs[4], true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +270,38 @@ func TestPreflightRemainingMatchesResume(t *testing.T) {
 	}
 	if aud.Total != 10 { // all that are eligible now, sent or not: 10 - 1 who left + 1 who joined
 		t.Fatalf("total %d", aud.Total)
+	}
+}
+
+// With the checkpoint at 0 a person who already has a send record is still skipped when the
+// campaign is resumed (the sender reads the records above the checkpoint, and 0 is below all).
+func TestPreflightRemainingWithCheckpointZero(t *testing.T) {
+	e := newSendsEnv(t, 0)
+	ctx := context.Background()
+	e.db.MustExec(`UPDATE campaigns SET status='finished' WHERE id=$1`, e.campID)
+	l := e.pfList("single", "")
+	a := e.pfSub("enabled", "", map[int]string{l: "confirmed"})
+	e.pfSub("enabled", "", map[int]string{l: "confirmed"})
+	camp := e.pfCampaign("regular", "paused", l)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, camp, a)
+
+	_, aud, err := e.core.GetPreflightAudience(ctx, camp, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, _ := e.reach(camp, 0)
+	fresh := 0
+	for _, id := range ids {
+		if id != a {
+			fresh++
+		}
+	}
+	if aud.Remaining != fresh || fresh != 1 || aud.Total != 2 {
+		t.Fatalf("remaining %d total %d, the sender sends %d", aud.Remaining, aud.Total, fresh)
+	}
+	// A draft does not look at the records.
+	if _, aud, _ = e.core.GetPreflightAudience(ctx, camp, 0, false); aud.Remaining != 2 {
+		t.Fatalf("not a resume: %d", aud.Remaining)
 	}
 }
 
@@ -372,6 +413,116 @@ func TestCampaignPreflightHandler(t *testing.T) {
 	}
 }
 
+// What the confirmation says the recipients get is what the mail goes out with: the custom
+// headers replace the subject, the sender and the reply address, and the link to leave is
+// looked for in the rendered mail, not in the source.
+func TestCampaignPreflightWhatIsSent(t *testing.T) {
+	e := newPreflightApp(t)
+	member := e.as(e.ua)
+	e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	id := strconv.Itoa(e.campID)
+	read := func() (out struct {
+		Subject   string                  `json:"subject"`
+		FromEmail string                  `json:"from_email"`
+		ReplyTo   string                  `json:"reply_to"`
+		Checks    []models.PreflightCheck `json:"checks"`
+	}) {
+		t.Helper()
+		code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if code != http.StatusOK || json.Unmarshal(data, &out) != nil {
+			t.Fatalf("%d %s", code, data)
+		}
+		return out
+	}
+	level := func(checks []models.PreflightCheck, key string) string {
+		for _, c := range checks {
+			if c.Key == key {
+				return c.Level
+			}
+		}
+		return ""
+	}
+	e.db.MustExec(`UPDATE campaigns SET subject='Stored subject', from_email='News <news@crevasse.ai>' WHERE id=$1`, e.campID)
+	if o := read(); o.Subject != "Stored subject" || o.FromEmail != "News <news@crevasse.ai>" || o.ReplyTo != "" {
+		t.Fatalf("stored: %+v", o)
+	}
+
+	// Headers of the campaign replace the three fields of the mail.
+	e.db.MustExec(`UPDATE campaigns SET headers='[{"From":"Editorial <editor@crevasse.ai>","Subject":"Header subject","Reply-To":"reply@crevasse.ai"}]'::jsonb WHERE id=$1`, e.campID)
+	if o := read(); o.Subject != "Header subject" || o.FromEmail != "Editorial <editor@crevasse.ai>" || o.ReplyTo != "reply@crevasse.ai" {
+		t.Fatalf("headers: %+v", o)
+	}
+	e.db.MustExec(`UPDATE campaigns SET headers='[]'::jsonb WHERE id=$1`, e.campID)
+
+	// A link that is only in the source of a condition that does not hold is not in the mail.
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News {{ if false }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}</p>' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
+		t.Fatalf("hidden link: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News {{ if true }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}</p>' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "ok" {
+		t.Fatalf("shown link: %q", got)
+	}
+	// A body that cannot be rendered says nothing about it.
+	e.db.MustExec(`UPDATE campaigns SET body='<p>{{ .Subscriber.NoSuchField }}</p>' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "" {
+		t.Fatalf("unrenderable: %q", got)
+	}
+}
+
+// A paused campaign with a send time is scheduled by the confirmation, so the window shows
+// the time; with nothing left it only warns; and the paused time comes from the audit log.
+func TestCampaignPreflightResume(t *testing.T) {
+	e := newPreflightApp(t)
+	member := e.as(e.ua)
+	id := strconv.Itoa(e.campID)
+	e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	e.db.MustExec(`UPDATE campaigns SET status='paused', send_at=NOW() + INTERVAL '2 days', last_subscriber_id=0, to_send=1 WHERE id=$1`, e.campID)
+	e.db.MustExec(`INSERT INTO axm_audit_log(action,target_type,target_id,created_at) VALUES('campaign.pause','campaign',$1,'2026-01-02 03:04:05+00')`, e.campID)
+	read := func() (out struct {
+		Mode     string                  `json:"mode"`
+		SendAt   *string                 `json:"send_at"`
+		PausedAt *string                 `json:"paused_at"`
+		Checks   []models.PreflightCheck `json:"checks"`
+	}) {
+		t.Helper()
+		code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if code != http.StatusOK || json.Unmarshal(data, &out) != nil {
+			t.Fatalf("%d %s", code, data)
+		}
+		return out
+	}
+	o := read()
+	if o.Mode != "resume" || o.SendAt == nil || o.PausedAt == nil || !strings.HasPrefix(*o.PausedAt, "2026-01-02T03:04:05") {
+		t.Fatalf("paused with a send time: %+v", o)
+	}
+	for _, c := range o.Checks {
+		if c.Key == "schedule.past" {
+			t.Fatalf("a time ahead: %+v", o.Checks)
+		}
+	}
+	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() - INTERVAL '1 hour' WHERE id=$1`, e.campID)
+	found := false
+	for _, c := range read().Checks {
+		found = found || (c.Key == "schedule.past" && c.Level == "warn")
+	}
+	if !found {
+		t.Fatal("a resume with a time that has passed has no warning")
+	}
+
+	// The last list is gone: nothing is left, which only warns for a resume.
+	e.db.MustExec(`UPDATE campaigns SET send_at=NULL WHERE id=$1`, e.campID)
+	e.db.MustExec(`DELETE FROM lists WHERE id=$1`, e.aList)
+	member = e.as(e.superAdmin) // a member no longer reaches a campaign without lists
+	got := map[string]string{}
+	for _, c := range read().Checks {
+		got[c.Key] = c.Level
+	}
+	if got["lists.none"] != "warn" {
+		t.Fatalf("no list on resume: %v", got)
+	}
+}
+
 // The status change refuses a campaign that was edited after the confirmation read it,
 // and the updated_at the confirmation returns can be sent back as it is.
 func TestCampaignStatusSeenUpdatedAt(t *testing.T) {
@@ -417,6 +568,21 @@ func TestCampaignStatusSeenUpdatedAt(t *testing.T) {
 		t.Fatalf("no value: %d %s", code, s)
 	}
 
+	// A schedule that was taken off while the window was open is a 409 too, not the refusal
+	// that a campaign without a send time would get.
+	later := e.pfCampaign("regular", "draft", e.aList)
+	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() + INTERVAL '1 day' WHERE id=$1`, later)
+	_, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", strconv.Itoa(later), "")
+	var laterRead struct {
+		UpdatedAt string `json:"updated_at"`
+	}
+	json.Unmarshal(data, &laterRead)
+	e.db.MustExec(`UPDATE campaigns SET send_at=NULL, updated_at=NOW() WHERE id=$1`, later)
+	code, _ := e.call(e.a.UpdateCampaignStatus, member, http.MethodPut, "/", strconv.Itoa(later), fmt.Sprintf(`{"status":"scheduled","updated_at":%q}`, laterRead.UpdatedAt))
+	if code != http.StatusConflict {
+		t.Fatalf("schedule removed: %d", code)
+	}
+
 	// An unreadable value is a bad request, not a server error.
 	e.db.MustExec(`UPDATE campaigns SET status='draft' WHERE id=$1`, e.campID)
 	if code, s := status(`{"status":"running","updated_at":"not-a-time"}`); code != http.StatusBadRequest || s != "draft" {
@@ -458,7 +624,7 @@ func TestPreflightSpeed(t *testing.T) {
 	}{{"one list", one, 0}, {"two lists, 37% on both", two, 0}, {"regular + dynamic list", mixed, 0}, {"resume (half done)", resume, n / 2}} {
 		for i := 0; i < 2; i++ { // the second run is the warm one
 			start := time.Now()
-			_, aud, err := e.core.GetPreflightAudience(ctx, c.id, c.after)
+			_, aud, err := e.core.GetPreflightAudience(ctx, c.id, c.after, c.after > 0)
 			if err != nil {
 				t.Fatal(err)
 			}

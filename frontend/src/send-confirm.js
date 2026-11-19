@@ -96,16 +96,27 @@ const checkLine = (c, pf) => {
 export const checkLines = (pf) => {
   const lines = (pf.checks || []).map((c) => checkLine(c, pf));
 
-  // Tracking (LST-44): its own report decides, with its own texts.
+  // Tracking (LST-44): its own report decides, with its own texts. A line that says it is
+  // tracked only appears for what is tracked: a plain text mail records no views, a link
+  // that is not there records no clicks.
   if (pf.tracking) {
-    const warn = trackingConfirmLines(pf.tracking);
+    const t = pf.tracking;
+    const warn = trackingConfirmLines(t);
     warn.forEach((l) => lines.push({
       key: l.key, params: l.params || {}, level: 'warn', name: 'tracking', raw: true,
     }));
-    if (!warn.length) {
-      lines.push({
-        key: `${K}.check.tracking.ok`, params: {}, level: 'ok', name: 'tracking',
-      });
+    const line = (level, key) => lines.push({
+      key: `${K}.check.tracking.${key}`, params: {}, level, name: 'tracking',
+    });
+    if (t.state !== 'off') {
+      const viewOn = t.view === 'manual' || t.view === 'auto';
+      if (t.view === 'unsupported') line('info', 'viewUnsupported');
+      else if (t.view === 'n/a') line('info', 'notApplicable');
+      if (!warn.length) {
+        if (viewOn && t.links.total > 0) line('ok', 'ok');
+        else if (viewOn) line('ok', 'viewOnly');
+        else if (t.view === 'unsupported' && t.links.total > 0 && t.links.untracked === 0) line('ok', 'clickOnly');
+      }
     }
   } else {
     lines.push({
@@ -119,27 +130,32 @@ export const checkLines = (pf) => {
     .map(({ l }) => l);
 };
 
-// Everyone the lists add up to, minus the people counted once: how many were on more than
-// one list.
-export const overlap = (pf) => {
-  const sum = (pf.lists || []).reduce((n, l) => n + l.count, 0);
-  return Math.max(0, sum - pf.recipients);
-};
-
 // The whole window for an answer: title, button, whether it can be confirmed, the lines.
 export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {}) => {
   const resume = pf.mode === 'resume';
   const schedule = pf.mode === 'schedule';
   const n = resume ? pf.remaining : pf.recipients;
-  const checks = checkLines(pf);
-  const blocked = checks.some((c) => c.level === 'block');
-  const warnings = checks.filter((c) => c.level === 'warn').length;
-  const when = schedule && pf.sendAt ? scheduleDisplay(pf.sendAt, { tz, lang }) : null;
+  const all = checkLines(pf);
+  const blocked = all.some((c) => c.level === 'block');
+  // Nothing to send: the reason is the only line.
+  const checks = blocked ? all.filter((c) => c.level === 'block') : all;
+  const warnings = all.filter((c) => c.level === 'warn').length;
+  // A paused campaign with a send time is scheduled by the status change, not sent at once.
+  const timed = (schedule || resume) && pf.sendAt;
+  const when = timed ? scheduleDisplay(pf.sendAt, { tz, lang }) : null;
+  const until = timed ? timeUntil(pf.sendAt, now) : null;
 
   let title;
   if (blocked) {
     const noList = checks.some((c) => c.name === 'lists.none');
     title = { key: `${K}.title.${noList ? 'noList' : 'zero'}`, params: {} };
+  } else if (resume && when && until) {
+    title = {
+      key: `${K}.title.resumeAt`,
+      params: {
+        n, month: when.month, day: when.day, time: when.time,
+      },
+    };
   } else if (resume) {
     title = { key: `${K}.title.resume`, params: { n } };
   } else if (schedule && when) {
@@ -156,6 +172,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   let sub;
   if (blocked) sub = { key: `${K}.sub.blocked`, params: {} };
   else if (warnings) sub = { key: `${K}.sub.warn`, params: { n: warnings } };
+  else if (resume && when && until) sub = { key: `${K}.sub.resumeAt`, params: {} };
   else sub = { key: `${K}.sub.${pf.mode}`, params: {} };
 
   const confirmKey = `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
@@ -172,13 +189,15 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
     warnings,
     checks,
     when,
-    until: schedule && pf.sendAt ? timeUntil(pf.sendAt, now) : null,
+    until,
     // The browser's clock differs from Korea: say what the time is there (LST-50 fixes the
     // input to Korean time; then this stays empty).
     other: when && when.offsetMinutes !== 540
       ? scheduleDisplay(pf.sendAt, { tz: 'Asia/Seoul', lang })
       : null,
-    overlap: overlap(pf),
+    overlap: pf.overlap || 0,
+    excluded: pf.excluded || 0,
+    zero: !resume && pf.recipients === 0,
     asOf,
   };
 };

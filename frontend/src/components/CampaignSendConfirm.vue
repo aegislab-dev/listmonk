@@ -10,22 +10,45 @@
     <section class="modal-card-body">
       <!-- Loading -->
       <div v-if="state === 'loading'" data-cy="send-loading">
-        <b-skeleton :count="4" />
+        <div v-if="campaignName" class="send-row" data-cy="send-campaign">
+          <div class="send-k">{{ $t('campaigns.sendConfirm.row.campaign') }}</div>
+          <div class="send-v">{{ campaignName }}</div>
+        </div>
+        <div class="send-row">
+          <div class="send-k">{{ $t('campaigns.sendConfirm.row.lists') }}</div>
+          <div class="send-v"><b-skeleton :count="3" /></div>
+        </div>
+        <p class="help">{{ $t('campaigns.sendConfirm.loadingNote') }}</p>
       </div>
 
       <!-- The checks could not be loaded: try again, or go on without the count. -->
       <div v-else-if="state === 'error'" data-cy="send-error">
-        <p class="send-line">
+        <div class="send-row" data-cy="send-campaign">
+          <div class="send-k">{{ $t('campaigns.sendConfirm.row.campaign') }}</div>
+          <div class="send-v">{{ campaignName }}</div>
+        </div>
+        <div v-if="campaignSubject" class="send-row" data-cy="send-subject">
+          <div class="send-k">{{ $t('campaigns.sendConfirm.row.subject') }}</div>
+          <div class="send-v">{{ campaignSubject }}</div>
+        </div>
+        <div class="send-checks">
+          <p class="send-line">
 <span class="send-icon lv-warn">!</span>
-          {{ $t('campaigns.sendConfirm.checkFailed') }} <span class="has-text-grey">{{ error }}</span>
-          <a href="#" class="ml-2" data-cy="send-retry" @click.prevent="load">{{ $t('campaigns.sendConfirm.retry') }}</a>
-        </p>
+            <span>
+              {{ $t('campaigns.sendConfirm.checkFailed') }} <span class="has-text-grey">{{ error }}</span>
+              <a href="#" class="ml-2" data-cy="send-retry" @click.prevent="load">{{ $t('campaigns.sendConfirm.retry') }}</a>
+            </span>
+          </p>
+        </div>
         <p class="help">{{ $t('campaigns.sendConfirm.blindHelp') }}</p>
       </div>
 
       <template v-else-if="model">
         <p v-if="stale" class="notification is-warning is-light" role="alert" data-cy="send-stale">
           {{ $t('campaigns.sendConfirm.stale') }}
+          <span v-if="countChange" data-cy="send-stale-count">
+            {{ $t('campaigns.sendConfirm.staleCount', countChange) }}
+          </span>
         </p>
 
         <div class="send-rows">
@@ -54,12 +77,12 @@
                 <b-tag v-if="l.dynamic" type="is-light">{{ $t('campaigns.sendConfirm.dynamic') }}</b-tag>
                 <b-tag v-if="l.deleted" type="is-danger is-light">{{ $t('campaigns.sendConfirm.deleted') }}</b-tag>
                 <strong v-if="!isResume" class="ml-1" data-cy="send-list-count">{{ $t('campaigns.sendConfirm.people', { n: l.count }) }}</strong>
+                <span v-if="wasCount(l) !== null" class="send-was" data-cy="send-list-was">
+                  {{ $t('campaigns.sendConfirm.was', { n: wasCount(l) }) }}
+                </span>
               </div>
-              <div v-if="!isResume && pf.lists.length > 1" class="send-sum" data-cy="send-recipients">
-                {{ model.overlap > 0
-                  ? $t('campaigns.sendConfirm.overlap', { overlap: model.overlap, n: pf.recipients })
-                  : $t('campaigns.sendConfirm.total', { n: pf.recipients }) }}
-              </div>
+              <div v-if="!isResume && sumParts.length" class="send-sum" data-cy="send-recipients">{{ sumParts.join(' · ') }}</div>
+              <div v-if="model.zero" class="send-sum lv-block-text" data-cy="send-zero">{{ $t('campaigns.sendConfirm.zeroSummary') }}</div>
             </div>
           </div>
 
@@ -68,7 +91,7 @@
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.when') }}</div>
             <div class="send-v"><strong>{{ $t('campaigns.sendConfirm.now') }}</strong></div>
           </div>
-          <div v-else-if="model.mode === 'schedule' && model.when" class="send-row" data-cy="send-schedule">
+          <div v-if="model.when" class="send-row" data-cy="send-schedule">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.schedule') }}</div>
             <div class="send-v">
               <strong data-cy="send-schedule-time">{{ model.when.text }}</strong>
@@ -81,11 +104,11 @@
               </div>
             </div>
           </div>
-          <div v-else-if="isResume" class="send-row" data-cy="send-progress">
+          <div v-if="isResume" class="send-row" data-cy="send-progress">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.progress') }}</div>
             <div class="send-v">
               <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(pf.toSend, pf.sent, 1)" />
-              <div class="has-text-grey">{{ $t('campaigns.sendConfirm.progress', { sent: pf.sent, total: Math.max(pf.toSend, pf.sent) }) }}</div>
+              <div class="has-text-grey" data-cy="send-progress-text">{{ progressText }}</div>
               <div class="send-sum" data-cy="send-recipients">{{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}</div>
             </div>
           </div>
@@ -109,7 +132,7 @@
         </div>
 
         <p v-if="model.asOf" class="help" data-cy="send-asof">
-          {{ $t('campaigns.sendConfirm.asOf', { time: asOfText }) }}
+          {{ $t(isResume ? 'campaigns.sendConfirm.asOfResume' : 'campaigns.sendConfirm.asOf', { time: asOfText }) }}
         </p>
       </template>
     </section>
@@ -143,6 +166,9 @@ export default Vue.extend({
     campaignId: { type: Number, required: true },
     // The status that confirming asks for: 'running' (start, resume) or 'scheduled'.
     status: { type: String, required: true },
+    // What the window says while it has not read the campaign, or cannot: which campaign it is.
+    campaignName: { type: String, default: '' },
+    campaignSubject: { type: String, default: '' },
   },
 
   data() {
@@ -152,6 +178,8 @@ export default Vue.extend({
       error: '',
       busy: false,
       stale: false,
+      // What the window showed before the campaign changed under it: the count and each list's.
+      prev: null,
       ctl: null,
       now: new Date(),
       icons: {
@@ -176,6 +204,32 @@ export default Vue.extend({
 
     until() { return this.model && this.model.until ? untilKey(this.model.until) : null; },
 
+    // The summary under the lists: people on several lists, and people already left out.
+    sumParts() {
+      const m = this.model;
+      const out = [];
+      if (!m || m.zero) return out;
+      if (this.pf.lists.length > 1) {
+        out.push(m.overlap > 0
+          ? this.$t('campaigns.sendConfirm.overlap', { overlap: m.overlap, n: this.pf.recipients })
+          : this.$t('campaigns.sendConfirm.total', { n: this.pf.recipients }));
+      }
+      if (m.excluded > 0) out.push(this.$t('campaigns.sendConfirm.excluded', { excluded: m.excluded }));
+      return out;
+    },
+
+    progressText() {
+      const p = { sent: this.pf.sent, total: Math.max(this.pf.toSend, this.pf.sent) };
+      if (!this.pf.pausedAt) return this.$t('campaigns.sendConfirm.progress', p);
+      return this.$t('campaigns.sendConfirm.progressPaused', { ...p, time: dayjs(this.pf.pausedAt).format('YYYY-MM-DD HH:mm') });
+    },
+
+    // The count of recipients before and after a change under the open window.
+    countChange() {
+      if (!this.prev || !this.model || this.prev.count === this.model.count) return null;
+      return { before: this.prev.count, after: this.model.count };
+    },
+
     asOfText() { return this.model && this.model.asOf ? dayjs(this.model.asOf).format('YYYY-MM-DD HH:mm') : ''; },
 
     headTitle() {
@@ -197,6 +251,13 @@ export default Vue.extend({
   },
 
   methods: {
+    // The count a list had before the campaign changed under the window, if it is another now.
+    wasCount(l) {
+      if (!this.prev || this.isResume) return null;
+      const was = this.prev.lists[`${l.id}`];
+      return was === undefined || was === l.count ? null : was;
+    },
+
     lineParts(c) {
       return richParts(this.$t(c.key, c.params));
     },
@@ -236,6 +297,10 @@ export default Vue.extend({
       } catch (err) {
         if (!blind && err.response && err.response.status === 409) {
           // Edited after it was read: show what is true now and ask again.
+          this.prev = {
+            count: this.model.count,
+            lists: Object.fromEntries(this.pf.lists.map((l) => [`${l.id}`, l.count])),
+          };
           this.stale = true;
           this.busy = false;
           await this.load();
@@ -270,6 +335,8 @@ export default Vue.extend({
 .send-v { min-width: 0; overflow-wrap: anywhere; }
 .send-list { margin: 0.1rem 0; }
 .send-sum { margin-top: 0.3rem; padding: 0.3rem 0.5rem; background: #f5f5f5; border-radius: 6px; }
+.send-was { color: #b25e00; font-size: 0.8rem; margin-left: 0.25rem; }
+.lv-block-text { color: #cc0f35; }
 .send-tz-other { margin-top: 0.4rem; padding: 0.4rem 0.6rem; background: #fffaeb; border: 1px solid #ffe08a; border-radius: 6px; font-size: 0.875rem; }
 .send-checks { border: 1px solid #dbdbdb; border-radius: 8px; padding: 0.5rem 0.75rem; margin: 0.75rem 0 0.5rem; }
 .send-checks-head { font-weight: 700; margin-bottom: 0.25rem; }

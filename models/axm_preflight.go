@@ -32,7 +32,11 @@ type PreflightList struct {
 
 // PreflightAudience is the people a campaign reaches across all lists, each counted once.
 type PreflightAudience struct {
-	Total     int       `db:"total" json:"total"`
+	Total int `db:"total" json:"total"`
+	// Multi is how many of them are on more than one list; Excluded how many people on the
+	// lists are left out (blocklisted, unsubscribed, not confirmed).
+	Multi     int       `db:"multi" json:"multi"`
+	Excluded  int       `db:"excluded" json:"excluded"`
 	Remaining int       `db:"remaining" json:"remaining"`
 	AsOf      time.Time `db:"as_of" json:"as_of"`
 }
