@@ -238,9 +238,10 @@ export const getSubscriberAttribSample = (params) => http.get(
   },
 );
 
+// The attribute keys are data: they stay as they are stored (customer_id, not customerId).
 export const getSubscriber = async (id) => http.get(
   `/api/subscribers/${id}`,
-  { loading: models.subscribers },
+  { loading: models.subscribers, camelCase: (keyPath) => !keyPath.startsWith('.attribs.') },
 );
 
 export const getSubscriberActivity = async (id) => http.get(
@@ -281,6 +282,13 @@ export const createSubscriber = (data) => http.post(
 
 export const updateSubscriber = (data) => http.put(
   `/api/subscribers/${data.id}`,
+  data,
+  { loading: models.subscribers },
+);
+
+// Saves only the lists of a subscriber (the profile is left to the server as it is).
+export const updateSubscriberLists = (id, data) => http.patch(
+  `/api/subscribers/${id}`,
   data,
   { loading: models.subscribers },
 );
@@ -370,6 +378,15 @@ export const getCampaign = async (id) => http.get(`/api/campaigns/${id}`, {
 
 export const previewRecentExclude = (data, signal) => http.post('/api/campaigns/recent-exclude/preview', data, {
   disableToast: true, signal,
+});
+// Address check (LST-43). Both only read; pending lookups are asked for again by the caller.
+export const checkListAddresses = (data, signal) => http.post('/api/lists/address-check', data, {
+  disableToast: true, signal,
+});
+// The answer can hold one entry per row of a large file; its keys need no conversion, and
+// converting them takes many seconds.
+export const checkImportAddresses = (data, signal) => http.post('/api/subscribers/address-check', data, {
+  disableToast: true, signal, camelCase: false,
 });
 export const getRecentRule = (id) => http.get(`/api/campaigns/${id}/recent-exclude`);
 export const saveRecentRule = (id, data) => http.put(`/api/campaigns/${id}/recent-exclude`, data);

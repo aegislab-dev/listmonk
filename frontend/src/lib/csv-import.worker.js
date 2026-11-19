@@ -4,8 +4,9 @@ import {
   inspectCSVHeader, inspectOriginalCSV, unresolvedValues,
 } from './csv-import';
 
-// Subscriber cells stay here. Only the first rows' samples, review results and
-// the final upload bytes cross the Worker boundary. Discarding the file terminates us.
+// Subscriber cells stay here. Only the first rows' samples, review results, the cleaned
+// addresses (for the address check) and the final upload bytes cross the Worker boundary.
+// Discarding the file terminates us.
 let parsed;
 function samples() {
   return parsed.columns.map((_, index) => parsed.rows.slice(0, 3).map(({ cells }) => cells[index]));
@@ -51,7 +52,7 @@ globalThis.onmessage = async ({ data }) => {
         globalThis.postMessage(review);
         return;
       }
-      const { bytes, ...result } = convertCSV(parsed, data.mapping, data.keys, data.standard);
+      const { bytes, ...result } = convertCSV(parsed, data.mapping, data.keys, data.standard, new Set(data.exclude || []));
       // No upload exists while a column still has values that cannot be stored as they are.
       const unresolved = unresolvedValues(result.values, data.mapping);
       if (unresolved.length) {
