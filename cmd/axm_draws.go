@@ -56,7 +56,10 @@ func (a *App) DrawList(c echo.Context) error {
 	if err := a.checkDrawSource(user, getID(c)); err != nil {
 		return err
 	}
-	setTeams, teamTags, err := a.teamsForDraw(user, getID(c), req)
+	setTeams, teamTags, err := a.teamsForNewList(user, req.Team, req.NoTeam, func() ([]string, error) {
+		src, err := a.core.GetList(getID(c), "")
+		return models.TeamTags(src.Tags), err
+	})
 	if err != nil {
 		return err
 	}
@@ -133,10 +136,8 @@ func (a *App) GetListDraws(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
-// teamsForDraw decides the team tags of the list a draw makes. A team member's list belongs
-// to the member's team. An admin's list takes the team asked for, else the teams of the
-// source; a source without a team needs a team (or no_team) once teams exist.
-func (a *App) teamsForDraw(user auth.User, sourceID int, req drawRequest) (bool, []string, error) {
+// teamsForNewList resolves an explicit team or falls back to the source's team tags.
+func (a *App) teamsForNewList(user auth.User, team string, noTeam bool, sourceTeams func() ([]string, error)) (bool, []string, error) {
 	if !user.HasPerm(auth.PermListManageAll) {
 		own := a.teamTagOf(user)
 		if own == "" {
@@ -144,18 +145,17 @@ func (a *App) teamsForDraw(user auth.User, sourceID int, req drawRequest) (bool,
 		}
 		return true, []string{own}, nil
 	}
-	if t := cleanTags([]string{req.Team}); len(t) == 1 {
+	if t := cleanTags([]string{team}); len(t) == 1 {
 		if err := a.checkAdminTeams(t, false); err != nil {
 			return false, nil, err
 		}
 		return true, t, nil
 	}
-	src, err := a.core.GetList(sourceID, "")
+	teams, err := sourceTeams()
 	if err != nil {
 		return false, nil, err
 	}
-	teams := models.TeamTags(src.Tags)
-	if err := a.checkAdminTeams(teams, req.NoTeam); err != nil {
+	if err := a.checkAdminTeams(teams, noTeam); err != nil {
 		return false, nil, err
 	}
 	return false, nil, nil

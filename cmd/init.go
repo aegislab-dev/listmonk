@@ -425,6 +425,11 @@ func prepareQueries(qMap goyesql.Queries, db *sqlx.DB, ko *koanf.Koanf) *models.
 	}
 	qMap["get-campaign-link-counts"].Query = fmt.Sprintf(qMap["get-campaign-link-counts"].Query, linkSel)
 
+	// Keep eligibility identical for preview counts, masked sample, and insertion.
+	for name, query := range qMap {
+		query.Query = models.WithReactionCandidates(name, query.Query, qMap["axm-reaction-candidates"].Query)
+	}
+
 	// Scan and prepare all queries.
 	var q models.Queries
 	if err := goyesqlx.ScanToStruct(&q, qMap, db); err != nil {

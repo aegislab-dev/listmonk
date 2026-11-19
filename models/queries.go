@@ -24,6 +24,11 @@ type Queries struct {
 	AxmDrawAddMembers              *sqlx.Stmt `query:"axm-draw-add-members"`
 	AxmDrawRecord                  *sqlx.Stmt `query:"axm-draw-record"`
 	AxmGetListDraws                *sqlx.Stmt `query:"axm-get-list-draws"`
+	AxmReactionTracking            *sqlx.Stmt `query:"axm-reaction-tracking"`
+	AxmReactionCampaignLists       *sqlx.Stmt `query:"axm-reaction-campaign-lists"`
+	AxmReactionCounts              *sqlx.Stmt `query:"axm-reaction-counts"`
+	AxmReactionSample              *sqlx.Stmt `query:"axm-reaction-sample"`
+	AxmReactionAddMembers          *sqlx.Stmt `query:"axm-reaction-add-members"`
 	AxmGetColumnPresets            *sqlx.Stmt `query:"axm-get-column-presets"`
 	AxmGetColumnPreset             *sqlx.Stmt `query:"axm-get-column-preset"`
 	AxmColumnPresetExists          *sqlx.Stmt `query:"axm-column-preset-exists"`

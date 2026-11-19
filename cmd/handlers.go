@@ -180,6 +180,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/campaigns/running/stats", pm(a.GetRunningCampaignStats, "campaigns:get_all", "campaigns:get"))
 		g.GET("/api/campaigns/:id", pm(hasID(a.GetCampaign), "campaigns:get_all", "campaigns:get"))
 		g.GET("/api/campaigns/analytics/:type", pm(a.GetCampaignViewAnalytics, "campaigns:get_analytics"))
+		g.POST("/api/campaigns/:id/reaction-list/preview", a.listMaker(hasID(a.PreviewReactionList)))
+		g.POST("/api/campaigns/:id/reaction-list", a.listMaker(hasID(a.MakeReactionList)))
 		g.GET("/api/campaigns/:id/preview", pm(hasID(a.PreviewCampaign), "campaigns:get_all", "campaigns:get"))
 		g.POST("/api/campaigns/:id/preview/archive", pm(hasID(a.PreviewCampaignArchive), "campaigns:get_all", "campaigns:get"))
 		g.POST("/api/campaigns/:id/preview", pm(hasID(a.PreviewCampaign), "campaigns:get_all", "campaigns:get"))
