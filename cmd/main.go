@@ -58,6 +58,9 @@ type App struct {
 	// Who started the import that runs now (see axm_import_audit.go).
 	importMu sync.Mutex
 	importBy importActor
+	// The lists the current or last import subscribes people to (nil for a blocklist
+	// import), after the permission filter. The import screen checks their addresses.
+	importLists []int
 
 	about         about
 	fnOptinNotify func(models.Subscriber, []int) (int, error)

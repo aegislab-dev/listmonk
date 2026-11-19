@@ -37,6 +37,7 @@ const risky = () => ({
   detail: true,
   linked: ['Tied source list'],
   linked_hidden: 2,
+  targets: [listId],
   classes: {
     format: empty, dead: cls([1, 2]), nullmx: empty, disposable: empty, role: cls([2, 3]), unknown: empty,
   },
@@ -51,6 +52,9 @@ const clean = (total) => ({
   too_large: false,
   limit: 500000,
   detail: true,
+  linked: [],
+  linked_hidden: 0,
+  targets: [listId],
   classes: {
     format: empty, dead: empty, nullmx: empty, disposable: empty, role: empty, unknown: empty,
   },
@@ -176,7 +180,13 @@ describe('Address check before sending and on import', () => {
     // Someone who is in only through a dynamic list cannot be unsubscribed here: no button
     // for a class with nobody else, and only the others are sent for a mixed class.
     cy.intercept('POST', listCheck, {
-      data: { ...risky(), classes: { ...clean(4).classes, dead: cls([1, 2], () => false), role: cls([2, 3], (n) => n === 3) } },
+      data: {
+        ...risky(),
+        // A tied list the user cannot see is still announced, as a count.
+        linked: [],
+        linked_hidden: 1,
+        classes: { ...clean(4).classes, dead: cls([1, 2], () => false), role: cls([2, 3], (n) => n === 3) },
+      },
     }).as('indirect');
     cy.intercept('PUT', '/api/subscribers/lists', { data: true }).as('unsubscribe');
     cy.visit(`/admin/campaigns/${campaignId}`);
@@ -188,9 +198,19 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=address-modal] .ac-indirect').should('have.length', 2);
     cy.get('[data-cy=address-modal-unsub]').should('not.exist');
     cy.get('[data-cy=address-modal] footer button').first().click();
+    cy.get('[data-cy=address-note]').should('contain', '1 other lists');
     cy.get('[data-cy=address-unsub-role]').click();
+    cy.get('.modal.dialog [data-cy=warn-box]').should('contain', '1 other lists');
     cy.get('.modal.dialog footer button.is-danger').click();
     cy.wait('@unsubscribe').its('request.body.ids').should('deep.equal', [ids[3]]);
+
+    // Without a list the user may manage there is nothing to unsubscribe from.
+    cy.intercept('POST', listCheck, { data: { ...risky(), targets: [] } }).as('readOnly');
+    cy.visit(`/admin/campaigns/${campaignId}`);
+    cy.wait('@readOnly');
+    cy.get('[data-cy=address-toggle]').click();
+    cy.get('[data-cy=address-list-dead]').should('exist');
+    cy.get('[data-cy=address-unsub-dead], [data-cy=address-unsub-role]').should('not.exist');
 
     // A failed check is one grey line and nothing else.
     cy.intercept('POST', listCheck, { statusCode: 500, body: { message: 'Synthetic failure' } }).as('failed');
@@ -283,16 +303,18 @@ describe('Address check before sending and on import', () => {
         .its('body.data.results').should('have.length', 0);
     });
 
-    // The finished box checks the whole list that was imported into. A page that did not
-    // start this import (here: after a reload) cannot know its lists and shows no check.
+    // The finished box checks the lists the server reports for this import (the status and
+    // the lists come in one answer), so it is the same after a reload.
+    cy.request('/api/import/subscribers').its('body.data.axm_lists').should('have.length', 1);
     cy.wait('@listCheck').its('request.body.list_ids').should('have.length', 1);
     cy.get('.status [data-cy=address-check]').should('have.class', 'is-ok');
     cy.get('.status [data-cy=address-scope]').should('contain', importListName);
     cy.reload();
-    cy.get('.status .has-text-success').should('contain', 'finished');
-    cy.get('[data-cy=address-check]').should('not.exist');
+    cy.get('.status [data-cy=address-scope]').should('contain', importListName);
     cy.get('.status button').first().click();
     cy.get('form.box').should('be.visible');
+    cy.get('[data-cy=address-check]').should('not.exist');
+    cy.request('/api/import/subscribers').its('body.data.axm_lists').should('have.length', 0);
   });
 
   it('does not block the upload when the check fails, and has no check for a blocklist import', () => {

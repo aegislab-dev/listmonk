@@ -4,12 +4,12 @@
 SELECT COUNT(*) FROM axm_campaign_audience($1);
 
 -- name: axm-address-check-audience
--- direct: the subscriber has a subscription of their own in one of the ordinary lists, so
--- unsubscribing them there takes them out. Someone who is in only through a dynamic list
--- has none.
+-- direct: the subscriber has a subscription of their own in one of the target lists ($2:
+-- the chosen ordinary lists the user may manage), so unsubscribing them there changes
+-- something. Someone who is in only through a dynamic list or a read-only list has none.
 SELECT s.id, s.email, EXISTS (
-    SELECT 1 FROM subscriber_lists sl JOIN lists l ON l.id = sl.list_id
-    WHERE sl.subscriber_id = s.id AND sl.list_id = ANY($1) AND l.axm_filter IS NULL AND sl.status != 'unsubscribed'
+    SELECT 1 FROM subscriber_lists sl
+    WHERE sl.subscriber_id = s.id AND sl.list_id = ANY($2::INT[]) AND sl.status != 'unsubscribed'
 ) AS direct
 FROM axm_campaign_audience($1) a
 JOIN subscribers s ON s.id = a.subscriber_id

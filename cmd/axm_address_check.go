@@ -58,6 +58,9 @@ type addrCheckListResp struct {
 	// also reaches, because a draw ties them. LinkedHidden counts those the user cannot see.
 	Linked       []string `json:"linked"`
 	LinkedHidden int      `json:"linked_hidden"`
+	// Targets are the chosen ordinary lists the user may manage: where an unsubscribe from
+	// this screen can change something. The direct marks and Linked are about these lists.
+	Targets []int `json:"targets"`
 }
 
 // CheckImportAddresses checks the addresses of a file that is about to be imported.
@@ -107,9 +110,10 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 	user := auth.GetUser(c)
 	lists := user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, req.ListIDs)
 	out := addrCheckListResp{
-		Limit:  addrCheckMaxAudience,
-		Detail: user.HasPerm(auth.PermSubscribersGetAll) || user.HasPerm(auth.PermSubscribersGet),
-		Linked: []string{},
+		Limit:   addrCheckMaxAudience,
+		Detail:  user.HasPerm(auth.PermSubscribersGetAll) || user.HasPerm(auth.PermSubscribersGet),
+		Linked:  []string{},
+		Targets: []int{},
 	}
 	if len(lists) == 0 {
 		out.Summary = addrcheck.Summarize(nil, nil, nil, false)
@@ -130,7 +134,8 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 			out.Detail = false
 		}
 	}
-	linked, err := a.core.AddressCheckLinked(ctx, ordinary)
+	out.Targets = append(out.Targets, user.FilterListsByPerm(auth.PermTypeManage, ordinary)...)
+	linked, err := a.core.AddressCheckLinked(ctx, out.Targets)
 	if err != nil {
 		return err
 	}
@@ -142,7 +147,7 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 		}
 	}
 
-	total, rows, err := a.core.AddressCheckAudience(ctx, lists, addrCheckMaxAudience)
+	total, rows, err := a.core.AddressCheckAudience(ctx, lists, out.Targets, addrCheckMaxAudience)
 	if err != nil {
 		return err
 	}

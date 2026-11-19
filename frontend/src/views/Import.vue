@@ -153,9 +153,8 @@
       </p>
       <br />
 
-      <address-check v-if="showImportCheck" :list-ids="importLists.map(({ id }) => id)"
-        :lists="lists.results || importLists"
-        :scope-note="$t('addressCheck.listScope', { lists: importLists.map(({ name }) => name).join(', ') })" />
+      <address-check v-if="showImportCheck" :list-ids="status.axmLists" :lists="lists.results || []"
+        :scope-note="$t('addressCheck.listScope', { lists: importListNames })" />
 
       <div class="import-logs">
         <log-view :lines="logs" :loading="false" />
@@ -252,10 +251,6 @@ export default Vue.extend({
       // The address check of the rows to import, and the two switches of what it leaves out.
       addr: addressState(),
       addrExclude: { confirmed: true, warning: false },
-      // The lists and file name of the import this page started. The finished box checks
-      // those lists only while the server still shows that same file.
-      importLists: [],
-      importName: '',
       sentCount: null,
       isProcessing: false,
       status: { status: '' },
@@ -415,11 +410,6 @@ export default Vue.extend({
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-    },
-
-    rememberImport(lists = [], name = '') {
-      this.importLists = lists;
-      this.importName = name;
     },
 
     async parseCSV(initial = false, manualDelimiter = false) {
@@ -723,7 +713,6 @@ export default Vue.extend({
         this.pollStatus();
         this.form.file = null;
         this.sentCount = null;
-        this.rememberImport();
       });
     },
 
@@ -765,8 +754,6 @@ export default Vue.extend({
         } catch (_) { /* Remembering assignments is optional. */ }
       }
       this.isProcessing = true;
-      this.rememberImport();
-      const importLists = this.form.mode === 'subscribe' ? this.form.lists.map(({ id, name }) => ({ id, name })) : [];
 
       // Prepare the upload payload.
       const params = new FormData();
@@ -782,8 +769,6 @@ export default Vue.extend({
 
       // Post.
       this.$api.importSubscribers(params).then(() => {
-        // Only an import this page really started has its lists checked when it ends.
-        this.rememberImport(importLists, file.name);
         // On file upload, show a confirmation.
         this.$utils.toast(this.$t('import.importStarted'));
 
@@ -850,8 +835,14 @@ export default Vue.extend({
     addressBusy() {
       return this.form.mode === 'subscribe' && (this.addr.state === 'checking' || this.addressPolling);
     },
+    // The finished box checks the lists the server says this import subscribed people to (it
+    // sends them with the status, after its own permission filter; none for a blocklist import).
     showImportCheck() {
-      return this.isSuccessful() && this.importLists.length > 0 && this.status.name === this.importName;
+      return this.isSuccessful() && (this.status.axmLists || []).length > 0;
+    },
+    importListNames() {
+      const all = this.lists.results || [];
+      return (this.status.axmLists || []).map((id) => (all.find((l) => l.id === id) || { name: `#${id}` }).name).join(', ');
     },
     // What the column mapper shows of the address check: counts, one line per class with the
     // first source rows, and how many rows each switch leaves out.

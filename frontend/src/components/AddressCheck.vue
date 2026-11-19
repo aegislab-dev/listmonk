@@ -187,17 +187,19 @@ export default {
       ].filter((group) => group.rows.length);
     },
 
-    chosen() {
-      return this.lists.filter(({ id }) => this.listIds.includes(id));
-    },
-
-    // People can be unsubscribed from ordinary lists only; a dynamic list has no rows of its own.
+    // Where an unsubscribe can change something: the chosen ordinary lists the user may manage,
+    // as the server reports them. A dynamic list has no rows of its own.
     targetIds() {
-      return this.chosen.filter((l) => !l.axmFilter).map(({ id }) => id);
+      return (this.result && this.result.targets) || [];
     },
 
+    targetNames() {
+      return this.targetIds.map((id) => (this.lists.find((l) => l.id === id) || { name: `#${id}` }).name).join(', ');
+    },
+
+    // Some chosen list is not a target (dynamic, or not manageable by this user).
     hasDynamic() {
-      return this.chosen.some((l) => l.axmFilter);
+      return [...new Set(this.listIds)].some((id) => !this.targetIds.includes(id));
     },
 
     canUnsubscribe() {
@@ -215,7 +217,7 @@ export default {
     // The other lists an unsubscribe here also reaches because a draw ties them (from the server).
     linkedText() {
       const names = this.result.linked || [];
-      const more = names.length - 5 + (this.result.linkedHidden || 0);
+      const more = Math.max(0, names.length - 5) + (this.result.linkedHidden || 0);
       const shown = names.slice(0, 5).join(', ');
       if (!shown) return more > 0 ? this.$t('addressCheck.linkedHidden', { count: this.n(more) }) : '';
       return more > 0 ? this.$t('addressCheck.linkedMore', { lists: shown, count: this.n(more) }) : shown;
@@ -295,7 +297,7 @@ export default {
       const ids = this.unsubIds(name);
       if (!ids.length || this.busy) return;
       const count = this.n(ids.length);
-      const lists = this.chosen.filter((l) => !l.axmFilter).map((l) => l.name).join(', ');
+      const lists = this.targetNames;
       const warning = [
         this.$t('addressCheck.confirm.body', { lists, count }),
         this.linkedText ? this.$t('addressCheck.confirm.linked', { lists: this.linkedText }) : '',

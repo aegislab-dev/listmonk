@@ -22,6 +22,10 @@ func (a *App) importStarted(c echo.Context, opt subimporter.SessionOpt) {
 	u := auth.GetUser(c)
 	a.importMu.Lock()
 	a.importBy = importActor{user: u, ok: true}
+	a.importLists = nil
+	if opt.Mode == subimporter.ModeSubscribe {
+		a.importLists = append([]int{}, opt.ListIDs...)
+	}
 	a.importMu.Unlock()
 
 	a.audit(c, auditImportStart, auditTarget{Type: auditTargetImport}, auditNoCount, map[string]any{

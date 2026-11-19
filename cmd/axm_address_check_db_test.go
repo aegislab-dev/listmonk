@@ -14,6 +14,9 @@ import (
 
 	"github.com/knadh/listmonk/internal/addrcheck"
 	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/i18n"
+	"github.com/knadh/listmonk/internal/subimporter"
+	"github.com/labstack/echo/v4"
 )
 
 // addrFakeDNS answers the address check from a table, so the tests never touch real
@@ -79,6 +82,7 @@ type addrListAnswer struct {
 	Detail       bool     `json:"detail"`
 	Linked       []string `json:"linked"`
 	LinkedHidden int      `json:"linked_hidden"`
+	Targets      []int    `json:"targets"`
 }
 
 func (e *addrEnv) check(user auth.User, lists ...int) (addrListAnswer, string) {
@@ -429,5 +433,107 @@ func TestAddressCheckNamesListsLinkedByDraws(t *testing.T) {
 	e.get(&n, `SELECT COUNT(*) FROM subscriber_lists WHERE subscriber_id=$1 AND list_id IN ($2,$3) AND status='unsubscribed'`, sub, source, sample)
 	if n != 2 {
 		t.Fatalf("%d of the two tied subscriptions unsubscribed", n)
+	}
+}
+
+// Only a list the user may manage is a place to unsubscribe from: a subscriber of a
+// read-only list is not marked direct, and draws are followed from manageable lists only.
+func TestAddressCheckTargetsAreManageableLists(t *testing.T) {
+	e := newAddrEnv(t)
+	// A list role with read access to one list and manage access to another.
+	var role, readOnly, managed int
+	e.get(&readOnly, `INSERT INTO lists(uuid,name,type,optin) VALUES(gen_random_uuid(),'Read only','private','single') RETURNING id`)
+	e.get(&managed, `INSERT INTO lists(uuid,name,type,optin) VALUES(gen_random_uuid(),'Managed','private','single') RETURNING id`)
+	e.get(&role, `INSERT INTO roles(type,name) VALUES('list','Mixed') RETURNING id`)
+	e.db.MustExec(`INSERT INTO roles(parent_id,list_id,type,permissions) VALUES($1,$2,'list','{list:get}'),($1,$3,'list','{list:get,list:manage}')`,
+		role, readOnly, managed)
+	var uid int
+	e.get(&uid, `INSERT INTO users(username,email,name,user_role_id,list_role_id,status,type)
+		VALUES('mixed','mixed@example.invalid','mixed',$1,$2,'enabled','user') RETURNING id`, e.memberRole, role)
+	user := e.as(uid)
+
+	inReadOnly := e.sub("a@gone.test", "enabled", readOnly, "confirmed")
+	inManaged := e.sub("b@gone.test", "enabled", managed, "confirmed")
+	var hiddenSource int
+	e.get(&hiddenSource, `INSERT INTO lists(uuid,name,type,optin) VALUES(gen_random_uuid(),'Hidden source','private','single') RETURNING id`)
+	e.db.MustExec(`INSERT INTO axm_list_draws(list_id, source_list_id, source_name, list_name) VALUES ($1,$2,'Hidden source','Managed')`, managed, hiddenSource)
+
+	got, raw := e.check(user, readOnly, managed)
+	dead := got.Classes["dead"]
+	if !reflect.DeepEqual(got.Targets, []int{managed}) || !reflect.DeepEqual(dead.IDs, []int{inReadOnly, inManaged}) ||
+		!reflect.DeepEqual(dead.Direct, []bool{false, true}) {
+		t.Fatalf("mixed access: %s", raw)
+	}
+	// The source the user cannot see is counted, so the screen can say that it exists.
+	if len(got.Linked) != 0 || got.LinkedHidden != 1 {
+		t.Fatalf("hidden source: %s", raw)
+	}
+	if got, raw := e.check(user, readOnly); len(got.Targets) != 0 || got.Targets == nil || !reflect.DeepEqual(got.Classes["dead"].Direct, []bool{false}) || got.LinkedHidden != 0 {
+		t.Fatalf("read only: %s", raw)
+	}
+}
+
+// The import status carries the lists the import subscribes people to, after the permission
+// filter, and none for a blocklist import.
+func TestImportStatusCarriesItsLists(t *testing.T) {
+	e := newAddrEnv(t)
+	e.a.importer = subimporter.New(subimporter.Options{}, e.db.DB, &i18n.I18n{})
+	status := func() (string, []int) {
+		t.Helper()
+		code, data := e.call(e.a.GetImportSubscribers, e.as(e.admin), "GET", "/api/import/subscribers", "", "")
+		var out struct {
+			Status   string `json:"status"`
+			AxmLists []int  `json:"axm_lists"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil || code != http.StatusOK || out.AxmLists == nil {
+			t.Fatalf("status HTTP %d %s: %v", code, data, err)
+		}
+		return out.Status, out.AxmLists
+	}
+	if st, lists := status(); st != subimporter.StatusNone || len(lists) != 0 {
+		t.Fatalf("idle: %s %v", st, lists)
+	}
+	// Lists remembered while no import exists are not reported.
+	e.a.importLists = []int{e.aList}
+	if _, lists := status(); len(lists) != 0 {
+		t.Fatalf("idle with stale lists: %v", lists)
+	}
+
+	start := func(mode string, lists ...int) {
+		t.Helper()
+		opt := subimporter.SessionOpt{Filename: "same-name.csv", Mode: mode, ListIDs: lists}
+		if _, err := e.a.importer.NewSession(opt); err != nil {
+			t.Fatal(err)
+		}
+		h := func(c echo.Context) error {
+			e.a.importStarted(c, opt)
+			return c.JSON(http.StatusOK, okResp{true})
+		}
+		if code, _ := e.call(h, e.as(e.admin), "POST", "/x", "", ""); code != http.StatusOK {
+			t.Fatalf("start HTTP %d", code)
+		}
+		e.a.importer.Stop() // back to idle for the next session
+	}
+	// Two imports of a file with the same name: the status names the lists of the later one.
+	start(subimporter.ModeSubscribe, e.aList)
+	e.a.importer = subimporter.New(subimporter.Options{}, e.db.DB, &i18n.I18n{})
+	if _, err := e.a.importer.NewSession(subimporter.SessionOpt{Filename: "same-name.csv", Mode: subimporter.ModeSubscribe, ListIDs: []int{e.bList}}); err != nil {
+		t.Fatal(err)
+	}
+	h := func(c echo.Context) error {
+		e.a.importStarted(c, subimporter.SessionOpt{Mode: subimporter.ModeSubscribe, ListIDs: []int{e.bList}})
+		return nil
+	}
+	e.call(h, e.as(e.admin), "POST", "/x", "", "")
+	if st, lists := status(); st != subimporter.StatusImporting || !reflect.DeepEqual(lists, []int{e.bList}) {
+		t.Fatalf("second import: %s %v", st, lists)
+	}
+	h = func(c echo.Context) error {
+		e.a.importStarted(c, subimporter.SessionOpt{Mode: subimporter.ModeBlocklist, ListIDs: []int{e.bList}})
+		return nil
+	}
+	e.call(h, e.as(e.admin), "POST", "/x", "", "")
+	if _, lists := status(); len(lists) != 0 {
+		t.Fatalf("blocklist import: %v", lists)
 	}
 }

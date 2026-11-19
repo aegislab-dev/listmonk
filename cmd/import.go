@@ -125,8 +125,19 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 
 // GetImportSubscribers returns import statistics.
 func (a *App) GetImportSubscribers(c echo.Context) error {
+	// The lists come with the status in one answer, so a page never pairs the status of one
+	// import with the lists of another.
 	s := a.importer.GetStats()
-	return c.JSON(http.StatusOK, okResp{s})
+	a.importMu.Lock()
+	lists := []int{}
+	if s.Status != subimporter.StatusNone && a.importLists != nil {
+		lists = a.importLists
+	}
+	a.importMu.Unlock()
+	return c.JSON(http.StatusOK, okResp{struct {
+		subimporter.Status
+		AxmLists []int `json:"axm_lists"`
+	}{s, lists}})
 }
 
 // GetImportSubscriberStats returns import statistics.
