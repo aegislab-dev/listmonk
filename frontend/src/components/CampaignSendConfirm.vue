@@ -16,7 +16,7 @@
       <!-- The checks could not be loaded: try again, or go on without the count. -->
       <div v-else-if="state === 'error'" data-cy="send-error">
         <p class="send-line">
-<span class="send-icon is-warn">!</span>
+<span class="send-icon lv-warn">!</span>
           {{ $t('campaigns.sendConfirm.checkFailed') }} <span class="has-text-grey">{{ error }}</span>
           <a href="#" class="ml-2" data-cy="send-retry" @click.prevent="load">{{ $t('campaigns.sendConfirm.retry') }}</a>
         </p>
@@ -94,9 +94,9 @@
         <div class="send-checks" data-cy="send-checks">
           <div class="send-checks-head">{{ $t('campaigns.sendConfirm.checks') }}</div>
           <ul>
-            <li v-for="c in model.checks" :key="`${c.name}-${c.key}`" class="send-line" :class="`is-${c.level}`"
+            <li v-for="c in model.checks" :key="`${c.name}-${c.key}`" class="send-line" :class="`lv-${c.level}`"
               :data-cy="`send-check-${c.name}`" :data-level="c.level">
-              <span class="send-icon" :class="`is-${c.level}`">{{ icons[c.level] }}</span>
+              <span class="send-icon" :class="`lv-${c.level}`">{{ icons[c.level] }}</span>
               <span>
                 <template v-for="(part, i) in lineParts(c)">
                   <strong v-if="part.bold" :key="i">{{ part.text }}</strong>
@@ -262,6 +262,8 @@ export default Vue.extend({
 
 <style scoped>
 .send-confirm { max-width: 600px; }
+/* The foot is transparent in this app: without a ground the buttons float over the page. */
+.send-confirm .modal-card-foot { background: #fff; border-top: 1px solid #ededed; border-radius: 0 0 6px 6px; justify-content: flex-end; gap: 0.5rem; }
 .send-title { font-size: 1.25rem; font-weight: 700; }
 .send-row { display: grid; grid-template-columns: 6.5rem 1fr; gap: 0.75rem; padding: 0.3rem 0; }
 .send-k { color: #7a7a7a; }
@@ -272,12 +274,12 @@ export default Vue.extend({
 .send-checks { border: 1px solid #dbdbdb; border-radius: 8px; padding: 0.5rem 0.75rem; margin: 0.75rem 0 0.5rem; }
 .send-checks-head { font-weight: 700; margin-bottom: 0.25rem; }
 .send-line { display: flex; gap: 0.6rem; padding: 0.15rem 0; }
-.send-line.is-block { background: #feecf0; border-radius: 6px; padding: 0.4rem 0.5rem; }
+.send-line.lv-block { background: #feecf0; border-radius: 6px; padding: 0.4rem 0.5rem; }
 .send-ok-warn.button.is-primary { background-color: #b25e00; }
 .send-icon { flex: none; width: 1rem; font-weight: 700; text-align: center; }
-.send-icon.is-ok { color: #1a7f37; }
-.send-icon.is-warn { color: #b25e00; }
-.send-icon.is-block { color: #cc0f35; }
+.send-icon.lv-ok { color: #1a7f37; }
+.send-icon.lv-warn { color: #b25e00; }
+.send-icon.lv-block { color: #cc0f35; }
 @media (max-width: 480px) {
   .send-row { grid-template-columns: 1fr; gap: 0; }
   .modal-card-foot .button { flex: 1; }
