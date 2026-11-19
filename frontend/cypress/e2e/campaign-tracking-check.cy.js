@@ -262,7 +262,7 @@ describe('Pre-send tracking check', () => {
     });
     open('ok');
     cy.get('.b-tabs nav a').eq(2).click();
-    cy.intercept('POST', check, (req) => { req.on('response', (res) => { res.setDelay(1500); }); }).as('slow');
+    cy.intercept('POST', check, (req) => { req.on('response', (res) => { res.setDelay(1500); }); }).as('slowCheck');
     cy.intercept('PUT', `/api/campaigns/${ids.ok}/status`, { statusCode: 200, body: { data: {} } }).as('start');
     cy.get('[data-cy=btn-start]').click();
     cy.get('.b-tabs .tab-item:visible textarea').clear().type('{"track": true}', { parseSpecialCharSequences: false });
@@ -303,6 +303,18 @@ describe('Pre-send tracking check', () => {
   });
 
   it('warns on the campaigns list too, for start and for schedule', () => {
+    // The schedule test above saved a send time with the draft: take it off again.
+    cy.request('PUT', `/api/campaigns/${ids.warn}`, {
+      name: `Tracking warn ${stamp}`,
+      subject: 'Tracking warn',
+      type: 'regular',
+      messenger: 'email',
+      lists: [listId],
+      content_type: 'richtext',
+      template_id: bareTpl,
+      body: mixedBody,
+      send_at: null,
+    });
     cy.visit('/admin/campaigns');
     cy.intercept('POST', check).as('listCheck');
     cy.intercept('PUT', '/api/campaigns/*/status', { statusCode: 200, body: { data: {} } }).as('listStatus');
