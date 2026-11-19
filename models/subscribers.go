@@ -38,6 +38,11 @@ type Subscriber struct {
 	// OtherTeams tells a restricted user that the subscriber is also on lists of other
 	// teams (team name and number of lists, never list names). Filled by the handlers.
 	OtherTeams []OtherTeam `db:"-" json:"other_teams,omitempty"`
+
+	// EditLocked tells a user who may not manage all lists that the subscriber also has a
+	// subscription on a list they may not manage (LST-42): they may change the subscriptions
+	// on their own lists, not the subscriber itself. Filled by the handlers.
+	EditLocked bool `db:"-" json:"edit_locked,omitempty"`
 }
 
 type subLists struct {

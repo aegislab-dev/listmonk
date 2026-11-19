@@ -51,9 +51,10 @@
           <div class="columns">
             <div class="column is-4">
               <b-field v-if="form.mode === 'subscribe'" :label="$t('import.overwriteUserInfo')"
-                :message="$t('import.overwriteUserInfoHelp')">
+                :message="$can('lists:manage_all') ? $t('import.overwriteUserInfoHelp') : $t('teams.importOverwriteLocked')">
                 <div>
-                  <b-switch v-model="form.overwriteUserInfo" name="overwriteUserInfo" data-cy="overwrite-user-info" />
+                  <b-switch v-model="form.overwriteUserInfo" name="overwriteUserInfo" data-cy="overwrite-user-info"
+                    :disabled="!$can('lists:manage_all')" />
                 </div>
               </b-field>
             </div>

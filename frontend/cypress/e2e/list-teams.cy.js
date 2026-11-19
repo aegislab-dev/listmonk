@@ -126,7 +126,17 @@ describe('teams', () => {
     // A subscriber on a list of each team.
     cy.request('POST', '/api/subscribers', {
       email: `shared-${stamp}@example.invalid`, name: `공유 ${stamp}`, status: 'enabled', lists: [listAId, listBId],
+      attribs: { customer_id: 'c-1', follower_count: 12 },
     });
+    // Somebody on the member's list only, and somebody who unsubscribed from the other team's list.
+    cy.request('POST', '/api/subscribers', {
+      email: `shared-${stamp}-own@example.invalid`, name: `우리 팀만 ${stamp}`, status: 'enabled', lists: [listAId],
+    });
+    cy.request('POST', '/api/subscribers', {
+      email: `shared-${stamp}-unsub@example.invalid`, name: `해지 기록 ${stamp}`, status: 'enabled', lists: [listAId, listBId],
+    }).then(({ body }) => cy.request('PUT', '/api/subscribers/lists', {
+      ids: [body.data.id], action: 'unsubscribe', target_list_ids: [listBId],
+    }));
 
     loginAs(memberUser, memberPass, '/admin/lists');
     cy.get('[data-cy=my-team]').should('contain', teamA);
@@ -146,15 +156,81 @@ describe('teams', () => {
     cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=other-teams]').should('contain', teamB);
     cy.contains('B 리스트').should('not.exist');
 
-    // Deleting that person asks with the approved warning: a title, the other team, a delete button.
-    cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=btn-delete]').click();
-    // (The checks do not depend on the language of the screen.)
-    cy.get('.dialog .modal-card-title').invoke('text').should('not.be.empty');
-    cy.get('[data-cy=warn-box]').should('contain', teamB);
-    cy.get('.dialog .modal-card-foot button').should('have.length', 2);
-    cy.get('.dialog .modal-card-foot button.is-danger').should('have.length', 1);
-    cy.get('.dialog .modal-card-foot button').first().click();
-    cy.contains('tr', `shared-${stamp}@example.invalid`).should('exist');
+    // The shared person is locked for the member (LST-42): a lock where the delete button is,
+    // and the person who is on the member's lists only keeps the button.
+    cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=btn-delete]').should('not.exist');
+    cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=btn-delete-locked]').should('exist');
+    cy.contains('tr', `shared-${stamp}-own@example.invalid`).find('[data-cy=btn-delete-locked]').should('not.exist');
+    cy.contains('tr', `shared-${stamp}-own@example.invalid`).find('[data-cy=btn-delete]').should('exist');
+    // Somebody with only an unsubscribe record on the other team's list is locked too, with a mark of its own.
+    cy.contains('tr', `shared-${stamp}-unsub@example.invalid`).find('[data-cy=locked-record]').should('exist');
+    cy.contains('tr', `shared-${stamp}-unsub@example.invalid`).find('[data-cy=btn-delete-locked]').should('exist');
+  });
+
+  it('locks the profile of a shared subscriber in the edit form and still saves the member\'s lists', () => {
+    cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=btn-edit]').click();
+    cy.get('[data-cy=locked-notice]').should('be.visible').and('contain', teamB);
+    cy.get('.modal-card input[name=email]').should('be.disabled');
+    cy.get('.modal-card input[name=name]').should('be.disabled');
+    cy.get('.modal-card select[name=status]').should('be.disabled');
+    cy.get('.modal-card textarea[name=attribs]').should('be.disabled');
+
+    // The member's own lists stay open: add the list the member made, and save.
+    cy.get('.modal-card .list-selector input').type(`멤버 리스트 ${stamp}`);
+    cy.contains('.modal-card .list-selector .autocomplete a', `멤버 리스트 ${stamp}`).click();
+    cy.get('.modal-card-foot button[type=submit]').click();
+    cy.get('.modal-card').should('not.exist');
+    cy.contains('tr', `shared-${stamp}@example.invalid`).should('contain', `멤버 리스트 ${stamp}`);
+    cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=other-teams]').should('contain', teamB);
+
+    // The server refuses what the form does not offer.
+    cy.request('/api/subscribers?per_page=all').then(({ body }) => {
+      const sub = body.data.results.find((r) => r.email === `shared-${stamp}@example.invalid`);
+      expect(sub.edit_locked).to.eq(true);
+      expect(body.data.results.filter((r) => r.id === sub.id)).to.have.length(1);
+      cy.request({ method: 'DELETE', url: `/api/subscribers/${sub.id}`, failOnStatusCode: false }).its('status').should('eq', 403);
+      cy.request({ method: 'PUT', url: `/api/subscribers/${sub.id}/blocklist`, failOnStatusCode: false }).its('status').should('eq', 403);
+      cy.request({ method: 'PATCH', url: `/api/subscribers/${sub.id}`, body: { name: 'renamed' }, failOnStatusCode: false })
+        .its('status').should('eq', 403);
+
+      // Opened by its own link: the attribute keys stay as they are stored, and saving the
+      // lists goes through without touching the profile.
+      cy.visit(`/admin/subscribers/${sub.id}`);
+      cy.get('[data-cy=locked-notice]').should('be.visible');
+      cy.get('.modal-card textarea[name=attribs]').invoke('val').should('contain', 'customer_id').and('not.contain', 'customerId');
+      cy.intercept('PATCH', `/api/subscribers/${sub.id}`).as('saveLists');
+      cy.get('.modal-card-foot button[type=submit]').click();
+      cy.wait('@saveLists').then(({ request, response }) => {
+        expect(response.statusCode).to.eq(200);
+        expect(request.body).to.have.property('lists');
+        expect(request.body).to.not.have.any.keys('email', 'name', 'status', 'attribs');
+      });
+      cy.request(`/api/subscribers/${sub.id}`).then(({ body: one }) => {
+        expect(one.data.attribs).to.deep.eq({ customer_id: 'c-1', follower_count: 12 });
+      });
+    });
+  });
+
+  it('leaves shared subscribers out of a bulk blocklist and says how many', () => {
+    cy.visit('/admin/subscribers');
+    const pick = (email) => cy.contains('tr', email).find('td.checkbox-cell .checkbox').click();
+
+    // Only shared people: nothing to do, one button.
+    pick(`shared-${stamp}@example.invalid`);
+    pick(`shared-${stamp}-unsub@example.invalid`);
+    cy.get('[data-cy=btn-manage-blocklist]').click();
+    cy.get('[data-cy=warn-box]').should('be.visible');
+    cy.get('.dialog .modal-card-foot button').should('have.length', 1).click();
+
+    // With one of the member's own people: the dialog counts the one who goes and the two left out.
+    pick(`shared-${stamp}-own@example.invalid`);
+    cy.get('[data-cy=btn-manage-blocklist]').click();
+    cy.get('.dialog .modal-card-title').should('contain', '1');
+    cy.get('[data-cy=warn-box]').should('contain', '3').and('contain', '2');
+    cy.get('.dialog .modal-card-foot button.is-danger').click();
+    cy.contains('tr', `shared-${stamp}-own@example.invalid`).find('[data-cy=blocklisted]').should('exist');
+    cy.contains('tr', `shared-${stamp}@example.invalid`).find('[data-cy=blocklisted]').should('not.exist');
+    cy.contains('tr', `shared-${stamp}-unsub@example.invalid`).find('[data-cy=blocklisted]').should('not.exist');
   });
 
   it('lets an operator who may make every list but not manage roles choose the team', () => {

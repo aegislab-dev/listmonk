@@ -102,3 +102,87 @@ WHERE sl.subscriber_id = ANY($1::INT[]) AND sl.status != 'unsubscribed' AND NOT 
     AND l.axm_filter IS NULL
 GROUP BY sl.subscriber_id, COALESCE(t.tag, '')
 ORDER BY sl.subscriber_id, 2;
+
+-- name: axm-subscriber-locked
+-- Team boundary (LST-42). For subscribers $1: whether they have a subscription row (any
+-- status, so unsubscribed rows and the exclusion rows of dynamic lists count too) on a list
+-- outside $2, the lists the user may manage. Such a subscriber is "locked" for that user:
+-- the row itself (name, e-mail, attributes, status, blocklist, delete, bounces) is not theirs
+-- alone to change.
+SELECT s.id AS subscriber_id,
+    EXISTS (
+        SELECT 1 FROM subscriber_lists sl
+        WHERE sl.subscriber_id = s.id AND NOT (sl.list_id = ANY($2::INT[]))
+    ) AS locked
+FROM subscribers s WHERE s.id = ANY($1::INT[]);
+
+-- name: axm-query-subscribers-multi
+-- raw: true
+-- query-subscribers for more than one list ID (LST-42). The upstream query joins
+-- subscriber_lists, so a subscriber on two of the lists comes back twice. Here the same join
+-- and conditions only pick the IDs, and the rows are read once per subscriber. The join stays
+-- inside so that an SQL condition that names subscriber_lists keeps working.
+SELECT subscribers.* FROM subscribers
+    WHERE subscribers.id IN (
+        SELECT subscribers.id FROM subscribers
+        LEFT JOIN subscriber_lists
+        ON (
+            (CASE WHEN CARDINALITY($1::INT[]) > 0 THEN true ELSE false END)
+            AND subscriber_lists.subscriber_id = subscribers.id
+            AND ($2 = '' OR subscriber_lists.status = $2::subscription_status)
+        )
+        WHERE (CARDINALITY($1) = 0 OR subscriber_lists.list_id = ANY($1::INT[]))
+        AND (CASE WHEN $3 != '' THEN name ~* $3 OR email ~* $3 ELSE TRUE END)
+        AND %query%
+    )
+    ORDER BY %order% OFFSET $4 LIMIT (CASE WHEN $5 < 1 THEN NULL ELSE $5 END);
+
+-- name: axm-query-subscribers-multi-count
+-- raw: true
+-- The count of axm-query-subscribers-multi: people, not subscription rows.
+SELECT COUNT(DISTINCT subscribers.id) AS total FROM subscribers
+    LEFT JOIN subscriber_lists
+    ON (
+        (CASE WHEN CARDINALITY($1::INT[]) > 0 THEN true ELSE false END)
+        AND subscriber_lists.subscriber_id = subscribers.id
+        AND ($2 = '' OR subscriber_lists.status = $2::subscription_status)
+    )
+    WHERE (CARDINALITY($1) = 0 OR subscriber_lists.list_id = ANY($1::INT[]))
+    AND (CASE WHEN $3 != '' THEN name ~* $3 OR email ~* $3 ELSE TRUE END)
+    AND %query%;
+
+-- name: axm-lock-subscribers
+-- Team boundary (LST-42). Takes the row locks of subscribers $1 for the rest of the
+-- transaction. A new subscription row needs a key-share lock on its subscriber, so no
+-- subscription can be added to these people between the "locked?" check and the change.
+SELECT id FROM subscribers WHERE id = ANY($1::INT[]) ORDER BY id FOR UPDATE;
+
+-- name: axm-update-subscriber-lists
+-- The subscriptions part of update-subscriber-with-lists, without writing the subscriber row
+-- (LST-42): for a subscriber whose profile the user may not change. $2 are the lists to be
+-- on, $3 the status of new subscriptions, $4 whether to remove the others, $5 the lists
+-- whose subscriptions may be removed (never empty: an ID no list has when there is none).
+WITH s AS (
+    SELECT id, status FROM subscribers WHERE id = $1
+),
+listIDs AS (
+    SELECT id FROM lists WHERE id = ANY($2::INT[])
+),
+d AS (
+    DELETE FROM subscriber_lists WHERE $4 = TRUE AND subscriber_id = $1
+        AND list_id != ALL(SELECT id FROM listIDs)
+        AND list_id = ANY($5::INT[])
+)
+INSERT INTO subscriber_lists (subscriber_id, list_id, status)
+    SELECT s.id, l.id,
+        (CASE WHEN s.status = 'blocklisted' THEN 'unsubscribed'::subscription_status ELSE $3::subscription_status END)
+    FROM s, listIDs l
+    ON CONFLICT (subscriber_id, list_id) DO UPDATE
+    SET status = (
+        CASE
+            WHEN (SELECT status FROM s) = 'blocklisted' THEN 'unsubscribed'::subscription_status
+            WHEN subscriber_lists.status = 'confirmed' THEN 'confirmed'
+            WHEN subscriber_lists.status = 'unsubscribed' THEN 'unsubscribed'::subscription_status
+            ELSE $3::subscription_status
+        END
+    );

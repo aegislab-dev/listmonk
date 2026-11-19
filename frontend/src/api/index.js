@@ -238,9 +238,10 @@ export const getSubscriberAttribSample = (params) => http.get(
   },
 );
 
+// The attribute keys are data: they stay as they are stored (customer_id, not customerId).
 export const getSubscriber = async (id) => http.get(
   `/api/subscribers/${id}`,
-  { loading: models.subscribers },
+  { loading: models.subscribers, camelCase: (keyPath) => !keyPath.startsWith('.attribs.') },
 );
 
 export const getSubscriberActivity = async (id) => http.get(
@@ -281,6 +282,13 @@ export const createSubscriber = (data) => http.post(
 
 export const updateSubscriber = (data) => http.put(
   `/api/subscribers/${data.id}`,
+  data,
+  { loading: models.subscribers },
+);
+
+// Saves only the lists of a subscriber (the profile is left to the server as it is).
+export const updateSubscriberLists = (id, data) => http.patch(
+  `/api/subscribers/${id}`,
   data,
   { loading: models.subscribers },
 );

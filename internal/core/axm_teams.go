@@ -2,6 +2,7 @@ package core
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -355,4 +356,40 @@ func (c *Core) OtherTeams(subIDs, readableListIDs []int) (map[int][]models.Other
 		out[r.SubscriberID] = append(out[r.SubscriberID], r)
 	}
 	return out, nil
+}
+
+// LockedSubscribers tells, per subscriber, whether they have a subscription row (any status)
+// on a list outside manageListIDs (LST-42). A subscriber that does not exist is left out.
+func (c *Core) LockedSubscribers(subIDs, manageListIDs []int) (map[int]bool, error) {
+	out := map[int]bool{}
+	if len(subIDs) == 0 {
+		return out, nil
+	}
+	if manageListIDs == nil {
+		manageListIDs = []int{}
+	}
+	rows := []struct {
+		SubID  int  `db:"subscriber_id"`
+		Locked bool `db:"locked"`
+	}{}
+	if err := c.q.AxmSubscriberLocked.Select(&rows, pq.Array(subIDs), pq.Array(manageListIDs)); err != nil {
+		return nil, c.teamFail(err)
+	}
+	for _, r := range rows {
+		out[r.SubID] = r.Locked
+	}
+	return out, nil
+}
+
+// SharedSubscriberExclusion is the SQL condition that leaves out the locked subscribers of
+// LockedSubscribers in a bulk action by query: the subscribers with a subscription row on a
+// list outside manageListIDs. Only integer IDs enter the text. With no list at all, everybody
+// who has a subscription row is left out.
+func SharedSubscriberExclusion(manageListIDs []int) string {
+	ids := make([]string, len(manageListIDs))
+	for i, id := range manageListIDs {
+		ids[i] = strconv.Itoa(id)
+	}
+	return "NOT EXISTS (SELECT 1 FROM subscriber_lists axm_lk WHERE axm_lk.subscriber_id = subscribers.id" +
+		" AND NOT (axm_lk.list_id = ANY('{" + strings.Join(ids, ",") + "}'::INT[])))"
 }
