@@ -522,7 +522,6 @@
     "campaigns.sendConfirm.asOf": "The count is as of {time}; blocked and unsubscribed people are left out again when sending starts, so it may differ a little.",
     "campaigns.sendConfirm.stale": "The campaign changed in the meantime and was loaded again. Please check what changed.",
     "campaigns.sendConfirm.changed": "The campaign changed in the meantime. Please check it again.",
-    "campaigns.sendConfirm.was": "before: {n}",
     "campaigns.tracking.toast.viewMissing": "no view tracking",
     "campaigns.tracking.toast.untracked": "{n} links without click tracking",
     "campaigns.tracking.toast.off": "tracking off",
