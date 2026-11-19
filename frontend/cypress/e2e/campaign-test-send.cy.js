@@ -78,6 +78,30 @@ describe('Campaign test send to addresses that are not subscribers', () => {
     cy.request(`/api/subscribers?search=${encodeURIComponent(internal)}`).its('body.data.total').should('eq', 0);
   });
 
+  it('says that the own address awaits confirmation', () => {
+    // The server's answer is stubbed: the real one mails a link, which needs a mail server
+    // (the Go tests cover that).
+    open();
+    box().find('[data-cy=test-add-own]').click();
+    addEmail(internal);
+    cy.intercept('POST', `/api/campaigns/${campaignId}/test`, {
+      statusCode: 400,
+      body: { message: 'Your own address is not confirmed yet.', data: { rejected: [ownEmail], own_unverified: true } },
+    }).as('ownSend');
+    box().find('[data-cy=btn-test-send]').click();
+    cy.wait('@ownSend');
+    tag(ownEmail).should('have.attr', 'data-kind', 'rejected').and('have.class', 'is-rejected');
+    tag(internal).should('have.attr', 'data-kind', 'internal');
+    box().find('[data-cy=test-rejected]').should('contain', 'not confirmed yet').and('contain', 'confirmation mail');
+    // Another refusal afterwards shows the ordinary note again.
+    cy.intercept('POST', `/api/campaigns/${campaignId}/test`, {
+      statusCode: 400, body: { message: 'x', data: { rejected: [ownEmail] } },
+    }).as('plain');
+    box().find('[data-cy=btn-test-send]').click();
+    cy.wait('@plain');
+    box().find('[data-cy=test-rejected]').should('contain', 'marked red').and('not.contain', 'not confirmed yet');
+  });
+
   it('takes at most ten addresses', () => {
     open();
     for (let i = 0; i < 10; i += 1) addEmail(`u${i}-${stamp}@${domain}`);

@@ -156,7 +156,7 @@ func (a *App) requestOwnTestAddress(user auth.User) (bool, error) {
 		a.log.Printf("error sending the test address verification e-mail: %v", err)
 		// No mail went out, so the next try need not wait a minute.
 		a.core.ForgetTestAddressMail(user.ID)
-		return false, echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("senders.sendFailed"))
+		return false, echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("campaigns.testAddr.sendFailed"))
 	}
 	return true, nil
 }
