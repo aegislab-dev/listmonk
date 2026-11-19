@@ -108,6 +108,12 @@ test('nobody: a regular campaign cannot be confirmed, the reason leads the check
   assert.equal(m.checks[0].name, 'recipients.zero');
 });
 
+test('a blocked window keeps the plain button text: there is nothing to go ahead anyway with', () => {
+  const m = model({ recipients: 0, checks: [{ key: 'recipients.zero', level: 'block' }, { key: 'from.placeholder', level: 'warn' }] });
+  assert.equal(m.disabled, true);
+  assert.equal(m.confirm.key, 'campaigns.sendConfirm.confirm.start');
+});
+
 test('no list left: its own title', () => {
   const m = model({ recipients: 0, lists: [], checks: [{ key: 'lists.none', level: 'block' }] });
   assert.equal(m.disabled, true);

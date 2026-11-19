@@ -158,7 +158,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   else if (warnings) sub = { key: `${K}.sub.warn`, params: { n: warnings } };
   else sub = { key: `${K}.sub.${pf.mode}`, params: {} };
 
-  const confirmKey = `${K}.${warnings ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
+  const confirmKey = `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
   const asOf = pf.asOf ? new Date(pf.asOf) : null;
 
   return {

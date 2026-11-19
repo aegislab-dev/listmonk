@@ -84,8 +84,9 @@ describe('Recent-send exclusion settings', () => {
     cy.get(switchInput).should('be.checked').and('not.be.disabled');
     cy.get('select[data-cy=recent-days]').should('have.value', '7');
     cy.get('[data-cy=btn-start]').click();
-    cy.contains('.dialog', 'The exclusion rule does not apply to sending yet.').should('be.visible');
-    cy.get('.dialog button').contains('Cancel').click();
+    // The saved rule is only recorded: the window that every start goes through says so (LST-48).
+    cy.get('[data-cy="send-check-recent.notApplied"]').should('contain', 'does not apply to sending yet').and('contain', 'last 7 days');
+    cy.get('[data-cy=send-cancel]').click();
 
     cy.clearCookies();
     cy.visit(`/admin/login?next=/admin/campaigns/${campaignId}`);
