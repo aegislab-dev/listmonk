@@ -82,6 +82,8 @@ type addrListAnswer struct {
 	Linked       []string `json:"linked"`
 	LinkedHidden int      `json:"linked_hidden"`
 	Targets      []int    `json:"targets"`
+	Checked      int      `json:"checked_lists"`
+	Unchecked    int      `json:"unchecked_lists"`
 }
 
 func (e *addrEnv) check(user auth.User, lists ...int) (addrListAnswer, string) {
@@ -149,16 +151,20 @@ func TestAddressCheckListAudienceAndClasses(t *testing.T) {
 	}
 
 	// The other team's list is not counted for this user, and is for its own member.
-	if other, raw := e.check(e.as(e.ub), e.aList, e.bList); other.Total != 1 || other.Confirmed != 1 {
+	// The list it leaves out is reported as unchecked, so that the screen does not show
+	// the counts of one list as those of the whole send (asked twice: counted once).
+	if other, raw := e.check(e.as(e.ub), e.aList, e.bList, e.aList); other.Total != 1 || other.Confirmed != 1 ||
+		other.Checked != 1 || other.Unchecked != 1 {
 		t.Fatalf("other team: %s", raw)
 	}
-	if all, raw := e.check(e.as(e.admin), e.aList, e.bList); all.Total != 10 || all.Confirmed != 5 {
+	if all, raw := e.check(e.as(e.admin), e.aList, e.bList); all.Total != 10 || all.Confirmed != 5 ||
+		all.Checked != 2 || all.Unchecked != 0 {
 		t.Fatalf("operator: %s", raw)
 	}
 	if strings.Contains(raw, `"checked_lists":0`) || !strings.Contains(raw, `"checked_lists":1`) {
 		t.Fatalf("checked lists: %s", raw)
 	}
-	if none, raw := e.check(member, e.bList); none.Total != 0 || none.Risky != 0 || len(none.Classes) != 6 || !strings.Contains(raw, `"checked_lists":0`) {
+	if none, raw := e.check(member, e.bList); none.Total != 0 || none.Risky != 0 || len(none.Classes) != 6 || !strings.Contains(raw, `"checked_lists":0`) || none.Unchecked != 1 {
 		t.Fatalf("no access: %s", raw)
 	}
 	if none, raw := e.check(member); none.Total != 0 || none.Risky != 0 {
@@ -480,16 +486,19 @@ func TestAddressCheckTargetsAreManageableLists(t *testing.T) {
 func TestImportStatusCarriesItsLists(t *testing.T) {
 	e := newAddrEnv(t)
 	e.a.importer = subimporter.New(subimporter.Options{}, e.db.DB, &i18n.I18n{})
+	hidden := 0
 	status := func(user auth.User) (string, []int) {
 		t.Helper()
 		code, data := e.call(e.a.GetImportSubscribers, user, "GET", "/api/import/subscribers", "", "")
 		var out struct {
-			Status   string `json:"status"`
-			AxmLists []int  `json:"axm_lists"`
+			Status         string `json:"status"`
+			AxmLists       []int  `json:"axm_lists"`
+			AxmListsHidden *int   `json:"axm_lists_hidden"`
 		}
-		if err := json.Unmarshal(data, &out); err != nil || code != http.StatusOK || out.AxmLists == nil {
+		if err := json.Unmarshal(data, &out); err != nil || code != http.StatusOK || out.AxmLists == nil || out.AxmListsHidden == nil {
 			t.Fatalf("status HTTP %d %s: %v", code, data, err)
 		}
+		hidden = *out.AxmListsHidden
 		return out.Status, out.AxmLists
 	}
 	admin := e.as(e.admin)
@@ -512,15 +521,16 @@ func TestImportStatusCarriesItsLists(t *testing.T) {
 	// Two imports of a file with the same name: the status names the lists of the later one.
 	start(subimporter.ModeSubscribe, e.aList)
 	start(subimporter.ModeSubscribe, e.bList, e.aList)
-	if st, lists := status(admin); st != subimporter.StatusImporting || !reflect.DeepEqual(lists, []int{e.bList, e.aList}) {
-		t.Fatalf("second import: %s %v", st, lists)
+	if st, lists := status(admin); st != subimporter.StatusImporting || !reflect.DeepEqual(lists, []int{e.bList, e.aList}) || hidden != 0 {
+		t.Fatalf("second import: %s %v hidden %d", st, lists, hidden)
 	}
-	// Someone else sees only the lists they may see, and none if there is no such list.
-	if _, lists := status(e.as(e.ua)); !reflect.DeepEqual(lists, []int{e.aList}) {
-		t.Fatalf("team member: %v", lists)
+	// Someone else sees only the lists they may see, and none if there is no such list. The
+	// others are counted, so that the screen can say they were not checked.
+	if _, lists := status(e.as(e.ua)); !reflect.DeepEqual(lists, []int{e.aList}) || hidden != 1 {
+		t.Fatalf("team member: %v hidden %d", lists, hidden)
 	}
-	if _, lists := status(e.as(e.ub)); !reflect.DeepEqual(lists, []int{e.bList}) {
-		t.Fatalf("other team member: %v", lists)
+	if _, lists := status(e.as(e.ub)); !reflect.DeepEqual(lists, []int{e.bList}) || hidden != 1 {
+		t.Fatalf("other team member: %v hidden %d", lists, hidden)
 	}
 	start(subimporter.ModeSubscribe, e.bList)
 	if _, lists := status(e.as(e.ua)); len(lists) != 0 {

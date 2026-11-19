@@ -154,6 +154,7 @@
       <br />
 
       <address-check v-if="showImportCheck" :list-ids="status.axmLists" :lists="lists.results || []"
+        :hidden-lists="status.axmListsHidden || 0"
         :scope-note="$t('addressCheck.listScope', { lists: importListNames })" />
 
       <div class="import-logs">

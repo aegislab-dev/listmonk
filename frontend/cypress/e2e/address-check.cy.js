@@ -221,6 +221,26 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=address-check]').should('have.class', 'is-busy').and('not.have.class', 'is-ok');
     cy.get('[data-cy=address-summary]').should('contain', 'Not checked');
 
+    // Some of the lists were not checked (the user cannot see them): the counts are those of
+    // the checked lists only, never a green "no risky addresses" for the whole send.
+    cy.intercept('POST', listCheck, { data: { ...clean(1), unchecked_lists: 1 } }).as('partial');
+    cy.visit(`/admin/campaigns/${campaignId}`);
+    cy.wait('@partial');
+    cy.get('[data-cy=address-check]').should('have.class', 'is-busy').and('not.have.class', 'is-ok');
+    cy.get('[data-cy=address-summary]').should('contain', '1 checked recipients');
+    cy.get('[data-cy=address-partial]').should('contain', '1 list(s) you cannot see were not checked');
+    cy.intercept('POST', listCheck, { data: { ...risky(), unchecked_lists: 2 } }).as('partialRisky');
+    cy.visit(`/admin/campaigns/${campaignId}`);
+    cy.wait('@partialRisky');
+    cy.get('[data-cy=address-check]').should('have.class', 'is-risk');
+    cy.get('[data-cy=address-summary]').should('contain', 'Of 4 checked recipients');
+    cy.get('[data-cy=address-partial]').should('contain', '2 list(s)');
+    cy.intercept('POST', listCheck, { data: clean(4) }).as('whole');
+    cy.visit(`/admin/campaigns/${campaignId}`);
+    cy.wait('@whole');
+    cy.get('[data-cy=address-check]').should('have.class', 'is-ok');
+    cy.get('[data-cy=address-partial]').should('not.exist');
+
     // A failed check is one grey line and nothing else.
     cy.intercept('POST', listCheck, { statusCode: 500, body: { message: 'Synthetic failure' } }).as('failed');
     cy.visit(`/admin/campaigns/${campaignId}`);

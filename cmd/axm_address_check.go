@@ -62,6 +62,10 @@ type addrCheckListResp struct {
 	// CheckedLists is how many of the asked lists the user may see and were checked. With
 	// none, the zero counts say nothing about the lists.
 	CheckedLists int `json:"checked_lists"`
+	// UncheckedLists is how many of the asked lists were left out because the user cannot
+	// see them. Their recipients are not in the counts, so the counts are not the whole
+	// audience and must not be shown as "no risky addresses".
+	UncheckedLists int `json:"unchecked_lists"`
 	// Targets are the chosen ordinary lists the user may manage: where an unsubscribe from
 	// this screen can change something. The direct marks and Linked are about these lists.
 	Targets []int `json:"targets"`
@@ -112,7 +116,10 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 	}
 
 	user := auth.GetUser(c)
-	lists := slices.Clone(user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, req.ListIDs))
+	asked := slices.Clone(req.ListIDs)
+	slices.Sort(asked)
+	asked = slices.Compact(asked)
+	lists := slices.Clone(user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, asked))
 	slices.Sort(lists)
 	lists = slices.Compact(lists)
 	out := addrCheckListResp{
@@ -121,7 +128,8 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 		Linked:  []string{},
 		Targets: []int{},
 
-		CheckedLists: len(lists),
+		CheckedLists:   len(lists),
+		UncheckedLists: len(asked) - len(lists),
 	}
 	if len(lists) == 0 {
 		out.Summary = addrcheck.Summarize(nil, nil, nil, false)

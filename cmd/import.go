@@ -125,14 +125,16 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 
 // GetImportSubscribers returns import statistics.
 func (a *App) GetImportSubscribers(c echo.Context) error {
-	s, lists := a.importStatus()
-	// Only the lists this user may see: the screen checks their addresses.
+	s, all := a.importStatus()
+	// Only the lists this user may see: the screen checks their addresses. The others are
+	// counted so that the screen can say that they were not checked.
 	user := auth.GetUser(c)
-	lists = append([]int{}, user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, lists)...)
+	lists := append([]int{}, user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, all)...)
 	return c.JSON(http.StatusOK, okResp{struct {
 		subimporter.Status
-		AxmLists []int `json:"axm_lists"`
-	}{s, lists}})
+		AxmLists       []int `json:"axm_lists"`
+		AxmListsHidden int   `json:"axm_lists_hidden"`
+	}{s, lists, len(all) - len(lists)}})
 }
 
 // newImportSession creates the import session and records the lists it subscribes people

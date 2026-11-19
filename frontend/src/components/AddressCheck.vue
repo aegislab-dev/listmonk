@@ -12,10 +12,10 @@
           {{ $t('addressCheck.tooLarge', { total: n(result.total), limit: n(result.limit) }) }}
         </template>
         <template v-else-if="!result.risky">
-          {{ $t('addressCheck.clean', { total: n(result.total) }) }}<template v-if="tail"> · {{ tail }}</template>
+          {{ $t(skipped ? 'addressCheck.cleanPartial' : 'addressCheck.clean', { total: n(result.total) }) }}<template v-if="tail"> · {{ tail }}</template>
         </template>
         <template v-else>
-          {{ $t('addressCheck.target', { total: n(result.total) }) }}
+          {{ $t(skipped ? 'addressCheck.targetPartial' : 'addressCheck.target', { total: n(result.total) }) }}
           <b>{{ $t('addressCheck.risky', { count: n(result.risky) }) }}</b>
           {{ $t('addressCheck.breakdown', { confirmed: n(result.confirmed), warning: n(result.warning) }) }}<template v-if="tail"> · {{ tail }}</template>
         </template>
@@ -23,6 +23,9 @@
       <span v-if="canOpen" class="ac-toggle">{{ $t(open ? 'addressCheck.collapse' : 'addressCheck.expand') }} {{ open ? '▴' : '▾' }}</span>
     </button>
     <p v-if="scopeNote" class="ac-scope" data-cy="address-scope">{{ scopeNote }}</p>
+    <p v-if="showSkipped" class="ac-scope is-partial" data-cy="address-partial">
+      {{ $t('addressCheck.partial', { count: n(skipped) }) }}
+    </p>
 
     <div v-if="open && canOpen" class="ac-body" data-cy="address-body">
       <div v-for="group in groups" :key="group.kind" class="ac-group" :data-cy="`address-group-${group.kind}`">
@@ -133,6 +136,9 @@ export default {
     // The list objects ({ id, name, axmFilter }) the IDs can belong to.
     lists: { type: Array, default: () => [] },
     scopeNote: { type: String, default: '' },
+    // Lists of the same send that were left out before the check was asked (the import
+    // status gives only the lists this user may see). They count as not checked.
+    hiddenLists: { type: Number, default: 0 },
   },
 
   data() {
@@ -166,9 +172,22 @@ export default {
       return unknown ? this.$t('addressCheck.unknown', { count: this.n(unknown) }) : '';
     },
 
+    // How many lists of this send were not checked because the user cannot see them. Their
+    // recipients are not in the counts, so "no risky addresses" would say too much.
+    skipped() {
+      if (!this.result) return 0;
+      return (this.result.uncheckedLists || 0) + this.hiddenLists;
+    },
+
+    showSkipped() {
+      const r = this.result;
+      return !this.error && !!r && !!r.checkedLists && !r.tooLarge && this.skipped > 0;
+    },
+
     stateClass() {
       if (this.error || !this.result || this.result.tooLarge || !this.result.checkedLists) return 'is-busy';
-      return this.result.risky ? 'is-risk' : 'is-ok';
+      if (this.result.risky) return 'is-risk';
+      return this.skipped ? 'is-busy' : 'is-ok';
     },
 
     canOpen() {
@@ -346,6 +365,8 @@ export default {
 .ac.is-ok .ac-summary { color: #1c6b3f; }
 .ac-toggle { flex: none; color: #0055d4; font-size: .8125rem; white-space: nowrap; }
 .ac-scope { margin: -6px 16px 12px 36px; color: #616161; font-size: .8125rem; }
+.ac-scope + .ac-scope { margin-top: -8px; }
+.ac-scope.is-partial { color: #614600; font-weight: 600; }
 .ac-body { border-top: 1px solid #e9e9e9; padding: 2px 16px 14px; }
 .ac-group { margin-top: 14px; }
 .ac-group-title { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
