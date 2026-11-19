@@ -437,11 +437,20 @@ export const updateCampaign = async (id, data) => http.put(
   { loading: models.campaigns },
 );
 
-export const changeCampaignStatus = async (id, status) => http.put(
+// updatedAt (LST-48): the campaign's updated_at as the pre-send confirmation showed it,
+// unchanged. The server then refuses (409) a campaign that was edited since. Left out, the
+// status is changed without that check. options: more of the request's own settings.
+export const changeCampaignStatus = async (id, status, updatedAt, options) => http.put(
   `/api/campaigns/${id}/status`,
-  { status },
+  updatedAt ? { status, updated_at: updatedAt } : { status },
 
-  { loading: models.campaigns },
+  { loading: models.campaigns, ...options },
+);
+
+// What the pre-send confirmation shows (LST-48). The window shows its own errors.
+export const getCampaignPreflight = (id, options) => http.get(
+  `/api/campaigns/${id}/preflight`,
+  { disableToast: true, timeout: 60000, ...options },
 );
 
 export const updateCampaignArchive = async (id, data) => http.put(

@@ -56,6 +56,12 @@
 
     <b-loading :active="loading.campaigns || savingCampaign" />
 
+    <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
+      @close="sendAsk = null">
+      <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
+        @done="onSendDone" @failed="onSendFailed" />
+    </b-modal>
+
     <b-tabs type="is-boxed" :animated="false" v-model="activeTab" @input="onTab">
       <b-tab-item :label="$tc('globals.terms.campaign')" label-position="on-border" value="campaign"
         icon="rocket-launch-outline">
@@ -357,9 +363,10 @@ import RecentSendExclude from '../components/RecentSendExclude.vue';
 import Media from './Media.vue';
 import SenderAddressInput from '../components/SenderAddressInput.vue';
 import TrackingCheck from '../components/TrackingCheck.vue';
+import CampaignSendConfirm from '../components/CampaignSendConfirm.vue';
 import { isSenderDomain } from '../senders';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
-import { trackingConfirmLines, trackingToastParts } from '../tracking-check';
+import { trackingToastParts } from '../tracking-check';
 
 export default Vue.extend({
   components: {
@@ -371,6 +378,7 @@ export default Vue.extend({
     SenderAddressInput,
     RecentSendExclude,
     TrackingCheck,
+    CampaignSendConfirm,
   },
 
   data() {
@@ -392,6 +400,10 @@ export default Vue.extend({
       activeTab: 'campaign',
       replyError: '',
       recentRule: defaultRecentRule(),
+      // The window every start, resume and schedule goes through (LST-48).
+      isSendVisible: false,
+      sendAsk: null,
+
       savedRecentRule: JSON.stringify({ enabled: false }),
       recentRuleLoaded: false,
       recentRuleError: '',
@@ -802,22 +814,20 @@ export default Vue.extend({
         return;
       }
       if (!saved) return;
-      const report = await this.$api.checkCampaignTracking(saved.id, {}).catch(() => null);
+      // The tracking box shows the saved campaign again; the window checks it itself.
       this.$refs.tracking?.run();
 
-      const warnings = trackingConfirmLines(report).map(({ key, params }) => this.$t(key, params));
-      const msg = this.recentRule.enabled
-        ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null;
-      const start = () => this.$api.changeCampaignStatus(saved.id, status).then(() => {
-        this.$router.push({ name: 'campaigns' });
-      }).catch((err) => {
-        if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
-      });
-      if (warnings.length) {
-        this.$utils.confirmWithWarnings(msg, warnings, this.$t(`campaigns.tracking.confirm.${status === 'running' ? 'start' : 'schedule'}`), start);
-      } else {
-        this.$utils.confirm(msg, start);
-      }
+      // The window shows the campaign as saved and, when confirmed, only changes its status.
+      this.sendAsk = { id: saved.id, status };
+      this.isSendVisible = true;
+    },
+
+    onSendDone() {
+      this.$router.push({ name: 'campaigns' });
+    },
+
+    onSendFailed(err) {
+      if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
     },
 
     unscheduleCampaign() {

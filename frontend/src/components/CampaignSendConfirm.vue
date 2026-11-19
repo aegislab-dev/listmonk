@@ -1,0 +1,285 @@
+<template>
+  <div class="modal-card send-confirm" style="width: auto" data-cy="send-confirm" :data-state="state" :data-mode="model ? model.mode : ''">
+    <header class="modal-card-head">
+      <div>
+        <h4 class="send-title" data-cy="send-title" role="status">{{ headTitle }}</h4>
+        <p class="help mt-1" data-cy="send-sub">{{ headSub }}</p>
+      </div>
+    </header>
+
+    <section class="modal-card-body">
+      <!-- Loading -->
+      <div v-if="state === 'loading'" data-cy="send-loading">
+        <b-skeleton :count="4" />
+      </div>
+
+      <!-- The checks could not be loaded: try again, or go on without the count. -->
+      <div v-else-if="state === 'error'" data-cy="send-error">
+        <p class="send-line">
+<span class="send-icon is-warn">!</span>
+          {{ $t('campaigns.sendConfirm.checkFailed') }} <span class="has-text-grey">{{ error }}</span>
+          <a href="#" class="ml-2" data-cy="send-retry" @click.prevent="load">{{ $t('campaigns.sendConfirm.retry') }}</a>
+        </p>
+        <p class="help">{{ $t('campaigns.sendConfirm.blindHelp') }}</p>
+      </div>
+
+      <template v-else-if="model">
+        <p v-if="stale" class="notification is-warning is-light" role="alert" data-cy="send-stale">
+          {{ $t('campaigns.sendConfirm.stale') }}
+        </p>
+
+        <div class="send-rows">
+          <div class="send-row" data-cy="send-campaign">
+            <div class="send-k">{{ $t('campaigns.sendConfirm.row.campaign') }}</div>
+            <div class="send-v">{{ pf.name }}</div>
+          </div>
+          <div class="send-row" data-cy="send-subject">
+            <div class="send-k">{{ $t('campaigns.sendConfirm.row.subject') }}</div>
+            <div class="send-v">{{ pf.subject }}</div>
+          </div>
+          <div class="send-row" data-cy="send-from">
+            <div class="send-k">{{ $t('campaigns.sendConfirm.row.from') }}</div>
+            <div class="send-v">
+              {{ pf.fromEmail }}
+              <span class="has-text-grey">
+                · {{ pf.replyTo ? $t('campaigns.sendConfirm.replyTo', { email: pf.replyTo }) : $t('campaigns.sendConfirm.replyOwn') }}
+              </span>
+            </div>
+          </div>
+          <div class="send-row" data-cy="send-lists">
+            <div class="send-k">{{ $t('campaigns.sendConfirm.row.lists') }}</div>
+            <div class="send-v">
+              <div v-for="(l, i) in pf.lists" :key="`${l.id}-${i}`" class="send-list" :data-cy="`send-list-${l.id || 'deleted'}`">
+                <b-tag type="is-info is-light">{{ l.name }}</b-tag>
+                <b-tag v-if="l.dynamic" type="is-light">{{ $t('campaigns.sendConfirm.dynamic') }}</b-tag>
+                <b-tag v-if="l.deleted" type="is-danger is-light">{{ $t('campaigns.sendConfirm.deleted') }}</b-tag>
+                <strong v-if="!isResume" class="ml-1" data-cy="send-list-count">{{ $t('campaigns.sendConfirm.people', { n: l.count }) }}</strong>
+              </div>
+              <div v-if="!isResume && pf.lists.length > 1" class="send-sum" data-cy="send-recipients">
+                {{ model.overlap > 0
+                  ? $t('campaigns.sendConfirm.overlap', { overlap: model.overlap, n: pf.recipients })
+                  : $t('campaigns.sendConfirm.total', { n: pf.recipients }) }}
+              </div>
+            </div>
+          </div>
+
+          <!-- When -->
+          <div v-if="model.mode === 'start'" class="send-row" data-cy="send-when">
+            <div class="send-k">{{ $t('campaigns.sendConfirm.row.when') }}</div>
+            <div class="send-v"><strong>{{ $t('campaigns.sendConfirm.now') }}</strong></div>
+          </div>
+          <div v-else-if="model.mode === 'schedule' && model.when" class="send-row" data-cy="send-schedule">
+            <div class="send-k">{{ $t('campaigns.sendConfirm.row.schedule') }}</div>
+            <div class="send-v">
+              <strong data-cy="send-schedule-time">{{ model.when.text }}</strong>
+              <div data-cy="send-schedule-zone">
+                {{ $t('campaigns.sendConfirm.zone', { zone: model.when.zone, offset: model.when.offset }) }}
+              </div>
+              <div v-if="until" class="has-text-grey" data-cy="send-schedule-until">{{ $t(until.key, until.params) }}</div>
+              <div v-if="model.other" class="send-tz-other" data-cy="send-schedule-other">
+                {{ $t('campaigns.sendConfirm.zoneOther', { kst: `${model.other.text} (${model.other.offset})` }) }}
+              </div>
+            </div>
+          </div>
+          <div v-else-if="isResume" class="send-row" data-cy="send-progress">
+            <div class="send-k">{{ $t('campaigns.sendConfirm.row.progress') }}</div>
+            <div class="send-v">
+              <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(pf.toSend, pf.sent, 1)" />
+              <div class="has-text-grey">{{ $t('campaigns.sendConfirm.progress', { sent: pf.sent, total: Math.max(pf.toSend, pf.sent) }) }}</div>
+              <div class="send-sum" data-cy="send-recipients">{{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="send-checks" data-cy="send-checks">
+          <div class="send-checks-head">{{ $t('campaigns.sendConfirm.checks') }}</div>
+          <ul>
+            <li v-for="c in model.checks" :key="`${c.name}-${c.key}`" class="send-line" :class="`is-${c.level}`"
+              :data-cy="`send-check-${c.name}`" :data-level="c.level">
+              <span class="send-icon" :class="`is-${c.level}`">{{ icons[c.level] }}</span>
+              <span>
+                <template v-for="(part, i) in lineParts(c)">
+                  <strong v-if="part.bold" :key="i">{{ part.text }}</strong>
+                  <code v-else-if="part.code" :key="i">{{ part.text }}</code>
+                  <template v-else>{{ part.text }}</template>
+                </template>
+              </span>
+            </li>
+          </ul>
+        </div>
+
+        <p v-if="model.asOf" class="help" data-cy="send-asof">
+          {{ $t('campaigns.sendConfirm.asOf', { time: asOfText }) }}
+        </p>
+      </template>
+    </section>
+
+    <footer class="modal-card-foot has-text-right">
+      <b-button data-cy="send-cancel" @click="$parent.close()">{{ $t('globals.buttons.cancel') }}</b-button>
+      <b-button v-if="state === 'error'" type="is-warning" data-cy="send-ok" :loading="busy" @click="confirm(true)">
+        {{ $t('campaigns.sendConfirm.confirmBlind') }}
+      </b-button>
+      <b-button v-else type="is-primary" data-cy="send-ok" :class="{ 'send-ok-warn': model && model.warnings }"
+        :disabled="state !== 'ready' || !model || model.disabled" :loading="busy" @click="confirm(false)">
+        {{ okText }}
+      </b-button>
+    </footer>
+  </div>
+</template>
+
+<script>
+import Vue from 'vue';
+import dayjs from 'dayjs';
+import { richParts, sendConfirmModel, untilKey } from '../send-confirm';
+
+// The window that every start, resume and schedule of a campaign goes through (LST-48):
+// the people it reaches, its lists, subject, sender, time and the checks, read from the
+// server at the moment it opens. Confirming changes the status only; the campaign is saved
+// before the window opens and the server refuses a campaign that changed after this read.
+export default Vue.extend({
+  name: 'CampaignSendConfirm',
+
+  props: {
+    campaignId: { type: Number, required: true },
+    // The status that confirming asks for: 'running' (start, resume) or 'scheduled'.
+    status: { type: String, required: true },
+  },
+
+  data() {
+    return {
+      state: 'loading', // loading | ready | error
+      pf: null,
+      error: '',
+      busy: false,
+      stale: false,
+      ctl: null,
+      now: new Date(),
+      icons: {
+        ok: '✓', warn: '!', block: '✕', info: 'i',
+      },
+    };
+  },
+
+  computed: {
+    isResume() { return this.pf && this.pf.mode === 'resume'; },
+
+    // The time zone the scheduled time is shown in. The time picker of the campaign page
+    // reads the time in the zone of this browser, so this is it too (undefined = the
+    // browser's). When the picker is fixed to Korean time, set this to 'Asia/Seoul'.
+    zone() { return undefined; },
+
+    lang() { return (this.$store.state.serverConfig || {}).lang || 'ko'; },
+
+    model() {
+      return this.pf ? sendConfirmModel(this.pf, { tz: this.zone, lang: this.lang, now: this.now }) : null;
+    },
+
+    until() { return this.model && this.model.until ? untilKey(this.model.until) : null; },
+
+    asOfText() { return this.model && this.model.asOf ? dayjs(this.model.asOf).format('YYYY-MM-DD HH:mm') : ''; },
+
+    headTitle() {
+      if (this.state === 'loading') return this.$t('campaigns.sendConfirm.title.loading');
+      if (this.state === 'error') return this.$t('campaigns.sendConfirm.title.error');
+      return this.$t(this.model.title.key, this.model.title.params);
+    },
+
+    headSub() {
+      if (this.state === 'loading') return this.$t('campaigns.sendConfirm.sub.loading');
+      if (this.state === 'error') return this.$t('campaigns.sendConfirm.sub.error');
+      return this.$t(this.model.sub.key, this.model.sub.params);
+    },
+
+    okText() {
+      if (!this.model) return this.$t('globals.buttons.ok');
+      return this.$t(this.model.confirm.key, this.model.confirm.params);
+    },
+  },
+
+  methods: {
+    lineParts(c) {
+      return richParts(this.$t(c.key, c.params));
+    },
+
+    async load() {
+      if (this.ctl) this.ctl.abort();
+      this.ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      this.state = 'loading';
+      this.error = '';
+      try {
+        const pf = await this.$api.getCampaignPreflight(this.campaignId, this.ctl ? { signal: this.ctl.signal } : {});
+        this.pf = pf;
+        this.now = new Date();
+        this.state = 'ready';
+      } catch (err) {
+        if (err && (err.code === 'ERR_CANCELED' || err.name === 'CanceledError')) return;
+        this.pf = null;
+        this.state = 'error';
+        this.error = (err.response && err.response.data && err.response.data.message) || '';
+      }
+    },
+
+    // blind: the checks could not be loaded; go on without them and without the
+    // changed-since check (there is nothing that was shown).
+    async confirm(blind) {
+      if (this.busy) return;
+      this.busy = true;
+      try {
+        const out = await this.$api.changeCampaignStatus(
+          this.campaignId,
+          this.status,
+          blind ? undefined : this.pf.updatedAt,
+          { disableToast: true },
+        );
+        this.$emit('done', out);
+        this.$parent.close();
+      } catch (err) {
+        if (!blind && err.response && err.response.status === 409) {
+          // Edited after it was read: show what is true now and ask again.
+          this.stale = true;
+          this.busy = false;
+          await this.load();
+          return;
+        }
+        this.$utils.toast((err.response && err.response.data && err.response.data.message) || err.message, 'is-danger');
+        this.$emit('failed', err);
+        this.$parent.close();
+      } finally {
+        this.busy = false;
+      }
+    },
+  },
+
+  mounted() {
+    this.load();
+  },
+
+  beforeDestroy() {
+    if (this.ctl) this.ctl.abort();
+  },
+});
+</script>
+
+<style scoped>
+.send-confirm { max-width: 600px; }
+.send-title { font-size: 1.25rem; font-weight: 700; }
+.send-row { display: grid; grid-template-columns: 6.5rem 1fr; gap: 0.75rem; padding: 0.3rem 0; }
+.send-k { color: #7a7a7a; }
+.send-v { min-width: 0; overflow-wrap: anywhere; }
+.send-list { margin: 0.1rem 0; }
+.send-sum { margin-top: 0.3rem; padding: 0.3rem 0.5rem; background: #f5f5f5; border-radius: 6px; }
+.send-tz-other { margin-top: 0.4rem; padding: 0.4rem 0.6rem; background: #fffaeb; border: 1px solid #ffe08a; border-radius: 6px; font-size: 0.875rem; }
+.send-checks { border: 1px solid #dbdbdb; border-radius: 8px; padding: 0.5rem 0.75rem; margin: 0.75rem 0 0.5rem; }
+.send-checks-head { font-weight: 700; margin-bottom: 0.25rem; }
+.send-line { display: flex; gap: 0.6rem; padding: 0.15rem 0; }
+.send-line.is-block { background: #feecf0; border-radius: 6px; padding: 0.4rem 0.5rem; }
+.send-ok-warn.button.is-primary { background-color: #b25e00; }
+.send-icon { flex: none; width: 1rem; font-weight: 700; text-align: center; }
+.send-icon.is-ok { color: #1a7f37; }
+.send-icon.is-warn { color: #b25e00; }
+.send-icon.is-block { color: #cc0f35; }
+@media (max-width: 480px) {
+  .send-row { grid-template-columns: 1fr; gap: 0; }
+  .modal-card-foot .button { flex: 1; }
+}
+</style>

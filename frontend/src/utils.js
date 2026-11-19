@@ -171,20 +171,6 @@ export default class Utils {
     });
   };
 
-  // The usual confirmation with a warning box under it and a named confirm button, for
-  // going ahead although something was found. Every line is escaped; **...** marks its lead.
-  confirmWithWarnings = (msg, lines, confirmText, onConfirm) => {
-    const line = (l) => `<p>${this.escapeHTML(l).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')}</p>`;
-    Dialog.confirm({
-      scroll: 'keep',
-      message: `${this.escapeHTML(msg || this.i18n.t('globals.messages.confirm')).replace(/\n/g, '<br>')}`
-        + `<div class="notification is-warning is-light mt-3 mb-0" style="padding:12px 14px" data-cy="warn-box">${lines.map(line).join('')}</div>`,
-      confirmText,
-      cancelText: this.i18n.t('globals.buttons.cancel'),
-      onConfirm,
-    });
-  };
-
   prompt = (msg, inputAttrs, onConfirm, onCancel, params) => {
     const p = params || {};
 

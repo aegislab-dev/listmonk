@@ -248,7 +248,11 @@ func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs
 }
 
 // UpdateCampaignStatus updates a campaign's status, eg: draft to running.
-func (c *Core) UpdateCampaignStatus(id int, status string, from string) (models.Campaign, error) {
+//
+// seenAt (AXM, LST-48) is the campaign's updated_at that the pre-send confirmation showed,
+// as text exactly as it was read. When it is not empty and the campaign was changed since,
+// nothing is changed and the error is a 409.
+func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt string) (models.Campaign, error) {
 	cm, err := c.GetCampaign(id, "", "")
 	if err != nil {
 		return models.Campaign{}, err
@@ -291,6 +295,9 @@ func (c *Core) UpdateCampaignStatus(id int, status string, from string) (models.
 		return models.Campaign{}, err
 	}
 	defer tx.Rollback()
+	if err := c.checkCampaignSeen(tx, id, seenAt); err != nil {
+		return models.Campaign{}, err
+	}
 	if from != "" && cm.Status == models.CampaignStatusDraft {
 		if _, err := tx.Stmtx(c.q.UpdateCampaignFrom).Exec(id, from); err != nil {
 			return models.Campaign{}, err

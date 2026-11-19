@@ -281,6 +281,10 @@
       @close="closePreview" />
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
       @close="reactionCampaign = null" />
+    <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
+      @close="sendAsk = null">
+      <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status" @done="onSendDone" />
+    </b-modal>
   </section>
 </template>
 
@@ -289,9 +293,9 @@ import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import reactionStatuses from '../campaign-reaction-list';
-import { trackingConfirmLines } from '../tracking-check';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
+import CampaignSendConfirm from '../components/CampaignSendConfirm.vue';
 import CopyText from '../components/CopyText.vue';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
 
@@ -299,13 +303,16 @@ export default Vue.extend({
   components: {
     CampaignPreview,
     CampaignReactionList,
+    CampaignSendConfirm,
     EmptyPlaceholder,
     CopyText,
   },
 
   data() {
     return {
-      checkingSend: false,
+      // The window every start, resume and schedule goes through (LST-48).
+      isSendVisible: false,
+      sendAsk: null,
       previewItem: null,
       reactionCampaign: null,
       queryParams: {
@@ -437,27 +444,18 @@ export default Vue.extend({
       }, 1000);
     },
 
-    // Starting, resuming or scheduling from the list sends the saved campaign as it is:
-    // the same tracking warning as on the campaign page comes first (LST-44).
-    async confirmSend(c, status) {
-      if (this.checkingSend) return;
-      this.checkingSend = true;
-      const report = await this.$api.checkCampaignTracking(c.id, {}).catch(() => null);
-      this.checkingSend = false;
+    // Starting, resuming or scheduling from the list sends the saved campaign as it is, and
+    // goes through the same window as the campaign page (LST-48).
+    confirmSend(c, status) {
+      this.sendAsk = { id: c.id, name: c.name, status };
+      this.isSendVisible = true;
+    },
 
-      const msg = status === 'scheduled' ? this.$t('campaigns.confirmSchedule') : null;
-      const fn = () => this.changeCampaignStatus(c, status);
-      const warnings = trackingConfirmLines(report).map(({ key, params }) => this.$t(key, params));
-      if (!warnings.length) {
-        this.$utils.confirm(msg, fn);
-        return;
-      }
-      this.$utils.confirmWithWarnings(
-        msg,
-        warnings,
-        this.$t(status === 'scheduled' ? 'campaigns.tracking.confirm.schedule' : 'campaigns.tracking.confirm.start'),
-        fn,
-      );
+    onSendDone(out) {
+      const c = this.sendAsk;
+      this.$utils.toast(this.$t('campaigns.statusChanged', { name: c.name, status: (out && out.status) || c.status }));
+      this.getCampaigns();
+      this.pollStats();
     },
 
     changeCampaignStatus(c, status) {
