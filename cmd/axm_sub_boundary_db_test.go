@@ -180,10 +180,10 @@ func TestBoundaryEditKeepsProfile(t *testing.T) {
 	before := e.row(e.s2)
 
 	for what, change := range map[string]func(m map[string]any){
-		"name":    func(m map[string]any) { m["name"] = "renamed" },
-		"email":   func(m map[string]any) { m["email"] = "other@example.invalid" },
-		"status":  func(m map[string]any) { m["status"] = "blocklisted" },
-		"attribs": func(m map[string]any) { m["attribs"] = map[string]any{"city": "Busan", "n": 3} },
+		"name":            func(m map[string]any) { m["name"] = "renamed" },
+		"email":           func(m map[string]any) { m["email"] = "other@example.invalid" },
+		"status":          func(m map[string]any) { m["status"] = "blocklisted" },
+		"attribs":         func(m map[string]any) { m["attribs"] = map[string]any{"city": "Busan", "n": 3} },
 		"attribs dropped": func(m map[string]any) { delete(m, "attribs") },
 	} {
 		if code := put(e.s2, e.putBody(e.s2, change, e.aList)); code != http.StatusForbidden {
