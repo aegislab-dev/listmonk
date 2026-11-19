@@ -19,22 +19,38 @@
       </header>
 
       <section expanded class="modal-card-body">
+        <div v-if="profileLocked" class="notification is-warning is-light locked-notice" role="note" data-cy="locked-notice">
+          <p class="locked-title">
+            <svg class="lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 11h12v9H6zM8.5 11V7.5a3.5 3.5 0 0 1 7 0V11" />
+            </svg>
+            {{ $t('teams.lockedFormTitle') }}
+          </p>
+          <p>{{ $t('teams.lockedForm') }}</p>
+          <b-taglist v-if="data.otherTeams && data.otherTeams.length" data-cy="other-teams">
+            <b-tag v-for="t in data.otherTeams" :key="t.team">
+              {{ $t('teams.otherTeamLists', { team: t.team || $t('teams.noTeam'), num: t.lists }) }}
+            </b-tag>
+          </b-taglist>
+        </div>
+
         <b-field :label="$t('subscribers.email')" label-position="on-border">
           <b-input :maxlength="200" v-model="form.email" name="email" :ref="'focus'"
-            :placeholder="$t('subscribers.email')" required />
+            :placeholder="$t('subscribers.email')" required :disabled="profileLocked" />
         </b-field>
 
         <div class="columns">
           <div class="column is-8">
             <b-field :label="$t('globals.fields.name')" label-position="on-border">
-              <b-input :maxlength="200" v-model="form.name" name="name" :placeholder="$t('globals.fields.name')" />
+              <b-input :maxlength="200" v-model="form.name" name="name" :placeholder="$t('globals.fields.name')"
+                :disabled="profileLocked" />
             </b-field>
           </div>
           <div class="column is-4">
             <b-field :label="$t('globals.fields.status')" label-position="on-border"
-              :message="unblockLocked ? $t('teams.unblockAdminOnly') : $t('subscribers.blocklistedHelp')">
+              :message="statusHelp">
               <b-select v-model="form.status" name="status" :placeholder="$t('globals.fields.status')" required
-                expanded :disabled="unblockLocked" data-cy="sub-status">
+                expanded :disabled="unblockLocked || profileLocked" data-cy="sub-status">
                 <option value="enabled">
                   {{ $t('subscribers.status.enabled') }}
                 </option>
@@ -46,7 +62,7 @@
           </div>
         </div>
 
-        <div v-if="isEditing && data.otherTeams && data.otherTeams.length" class="other-teams-box" data-cy="other-teams">
+        <div v-if="isEditing && !profileLocked && data.otherTeams && data.otherTeams.length" class="other-teams-box" data-cy="other-teams">
           <p class="label">{{ $t('teams.otherTeams') }}</p>
           <b-taglist>
             <b-tag v-for="t in data.otherTeams" :key="t.team" type="is-info is-light">
@@ -119,7 +135,7 @@
           <b-tab-item :label="`${$t('globals.terms.bounces')} (${bounces.length})`" class="bounces"
             :disabled="bounces.length === 0">
             <a href="#" class="is-size-6 is-pulled-right" disabed="true" @click.prevent="deleteBounces"
-              v-if="isBounceVisible">
+              v-if="isBounceVisible && !profileLocked">
               <b-icon icon="trash-can-outline" />
               {{ $t('globals.buttons.delete') }}
             </a>
@@ -158,7 +174,7 @@
         <b-field :message="$t('subscribers.attribsHelp') + ' ' + egAttribs" class="mt-6">
           <div>
             <h5>{{ $t('globals.terms.attribs') }}</h5>
-            <b-input v-model="form.strAttribs" name="attribs" type="textarea" />
+            <b-input v-model="form.strAttribs" name="attribs" type="textarea" :disabled="profileLocked" />
             <a href="https://listmonk.app/docs/concepts" target="_blank" rel="noopener noreferrer" class="is-size-7">
               {{ $t('globals.buttons.learnMore') }} <b-icon icon="link-variant" size="is-small" />
             </a>
@@ -286,6 +302,20 @@ export default Vue.extend({
     },
 
     updateSubscriber() {
+      // A locked profile is not sent at all: only the lists are saved, so nothing the form
+      // shows of the profile can count as a change.
+      if (this.profileLocked) {
+        this.$api.updateSubscriberLists(this.form.id, {
+          lists: this.form.lists.map((l) => l.id),
+          preconfirm_subscriptions: this.form.preconfirm,
+        }).then((d) => {
+          this.$emit('finished');
+          this.$parent.close();
+          this.$utils.toast(this.$t('globals.messages.updated', { name: d.name }));
+        });
+        return;
+      }
+
       let attribs = {};
       if (this.form.strAttribs) {
         attribs = this.validateAttribs(this.form.strAttribs);
@@ -351,6 +381,17 @@ export default Vue.extend({
       return this.isEditing && this.data.status === 'blocklisted' && !this.$can('subscribers:get_all');
     },
 
+    // The subscriber is on a list the user may not manage (edit_locked from the server): the
+    // profile is an administrator's to change, the user's own lists stay open.
+    profileLocked() {
+      return this.isEditing && !!this.data.editLocked;
+    },
+
+    statusHelp() {
+      if (this.profileLocked) return this.$t('teams.lockedField');
+      return this.unblockLocked ? this.$t('teams.unblockAdminOnly') : this.$t('subscribers.blocklistedHelp');
+    },
+
     hasOptinList() {
       return this.form.lists.some((l) => l.optin === 'double');
     },
@@ -371,7 +412,9 @@ export default Vue.extend({
     }
 
     this.$nextTick(() => {
-      this.$refs.focus.focus();
+      if (!this.profileLocked) {
+        this.$refs.focus.focus();
+      }
     });
   },
 });
@@ -380,4 +423,11 @@ export default Vue.extend({
 <style scoped>
 .other-teams-box { background: #f8fafb; border: 1px solid #dce3e8; border-radius: 5px; padding: 10px 14px; margin: 0 0 16px; }
 .other-teams-box .label { margin-bottom: 4px; }
+.lock-icon { width: 1.05em; height: 1.05em; vertical-align: -0.15em; fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linejoin: round; stroke-linecap: round; }
+.locked-notice { padding: 12px 16px; margin-bottom: 20px; }
+.locked-notice p { margin: 0 0 4px; }
+.locked-notice .locked-title { font-weight: 600; }
+.locked-notice .tags { margin-top: 8px; margin-bottom: 0; }
+.locked-notice .tag { background: #fff; border: 1px solid #ecd9a0; color: #7a5b00; }
 </style>

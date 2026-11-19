@@ -28,6 +28,13 @@ type Queries struct {
 	AxmLockRecentCampaign  *sqlx.Stmt `query:"axm-lock-recent-campaign"`
 	AxmRecentCampaignLists *sqlx.Stmt `query:"axm-recent-campaign-lists"`
 
+	AxmAddressCheckCount         *sqlx.Stmt `query:"axm-address-check-count"`
+	AxmAddressCheckAudience      *sqlx.Stmt `query:"axm-address-check-audience"`
+	AxmAddressCheckDynamic       *sqlx.Stmt `query:"axm-address-check-dynamic"`
+	AxmAddressCheckCountOptin    *sqlx.Stmt `query:"axm-address-check-count-optin"`
+	AxmAddressCheckAudienceOptin *sqlx.Stmt `query:"axm-address-check-audience-optin"`
+	AxmAddressCheckLinked        *sqlx.Stmt `query:"axm-address-check-linked"`
+
 	AxmDrawLock                    *sqlx.Stmt `query:"axm-draw-lock"`
 	AxmDrawSource                  *sqlx.Stmt `query:"axm-draw-source"`
 	AxmDrawCounts                  *sqlx.Stmt `query:"axm-draw-counts"`
@@ -68,6 +75,11 @@ type Queries struct {
 	AxmVisibleTeams                *sqlx.Stmt `query:"axm-visible-teams"`
 	AxmTeamlessListIDs             *sqlx.Stmt `query:"axm-teamless-list-ids"`
 	AxmSubscriberOtherTeams        *sqlx.Stmt `query:"axm-subscriber-other-teams"`
+	AxmSubscriberLocked            *sqlx.Stmt `query:"axm-subscriber-locked"`
+	AxmLockSubscribers             *sqlx.Stmt `query:"axm-lock-subscribers"`
+	AxmUpdateSubscriberLists       *sqlx.Stmt `query:"axm-update-subscriber-lists"`
+	AxmQuerySubscribersMulti       string     `query:"axm-query-subscribers-multi"`
+	AxmQuerySubscribersMultiCount  string     `query:"axm-query-subscribers-multi-count"`
 	NextCampaignSubscribersDynamic *sqlx.Stmt `query:"next-campaign-subscribers-dynamic"`
 	ListSenderAddresses            *sqlx.Stmt `query:"list-sender-addresses"`
 	GetSenderAddress               *sqlx.Stmt `query:"get-sender-address"`

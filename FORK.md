@@ -357,13 +357,13 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - **메일의 수신거부(링크, 페이지 버튼, 원클릭 `List-Unsubscribe-Post`)는 항상 전체 차단이다**: `SubscriptionPrefs`가 `unsubscribe-by-campaign`을 `blocklist=true`로 부른다(SQL은 그대로). 모든 리스트의 구독이 `unsubscribed`가 되고 상태가 `blocklisted`라 어느 팀도 다시 보낼 수 없다. 「구독 설정 관리」(리스트별 선택) 화면은 그대로 리스트별이다.
 - `axm_suppressed_emails`(주소의 `sha256(lower(trim(email)))`만 저장, 평문 주소 없음)가 차단된 주소를 기억한다. 트리거: 차단되면 기록(`axm_track_blocklist_ins/_upd`), **차단이 풀릴 때만** 그 주소를 지움(차단된 사람의 이메일을 고쳐도 옛 주소는 차단으로 남고 새 주소도 차단된다 — 풀려면 차단을 풀거나 SQL로), 차단된 사람을 지울 때 남김(`axm_keep_blocklist`, 「차단된 사람 모두 삭제」 포함), 기록에 있는 주소로 새 구독자가 들어오거나 다른 구독자의 이메일이 그 주소로 바뀌면 `blocklisted`(바뀔 때는 모든 구독 `unsubscribed`)(`axm_suppress_new_subscriber`, `axm_suppress_changed_email`; 구독 해지는 문장이 끝난 뒤 지연 트리거 `axm_unsubscribe_blocked_email`이 한다 — 구독자 수정 문장이 같은 구독 행을 쓰기 때문), 차단된 사람의 구독은 어떤 경로로 들어와도 `unsubscribed`(`axm_block_subscription`). 그래서 지우거나 차단한 사람을 가져오기·API 추가·가입 폼으로 다시 넣어도 되살아나지 않는다. 마이그레이션이 지금 차단된 사람을 기록에 채운다.
 - 차단 해제(구독자 수정·PATCH에서 상태를 `blocklisted`에서 바꾸기)는 `subscribers:get_all` 보유자만(403). 기록은 해제하면 지워진다.
-- 차단 안 된 사람을 지우는 것은 그냥 삭제다(같은 주소를 다시 가져오면 새로 들어온다). **구독자는 전사에서 한 행이라 팀원이 자기 리스트에 있는 사람을 지우거나 차단하면 다른 팀 리스트에서도 사라진다**(upstream 동작: 내 리스트 한 곳에만 있어도 통과). 구독자 목록·상세의 「다른 팀 리스트에서도 사용 중」 표시가 이를 알린다.
+- 차단 안 된 사람을 지우는 것은 그냥 삭제다(같은 주소를 다시 가져오면 새로 들어온다). 구독자는 전사에서 한 행이다. **LST-42부터 팀원은 자기가 관리하는 리스트에만 있는 사람만 지우거나 차단한다**(다른 리스트에도 구독 행이 있으면 403, 아래 「팀 경계」 절). 그 전에는 upstream 동작대로 내 리스트 한 곳에만 있어도 통과해 다른 팀 리스트에서도 사라졌다.
 - 반송: 설정 `bounce.actions`의 `blocklist`는 차단이라 기록된다. `unsubscribe`(구독만 해지, 상태 enabled)·`delete`(행 삭제)는 같은 주소가 다시 들어오면 되살아나므로 `blocklist`를 권장한다(운영 설정, 코드 변경 아님). SES 억제 목록과는 동기화하지 않는다(listmonk가 차단한 주소는 어차피 안 보내고, SES가 막은 주소는 반송 웹훅이 켜져 있어야 listmonk에 들어온다).
 
 ### 화면 (LST-24)
 - 사용자 메뉴 아래 **「팀」**(`/admin/users/teams`, `frontend/src/views/Teams.vue`·`components/TeamForm.vue`·`TeamMembers.vue`): 팀 만들기·이름 바꾸기(리스트 태그 같이 바뀜 경고)·팀원 넣고 빼기(다른 팀에서 옮겨 옴, 역할 바뀜 경고)·팀원 기본 사용자 역할·삭제(팀원·리스트 없을 때만). 리스트 역할 화면에서 팀 역할은 읽기 전용(「팀 (자동 관리)」, 팀 화면 링크).
 - 리스트 목록: 팀 배지(`팀:` 접두사는 뗌), 관리자용 「팀」 필터(`?team=` 주소에 남음, 「팀 없음」은 `team=none`)와 「팀 없는 리스트 N개」 링크, 팀원 화면에는 내 팀 표시와 「새로 만들기」·뽑기 버튼(`$canCreateList()`). 리스트 만들기·편집 창의 「팀」 칸(관리자: 선택, 새 리스트는 필수, 「팀 없음(관리자 전용)」은 `no_team`; 팀원: 고정), 뽑기 창의 「새 리스트의 팀」, 동적 리스트 「제외 리스트 새로 만들기」의 팀. 태그 입력 칸에서는 팀 태그를 빼고 보여 주며 저장 때 합친다(`frontend/src/teams.js`).
-- 구독자 목록·상세: `other_teams`로 「다른 팀 리스트에서도 사용 중 · 팀 이름 N개」 표시, 삭제·차단 확인에 경고 한 줄. 차단된 구독자의 상태 칸은 `subscribers:get_all`이 없으면 잠긴다.
+- 구독자 목록·상세: `other_teams`로 「다른 팀 리스트에서도 사용 중 · 팀 이름 N개」 표시. 삭제·차단 확인의 경고 한 줄은 LST-42에서 잠금 표시와 「N명 제외」 안내로 바뀌었다(아래 「팀 경계」 절). 차단된 구독자의 상태 칸은 `subscribers:get_all`이 없으면 잠긴다.
 - 공개 수신거부 화면(`static/public/templates/subscription.html`): 「향후 모든 이메일 구독 해지」 체크박스를 없애고 「모든 메일 구독 해지」 버튼과 설명, 완료 문구에 「어느 리스트의 메일도 받지 않음」을 적었다(새 문구 `public.unsubAll*`는 영어·한국어만, 다른 언어는 영어). 「환경설정 관리」 화면은 그대로.
 - 프로필을 다시 읽는다(`$refreshProfile()`): 팀원이 리스트를 만들거나 뽑은 뒤 `$canList`가 새 리스트를 알게 한다.
 
@@ -385,6 +385,62 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - 이전 이미지로 되돌려도 컬럼·트리거는 남아 동작한다(차단 기록 트리거가 남아 차단이 유지되는 쪽으로 안전).
 - 새 사용자(OIDC)의 기본 사용자 역할 `viewer`에는 `subscribers:get_all`·`campaigns:get_all`이 있어 팀 배정 전에는 전체를 본다(운영 설정).
 - upstream을 따라갈 때: `lists.go`의 `CreateList`/`UpdateList`/`GetLists`, `roles.go`의 `UpdateListRole`/`DeleteRole`, `users.go`의 프로필, `subscribers.go`의 목록·단건·수정·PATCH, `public.go`의 `SubscriptionPrefs`, `handlers.go`의 라우트 3줄과 팀 라우트에 포크 줄이 있다. `schema.sql`의 `.8`·`.9` 블록은 마이그레이션과 글자 단위로 같다(시험이 확인).
+
+## 팀 경계: 구독자 쓰기 권한과 목록 중복 (LST-42)
+
+구독자는 전사에 한 행이다. upstream은 「구독자가 내가 읽는 리스트 한 곳에라도 있으면」 그 행을 고치고 차단하고 지우게 한다(`hasSubPerm`, `has-subscriber-list`). 그래서 한 팀의 팀원이 다른 팀 리스트에도 있는 사람을 바꿀 수 있었다. 이 절은 그 판정을 읽기와 쓰기로 나눈다. 마이그레이션은 없다. upstream의 `queries/subscribers.sql`과 `hasSubPerm`은 바꾸지 않았다.
+
+### 규칙
+- **대상**: `lists:manage_all`이 없는 사용자(Super Admin 제외). 팀원, 일반 리스트 역할, `lists:get_all`만 있는 역할, API 토큰 사용자가 모두 같다.
+- **잠긴 구독자**: 구독 행(`subscriber_lists`, 상태 무관 — 수신거부 행과 동적 리스트의 제외 행 포함)이 **내가 `list:manage`를 가진 리스트 밖에 하나라도 있는** 구독자. 팀 태그가 둘인 리스트는 두 팀 모두 manage라서 그 리스트에만 있는 사람은 두 팀 모두에게 잠기지 않는다. 팀 없는 리스트에 함께 있는 사람은 잠긴다. 구독 행이 하나도 없는 사람(어느 팀의 것도 아님)은 잠기지 않는다. 팀원은 읽기 판정(내 리스트에 있어야 함)에서 걸려 손댈 수 없고, `lists:get_all`이 있는 역할은 종전처럼 읽고 바꿀 수 있다.
+- **읽기는 그대로**: 목록, 상세, 활동, 개인정보 내보내기, CSV 내보내기, 옵트인 메일 재발송(`hasSubPerm`).
+- **구독자 행을 바꾸는 일은 잠긴 사람에게 403**(`deleteSubs`·`blocklistSubs`·`deleteSubBounces`, 문구 `teams.sharedLocked`에 잠긴 ID): 차단(`PUT /api/subscribers/:id/blocklist`, `PUT /api/subscribers/blocklist`), 삭제(`DELETE /api/subscribers/:id`, `DELETE /api/subscribers`), 반송 기록 삭제(`DELETE /api/subscribers/:id/bounces`). ID 여러 개 중 하나라도 잠겼으면 **요청 전체가 거부**되고 아무도 바뀌지 않는다.
+- **수정(`PUT`·`PATCH /api/subscribers/:id`)**: 잠긴 사람은 이름·이메일·상태·속성 중 하나라도 지금 값과 다르면 403. 모두 같으면 통과하고(수정 창에서 리스트만 바꾼 저장), **구독자 행은 아예 쓰지 않고** 내 리스트의 구독 행만 바꾼다(`updateSub` → `core.UpdateSubscriberBounded`, 쿼리 `axm-update-subscriber-lists`). 속성을 다시 직렬화해 쓰지 않으므로 JSON 숫자로 정확히 못 담는 큰 정수(2^53 초과)도 그대로 남고 `updated_at`도 안 바뀐다. 비교는 저장 쿼리가 읽는 방식대로다: 빈 이메일·이름·상태는 「변경 없음」, 이메일은 대소문자 무시, 이름은 앞뒤 공백 무시, 속성은 JSON 값 비교(`PUT`에서 `attribs`를 빼면 `{}`로 덮는 요청이라 「변경」).
+- **내 리스트의 구독 바꾸기는 잠긴 사람에게도 된다**: `PUT /api/subscribers/lists(/:id)`, `PUT /api/subscribers/query/lists`, 수정 저장의 `lists`. 내 manage 리스트의 행만 바뀐다. **manage 리스트가 하나도 없는 사용자의 수정 저장은 어떤 구독도 지우지 않는다**(`ownListsOnly`): upstream은 빈 배열을 「모든 리스트」로 읽어, 읽기 전용 역할이 수정 창을 그대로 저장하면 그 사람의 모든 구독을 지웠다.
+- **조건 일괄 삭제·차단**(`POST /api/subscribers/query/delete`, `PUT /api/subscribers/query/blocklist`, 화면의 「전체 선택」): 잠긴 사람을 건너뛴다(오류 없음). upstream의 한 문장(`delete-subscribers-by-query` 등)은 문장이 시작될 때의 소속으로 대상을 골라, 실행 중에 다른 팀이 넣은 구독까지 지우거나 차단할 수 있다. 그래서 이 사용자에게는 쓰지 않는다(`bulkByQuery` → `core.BulkByQueryBounded`): ① 사용자의 조건에 `core.SharedSubscriberExclusion(manage 리스트)`를 `AND`로 붙여 대상 ID를 고르고(내보내기 쿼리 `query-subscribers-for-export` — 조건·리스트·구독 상태를 같은 방식으로 읽고, 허용된 테이블만 쓰는지도 확인한다), ② **한 트랜잭션에서** 그 사람들의 구독자 행을 `FOR UPDATE`로 잠근 뒤 잠김 여부를 **다시 읽어** 잠기지 않은 사람만 삭제·차단한다. 도중에 오류가 나면 전부 되돌아가 아무도 바뀌지 않고(응답 500, 감사 기록 없음), 대상이 많으면 그만큼 행 잠금을 오래 쥔다. 붙이는 조건은 정수 ID만 들어간 `NOT EXISTS`이고 `subscribers:sql_query` 검사 대상이 아니다. 감사 기록의 건수는 **실제로 처리한 수**(`detail.counted="done"`: 잠근 시점에 아직 있던, 잠기지 않은 사람 — 그 사이 다른 요청이 지운 사람은 세지 않는다), `detail.skipped_shared`는 건너뛴 수(직전에 정확히 센 「조건에 맞는 수 − 잠기지 않은 수」에 두 번째 판정에서 빠진 수를 더한 값), `detail.query`에는 사용자의 조건만 남는다. 관리자(`lists:manage_all`)는 upstream 문장 그대로다.
+- **가져오기**: 이 사용자의 `overwrite_userinfo`는 서버가 끈다(옛 `overwrite`는 `overwrite_subscription_status`만 남긴다). 이미 있는 주소의 이름·속성은 바뀌지 않고, 새 사람은 파일대로 들어가며, 내 리스트의 구독 상태 덮어쓰기는 그대로 된다. 감사 기록 `import.start`에 실제 적용된 값이 남는다. 차단 모드 가져오기는 그대로다(전사 차단).
+- **판정과 변경은 한 트랜잭션**이다(`internal/core/axm_sub_boundary.go`의 `boundedTx`): 대상 구독자 행을 `FOR UPDATE`로 잠그고(`axm-lock-subscribers`) 잠김 여부를 읽은 뒤 삭제·차단·반송 삭제·수정을 실행한다. 새 구독 행은 외래 키 때문에 구독자 행의 key-share 잠금이 필요하므로, 다른 팀이 같은 순간에 넣는 구독은 판정에 보이거나 변경이 끝날 때까지 기다린다. ID로 하는 쓰기와 조건 일괄(위) 모두 이 방식이다.
+- 차단 해제는 종전대로 `subscribers:get_all` 보유자만.
+
+### API 응답
+- `GET /api/subscribers`, `GET /api/subscribers/:id`: 대상 사용자에게 잠긴 구독자마다 `edit_locked: true`가 붙는다(아니면 필드 없음). `other_teams`(활성 구독·읽을 수 없는 리스트 기준)와 기준이 달라, 다른 팀 리스트에 수신거부 행만 남은 사람은 `other_teams` 없이 `edit_locked`만 붙는다.
+
+### 목록 중복 행
+- upstream `query-subscribers`·`query-subscribers-count`는 리스트 ID가 2개 이상이면 `subscriber_lists`를 조인해, 그중 두 곳에 있는 사람을 두 줄로 돌려주고 수도 행 수로 센다. 팀원이 리스트를 고르지 않고 목록을 열면 자기 리스트 전부가 들어가 이 경우가 된다.
+- 리스트 ID가 **2개 이상일 때만** `axm-query-subscribers-multi`·`axm-query-subscribers-multi-count`(`queries/axm_teams.sql`)를 쓴다. 같은 조인·조건으로 ID만 고르고 구독자는 한 번씩 읽으며, 수는 `COUNT(DISTINCT subscribers.id)`다. 조인이 안쪽에 남아 있어 `subscriber_lists.status = ...` 같은 SQL 조건과 구독 상태 필터가 그대로 동작한다. 관리자(리스트 ID 없음)와 리스트 하나를 고른 경우는 upstream 쿼리 그대로다.
+
+### 화면
+- 구독자 목록: 잠긴 행은 삭제 아이콘 자리에 자물쇠(`data-cy=btn-delete-locked`, 툴팁 `teams.lockedRow`). `other_teams` 배지가 없는 잠긴 행에는 「다른 팀 리스트에 기록 있음」(`data-cy=locked-record`). 선택 일괄 차단·삭제는 잠긴 사람을 빼고 보내며 확인 창이 「선택한 N명 중 K명 제외」를 알린다. 전원이 잠겼으면 실행 버튼 없는 안내만 뜬다. 「전체 선택」은 「이 중 다른 팀 리스트에도 있는 사람은 제외됩니다」를 알리고 끝난 뒤 건수 없는 알림을 띄운다(화면이 미리 셀 수 없다).
+- 구독자 수정 창: 잠긴 사람은 맨 위 안내(`data-cy=locked-notice`)와 함께 이메일·이름·상태·추가 정보가 잠긴다. 리스트 선택과 저장은 그대로이고, 저장은 `PATCH`로 리스트(`lists`, 사전 확인을 켰으면 `preconfirm_subscriptions`)만 보낸다. 상세 링크(`/subscribers/:id`)로 열 때 응답의 속성 키를 camelCase로 바꾸던 것을 그만뒀다(`getSubscriber`; 전에는 `customer_id`가 `customerId`로 보이고 저장하면 그렇게 바뀌었다). 반송 기록 「삭제」 링크는 숨긴다.
+- 가져오기: 대상 사용자에게 「사용자 정보 덮어쓰기」 스위치는 꺼진 채 잠기고 이유를 적는다.
+- 활동 기록: `skipped_shared`가 「다른 팀 리스트에도 있어 제외한 수」로 나온다.
+- 관리자(`lists:manage_all`) 화면은 그대로다.
+
+### 측정 (로컬 Postgres 17, 합성 데이터)
+구독자 400,000명, 구독 행 546,227개, 리스트 14개(팀 가 6개·팀 나 6개·팀 없음 2개), 2개 이상 리스트에 있는 사람 130,730명(32.7%), 한 리스트는 156,428명. 팀 가의 리스트에는 270,986명(구독 행 306,436개)이 있고 그중 76,877명이 잠긴 구독자다. 앱이 보내는 SQL을 psql에서 7회 돌린 중앙값이다(`~/.herdr-projects/reports/listmonk/42/harness/perf.py`).
+
+| 항목 | 시간 |
+|---|---|
+| 팀원 목록 첫 페이지(20명), upstream 쿼리(중복 있음) / multi 쿼리 | 0.5ms / 0.8ms |
+| 팀원 목록 500쪽(offset 10,000), upstream / multi | 3.4ms / 6.1ms |
+| 팀원 목록 수 세기, upstream(행 306,436) / multi(사람 270,986) | 56.5ms / 80.2ms |
+| 팀원 이름 검색(「Person 1234」, 111명) multi 목록 / 수 | 424.7ms / 193.9ms |
+| 관리자 목록 첫 페이지(리스트 없음, 쿼리 변경 없음) | 0.4ms |
+| 리스트 하나(15만 명) 첫 페이지(쿼리 변경 없음) | 0.7ms |
+| 잠김 판정 50명(`axm-subscriber-locked`) | 0.5ms |
+| 15만 명 리스트 조건 일괄 수 세기, 제외 조건 없음 / 있음(120,758명 남음) | 42.7ms / 89.9ms |
+
+이름 검색은 upstream과 같은 정규식 전체 훑기라 느리다(이번 변경과 무관). 운영 수치(Q1~Q3)는 코디네이터가 Railway Query 복구 뒤 실행한다.
+
+### 남긴 것
+- 반송 화면의 「모두 차단」(`PUT /api/bounces/blocklist`, `bounces:manage`)은 팀과 무관하게 반송된 사람 전원을 차단한다(전사 차단, upstream 그대로). 선택 차단은 구독자 ID로 보내므로 잠긴 사람이 섞이면 403이다.
+- 팀원이 리스트를 고르지 않고 「전체 선택」 일괄 작업이나 CSV 내보내기를 하면 아무것도 처리되지 않는다(upstream의 `query-subscribers-template`·`query-subscribers-for-export`가 `list_id = ALL(리스트들)`이라 리스트가 2개 이상이면 거짓). 리스트 하나를 고르면 된다.
+- 옵트인 메일 재발송은 읽기 규칙을 따른다(구독자를 바꾸지 않는다).
+
+### upstream을 따라갈 때
+- `cmd/subscribers.go`: `GetSubscriber`·`QuerySubscribers`의 `attachLocked`, `UpdateSubscriber`·`PatchSubscriber`의 `updateSub`, 차단·삭제·반송 삭제 5곳의 `blocklistSubs`·`deleteSubs`·`deleteSubBounces`(upstream의 `hasSubPerm` 줄은 그대로), 조건 일괄 2곳의 `guardBulkQuery`·`bulkByQuery`. upstream이 `update-subscriber-with-lists`의 구독 부분을 바꾸면 `axm-update-subscriber-lists`에도 넣는다. `cmd/import.go`의 `restrictImportOverwrite` 한 줄. `internal/core/subscribers.go`의 `QuerySubscribers`·`getSubscriberCount`에 「리스트 2개 이상이면 multi 문장」 두 블록(upstream의 `stmt` 줄은 그대로 두고 그 아래에 덧붙였다 — CodeQL이 그 줄의 변경을 새 경고로 본다).
+- upstream이 `query-subscribers`의 조인·조건을 바꾸면 `axm-query-subscribers-multi`(-count)에도 같은 변경을 넣는다.
+- 판정 코드는 `cmd/axm_sub_boundary.go`·`internal/core/axm_sub_boundary.go`, 시험은 `cmd/axm_sub_boundary_db_test.go`·`internal/core/axm_sub_boundary_test.go`·`frontend/cypress/e2e/list-teams.cy.js`.
 
 ## 감사 기록과 리스트 휴지통 (LST-27)
 
@@ -915,3 +971,58 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 - 시험: `frontend/tests/schedule-time.test.mjs`는 `TZ`를 바꿔(`Asia/Seoul`, `America/New_York`, `Pacific/Auckland`, `UTC`) 돌린다(CI가 세 가지를 돌리고 이미지 빌드가 UTC로 돌린다). `cmd/axm_send_tz_test.go`, `frontend/cypress/e2e/schedule-time.cy.js`.
 
 **후속 후보 (이번에 하지 않음): 받는 사람별 현지 시각 발송.** 각 수신자의 시간대에 맞춰 같은 현지 시각(예: 현지 09:00)에 보내는 기능이다. 발송 엔진 변경이 필요하고(업스트림 knadh/listmonk#2374), 수신자 `country` 데이터가 약 41%에만 있어 효과가 제한적이다. 이 변경은 입력·표시만 다룬다.
+
+## 발송 전 주소 검사 (LST-43)
+
+반송될 가능성이 큰 주소를 보내기 전에 보여 주고 사람이 고치게 한다. 발송을 막지 않고, 발송 루프(`internal/manager`)와 공용 `utils.SanitizeEmail`에는 손대지 않았다. 검사는 화면이 요청할 때만 돈다. DB 변경·마이그레이션이 없고 외부 검증 API와 SMTP 접속 검사도 쓰지 않는다.
+
+### 분류
+
+한 주소가 여러 분류에 들 수 있다. 화면의 "위험"은 확정과 경고를 합쳐 중복 없이 센 수다.
+
+| 분류 (코드) | 판정 | 무게 |
+|---|---|---|
+| 형식 오류 (`format`) | `utils.SanitizeEmail` 실패 | 확정 |
+| 도메인·메일 서버 없음 (`dead`) | MX가 없고 A/AAAA도 없음, 또는 도메인이 없음 | 확정 |
+| 메일을 받지 않는 도메인 (`nullmx`) | MX가 `.` 하나뿐 (RFC 7505) | 확정 |
+| 일회용 주소 (`disposable`) | 내장 목록의 도메인 또는 그 하위 도메인 | 경고 |
+| 역할 주소 (`role`) | 로컬파트(`+태그` 제외)가 `info`, `booking`, `support` 등 (`internal/addrcheck/roles.go`) | 경고 |
+| 미확인 (`unknown`) | DNS 시간 초과·SERVFAIL 등 | 위험에 넣지 않음 |
+
+- Go 표준 리졸버는 NXDOMAIN과 NODATA를 구분해 주지 않아 "도메인 없음"과 "메일 서버 없음"은 한 분류다.
+- MX가 정상이어도 사서함이 실제로 있는지는 모른다.
+- 국제화 도메인은 punycode로 바꿔 조회한다.
+- 주소 리터럴(`qa@[192.0.2.17]`, RFC 5321 §4.1.3)은 DNS를 거치지 않고 그 호스트로 가므로 조회하지 않고 미확인으로 둔다(위험에 넣지 않고 가져오기에서 빼지 않는다).
+
+### DNS 조회 (`internal/addrcheck/dns.go`)
+
+- Go 리졸버(`PreferGo`)로 MX를 묻고, 없다는 답이면 주소 레코드를 묻는다. 이름 끝에 점을 붙여 호스트 `resolv.conf`의 search 도메인을 타지 않는다.
+- 조회 1건 제한 3초, 동시 8개, 같은 도메인은 요청이 겹쳐도 한 번만 조회한다. 대기 중인 도메인은 20,000개까지다.
+- 캐시는 프로세스 메모리에 도메인 단위로 둔다: 정상 7일, 확정 위험 1일, 미확인은 캐시하지 않는다. 최대 50,000개이고 넘으면 오래된 것부터 버린다. 재시작하면 비워진다.
+- 한 요청이 DNS를 기다리는 시간은 8초다. 그 안에 안 끝난 도메인은 `pending`으로 답하고 조회는 뒤에서 계속한다. 화면은 3초마다 최대 10번 다시 묻고, 그래도 남으면 미확인으로 보인다.
+
+### API (읽기 전용, 감사 기록 없음)
+
+- `POST /api/subscribers/address-check` (`subscribers:import`): 본문 `{emails: [...]}` 최대 50,000개. 분류별 건수와 요청 순서 기준 `issues: {index: [분류...]}`를 준다. 주소는 저장하지 않고 답에도 다시 싣지 않는다.
+- `POST /api/lists/address-check`: 본문 `{list_ids: [...]}`. 볼 수 있는 리스트만 남겨 `axm_campaign_audience`(차단·해지 제외, 이중 동의는 확인된 사람, 동적 리스트 포함)의 주소를 검사한다. 다른 리스트 API처럼 라우트 권한 대신 리스트별 권한으로 거른다. `subscribers:get_all` 또는 `subscribers:get`이 있을 때만 분류별 예시 20개와 구독자 ID·주소(분류당 5,000명까지, 넘으면 `truncated`)를 준다. 동적 리스트가 섞이면 그 미리보기와 같은 규칙을 따른다: 바탕 리스트를 볼 수 있어야 하고, 바탕이 전체 구독자면 `subscribers:get_all`이 있어야 한다. 하나라도 어기면 답 전체가 건수만이다. 주소마다 그 주소의 모든 분류(`tags`)와, 관리할 수 있는 일반 리스트(`targets`)에 자기 구독이 있는지(`direct`)를 같이 준다. 뽑기로 이어져 구독 해지가 함께 번지는 다른 리스트(`axm_propagate_draw_unsub`)는 `linked`(이름)와 `linked_hidden`(볼 수 없는 리스트 수)으로 알려 준다. 대상이 500,000명을 넘으면 검사하지 않고 `too_large`로 답한다. `checked_lists`는 검사한 리스트 수, `unchecked_lists`는 요청했지만 볼 수 없어 뺀 리스트 수다. 본문에 `optin: true`를 주면 옵트인 캠페인의 대상, 곧 발송기(`next-campaign-subscribers`·`-dynamic`, 종류 `optin`)와 같이 고른 이중 동의 일반 리스트의 미확인 구독자(차단 제외)를 검사한다. 동적 리스트는 옵트인 메일을 보내지 않는다.
+
+### 화면
+
+- **캠페인 편집**: 리스트 선택 바로 아래에 한 줄 요약(`AddressCheck.vue`). 일반 캠페인과 옵트인 캠페인(위 `optin` 대상) 모두에 보인다. 펼치면 분류별 건수·예시·목록 보기·구독 해지. 구독 해지는 기존 `PUT /api/subscribers/lists`(`unsubscribe`)를 써서 권한 검사와 감사 기록(`subscriber.lists_unsubscribe`)이 그대로 적용되고, 고른 리스트 가운데 사용자가 관리할 수 있는 일반 리스트(응답의 `targets`)에서만 한다. 모두 확인 대화를 거치고, 대화와 패널은 뽑기로 이어져 함께 해지되는 리스트를 밝힌다. 동적 리스트나 읽기 전용 리스트로만 들어온 사람(`direct`가 아님)은 해지 대상에서 빠지고 버튼도 그 수만큼만 센다. 차단 버튼은 없다(이 포크의 차단은 주소 해시 억제라 되돌리기 어렵다).
+- **가져오기 열 맞춤 검토**: 가져올 주소를 검사해 분류별 건수와 원본 행 번호를 보인다. 스위치 「확정 위험 주소는 빼고 올리기」(기본 켬), 「역할·일회용 주소도 빼기」(기본 끔). 새 파일을 고를 때마다(같은 탭에서 앞 가져오기를 끝낸 뒤 포함) 두 스위치는 기본값으로 돌아간다. 뺀 행은 업로드 CSV와 요약 수에서 빠지고, 「빠진 행 CSV 내려받기」(행 번호·주소·이유)는 브라우저에서만 만든다. 검사가 답할 때까지(조회가 남아 다시 묻는 동안 포함) 올리기 버튼은 잠기고, 검사가 실패하면 그대로 올릴 수 있다. 이메일 열을 바꾸면 다시 검사한다. 차단 모드와 원본 그대로 모드(raw·ZIP)에는 이 검사가 없다.
+- **가져오기 끝 상자**: 가져오기 상태 응답(`GET /api/import/subscribers`)이 그 가져오기가 구독시킨 리스트(`axm_lists`, 권한으로 거른 뒤, 차단 모드는 없음)를 같이 준다. 끝나면 그 리스트를 같은 패널로 검사한다. 상태와 리스트는 한 잠금 안에서 같이 읽어, 다음 가져오기가 겹쳐도 한 작업의 건수와 다른 작업의 리스트가 섞이지 않는다. 묻는 사람이 볼 수 있는 리스트만 주므로, 볼 수 없는 사람의 화면에는 검사가 없다. 볼 수 없는 리스트 수는 `axm_lists_hidden`으로 준다. 리스트 검사 응답의 `checked_lists`가 0이면(볼 수 있는 리스트가 없음) 패널은 "위험 없음" 대신 검사하지 않았다고 알린다. 이번 파일이 아니라 리스트 전체 기준이다.
+- **일부 리스트만 볼 수 있을 때** (캠페인·가져오기 끝 공통): 숫자는 검사한 리스트의 대상뿐이므로 "발송 대상" 대신 "검사한 대상"이라고 쓰고, 볼 수 없는 리스트 N개는 검사하지 않아 위험 주소가 더 있을 수 있다고 따로 한 줄로 알린다. 이때 위험이 0이어도 초록(위험 없음) 상태로 보이지 않는다(캠페인은 `unchecked_lists`, 가져오기 끝은 그에 더해 `axm_lists_hidden`).
+
+### 일회용 도메인 목록
+
+`internal/addrcheck/disposable_domains.txt`는 [disposable-email-domains](https://github.com/disposable-email-domains/disposable-email-domains)의 `disposable_email_blocklist.conf`를 커밋 `f4cad16eb9fa2cd9ceb352ff5a8c213a25a10083`(2026-11-18, 10,400개)에 고정해 그대로 넣은 것이다. 라이선스는 CC0 1.0 Universal(퍼블릭 도메인 기증, 그 저장소의 `LICENSE.txt`)이라 AGPL 배포와 함께 쓸 수 있다. 갱신하려면 새 커밋의 파일로 바꾸고 파일 머리와 이 절의 커밋을 고친다.
+
+### 운영에서 알 것
+
+- 컨테이너에서 외부 도메인의 MX 조회가 막혀 있으면 전부 "미확인"으로 보인다. 오류로 막히지는 않는다.
+- 미확인 도메인은 캐시하지 않으므로, 응답 없는 도메인이 섞인 리스트는 검사할 때마다 3초쯤 걸린다.
+- DB 변경이 없어 이전 이미지로 그대로 되돌릴 수 있다. 되돌리면 화면과 API만 사라진다.
+
+### 검증
+
+`go test ./internal/addrcheck/`, `cmd/axm_address_check_db_test.go`(일반·동적·이중 동의·차단 제외·권한·주소 숨김·`too_large`·pending, DNS는 가짜), `frontend/tests/csv-import.test.mjs`, `frontend/cypress/e2e/address-check.cy.js`(두 검사 API는 고정 응답, 구독 해지와 가져오기는 실제 서버).

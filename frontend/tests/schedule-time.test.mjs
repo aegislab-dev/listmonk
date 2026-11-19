@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  KST, TZ_ATTRIB, allZones, browserDiffers, buildIndex, instantToWall, mergeAttribs, offsetLabel, otherZoneLines, searchIndex,
+  KST, TZ_ATTRIB, allZones, browserDiffers, browserZoneName, buildIndex, instantToWall, mergeAttribs, offsetLabel, otherZoneLines, searchIndex,
   splitAttribs, validZone, wallToInstant, zoneAbbr, zoneInfo, zoneParts,
 } from '../src/schedule-time.js';
 
@@ -135,8 +135,10 @@ test('the zone lives in attribs under one key and is stored only for a scheduled
 
 test('the browser zone note shows only when this computer differs from the chosen zone', () => {
   const t = new Date('2026-11-22T00:00:00Z');
-  const tz = process.env.TZ || '';
-  const expected = { 'Asia/Seoul': false, 'America/New_York': true, UTC: true }[tz];
+  const own = browserZoneName();
+  if (!validZone(own)) return; // an empty TZ gives "Etc/Unknown"; no browser reports that
+  // This computer's own zone never differs from itself; Korea differs from a New York or UTC computer.
+  assert.equal(browserDiffers(t, own), false);
+  const expected = { 'Asia/Seoul': false, 'America/New_York': true, UTC: true }[own];
   if (expected !== undefined) assert.equal(browserDiffers(t, KST), expected);
-  assert.equal(browserDiffers(t, process.env.TZ || 'UTC'), false);
 });
