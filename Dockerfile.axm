@@ -1,7 +1,7 @@
 # Both frontend builds are packed into the Go binary by make dist (stuffbin).
 FROM node:24.22.2-bookworm-slim AS node
 
-FROM golang:1.26.1-bookworm AS build
+FROM golang:1.26.11-bookworm AS build
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \

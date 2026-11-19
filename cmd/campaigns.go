@@ -202,7 +202,7 @@ func (a *App) PreviewCampaign(c echo.Context) error {
 		return c.String(http.StatusOK, string(msg.Body()))
 	}
 
-	return c.HTML(http.StatusOK, string(msg.Body()))
+	return renderSandboxedHTML(c, string(msg.Body()))
 }
 
 // PreviewCampaignArchive renders the public campaign archives page.
@@ -240,7 +240,7 @@ func (a *App) PreviewCampaignArchive(c echo.Context) error {
 			makeMsgTpl(a.i18n.T("public.errorTitle"), "", a.i18n.Ts("public.errorFetchingCampaign")))
 	}
 
-	return c.HTML(http.StatusOK, string(msg.Body()))
+	return renderSandboxedHTML(c, string(msg.Body()))
 }
 
 // CampaignContent handles campaign content (body) format conversions.
