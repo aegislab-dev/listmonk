@@ -21,6 +21,10 @@ describe('Team From address list', () => {
     cy.request('PUT', '/api/settings/axm.from_addresses', list);
     cy.waitForBackend();
   };
+  // A string value needs an explicit JSON body.
+  const setKey = (key, value) => cy.request({
+    method: 'PUT', url: `/api/settings/${key}`, body: JSON.stringify(value), headers: { 'Content-Type': 'application/json' },
+  });
   const refused = (r, text) => {
     expect(r.status).to.eq(400);
     if (text) expect(r.body.message).to.include(text);
@@ -52,9 +56,9 @@ describe('Team From address list', () => {
     if (savedSettings) {
       cy.request('PUT', '/api/settings/axm.sender_domains', savedSettings['axm.sender_domains']);
       cy.waitForBackend();
-      cy.request('PUT', '/api/settings/axm.default_from', savedSettings['axm.default_from']);
+      setKey('axm.default_from', savedSettings['axm.default_from']);
       cy.waitForBackend();
-      cy.request('PUT', '/api/settings/app.from_email', savedSettings['app.from_email']);
+      setKey('app.from_email', savedSettings['app.from_email']);
       cy.waitForBackend();
     }
     if (saved) setList(saved);
@@ -151,13 +155,13 @@ describe('Team From address list', () => {
 
   it('applies the same checks to the app default From when none is sent', () => {
     setList([]);
-    cy.request('PUT', '/api/settings/app.from_email', 'change-me@crevasse.ai');
+    setKey('app.from_email', 'change-me@crevasse.ai');
     cy.waitForBackend();
     create().then((r) => refused(r, 'change-me@crevasse.ai'));
-    cy.request('PUT', '/api/settings/app.from_email', ' Team <team@crevasse.ai> ');
+    setKey('app.from_email', ' Team <team@crevasse.ai> ');
     cy.waitForBackend();
     create().then((r) => expect(r.body.data.from_email).to.eq('Team <team@crevasse.ai>'));
-    cy.request('PUT', '/api/settings/app.from_email', savedSettings['app.from_email']);
+    setKey('app.from_email', savedSettings['app.from_email']);
     cy.waitForBackend();
   });
 
@@ -197,14 +201,14 @@ describe('Team From address list', () => {
     setList([]);
     cy.request('PUT', '/api/settings/axm.sender_domains', ['crevasse.ai']);
     cy.waitForBackend();
-    cy.request('PUT', '/api/settings/axm.default_from', 'change-me@crevasse.ai');
+    setKey('axm.default_from', 'change-me@crevasse.ai');
     cy.waitForBackend();
     let id;
     create().then((r) => {
       expect(r.status).to.eq(200);
       id = r.body.data.id;
     });
-    cy.request('PUT', '/api/settings/axm.default_from', savedSettings['axm.default_from']);
+    setKey('axm.default_from', savedSettings['axm.default_from']);
     cy.waitForBackend();
     cy.request('PUT', '/api/settings/axm.sender_domains', savedSettings['axm.sender_domains']);
     cy.waitForBackend();
