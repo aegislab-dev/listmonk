@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  codeParts, trackingConfirmLines, trackingRows, trackingTag, trackingToastParts,
+  codeParts, trackingConfirmLines, trackingRows, trackingTag, trackingToastParts, warningsCovered,
 } from '../src/tracking-check.js';
 
 const report = (over = {}) => ({
@@ -132,4 +132,19 @@ test('every key exists in ko and en', () => {
     const dict = JSON.parse(fs.readFileSync(new URL(`../../i18n/${lang}.json`, import.meta.url)));
     used.forEach((k) => assert.ok(dict[k], `${lang}: ${k}`));
   });
+});
+
+test('a later check needs no new confirmation only when it warns about nothing new', () => {
+  const ok = trackingConfirmLines(report());
+  const missing = trackingConfirmLines(report({ state: 'warn', view: 'missing' }));
+  const two = trackingConfirmLines(report({ state: 'warn', links: { total: 2, untracked: 2 } }));
+  const three = trackingConfirmLines(report({ state: 'warn', links: { total: 3, untracked: 3 } }));
+  const unknown = trackingConfirmLines(null);
+  assert.equal(warningsCovered(ok, ok), true);
+  assert.equal(warningsCovered(missing, ok), true);
+  assert.equal(warningsCovered(ok, missing), false);
+  assert.equal(warningsCovered(two, two), true);
+  assert.equal(warningsCovered(two, three), false);
+  assert.equal(warningsCovered(unknown, missing), false);
+  assert.equal(warningsCovered(missing, unknown), false);
 });

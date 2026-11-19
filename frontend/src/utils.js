@@ -145,16 +145,15 @@ export default class Utils {
   titleCase = (str) => str[0].toUpperCase() + str.substr(1).toLowerCase();
 
   // UI shortcuts.
-  confirm = (msg, onConfirm, onCancel) => {
-    Dialog.confirm({
-      scroll: 'keep',
-      message: !msg ? this.i18n.t('globals.messages.confirm') : this.escapeHTML(msg).replace(/\n/g, '<br>'),
-      confirmText: this.i18n.t('globals.buttons.ok'),
-      cancelText: this.i18n.t('globals.buttons.cancel'),
-      onConfirm,
-      onCancel,
-    });
-  };
+  // Returns the dialog (AXM LST-44: a page closes its own when it goes away).
+  confirm = (msg, onConfirm, onCancel) => Dialog.confirm({
+    scroll: 'keep',
+    message: !msg ? this.i18n.t('globals.messages.confirm') : this.escapeHTML(msg).replace(/\n/g, '<br>'),
+    confirmText: this.i18n.t('globals.buttons.ok'),
+    cancelText: this.i18n.t('globals.buttons.cancel'),
+    onConfirm,
+    onCancel,
+  });
 
   // A confirmation with a title and a warning box (the text is escaped), for an action that
   // reaches further than the person may think. The confirm button has its own name.
@@ -173,15 +172,17 @@ export default class Utils {
 
   // The usual confirmation with a warning box under it and a named confirm button, for
   // going ahead although something was found. Every line is escaped; **...** marks its lead.
-  confirmWithWarnings = (msg, lines, confirmText, onConfirm) => {
+  // Returns the dialog, like confirm().
+  confirmWithWarnings = (msg, lines, confirmText, onConfirm, onCancel) => {
     const line = (l) => `<p>${this.escapeHTML(l).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')}</p>`;
-    Dialog.confirm({
+    return Dialog.confirm({
       scroll: 'keep',
       message: `${this.escapeHTML(msg || this.i18n.t('globals.messages.confirm')).replace(/\n/g, '<br>')}`
         + `<div class="notification is-warning is-light mt-3 mb-0" style="padding:12px 14px" data-cy="warn-box">${lines.map(line).join('')}</div>`,
       confirmText,
       cancelText: this.i18n.t('globals.buttons.cancel'),
       onConfirm,
+      onCancel,
     });
   };
 
