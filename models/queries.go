@@ -11,11 +11,23 @@ import (
 
 // Queries contains all prepared SQL queries.
 type Queries struct {
-	AxmGetDynamicListIDs           *sqlx.Stmt `query:"axm-get-dynamic-list-ids"`
-	AxmDynamicListCounts           *sqlx.Stmt `query:"axm-dynamic-list-counts"`
-	AxmPreviewDynamicFilter        *sqlx.Stmt `query:"axm-preview-dynamic-filter"`
-	AxmPreviewDynamicSample        *sqlx.Stmt `query:"axm-preview-dynamic-sample"`
-	AxmPreviewDynamicExcluded      *sqlx.Stmt `query:"axm-preview-dynamic-excluded"`
+	AxmGetDynamicListIDs      *sqlx.Stmt `query:"axm-get-dynamic-list-ids"`
+	AxmDynamicListCounts      *sqlx.Stmt `query:"axm-dynamic-list-counts"`
+	AxmPreviewDynamicFilter   *sqlx.Stmt `query:"axm-preview-dynamic-filter"`
+	AxmPreviewDynamicSample   *sqlx.Stmt `query:"axm-preview-dynamic-sample"`
+	AxmPreviewDynamicExcluded *sqlx.Stmt `query:"axm-preview-dynamic-excluded"`
+
+	AxmRecentExcludeCounts *sqlx.Stmt `query:"axm-recent-exclude-counts"`
+	AxmRecentSendsCoverage *sqlx.Stmt `query:"axm-recent-sends-coverage"`
+	AxmGetRecentRule       *sqlx.Stmt `query:"axm-get-recent-rule"`
+	AxmUpsertRecentRule    *sqlx.Stmt `query:"axm-upsert-recent-rule"`
+	AxmDeleteRecentRule    *sqlx.Stmt `query:"axm-delete-recent-rule"`
+	AxmRecentTeamTags      *sqlx.Stmt `query:"axm-recent-team-tags"`
+	AxmGetRecentCampaign   *sqlx.Stmt `query:"axm-get-recent-campaign"`
+	AxmRecentSourceCamps   *sqlx.Stmt `query:"axm-recent-source-campaigns"`
+	AxmLockRecentCampaign  *sqlx.Stmt `query:"axm-lock-recent-campaign"`
+	AxmRecentCampaignLists *sqlx.Stmt `query:"axm-recent-campaign-lists"`
+
 	AxmDrawLock                    *sqlx.Stmt `query:"axm-draw-lock"`
 	AxmDrawSource                  *sqlx.Stmt `query:"axm-draw-source"`
 	AxmDrawCounts                  *sqlx.Stmt `query:"axm-draw-counts"`

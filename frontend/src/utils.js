@@ -148,7 +148,7 @@ export default class Utils {
   confirm = (msg, onConfirm, onCancel) => {
     Dialog.confirm({
       scroll: 'keep',
-      message: !msg ? this.i18n.t('globals.messages.confirm') : this.escapeHTML(msg),
+      message: !msg ? this.i18n.t('globals.messages.confirm') : this.escapeHTML(msg).replace(/\n/g, '<br>'),
       confirmText: this.i18n.t('globals.buttons.ok'),
       cancelText: this.i18n.t('globals.buttons.cancel'),
       onConfirm,
