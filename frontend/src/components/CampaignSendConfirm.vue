@@ -53,17 +53,23 @@
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.campaign') }}</div>
             <div class="send-v">{{ pf.name }}</div>
           </div>
-          <div class="send-row" data-cy="send-subject">
+          <!-- Read again after a change (approved design A7): the campaign and its recipients,
+               and of the other rows only those that changed, with what they were. -->
+          <div v-if="shows('subject')" class="send-row" data-cy="send-subject">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.subject') }}</div>
-            <div class="send-v">{{ pf.subject }}</div>
+            <div class="send-v">
+              {{ pf.subject }}
+              <div v-if="stale" class="send-was" data-cy="send-subject-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.subject }) }}</div>
+            </div>
           </div>
-          <div class="send-row" data-cy="send-from">
+          <div v-if="shows('from')" class="send-row" data-cy="send-from">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.from') }}</div>
             <div class="send-v">
               {{ pf.fromEmail }}
               <span class="has-text-grey">
                 · {{ pf.replyTo ? $t('campaigns.sendConfirm.replyTo', { email: pf.replyTo }) : $t('campaigns.sendConfirm.replyOwn') }}
               </span>
+              <div v-if="stale" class="send-was" data-cy="send-from-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.from }) }}</div>
             </div>
           </div>
           <div class="send-row" data-cy="send-lists">
@@ -87,11 +93,14 @@
           </div>
 
           <!-- When -->
-          <div v-if="model.mode === 'start'" class="send-row" data-cy="send-when">
+          <div v-if="model.mode === 'start' && shows('when')" class="send-row" data-cy="send-when">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.when') }}</div>
-            <div class="send-v"><strong>{{ $t('campaigns.sendConfirm.now') }}</strong></div>
+            <div class="send-v">
+              <strong>{{ $t('campaigns.sendConfirm.now') }}</strong>
+              <div v-if="stale" class="send-was" data-cy="send-when-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.when }) }}</div>
+            </div>
           </div>
-          <div v-if="model.when" class="send-row" data-cy="send-schedule">
+          <div v-if="model.when && shows('when')" class="send-row" data-cy="send-schedule">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.schedule') }}</div>
             <div class="send-v">
               <strong data-cy="send-schedule-time">{{ model.when.text }}</strong>
@@ -102,6 +111,7 @@
               <div v-if="model.other" class="send-tz-other" data-cy="send-schedule-other">
                 {{ $t('campaigns.sendConfirm.zoneOther', { kst: `${model.other.text} (${model.other.offset})` }) }}
               </div>
+              <div v-if="stale" class="send-was" data-cy="send-when-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.when }) }}</div>
             </div>
           </div>
           <div v-if="isResume" class="send-row" data-cy="send-progress">
@@ -141,7 +151,7 @@
     </section>
 
     <footer class="modal-card-foot has-text-right">
-      <b-button data-cy="send-cancel" @click="$parent.close()">{{ $t('globals.buttons.cancel') }}</b-button>
+      <b-button data-cy="send-cancel" :disabled="busy" @click="$parent.close()">{{ $t('globals.buttons.cancel') }}</b-button>
       <b-button v-if="state === 'error'" type="is-warning" data-cy="send-ok" :loading="busy" @click="confirm(true)">
         {{ $t('campaigns.sendConfirm.confirmBlind') }}
       </b-button>
@@ -184,6 +194,7 @@ export default Vue.extend({
       // What the window showed before the campaign changed under it: the count and each list's.
       prev: null,
       ctl: null,
+      ticker: null,
       now: new Date(),
       icons: {
         ok: '✓', warn: '!', block: '✕', info: 'i',
@@ -233,6 +244,19 @@ export default Vue.extend({
       return { before: this.prev.count, after: this.model.count };
     },
 
+    // What the rows other than the campaign and its recipients say now, to tell after a
+    // change under the window which of them changed.
+    rowTexts() {
+      if (!this.pf || !this.model) return null;
+      const { pf } = this;
+      const reply = pf.replyTo ? this.$t('campaigns.sendConfirm.replyTo', { email: pf.replyTo }) : this.$t('campaigns.sendConfirm.replyOwn');
+      return {
+        subject: pf.subject,
+        from: `${pf.fromEmail} · ${reply}`,
+        when: this.model.when ? this.model.when.text : this.$t('campaigns.sendConfirm.now'),
+      };
+    },
+
     // The count before the change, shown next to the total. With one list that kept its
     // place, the list's own "before" already says it.
     totalWas() {
@@ -267,6 +291,13 @@ export default Vue.extend({
   },
 
   methods: {
+    // Whether a row other than the campaign and its recipients is shown: always, except in the
+    // window read again after a change, where only a row that changed is (approved design A7).
+    shows(row) {
+      if (!this.stale || !this.prev || !this.rowTexts) return true;
+      return this.prev[row] !== this.rowTexts[row];
+    },
+
     // The count a list had before the campaign changed under the window, if it is another now.
     wasCount(l) {
       if (!this.prev || this.isResume) return null;
@@ -280,6 +311,23 @@ export default Vue.extend({
     statusToAsk(blind) {
       if (blind || !this.pf) return this.status;
       return this.pf.mode === 'schedule' ? 'scheduled' : 'running';
+    },
+
+    // The send time passed while the window is open: the status change now sends at once.
+    // Say so the way the server does (schedule.past) and tell whether it was added now.
+    markPast() {
+      const { pf } = this;
+      if (!pf || this.state !== 'ready' || !pf.sendAt) return false;
+      if (pf.mode !== 'schedule' && pf.mode !== 'resume') return false;
+      if (new Date(pf.sendAt).getTime() > this.now.getTime()) return false;
+      if (pf.checks.some((c) => c.key === 'schedule.past')) return false;
+      pf.checks.push({ key: 'schedule.past', level: 'warn', params: {} });
+      return true;
+    },
+
+    tick() {
+      this.now = new Date();
+      this.markPast();
     },
 
     lineParts(c) {
@@ -308,6 +356,9 @@ export default Vue.extend({
     // changed-since check (there is nothing that was shown).
     async confirm(blind) {
       if (this.busy) return;
+      // The send time may have passed since the last tick: show that first, do not send.
+      this.now = new Date();
+      if (!blind && this.markPast()) return;
       this.busy = true;
       try {
         const out = await this.$api.changeCampaignStatus(
@@ -322,6 +373,7 @@ export default Vue.extend({
         if (!blind && err.response && err.response.status === 409) {
           // Edited after it was read: show what is true now and ask again.
           this.prev = {
+            ...this.rowTexts,
             count: this.model.count,
             lists: Object.fromEntries(this.pf.lists.map((l) => [`${l.id}`, l.count])),
           };
@@ -339,11 +391,20 @@ export default Vue.extend({
     },
   },
 
+  watch: {
+    // While the status change is on its way the window must stay: closing it would lose
+    // the answer, and the page would not learn that the campaign was started (LST-48 review).
+    busy(b) { this.$emit('busy', b); },
+  },
+
   mounted() {
     this.load();
+    // The time left and the passing of the send time are kept up to date while it is open.
+    this.ticker = setInterval(this.tick, 1000);
   },
 
   beforeDestroy() {
+    clearInterval(this.ticker);
     if (this.ctl) this.ctl.abort();
   },
 });

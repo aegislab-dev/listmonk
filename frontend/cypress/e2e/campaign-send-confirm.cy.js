@@ -275,4 +275,78 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-checks]').should('not.contain', 'are tracked');
     cy.get('[data-cy=send-cancel]').click();
   });
+
+  it('says that the send time passed while the window was open, and does not send then', () => {
+    cy.intercept('PUT', statusPath).as('status');
+    cy.then(() => create('soon', { lists: [listX], send_at: new Date(Date.now() + 8000).toISOString() }));
+    cy.visit('/admin/campaigns');
+    row('soon').find('[data-cy=btn-schedule]').click();
+    ready();
+    cy.get('[data-cy="send-check-schedule.past"]').should('not.exist');
+    cy.get('[data-cy=send-schedule-until]').should('be.visible');
+    // The time comes while the window is open: the same warning as a fresh read gives.
+    cy.get('[data-cy="send-check-schedule.past"]', { timeout: 15000 }).should('have.attr', 'data-level', 'warn');
+    cy.get('[data-cy=send-schedule-until]').should('not.exist');
+    cy.get('[data-cy=send-ok]').should('contain', 'anyway');
+    cy.then(() => cy.request(`/api/campaigns/${camp.soon}/preflight`)).its('body.data.checks')
+      .should((checks) => { expect(checks.map((c) => `${c.key}=${c.level}`)).to.include('schedule.past=warn'); });
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+    cy.get(win).should('not.exist');
+  });
+
+  it('keeps the window while the status change is on its way, then follows it', () => {
+    cy.then(() => create('busy', { lists: [listX], send_at: new Date(Date.now() + 86400000 * 30).toISOString() }));
+    cy.then(() => cy.visit(`/admin/campaigns/${camp.busy}`));
+    cy.get('[data-cy=btn-schedule]').click();
+    ready();
+    cy.intercept('PUT', statusPath, (req) => { req.on('response', (res) => { res.setDelay(2500); }); }).as('slowStatus');
+    cy.get('[data-cy=send-ok]').click();
+    // Esc, the cancel button and a click outside do not close it.
+    cy.get('body').type('{esc}');
+    cy.get('[data-cy=send-cancel]').should('be.disabled');
+    cy.get('.modal.is-active .modal-background').click({ force: true });
+    cy.get(win).should('be.visible');
+    cy.wait('@slowStatus').its('response.statusCode').should('eq', 200);
+    // The answer arrives: the page goes to the list, as after any start.
+    cy.location('pathname').should('eq', '/admin/campaigns');
+    cy.then(() => cy.request(`/api/campaigns/${camp.busy}`)).its('body.data.status').should('eq', 'scheduled');
+  });
+
+  it('shows only the campaign and its recipients when only the count changed', () => {
+    let listC;
+    cy.request('POST', '/api/lists', {
+      name: `Send C ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { listC = body.data.id; });
+    cy.then(() => {
+      person('c1', [listC]);
+      create('count', { lists: [listC] });
+    });
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('count').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-title]').should('contain', 'Send to 1 people now');
+    // Somebody joins the list and the campaign is saved again as it was.
+    cy.then(() => {
+      person('c2', [listC]);
+      cy.request(`/api/campaigns/${camp.count}`).then(({ body }) => {
+        const c = body.data;
+        cy.request('PUT', `/api/campaigns/${camp.count}`, {
+          name: c.name, subject: c.subject, type: 'regular', messenger: 'email', lists: [listC], content_type: c.content_type, body: c.body,
+        });
+      });
+    });
+    cy.get('[data-cy=send-ok]').click();
+    cy.wait('@status').its('response.statusCode').should('eq', 409);
+    ready();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy=send-campaign]').should('be.visible');
+    cy.get('[data-cy=send-list-was]').should('contain', 'before: 1');
+    cy.get('[data-cy=send-subject]').should('not.exist');
+    cy.get('[data-cy=send-from]').should('not.exist');
+    cy.get('[data-cy=send-when]').should('not.exist');
+    cy.get('[data-cy=send-ok]').should('contain', 'Send to 2 people');
+    cy.get('[data-cy=send-cancel]').click();
+  });
 });

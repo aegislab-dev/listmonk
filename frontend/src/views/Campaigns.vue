@@ -282,9 +282,10 @@
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
       @close="reactionCampaign = null" />
     <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
+      :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
       @close="sendAsk = null">
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
-        :campaign-name="sendAsk.name" :campaign-subject="sendAsk.subject || ''" @done="onSendDone" />
+        :campaign-name="sendAsk.name" :campaign-subject="sendAsk.subject || ''" @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" />
     </b-modal>
   </section>
 </template>
@@ -448,8 +449,9 @@ export default Vue.extend({
     // Starting, resuming or scheduling from the list sends the saved campaign as it is, and
     // goes through the same window as the campaign page (LST-48).
     confirmSend(c, status) {
+      // busy: the status change is on its way; the window cannot be closed then.
       this.sendAsk = {
-        id: c.id, name: c.name, subject: c.subject, status,
+        id: c.id, name: c.name, subject: c.subject, status, busy: false,
       };
       this.isSendVisible = true;
     },

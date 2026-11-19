@@ -536,6 +536,7 @@
     "campaigns.sendConfirm.progressPaused": "{sent} sent of {total} · paused {time}",
     "campaigns.sendConfirm.asOfResume": "People who joined the lists while it was paused are included, and people who already got it are skipped. The count is as of {time}.",
     "campaigns.sendConfirm.was": "before: {n}",
+    "campaigns.sendConfirm.wasText": "before: {text}",
     "campaigns.sendConfirm.loadingNote": "A big list can take a second or two. Closing the window stops the count.",
     "campaigns.tracking.toast.viewMissing": "no view tracking",
     "campaigns.tracking.toast.untracked": "{n} links without click tracking",
