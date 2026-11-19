@@ -78,6 +78,7 @@ func (a *App) GetSubscriber(c echo.Context) error {
 	maskRestrictedSubLists(user, &out)
 	one := []models.Subscriber{out}
 	a.attachOtherTeams(user, one)
+	a.attachLocked(user, one)
 	out = one[0]
 
 	return c.JSON(http.StatusOK, okResp{out})
@@ -147,6 +148,7 @@ func (a *App) QuerySubscribers(c echo.Context) error {
 		maskRestrictedSubLists(user, &res[i])
 	}
 	a.attachOtherTeams(user, res)
+	a.attachLocked(user, res)
 
 	out := models.PageResults{
 		Query:   query,
@@ -334,6 +336,10 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 	if err := a.hasSubPerm(user, []int{id}); err != nil {
 		return err
 	}
+	// A subscriber who is on other lists too keeps their profile; only the lists may change.
+	if err := a.keepLockedProfile(user, id, &req.Subscriber, nil); err != nil {
+		return err
+	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {
 		return err
 	}
@@ -344,6 +350,7 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 	if allPerm {
 		permittedLists = []int{}
 	}
+	permittedLists = ownListsOnly(allPerm, permittedLists)
 
 	wasBlocked := a.isBlocklisted(id, req.Status)
 	out, _, err := a.core.UpdateSubscriberWithLists(id, req.Subscriber, listIDs, nil, req.PreconfirmSubs, true, false, permittedLists, false)
@@ -377,6 +384,9 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 		return err
 	}
 
+	// The profile as it is now, to tell whether the request changes it.
+	before := profileOf(sub)
+
 	// Prepopulate the incoming request struct with existing values.
 	// Rather than tediously and conditionally checking each incoming field, we can simply
 	// overwrite everything in the DB with the incoming fields+existing fields.
@@ -396,6 +406,10 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
 		req.Email = em
+	}
+	// A subscriber who is on other lists too keeps their profile; only the lists may change.
+	if err := a.keepLockedProfile(user, id, &req.Subscriber, &before); err != nil {
+		return err
 	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {
 		return err
@@ -420,6 +434,7 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 	if allPerm {
 		permittedLists = []int{}
 	}
+	permittedLists = ownListsOnly(allPerm, permittedLists)
 
 	out, _, err := a.core.UpdateSubscriberWithLists(id, req.Subscriber, listIDs, nil, req.PreconfirmSubs, overwriteSubs, false, permittedLists, false)
 	if err != nil {
@@ -463,7 +478,7 @@ func (a *App) BlocklistSubscriber(c echo.Context) error {
 
 	// Update the subscribers in the DB.
 	id := getID(c)
-	if err := a.hasSubPerm(user, []int{id}); err != nil {
+	if err := a.hasSubWritePerm(user, []int{id}); err != nil {
 		return err
 	}
 
@@ -489,7 +504,7 @@ func (a *App) BlocklistSubscribers(c echo.Context) error {
 			a.i18n.Ts("globals.messages.errorInvalidIDs", "error", "ids"))
 	}
 
-	if err := a.hasSubPerm(user, req.SubscriberIDs); err != nil {
+	if err := a.hasSubWritePerm(user, req.SubscriberIDs); err != nil {
 		return err
 	}
 
@@ -592,7 +607,7 @@ func (a *App) DeleteSubscriber(c echo.Context) error {
 
 	// Delete the subscribers from the DB.
 	id := getID(c)
-	if err := a.hasSubPerm(user, []int{id}); err != nil {
+	if err := a.hasSubWritePerm(user, []int{id}); err != nil {
 		return err
 	}
 
@@ -619,7 +634,7 @@ func (a *App) DeleteSubscribers(c echo.Context) error {
 			a.i18n.Ts("globals.messages.errorInvalidIDs", "error", "ids"))
 	}
 
-	if err := a.hasSubPerm(user, ids); err != nil {
+	if err := a.hasSubWritePerm(user, ids); err != nil {
 		return err
 	}
 
@@ -670,11 +685,12 @@ func (a *App) DeleteSubscribersByQuery(c echo.Context) error {
 	// Filter list IDs against the current user's permitted lists.
 	listIDs := user.GetPermittedListIDs(req.ListIDs)
 
-	// Count the subscribers the conditions reach before they go (for the audit log).
-	bq := a.countBulkQuery(req, core.AndSQLExp(req.Query, attribExp), listIDs)
+	// Count the subscribers the conditions reach before they go (for the audit log). A user
+	// who may not manage all lists leaves out the people who are on other lists too.
+	cond, bq := a.guardBulkQuery(user, req, core.AndSQLExp(req.Query, attribExp), listIDs)
 
 	// Delete the subscribers from the DB.
-	if err := a.core.DeleteSubscribersByQuery(req.Search, core.AndSQLExp(req.Query, attribExp), listIDs, req.SubscriptionStatus); err != nil {
+	if err := a.core.DeleteSubscribersByQuery(req.Search, cond, listIDs, req.SubscriptionStatus); err != nil {
 		return err
 	}
 	a.auditBulkQuery(c, auditSubDelete, bq, nil)
@@ -719,11 +735,12 @@ func (a *App) BlocklistSubscribersByQuery(c echo.Context) error {
 	// Filter list IDs against the current user's permitted lists.
 	listIDs := user.GetPermittedListIDs(req.ListIDs)
 
-	// Count the subscribers the conditions reach before they change (for the audit log).
-	bq := a.countBulkQuery(req, core.AndSQLExp(req.Query, attribExp), listIDs)
+	// Count the subscribers the conditions reach before they change (for the audit log). A
+	// user who may not manage all lists leaves out the people who are on other lists too.
+	cond, bq := a.guardBulkQuery(user, req, core.AndSQLExp(req.Query, attribExp), listIDs)
 
 	// Update the subscribers in the DB.
-	if err := a.core.BlocklistSubscribersByQuery(req.Search, core.AndSQLExp(req.Query, attribExp), listIDs, req.SubscriptionStatus); err != nil {
+	if err := a.core.BlocklistSubscribersByQuery(req.Search, cond, listIDs, req.SubscriptionStatus); err != nil {
 		return err
 	}
 	a.auditBulkQuery(c, auditSubBlocklist, bq, nil)
@@ -798,8 +815,8 @@ func (a *App) ManageSubscriberListsByQuery(c echo.Context) error {
 func (a *App) DeleteSubscriberBounces(c echo.Context) error {
 	id := getID(c)
 
-	// Check if the user has access to at least one of the lists on the subscriber.
-	if err := a.hasSubPerm(auth.GetUser(c), []int{id}); err != nil {
+	// The bounce records belong to the subscriber: the user must be able to change it.
+	if err := a.hasSubWritePerm(auth.GetUser(c), []int{id}); err != nil {
 		return err
 	}
 

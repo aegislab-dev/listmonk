@@ -102,3 +102,51 @@ WHERE sl.subscriber_id = ANY($1::INT[]) AND sl.status != 'unsubscribed' AND NOT 
     AND l.axm_filter IS NULL
 GROUP BY sl.subscriber_id, COALESCE(t.tag, '')
 ORDER BY sl.subscriber_id, 2;
+
+-- name: axm-subscriber-locked
+-- Team boundary (LST-42). For subscribers $1: whether they have a subscription row (any
+-- status, so unsubscribed rows and the exclusion rows of dynamic lists count too) on a list
+-- outside $2, the lists the user may manage. Such a subscriber is "locked" for that user:
+-- the row itself (name, e-mail, attributes, status, blocklist, delete, bounces) is not theirs
+-- alone to change.
+SELECT s.id AS subscriber_id,
+    EXISTS (
+        SELECT 1 FROM subscriber_lists sl
+        WHERE sl.subscriber_id = s.id AND NOT (sl.list_id = ANY($2::INT[]))
+    ) AS locked
+FROM subscribers s WHERE s.id = ANY($1::INT[]);
+
+-- name: axm-query-subscribers-multi
+-- raw: true
+-- query-subscribers for more than one list ID (LST-42). The upstream query joins
+-- subscriber_lists, so a subscriber on two of the lists comes back twice. Here the same join
+-- and conditions only pick the IDs, and the rows are read once per subscriber. The join stays
+-- inside so that an SQL condition that names subscriber_lists keeps working.
+SELECT subscribers.* FROM subscribers
+    WHERE subscribers.id IN (
+        SELECT subscribers.id FROM subscribers
+        LEFT JOIN subscriber_lists
+        ON (
+            (CASE WHEN CARDINALITY($1::INT[]) > 0 THEN true ELSE false END)
+            AND subscriber_lists.subscriber_id = subscribers.id
+            AND ($2 = '' OR subscriber_lists.status = $2::subscription_status)
+        )
+        WHERE (CARDINALITY($1) = 0 OR subscriber_lists.list_id = ANY($1::INT[]))
+        AND (CASE WHEN $3 != '' THEN name ~* $3 OR email ~* $3 ELSE TRUE END)
+        AND %query%
+    )
+    ORDER BY %order% OFFSET $4 LIMIT (CASE WHEN $5 < 1 THEN NULL ELSE $5 END);
+
+-- name: axm-query-subscribers-multi-count
+-- raw: true
+-- The count of axm-query-subscribers-multi: people, not subscription rows.
+SELECT COUNT(DISTINCT subscribers.id) AS total FROM subscribers
+    LEFT JOIN subscriber_lists
+    ON (
+        (CASE WHEN CARDINALITY($1::INT[]) > 0 THEN true ELSE false END)
+        AND subscriber_lists.subscriber_id = subscribers.id
+        AND ($2 = '' OR subscriber_lists.status = $2::subscription_status)
+    )
+    WHERE (CARDINALITY($1) = 0 OR subscriber_lists.list_id = ANY($1::INT[]))
+    AND (CASE WHEN $3 != '' THEN name ~* $3 OR email ~* $3 ELSE TRUE END)
+    AND %query%;

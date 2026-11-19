@@ -1347,6 +1347,7 @@
     "teams.otherTeamItem": "{team} {num}",
     "teams.otherTeamLists": "{team} · {num} lists",
     "teams.unblockAdminOnly": "Only an administrator can take a blocklisted subscriber off the blocklist.",
+    "teams.sharedLocked": "This subscriber is also on lists outside your team (subscriber ID: {ids}). Only an administrator can change the name, e-mail, attributes or status, blocklist or delete them. You can still change the subscriptions on your own lists.",
     "teams.multiTeams": "This list belongs to several teams ({names}) and keeps them until you choose one team.",
     "teams.deleteTitle": "Delete this subscriber?",
     "teams.deleteButton": "Delete",
