@@ -1,8 +1,9 @@
 # AXM listmonk fork
 
 이 저장소는 [knadh/listmonk](https://github.com/knadh/listmonk)의 공개 수정판(AGPL-3.0)입니다.
-2026-11-10: 프론트 포함 이미지 빌드와 화면 하단 소스 링크를 추가했습니다. CSV 열 맞춤·에디터 개인화·동적 리스트는 후속 구현 범위입니다.
-기본 브랜치는 **`axm/v6.2`**, 배포 버전별 소스는 **`v6.2.0-axm.N` 태그**, 이미지는 **`ghcr.io/aegislab-dev/listmonk`**에서 제공합니다(첫 게시 전).
+2026-11-10: 프론트 포함 이미지 빌드와 화면 하단 소스 링크를 추가했습니다. 이후 CSV 열 맞춤, 에디터 개인화, 동적 리스트, 추가 정보 열, 감사 기록·휴지통 등을 구현했고 기능 목록과 변경 범위는 [FORK.md](FORK.md)에 있습니다.
+기본 브랜치는 **`axm/v6.2`**, 배포 버전별 소스는 **`v6.2.0-axm.N` 태그**, 이미지는 **`ghcr.io/aegislab-dev/listmonk`**(GHCR 게시됨)에서 제공합니다.
+이 저장소는 「무엇을 만들었나」를 적습니다. 운영 버전 고정·기록, 인프라, 사이드카, 백업, 경보는 비공개 `aegislab-dev/newsletter`가 맡으며([경계 문서](https://github.com/aegislab-dev/newsletter/blob/main/docs/listmonk-fork-boundary.md), 비공개라 외부인은 열 수 없습니다), 이 저장소의 「레포 경계」 절([FORK.md](FORK.md#레포-경계))도 참고하세요.
 빌드·릴리스·upstream 추종·Go/DB 변경 규칙은 [FORK.md](FORK.md)를 참고하세요.
 
 Public AGPL-3.0 fork of knadh/listmonk; see [FORK.md](FORK.md) for modifications, versioned source and build/release rules.
