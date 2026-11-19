@@ -1,6 +1,9 @@
 const campaign = 'Cypress reaction recipients';
 const team = 'Cypress reaction team';
 const modal = '[data-cy=reaction-list]';
+const teamSelect = '[data-cy=reaction-team] select, select[data-cy=reaction-team]';
+const listNameInput = '[data-cy=reaction-name] input, input[data-cy=reaction-name]';
+const draftLists = '.list-selector';
 const input = (axis, condition) => `[data-cy=reaction-${axis}-${condition}] input`;
 let campaignId;
 
@@ -14,6 +17,22 @@ function patchPreview(change) {
   cy.intercept('POST', '**/reaction-list/preview', (request) => {
     request.continue((response) => change(response.body.data, request.body));
   });
+}
+
+function saveNamedList(name) {
+  cy.intercept('POST', '**/reaction-list').as('makeReaction');
+  onCampaign();
+  cy.get('[data-cy=reaction-check]').click();
+  cy.get(teamSelect).select('__none__');
+  cy.get(listNameInput).clear().type(name);
+  cy.get('[data-cy=reaction-create]').click();
+  cy.get('[data-cy=reaction-done]').should('be.visible');
+  return cy.wait('@makeReaction').its('response.body.data.list');
+}
+
+function assertSelectedList(list) {
+  cy.get(`${draftLists} .list[data-id="${list.id}"]`).should('contain.text', list.name);
+  cy.get(draftLists).contains('label', /\(1\)$/).should('be.visible');
 }
 
 describe('campaign reaction lists', () => {
@@ -43,8 +62,9 @@ describe('campaign reaction lists', () => {
     cy.get(input('click', 'no')).check({ force: true });
     cy.get('[data-cy=reaction-check]').click();
     cy.get('[data-cy=reaction-count-eligible]').should('have.text', '1');
-    cy.get('[data-cy=reaction-team] select, select[data-cy=reaction-team]').select('__none__');
-    cy.get('[data-cy=reaction-name] input, input[data-cy=reaction-name]').invoke('val').should('contain', campaign);
+    cy.get(teamSelect).closest('.field').find('p.help').should('not.exist');
+    cy.get(teamSelect).select('__none__');
+    cy.get(listNameInput).invoke('val').should('contain', campaign);
     cy.get('[data-cy=reaction-create]').click();
     cy.wait('@makeReaction').then(({ request, response }) => {
       expect(request.body).to.include({ open: 'yes', click: 'no', no_team: true });
@@ -56,6 +76,31 @@ describe('campaign reaction lists', () => {
       cy.get('[data-cy=reaction-campaign]').should('be.visible');
       cy.get('[data-cy=reaction-view]').click();
       cy.location('pathname').should('eq', `/admin/lists/${list.id}`);
+    });
+  });
+
+  it('opens a new draft with the created list already selected', () => {
+    saveNamedList(`Follow-up preselected ${Date.now()}`).then((list) => {
+      cy.document().then((doc) => {
+        cy.get('[data-cy=reaction-campaign]').click();
+        cy.location('pathname').should('eq', '/admin/campaigns/new');
+        cy.document().should('eq', doc);
+        assertSelectedList(list);
+      });
+    });
+  });
+
+  it('offers the created list when a draft is opened after closing the dialog', () => {
+    saveNamedList(`Follow-up selectable ${Date.now()}`).then((list) => {
+      cy.document().then((doc) => {
+        cy.get(`${modal} footer button`).first().click();
+        cy.get('.campaigns [data-cy=btn-new]').click();
+        cy.location('pathname').should('eq', '/admin/campaigns/new');
+        cy.document().should('eq', doc);
+        cy.get(`${draftLists} input`).type(list.name);
+        cy.get(draftLists).contains('.dropdown-item', list.name).click();
+        assertSelectedList(list);
+      });
     });
   });
 

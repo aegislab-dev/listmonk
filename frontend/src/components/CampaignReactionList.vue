@@ -95,7 +95,7 @@
               <p class="help">{{ t('checkedAt', { time: date(preview.checkedAt) }) }} {{ t('recheck') }}</p>
 
               <template v-if="eligible > 0">
-                <b-field v-if="isAdmin" :label="$t('teams.drawTeam')" :message="teamHelp">
+                <b-field v-if="isAdmin" :label="$t('teams.drawTeam')">
                   <b-select v-model="team" expanded :placeholder="$t('teams.choose')" data-cy="reaction-team"
                     :loading="loadingTeams" :disabled="creating">
                     <option v-if="sourceTeams.length" value="">{{ t('sameAsSource', { name: sourceTeamNames }) }}</option>
@@ -210,10 +210,6 @@ export default Vue.extend({
       return source.every((tag) => available.has(tag)) ? source : [];
     },
     sourceTeamNames() { return this.sourceTeams.map(teamName).join(', '); },
-    teamHelp() {
-      if (this.loadingTeams) return '';
-      return this.team === null ? this.$t('teams.drawRequired') : this.$t('teams.drawHelp');
-    },
     canCreate() {
       return this.eligible > 0 && !!this.name.trim() && !this.checking && !this.creating
         && (!this.isAdmin || (!this.loadingTeams && this.team !== null));
@@ -279,6 +275,9 @@ export default Vue.extend({
         this.checking = false;
       }
     },
+    refreshLists() {
+      return this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' });
+    },
     async createList() {
       if (!this.canCreate) return;
       this.creating = true;
@@ -289,8 +288,11 @@ export default Vue.extend({
       try {
         // Let the server use the final eligible count for the suggested name.
         const name = this.nameTouched ? this.name.trim() : '';
-        this.result = await this.$api.makeCampaignReactionList(this.campaignId, { ...this.settings, ...teamBody, name });
-        this.metadata = { ...this.metadata, campaign: this.result.campaign, tracking: this.result.tracking };
+        const result = await this.$api.makeCampaignReactionList(this.campaignId, { ...this.settings, ...teamBody, name });
+        // Campaign drafts use the shared list options. A refresh failure leaves the saved list intact.
+        await this.refreshLists().catch(() => {});
+        this.result = result;
+        this.metadata = { ...this.metadata, campaign: result.campaign, tracking: result.tracking };
         this.$refreshProfile().catch(() => {});
       } catch (e) {
         this.showError(e);
@@ -302,8 +304,21 @@ export default Vue.extend({
       this.$router.push({ name: 'list', params: { id: this.result.list.id } });
       this.$emit('close');
     },
-    makeCampaign() {
-      this.$router.push(`/campaigns/new?list_id=${this.result.list.id}`);
+    async makeCampaign() {
+      const { id } = this.result.list;
+      const isAvailable = () => this.$store.state.lists.results?.some((list) => list.id === id);
+      if (!isAvailable()) {
+        try {
+          await this.refreshLists();
+        } catch {
+          return;
+        }
+        if (!isAvailable()) {
+          this.$utils.toast(this.$t('globals.messages.notFound', { name: this.$tc('globals.terms.list', 1) }), 'is-danger');
+          return;
+        }
+      }
+      this.$router.push(`/campaigns/new?list_id=${id}`);
       this.$emit('close');
     },
   },
