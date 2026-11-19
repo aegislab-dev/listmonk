@@ -114,6 +114,8 @@ func TestPreflightChecks(t *testing.T) {
 			map[string]string{"schedule.past": "warn", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"resumed with a time ahead", with(func(f *preflightFacts) { f.Mode, f.SendAt = "resume", null.TimeFrom(now.Add(time.Hour)) }),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok"}},
+		{"no list left only warns for an opt-in campaign", with(func(f *preflightFacts) { f.LiveLists, f.Total, f.CampType = 0, 0, "optin" }),
+			map[string]string{"lists.none": "warn", "from.placeholder": "ok"}},
 		{"no list left on resume only warns", with(func(f *preflightFacts) { f.Mode, f.LiveLists, f.Remaining = "resume", 0, 0 }),
 			map[string]string{"lists.none": "warn", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"servers that disagree about a header", with(func(f *preflightFacts) { f.HeadersVary = true }),
@@ -198,24 +200,35 @@ func TestPreflightEveryStatus(t *testing.T) {
 		}
 	}
 
+	Links := func(total, untracked int, urls ...string) manager.TrackingLinks {
+		return manager.TrackingLinks{Total: total, Untracked: untracked, UntrackedURLs: urls}
+	}
 	reps := map[string]manager.TrackingReport{
-		"scheduled": {State: manager.TrackingStateOK, View: manager.TrackingViewManual},
-		"running":   {State: manager.TrackingStateWarn, View: manager.TrackingViewMissing, Links: manager.TrackingLinks{Untracked: 1}},
+		// The review case: the pixel and an untracked link only while "scheduled".
+		"scheduled": {State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(1, 1, "https://example.invalid/a")},
+		"running":   {State: manager.TrackingStateWarn, View: manager.TrackingViewMissing, Links: Links(0, 0)},
 	}
 	get := func(s string) (manager.TrackingReport, error) { return reps[s], nil }
-	if r, err := worstTracking(both, get); err != nil || r.View != manager.TrackingViewMissing {
-		t.Fatalf("worst of ok and missing: %+v %v", r, err)
+	r, err := trackingInAll(both, get)
+	if err != nil || r.View != manager.TrackingViewMissing || r.Links.Untracked != 1 || r.Links.Total != 1 || r.State != manager.TrackingStateWarn {
+		t.Fatalf("both warnings: %+v %v", r, err)
 	}
-	if r, err := worstTracking([]string{"scheduled"}, get); err != nil || r.View != manager.TrackingViewManual {
+	if r, err := trackingInAll([]string{"scheduled"}, get); err != nil || r.View != manager.TrackingViewManual || r.Links.Untracked != 1 {
 		t.Fatalf("one status: %+v %v", r, err)
 	}
-	// More untracked links is worse when the view is the same.
-	reps["scheduled"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: manager.TrackingLinks{Untracked: 3}}
-	reps["running"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: manager.TrackingLinks{Untracked: 1}}
-	if r, _ := worstTracking(both, get); r.Links.Untracked != 3 {
-		t.Fatalf("more untracked links: %+v", r)
+	// Different untracked links in each status are all counted, once.
+	reps["scheduled"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(3, 2, "https://a.invalid", "https://b.invalid")}
+	reps["running"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(2, 2, "https://b.invalid", "https://c.invalid")}
+	if r, _ := trackingInAll(both, get); r.Links.Untracked != 3 || r.Links.Total != 3 || len(r.Links.UntrackedURLs) != 3 {
+		t.Fatalf("links of both: %+v", r)
 	}
-	if _, err := worstTracking(both, func(s string) (manager.TrackingReport, error) {
+	// Tracked in both: ok.
+	reps["scheduled"] = manager.TrackingReport{State: manager.TrackingStateOK, View: manager.TrackingViewManual, Links: Links(1, 0)}
+	reps["running"] = reps["scheduled"]
+	if r, _ := trackingInAll(both, get); r.State != manager.TrackingStateOK {
+		t.Fatalf("ok in both: %+v", r)
+	}
+	if _, err := trackingInAll(both, func(s string) (manager.TrackingReport, error) {
 		if s == "running" {
 			return manager.TrackingReport{}, errBad
 		}

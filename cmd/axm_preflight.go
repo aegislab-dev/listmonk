@@ -5,7 +5,6 @@ import (
 	"net/mail"
 	"net/textproto"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -126,9 +125,11 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 
 	switch {
 	case f.LiveLists == 0:
-		// A resumed campaign with nothing left only warns, like one with nobody left.
+		// A resumed campaign with nothing left only warns, like one with nobody left, and so
+		// does an opt-in campaign (approved design v1, decision 1 and A5: only a regular
+		// campaign that reaches nobody is stopped).
 		level := models.PreflightBlock
-		if f.Mode == models.PreflightModeResume {
+		if f.Mode == models.PreflightModeResume || f.CampType == models.CampaignTypeOptin {
 			level = models.PreflightWarn
 		}
 		add("lists.none", level, nil)
@@ -351,8 +352,8 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	}
 
 	// The tracking of the saved campaign, as the tracking check reports it for the send (the
-	// status and sender of LST-44's trackingSendState), the worst of the statuses it is read in.
-	rep, err := worstTracking(statuses, func(status string) (manager.TrackingReport, error) {
+	// status and sender of LST-44's trackingSendState), in all the statuses it is read in.
+	rep, err := trackingInAll(statuses, func(status string) (manager.TrackingReport, error) {
 		c := sendCamp
 		c.Status = status
 		return a.manager.CheckTracking(&c, dummySubscriber)
@@ -384,32 +385,45 @@ func unsubscribeInAll(statuses []string, has func(status string) (bool, error)) 
 	return !missing, missing || (rendered == len(statuses) && rendered > 0)
 }
 
-// worstTracking checks the tracking in each status and returns the report that warns the
-// most: views not tracked, then the most links without click tracking. A status that cannot
-// be rendered is an error, as the send of it would be.
-func worstTracking(statuses []string, check func(status string) (manager.TrackingReport, error)) (manager.TrackingReport, error) {
-	rank := func(r manager.TrackingReport) [3]int {
-		warn, view := 0, 0
-		if r.State != manager.TrackingStateOK {
-			warn = 1
-		}
-		if r.View == manager.TrackingViewMissing {
-			view = 1
-		}
-		return [3]int{warn, view, r.Links.Untracked}
-	}
-	var (
-		worst manager.TrackingReport
-		found bool
-	)
-	for _, st := range statuses {
+// trackingInAll checks the tracking in each status and puts the reports together: what is
+// missing in any one of them is missing for the people who get that mail (LST-48 review: a
+// pixel and an untracked link only while "scheduled" lost the link warning when the report
+// of "running" was shown instead). Views are missing when one report says so; the untracked
+// links are those of all reports. A status that cannot be rendered is an error, as the send
+// of it would be.
+func trackingInAll(statuses []string, check func(status string) (manager.TrackingReport, error)) (manager.TrackingReport, error) {
+	var out manager.TrackingReport
+	urls := []string{}
+	seen := map[string]bool{}
+	for i, st := range statuses {
 		r, err := check(st)
 		if err != nil {
 			return manager.TrackingReport{}, err
 		}
-		if wr, rr := rank(worst), rank(r); !found || slices.Compare(wr[:], rr[:]) < 0 {
-			worst, found = r, true
+		if i == 0 {
+			out = r
+		} else {
+			if r.View == manager.TrackingViewMissing {
+				out.View = r.View
+			}
+			out.Links.Total = max(out.Links.Total, r.Links.Total)
+			out.Links.Manual = max(out.Links.Manual, r.Links.Manual)
+			out.Links.Auto = max(out.Links.Auto, r.Links.Auto)
+			out.Links.Untracked = max(out.Links.Untracked, r.Links.Untracked)
+		}
+		for _, u := range r.Links.UntrackedURLs {
+			if !seen[u] {
+				seen[u] = true
+				urls = append(urls, u)
+			}
 		}
 	}
-	return worst, nil
+	// Different links in different statuses: count each of them once.
+	out.Links.UntrackedURLs = urls
+	out.Links.Untracked = max(out.Links.Untracked, len(urls))
+	out.Links.Total = max(out.Links.Total, out.Links.Untracked)
+	if out.State != manager.TrackingStateOff && (out.View == manager.TrackingViewMissing || out.Links.Untracked > 0) {
+		out.State = manager.TrackingStateWarn
+	}
+	return out, nil
 }

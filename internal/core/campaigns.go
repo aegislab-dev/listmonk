@@ -255,7 +255,10 @@ func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs
 func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt string) (models.Campaign, error) {
 	// AXM (LST-48): the campaign is locked and compared with what the confirmation showed
 	// before anything else is judged, so a campaign changed in the meantime is a 409 and not
-	// whatever its new state would be refused with.
+	// whatever its new state would be refused with. Everything until the commit reads on the
+	// transaction's own connection: a second one (GetCampaign) would wait for a free
+	// connection while this one is held, which a small pool with the sender's lock connection
+	// in it does not have (LST-48 review).
 	tx, err := c.db.Beginx()
 	if err != nil {
 		return models.Campaign{}, err
@@ -265,7 +268,7 @@ func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt s
 		return models.Campaign{}, err
 	}
 
-	cm, err := c.GetCampaign(id, "", "")
+	cm, err := c.lockCampaignState(tx, id)
 	if err != nil {
 		return models.Campaign{}, err
 	}

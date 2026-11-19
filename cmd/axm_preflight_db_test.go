@@ -524,6 +524,22 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 	if got := view(); got != "missing" {
 		t.Fatalf("pixel while scheduled, a scheduled one: %q", got)
 	}
+	// The pixel and an untracked link only while "scheduled": both warnings, from two statuses.
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p>{{ if eq .Campaign.Status "scheduled" }}{{ TrackView }}<a href="https://example.invalid/article">article</a>{{ end }}' WHERE id=$1`, e.campID)
+	{
+		code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		var o struct {
+			Tracking struct {
+				View  string `json:"view"`
+				Links struct {
+					Untracked int `json:"untracked"`
+				} `json:"links"`
+			} `json:"tracking"`
+		}
+		if code != http.StatusOK || json.Unmarshal(data, &o) != nil || o.Tracking.View != "missing" || o.Tracking.Links.Untracked != 1 {
+			t.Fatalf("pixel and link while scheduled: %d %s", code, data)
+		}
+	}
 	e.db.MustExec(`UPDATE campaigns SET send_at=NULL, content_type='richtext' WHERE id=$1`, e.campID)
 
 	// A body that cannot be rendered says nothing about it.
@@ -703,5 +719,46 @@ func TestPreflightSpeed(t *testing.T) {
 			}
 			t.Logf("%-26s run %d: %6.2fs  total %d remaining %d", c.name, i+1, time.Since(start).Seconds(), aud.Total, aud.Remaining)
 		}
+	}
+}
+
+// A status change runs on one connection: the pool may have only one free while the sender
+// holds its lock connection (LST-48 review: with two connections and the sender's lock, a
+// schedule waited for the sender to let go).
+func TestCampaignStatusOneConnection(t *testing.T) {
+	e := newSendsEnv(t, 1)
+	draft, _ := e.addCampaign("draft")
+	e.db.MustExec(`UPDATE campaigns SET send_at = NOW() + INTERVAL '1 day' WHERE id = $1`, draft)
+	var seen string
+	e.get(&seen, `SELECT updated_at::TEXT FROM campaigns WHERE id = $1`, draft)
+	e.db.SetMaxOpenConns(1)
+	defer e.db.SetMaxOpenConns(8)
+
+	run := func(status, seenAt, want string) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() {
+			out, err := e.core.UpdateCampaignStatus(draft, status, "", seenAt)
+			if err == nil && out.Status != want {
+				err = fmt.Errorf("status %q", out.Status)
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", status, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: waits for a second connection", status)
+		}
+	}
+	run(models.CampaignStatusScheduled, seen, models.CampaignStatusScheduled)
+	run(models.CampaignStatusDraft, "", models.CampaignStatusDraft)
+	run(models.CampaignStatusScheduled, "", models.CampaignStatusScheduled)
+
+	// A campaign that does not exist is still refused.
+	if _, err := e.core.UpdateCampaignStatus(draft+1000, models.CampaignStatusRunning, "", ""); err == nil {
+		t.Fatal("unknown campaign")
 	}
 }

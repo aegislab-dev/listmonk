@@ -63,6 +63,18 @@ func (c *Core) checkCampaignSeen(tx *sqlx.Tx, id int, seenAt string) error {
 	return nil
 }
 
+// lockCampaignState reads, on the transaction and locked for it, what a status change of
+// campaign id is judged by (LST-48): its ID, status and send time.
+func (c *Core) lockCampaignState(tx *sqlx.Tx, id int) (models.Campaign, error) {
+	var cm models.Campaign
+	err := tx.QueryRowx(`SELECT id, status, send_at FROM campaigns WHERE id = $1 FOR UPDATE`, id).Scan(&cm.ID, &cm.Status, &cm.SendAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return cm, echo.NewHTTPError(http.StatusBadRequest,
+			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
+	}
+	return cm, err
+}
+
 // GetCampaignPausedAt is when campaign id was last paused by a person (the audit log), else
 // fallback, the campaign's last change. The audit row only counts while nothing started the
 // campaign again after it: a campaign that was resumed and then stopped by the sender (too many
