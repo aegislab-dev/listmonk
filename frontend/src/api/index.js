@@ -379,6 +379,15 @@ export const getCampaign = async (id) => http.get(`/api/campaigns/${id}`, {
 export const previewRecentExclude = (data, signal) => http.post('/api/campaigns/recent-exclude/preview', data, {
   disableToast: true, signal,
 });
+// Address check (LST-43). Both only read; pending lookups are asked for again by the caller.
+export const checkListAddresses = (data, signal) => http.post('/api/lists/address-check', data, {
+  disableToast: true, signal,
+});
+// The answer can hold one entry per row of a large file; its keys need no conversion, and
+// converting them takes many seconds.
+export const checkImportAddresses = (data, signal) => http.post('/api/subscribers/address-check', data, {
+  disableToast: true, signal, camelCase: false,
+});
 export const getRecentRule = (id) => http.get(`/api/campaigns/${id}/recent-exclude`);
 export const saveRecentRule = (id, data) => http.put(`/api/campaigns/${id}/recent-exclude`, data);
 export const getRecentCampaignOption = (id) => http.get(`/api/campaigns/${id}`, { disableToast: true });

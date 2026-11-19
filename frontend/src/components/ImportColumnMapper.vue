@@ -155,8 +155,60 @@
               <span>{{ $t('import.mapRows') }} {{ issueExamples(kind) }}</span>
             </template>
           </p>
+          <p v-if="summary.address" data-cy="map-issue-address">
+            <strong>{{ $t('import.mapIssueaddress', { count: summary.address }) }}</strong>
+            <span>{{ $t('import.mapIssueaddressHelp') }}</span>
+          </p>
         </div>
         <p class="help">{{ $t('import.mapDuplicateHelp') }}</p>
+        <div v-if="address" class="map-address" data-cy="map-address">
+          <h4 class="title is-6">{{ $t('import.addr.title') }} <span class="tag is-light">{{ $t('import.addr.server') }}</span></h4>
+          <p v-if="address.busy" class="help" role="status" data-cy="map-address-busy">
+            {{ $t('import.addr.checking') }} {{ $t('import.addr.wait') }}
+          </p>
+          <p v-if="address.state === 'error'" class="help" data-cy="map-address-error">{{ $t('import.addr.failed') }}</p>
+          <template v-else-if="address.state === 'done'">
+            <p class="map-address-line" data-cy="map-address-summary">
+              <template v-if="!address.risky">{{ $t('import.addr.clean', { total: address.total }) }}</template>
+              <template v-else>
+                {{ $t('import.addr.target', { total: address.total }) }}
+                <b>{{ $t('import.addr.risky', { count: address.risky }) }}</b>
+                {{ $t('addressCheck.breakdown', { confirmed: address.confirmed, warning: address.warning }) }}
+              </template>
+              <template v-if="address.pending"> · {{ $t('import.addr.pending', { count: address.pending }) }}</template>
+              <template v-else-if="address.unknown"> · {{ $t('import.addr.unknown', { count: address.unknown }) }}</template>
+            </p>
+            <div class="map-address-classes">
+              <p v-for="line in address.lines" :key="line.name" :data-cy="`map-address-${line.name}`">
+                <strong>
+                  <span class="map-address-chip" :class="`is-${line.kind}`">{{ $t(`import.addr.kind.${line.kind}`) }}</span>
+                  {{ $t(`addressCheck.class.${line.name}`) }} {{ $t('import.addr.rows', { count: line.count }) }}
+                </strong>
+                <span>
+                  {{ $t('import.mapRows') }} {{ line.examples }}
+                  <template v-if="line.help"> · {{ line.help }}</template>
+                </span>
+              </p>
+            </div>
+            <div v-if="address.confirmedRows || address.warningRows" class="map-address-switches">
+              <b-switch :value="address.excludeConfirmed" :disabled="!address.confirmedRows" data-cy="map-address-exclude-confirmed"
+                @input="$emit('address-exclude', { confirmed: $event })">
+                {{ $t('import.addr.excludeConfirmed', { count: address.confirmedRows }) }}
+              </b-switch>
+              <b-switch :value="address.excludeWarning" :disabled="!address.warningRows" data-cy="map-address-exclude-warning"
+                @input="$emit('address-exclude', { warning: $event })">
+                {{ $t('import.addr.excludeWarning', { count: address.warningRows }) }}
+              </b-switch>
+            </div>
+            <p v-if="address.confirmedRows || address.warningRows" class="map-address-result" data-cy="map-address-result">
+              <span v-if="summary.address">{{ $t('import.addr.result', { count: summary.imported, excluded: summary.address }) }}</span>
+              <span v-else>{{ $t('import.addr.resultAll', { count: summary.imported }) }}</span>
+              <a v-if="summary.address" href="#" data-cy="map-address-download" @click.prevent="$emit('address-download')">
+                {{ $t('import.addr.download') }}
+              </a>
+            </p>
+          </template>
+        </div>
         <div v-if="valueLines.length" class="map-values" data-cy="map-values">
           <h4 class="title is-6">{{ $t('import.mapValues') }}</h4>
           <div v-for="line in valueLines" :key="line.index" class="map-values-line" :data-cy="`map-values-${line.key}`">
@@ -237,6 +289,9 @@ export default {
     preview: { type: Array, default: () => [] },
     error: { type: String, default: '' },
     overwrite: { type: Boolean, default: false },
+    // The address check of the rows to import (null when there is none): its state, counts,
+    // one line per class and the two exclusion switches. See Import.vue addressView.
+    address: { type: Object, default: null },
   },
   computed: {
     rows() {
@@ -321,7 +376,7 @@ export default {
       return { ok: count('ok', 'warning'), skipped: count('skipped'), error: count('error') };
     },
     excluded() {
-      return ['empty', 'invalid', 'duplicate', 'malformed'].reduce((sum, key) => sum + this.summary[key], 0);
+      return ['empty', 'invalid', 'duplicate', 'malformed', 'address'].reduce((sum, key) => sum + (this.summary[key] || 0), 0);
     },
   },
   methods: {
