@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -200,13 +201,28 @@ func TestPreflightEveryStatus(t *testing.T) {
 		}
 	}
 
-	Links := func(total, untracked int, urls ...string) manager.TrackingLinks {
-		return manager.TrackingLinks{Total: total, Untracked: untracked, UntrackedURLs: urls}
+	// Links as CheckTracking counts them: tracked ones and untracked destinations.
+	Links := func(tracked int, untracked ...string) manager.TrackingLinks {
+		lk := manager.TrackingLinks{UntrackedURLs: []string{}}
+		for i := 0; i < tracked; i++ {
+			lk.All = append(lk.All, manager.TrackedLink{Kind: manager.TrackingViewManual, Dest: fmt.Sprintf("https://t.invalid/%d", i)})
+			lk.Total++
+			lk.Manual++
+		}
+		for _, u := range untracked {
+			lk.All = append(lk.All, manager.TrackedLink{Kind: "untracked", Dest: u})
+			lk.Total++
+			lk.Untracked++
+			if len(lk.UntrackedURLs) < manager.MaxUntrackedURLs {
+				lk.UntrackedURLs = append(lk.UntrackedURLs, u)
+			}
+		}
+		return lk
 	}
 	reps := map[string]manager.TrackingReport{
 		// The review case: the pixel and an untracked link only while "scheduled".
-		"scheduled": {State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(1, 1, "https://example.invalid/a")},
-		"running":   {State: manager.TrackingStateWarn, View: manager.TrackingViewMissing, Links: Links(0, 0)},
+		"scheduled": {State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(0, "https://example.invalid/a")},
+		"running":   {State: manager.TrackingStateWarn, View: manager.TrackingViewMissing, Links: Links(0)},
 	}
 	get := func(s string) (manager.TrackingReport, error) { return reps[s], nil }
 	r, err := trackingInAll(both, get)
@@ -216,16 +232,26 @@ func TestPreflightEveryStatus(t *testing.T) {
 	if r, err := trackingInAll([]string{"scheduled"}, get); err != nil || r.View != manager.TrackingViewManual || r.Links.Untracked != 1 {
 		t.Fatalf("one status: %+v %v", r, err)
 	}
-	// Different untracked links in each status are all counted, once.
-	reps["scheduled"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(3, 2, "https://a.invalid", "https://b.invalid")}
-	reps["running"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(2, 2, "https://b.invalid", "https://c.invalid")}
-	if r, _ := trackingInAll(both, get); r.Links.Untracked != 3 || r.Links.Total != 3 || len(r.Links.UntrackedURLs) != 3 {
+	// Different untracked links in each status are all counted, once, with the tracked ones.
+	reps["scheduled"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(1, "https://a.invalid", "https://b.invalid")}
+	reps["running"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(1, "https://b.invalid", "https://c.invalid")}
+	if r, _ := trackingInAll(both, get); r.Links.Untracked != 3 || r.Links.Total != 4 || r.Links.Manual != 1 || len(r.Links.UntrackedURLs) != 3 {
 		t.Fatalf("links of both: %+v", r)
 	}
+	// Past the capped sample of addresses (LST-48 review): 20 common links, then one of each.
+	var common []string
+	for i := 0; i < 20; i++ {
+		common = append(common, fmt.Sprintf("https://common.invalid/%d", i))
+	}
+	reps["scheduled"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(0, append(slices.Clone(common), "https://only-scheduled.invalid")...)}
+	reps["running"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: Links(0, append(slices.Clone(common), "https://only-running.invalid")...)}
+	if r, _ := trackingInAll(both, get); r.Links.Untracked != 22 || r.Links.Total != 22 || len(r.Links.UntrackedURLs) != manager.MaxUntrackedURLs {
+		t.Fatalf("past the sample: untracked %d total %d sample %d", r.Links.Untracked, r.Links.Total, len(r.Links.UntrackedURLs))
+	}
 	// Tracked in both: ok.
-	reps["scheduled"] = manager.TrackingReport{State: manager.TrackingStateOK, View: manager.TrackingViewManual, Links: Links(1, 0)}
+	reps["scheduled"] = manager.TrackingReport{State: manager.TrackingStateOK, View: manager.TrackingViewManual, Links: Links(1)}
 	reps["running"] = reps["scheduled"]
-	if r, _ := trackingInAll(both, get); r.State != manager.TrackingStateOK {
+	if r, _ := trackingInAll(both, get); r.State != manager.TrackingStateOK || r.Links.Total != 1 {
 		t.Fatalf("ok in both: %+v", r)
 	}
 	if _, err := trackingInAll(both, func(s string) (manager.TrackingReport, error) {

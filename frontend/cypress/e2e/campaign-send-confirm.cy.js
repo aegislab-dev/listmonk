@@ -295,6 +295,50 @@ describe('Pre-send confirmation window', () => {
     cy.get(win).should('not.exist');
   });
 
+  it('keeps time by the server clock when the browser clock is behind', () => {
+    // The server says it is 2 minutes later than this browser thinks: its send time 60 s
+    // from the browser's now has passed already.
+    cy.intercept('GET', preflight, (req) => {
+      req.continue((res) => { res.body.data.now = new Date(Date.now() + 120000).toISOString(); });
+    }).as('pfAhead');
+    cy.intercept('PUT', statusPath, { statusCode: 200, body: { data: { status: 'scheduled' } } }).as('status');
+    cy.then(() => create('skew', { lists: [listX], send_at: new Date(Date.now() + 60000).toISOString() }));
+    cy.visit('/admin/campaigns');
+    row('skew').find('[data-cy=btn-schedule]').click();
+    ready();
+    cy.get('[data-cy="send-check-schedule.past"]').should('have.attr', 'data-level', 'warn');
+    cy.get('[data-cy=send-schedule-until]').should('not.exist');
+    cy.get('[data-cy=send-ok]').should('contain', 'anyway').click();
+    // What the window showed goes with the request.
+    cy.wait('@status').its('request.body.send_at_passed').should('eq', true);
+  });
+
+  it('reads again when the server refuses a passed send time the window did not show', () => {
+    // The server's clock reads 2 minutes early here: the window believes there is time left.
+    cy.intercept('GET', preflight, (req) => {
+      req.continue((res) => { res.body.data.now = new Date(Date.now() - 120000).toISOString(); });
+    }).as('pfBehind');
+    cy.intercept('PUT', statusPath).as('status');
+    cy.then(() => create('late', { lists: [listX], send_at: new Date(Date.now() + 4000).toISOString() }));
+    cy.visit('/admin/campaigns');
+    row('late').find('[data-cy=btn-schedule]').click();
+    ready();
+    cy.get('[data-cy=send-schedule-until]').should('be.visible');
+    cy.wait(5000);
+    cy.get('[data-cy=send-ok]').click();
+    cy.wait('@status').its('response.statusCode').should('eq', 412);
+    ready();
+    // Read again: the server's own check says the time has passed; nothing was sent.
+    cy.get('[data-cy="send-check-schedule.past"]').should('have.attr', 'data-level', 'warn');
+    cy.then(() => cy.request(`/api/campaigns/${camp.late}`)).its('body.data.status').should('eq', 'draft');
+    cy.get('[data-cy=send-ok]').should('contain', 'anyway').click();
+    cy.wait('@status').then(({ request, response }) => {
+      expect(request.body.send_at_passed).to.equal(true);
+      expect(response.statusCode).to.equal(200);
+    });
+    cy.get(win).should('not.exist');
+  });
+
   it('keeps the window while the status change is on its way, then follows it', () => {
     cy.then(() => create('busy', { lists: [listX], send_at: new Date(Date.now() + 86400000 * 30).toISOString() }));
     cy.then(() => cy.visit(`/admin/campaigns/${camp.busy}`));

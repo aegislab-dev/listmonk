@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/models"
+	"github.com/labstack/echo/v4"
 )
 
 // LST-48: the pre-send confirmation counts the people a campaign reaches with the same
@@ -542,6 +544,31 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 	}
 	e.db.MustExec(`UPDATE campaigns SET send_at=NULL, content_type='richtext' WHERE id=$1`, e.campID)
 
+	// More untracked links than the sample of addresses: 20 in both statuses and one more in
+	// each. All 22 are counted (LST-48 review).
+	{
+		var b strings.Builder
+		b.WriteString(`<p>News</p>`)
+		for i := 0; i < 20; i++ {
+			fmt.Fprintf(&b, `<a href="https://common.invalid/%d">c</a>`, i)
+		}
+		b.WriteString(`{{ if eq .Campaign.Status "scheduled" }}<a href="https://only-scheduled.invalid/">s</a>{{ else }}<a href="https://only-running.invalid/">r</a>{{ end }}`)
+		e.db.MustExec(`UPDATE campaigns SET body=$2, send_at=NOW() + INTERVAL '1 day' WHERE id=$1`, e.campID, b.String())
+		code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		var o struct {
+			Tracking struct {
+				Links struct {
+					Total     int `json:"total"`
+					Untracked int `json:"untracked"`
+				} `json:"links"`
+			} `json:"tracking"`
+		}
+		if code != http.StatusOK || json.Unmarshal(data, &o) != nil || o.Tracking.Links.Untracked != 22 || o.Tracking.Links.Total != 22 {
+			t.Fatalf("links past the sample: %d %s", code, data)
+		}
+	}
+	e.db.MustExec(`UPDATE campaigns SET send_at=NULL, content_type='richtext' WHERE id=$1`, e.campID)
+
 	// A body that cannot be rendered says nothing about it.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>{{ .Subscriber.NoSuchField }}</p>' WHERE id=$1`, e.campID)
 	if got := level(read().Checks, "unsubscribe.missing"); got != "" {
@@ -738,7 +765,7 @@ func TestCampaignStatusOneConnection(t *testing.T) {
 		t.Helper()
 		done := make(chan error, 1)
 		go func() {
-			out, err := e.core.UpdateCampaignStatus(draft, status, "", seenAt)
+			out, err := e.core.UpdateCampaignStatus(draft, status, "", seenAt, false)
 			if err == nil && out.Status != want {
 				err = fmt.Errorf("status %q", out.Status)
 			}
@@ -758,7 +785,48 @@ func TestCampaignStatusOneConnection(t *testing.T) {
 	run(models.CampaignStatusScheduled, "", models.CampaignStatusScheduled)
 
 	// A campaign that does not exist is still refused.
-	if _, err := e.core.UpdateCampaignStatus(draft+1000, models.CampaignStatusRunning, "", ""); err == nil {
+	if _, err := e.core.UpdateCampaignStatus(draft+1000, models.CampaignStatusRunning, "", "", false); err == nil {
 		t.Fatal("unknown campaign")
+	}
+}
+
+// A schedule from the pre-send confirmation whose send time has come by the database's clock
+// is refused (412) unless the window said so: a browser clock behind the server's showed
+// "later" while the campaign went out at once (LST-48 review). The API without updated_at is
+// not judged.
+func TestCampaignStatusSendTimePassed(t *testing.T) {
+	e := newSendsEnv(t, 1)
+	draft, _ := e.addCampaign("draft")
+	e.db.MustExec(`UPDATE campaigns SET send_at = NOW() - INTERVAL '4 seconds' WHERE id = $1`, draft)
+	seen := func() string {
+		var s string
+		e.get(&s, `SELECT updated_at::TEXT FROM campaigns WHERE id = $1`, draft)
+		return s
+	}
+	status := func() string {
+		var s string
+		e.get(&s, `SELECT status FROM campaigns WHERE id = $1`, draft)
+		return s
+	}
+	for _, st := range []string{models.CampaignStatusScheduled, models.CampaignStatusRunning} {
+		_, err := e.core.UpdateCampaignStatus(draft, st, "", seen(), false)
+		var he *echo.HTTPError
+		if !errors.As(err, &he) || he.Code != http.StatusPreconditionFailed || status() != "draft" {
+			t.Fatalf("%s, not shown: %v %s", st, err, status())
+		}
+	}
+	// Shown: it goes on.
+	if _, err := e.core.UpdateCampaignStatus(draft, models.CampaignStatusScheduled, "", seen(), true); err != nil || status() != "scheduled" {
+		t.Fatalf("shown: %v %s", err, status())
+	}
+	// The API, as before.
+	e.db.MustExec(`UPDATE campaigns SET status='draft' WHERE id = $1`, draft)
+	if _, err := e.core.UpdateCampaignStatus(draft, models.CampaignStatusScheduled, "", "", false); err != nil || status() != "scheduled" {
+		t.Fatalf("api: %v %s", err, status())
+	}
+	// A time ahead is not judged.
+	e.db.MustExec(`UPDATE campaigns SET status='draft', send_at = NOW() + INTERVAL '1 hour' WHERE id = $1`, draft)
+	if _, err := e.core.UpdateCampaignStatus(draft, models.CampaignStatusScheduled, "", seen(), false); err != nil || status() != "scheduled" {
+		t.Fatalf("ahead: %v %s", err, status())
 	}
 }

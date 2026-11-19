@@ -251,8 +251,9 @@ func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs
 //
 // seenAt (AXM, LST-48) is the campaign's updated_at that the pre-send confirmation showed,
 // as text exactly as it was read. When it is not empty and the campaign was changed since,
-// nothing is changed and the error is a 409.
-func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt string) (models.Campaign, error) {
+// nothing is changed and the error is a 409. pastShown: the confirmation said that the send
+// time has passed; when it did not and the time has come, the error is a 412.
+func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt string, pastShown bool) (models.Campaign, error) {
 	// AXM (LST-48): the campaign is locked and compared with what the confirmation showed
 	// before anything else is judged, so a campaign changed in the meantime is a 409 and not
 	// whatever its new state would be refused with. Everything until the commit reads on the
@@ -268,7 +269,7 @@ func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt s
 		return models.Campaign{}, err
 	}
 
-	cm, err := c.lockCampaignState(tx, id)
+	cm, due, err := c.lockCampaignState(tx, id)
 	if err != nil {
 		return models.Campaign{}, err
 	}
@@ -303,6 +304,9 @@ func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt s
 
 	if len(errMsg) > 0 {
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, errMsg)
+	}
+	if err := c.checkSendTimeShown(cm, due, status, seenAt, pastShown); err != nil {
+		return models.Campaign{}, err
 	}
 
 	if from != "" && cm.Status == models.CampaignStatusDraft {

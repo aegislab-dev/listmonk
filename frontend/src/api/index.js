@@ -448,9 +448,10 @@ export const updateCampaign = async (id, data) => http.put(
 // updatedAt (LST-48): the campaign's updated_at as the pre-send confirmation showed it,
 // unchanged. The server then refuses (409) a campaign that was edited since. Left out, the
 // status is changed without that check. options: more of the request's own settings.
-export const changeCampaignStatus = async (id, status, updatedAt, options) => http.put(
+// extra: more fields of the request (send_at_passed from the pre-send confirmation, LST-48).
+export const changeCampaignStatus = async (id, status, updatedAt, options, extra = {}) => http.put(
   `/api/campaigns/${id}/status`,
-  updatedAt ? { status, updated_at: updatedAt } : { status },
+  { status, ...(updatedAt ? { updated_at: updatedAt } : {}), ...extra },
 
   { loading: models.campaigns, ...options },
 );

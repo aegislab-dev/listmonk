@@ -523,6 +523,7 @@
     "campaigns.sendConfirm.check.tracking.failed": "**The tracking check failed.** It is not known whether views and clicks are recorded.",
     "campaigns.sendConfirm.asOf": "The count is as of {time}; blocked and unsubscribed people are left out again when sending starts, so it may differ a little.",
     "campaigns.sendConfirm.changed": "The campaign changed in the meantime. Please check it again.",
+    "campaigns.sendConfirm.timePassed": "The send time has passed: confirming now sends it at once. The window was read again; please check.",
     "campaigns.sendConfirm.check.lists.none.warn": "**The campaign has no list.** It was deleted, so there is nobody left to send to.",
     "campaigns.sendConfirm.check.mail.headers.warn": "**The SMTP servers set different From, Subject or Reply-To headers,** so what recipients see depends on the server the mail takes.",
     "campaigns.sendConfirm.title.resumeAt": "Resume sending to about {n} remaining people on {month}/{day} at {time}",

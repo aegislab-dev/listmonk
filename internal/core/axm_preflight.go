@@ -64,15 +64,36 @@ func (c *Core) checkCampaignSeen(tx *sqlx.Tx, id int, seenAt string) error {
 }
 
 // lockCampaignState reads, on the transaction and locked for it, what a status change of
-// campaign id is judged by (LST-48): its ID, status and send time.
-func (c *Core) lockCampaignState(tx *sqlx.Tx, id int) (models.Campaign, error) {
-	var cm models.Campaign
-	err := tx.QueryRowx(`SELECT id, status, send_at FROM campaigns WHERE id = $1 FOR UPDATE`, id).Scan(&cm.ID, &cm.Status, &cm.SendAt)
+// campaign id is judged by (LST-48): its ID, status and send time, and whether the send time
+// has come by the database's clock, the one the sender goes by (next-campaigns).
+func (c *Core) lockCampaignState(tx *sqlx.Tx, id int) (models.Campaign, bool, error) {
+	var (
+		cm  models.Campaign
+		due bool
+	)
+	err := tx.QueryRowx(`SELECT id, status, send_at, COALESCE(NOW() >= send_at, false) FROM campaigns WHERE id = $1 FOR UPDATE`, id).
+		Scan(&cm.ID, &cm.Status, &cm.SendAt, &due)
 	if errors.Is(err, sql.ErrNoRows) {
-		return cm, echo.NewHTTPError(http.StatusBadRequest,
+		return cm, false, echo.NewHTTPError(http.StatusBadRequest,
 			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
 	}
-	return cm, err
+	return cm, due, err
+}
+
+// checkSendTimeShown refuses a status change from the pre-send confirmation (seenAt given)
+// that schedules a campaign whose send time has come, when the confirmation did not say so
+// (pastShown): the campaign would go out at once while the person read "later" (LST-48
+// review: a browser clock behind the server's). The answer is 412; the window reads again
+// and shows the warning. A change without seenAt (the API) is not judged.
+func (c *Core) checkSendTimeShown(cm models.Campaign, due bool, status, seenAt string, pastShown bool) error {
+	if seenAt == "" || pastShown || !due {
+		return nil
+	}
+	// As update-campaign-status: a start with a send time schedules the campaign.
+	if status == models.CampaignStatusScheduled || (status == models.CampaignStatusRunning && cm.SendAt.Valid) {
+		return echo.NewHTTPError(http.StatusPreconditionFailed, c.i18n.T("campaigns.sendConfirm.timePassed"))
+	}
+	return nil
 }
 
 // GetCampaignPausedAt is when campaign id was last paused by a person (the audit log), else

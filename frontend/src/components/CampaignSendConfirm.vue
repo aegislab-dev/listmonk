@@ -168,6 +168,9 @@ import Vue from 'vue';
 import dayjs from 'dayjs';
 import { richParts, sendConfirmModel, untilKey } from '../send-confirm';
 
+// Seconds before the send time that the window already says it has passed.
+const PAST_MARGIN = 3000;
+
 // The window that every start, resume and schedule of a campaign goes through (LST-48):
 // the people it reaches, its lists, subject, sender, time and the checks, read from the
 // server at the moment it opens. Confirming changes the status only; the campaign is saved
@@ -195,6 +198,9 @@ export default Vue.extend({
       prev: null,
       ctl: null,
       ticker: null,
+      // The server's clock minus this browser's, from the last reading: the window keeps
+      // time by the server, as the send does (a browser clock may be behind).
+      skew: 0,
       now: new Date(),
       icons: {
         ok: '✓', warn: '!', block: '✕', info: 'i',
@@ -319,14 +325,20 @@ export default Vue.extend({
       const { pf } = this;
       if (!pf || this.state !== 'ready' || !pf.sendAt) return false;
       if (pf.mode !== 'schedule' && pf.mode !== 'resume') return false;
-      if (new Date(pf.sendAt).getTime() > this.now.getTime()) return false;
+      // A few seconds early: the request takes time to arrive.
+      if (new Date(pf.sendAt).getTime() > this.now.getTime() + PAST_MARGIN) return false;
       if (pf.checks.some((c) => c.key === 'schedule.past')) return false;
       pf.checks.push({ key: 'schedule.past', level: 'warn', params: {} });
       return true;
     },
 
+    serverNow() { return new Date(Date.now() + this.skew); },
+
+    // Whether the window says that the send time has passed.
+    pastShown() { return !!this.pf && this.pf.checks.some((c) => c.key === 'schedule.past'); },
+
     tick() {
-      this.now = new Date();
+      this.now = this.serverNow();
       this.markPast();
     },
 
@@ -341,8 +353,10 @@ export default Vue.extend({
       this.error = '';
       try {
         const pf = await this.$api.getCampaignPreflight(this.campaignId, this.ctl ? { signal: this.ctl.signal } : {});
+        this.skew = pf.now ? new Date(pf.now).getTime() - Date.now() : 0;
+        if (!Number.isFinite(this.skew)) this.skew = 0;
         this.pf = pf;
-        this.now = new Date();
+        this.now = this.serverNow();
         this.state = 'ready';
       } catch (err) {
         if (err && (err.code === 'ERR_CANCELED' || err.name === 'CanceledError')) return;
@@ -357,7 +371,7 @@ export default Vue.extend({
     async confirm(blind) {
       if (this.busy) return;
       // The send time may have passed since the last tick: show that first, do not send.
-      this.now = new Date();
+      this.now = this.serverNow();
       if (!blind && this.markPast()) return;
       this.busy = true;
       try {
@@ -366,10 +380,20 @@ export default Vue.extend({
           this.statusToAsk(blind),
           blind ? undefined : this.pf.updatedAt,
           { disableToast: true },
+          // The server refuses a passed send time that the window did not show (412).
+          !blind && this.pastShown() ? { send_at_passed: true } : {},
         );
         this.$emit('done', out);
         this.$parent.close();
       } catch (err) {
+        if (!blind && err.response && err.response.status === 412) {
+          // The send time has come by the server's clock, and the window did not say so: read
+          // again, which shows it.
+          this.busy = false;
+          await this.load();
+          this.markPast();
+          return;
+        }
         if (!blind && err.response && err.response.status === 409) {
           // Edited after it was read: show what is true now and ask again.
           this.prev = {

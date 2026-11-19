@@ -122,6 +122,11 @@ func TestCheckTracking(t *testing.T) {
 			if want.Links.UntrackedURLs == nil {
 				want.Links.UntrackedURLs = []string{}
 			}
+			// The full list of links (LST-48) has one entry per counted link.
+			if len(got.Links.All) != got.Links.Total {
+				t.Fatalf("all links: %d of %d", len(got.Links.All), got.Links.Total)
+			}
+			got.Links.All = nil
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("got  %+v\nwant %+v", got, want)
 			}
@@ -176,7 +181,7 @@ func TestCheckTrackingCapsUntrackedList(t *testing.T) {
 		b.WriteString(`<a href="https://a.test/` + string(rune('a'+i%26)) + string(rune('a'+i/26)) + `">x</a>`)
 	}
 	rep := checkTracking(t, m, models.Campaign{ContentType: "html", Messenger: "email", Body: b.String()})
-	if rep.Links.Untracked != 30 || len(rep.Links.UntrackedURLs) != maxUntrackedURLs {
+	if rep.Links.Untracked != 30 || len(rep.Links.UntrackedURLs) != maxUntrackedURLs || len(rep.Links.All) != 30 {
 		t.Fatalf("got %d untracked, %d listed", rep.Links.Untracked, len(rep.Links.UntrackedURLs))
 	}
 }

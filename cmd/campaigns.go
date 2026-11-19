@@ -396,6 +396,8 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 		// UpdatedAt is the campaign's updated_at as the pre-send confirmation showed it
 		// (LST-48). When given, a campaign changed since is not started.
 		UpdatedAt string `json:"updated_at"`
+		// SendAtPassed: the confirmation said that the send time has passed (LST-48).
+		SendAtPassed bool `json:"send_at_passed"`
 	}{}
 	if err := c.Bind(&req); err != nil {
 		return err
@@ -415,7 +417,7 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 		}
 	}
 	// Update the campaign status in the DB.
-	out, err := a.core.UpdateCampaignStatus(id, req.Status, from, req.UpdatedAt)
+	out, err := a.core.UpdateCampaignStatus(id, req.Status, from, req.UpdatedAt, req.SendAtPassed)
 	if err != nil {
 		return err
 	}

@@ -47,6 +47,9 @@ type preflightResponse struct {
 	Sent      int       `json:"sent"`
 	ToSend    int       `json:"to_send"`
 	AsOf      time.Time `json:"as_of"`
+	// Now is the server's clock when the answer leaves: the window keeps time by it, not by a
+	// browser clock that may be behind (LST-48 review).
+	Now time.Time `json:"now"`
 
 	Checks []models.PreflightCheck `json:"checks"`
 	// Tracking is the tracking check of the saved campaign (LST-44); null with a
@@ -364,6 +367,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		out.Tracking = &rep
 	}
 
+	out.Now = time.Now()
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
@@ -388,13 +392,16 @@ func unsubscribeInAll(statuses []string, has func(status string) (bool, error)) 
 // trackingInAll checks the tracking in each status and puts the reports together: what is
 // missing in any one of them is missing for the people who get that mail (LST-48 review: a
 // pixel and an untracked link only while "scheduled" lost the link warning when the report
-// of "running" was shown instead). Views are missing when one report says so; the untracked
-// links are those of all reports. A status that cannot be rendered is an error, as the send
+// of "running" was shown instead). Views are missing when one report says so; the links are
+// those of all reports, each distinct one counted once, from the full lists (not the capped
+// samples of untracked addresses). A status that cannot be rendered is an error, as the send
 // of it would be.
 func trackingInAll(statuses []string, check func(status string) (manager.TrackingReport, error)) (manager.TrackingReport, error) {
-	var out manager.TrackingReport
-	urls := []string{}
-	seen := map[string]bool{}
+	var (
+		out   manager.TrackingReport
+		links []manager.TrackedLink
+		seen  = map[manager.TrackedLink]bool{}
+	)
 	for i, st := range statuses {
 		r, err := check(st)
 		if err != nil {
@@ -402,26 +409,34 @@ func trackingInAll(statuses []string, check func(status string) (manager.Trackin
 		}
 		if i == 0 {
 			out = r
-		} else {
-			if r.View == manager.TrackingViewMissing {
-				out.View = r.View
-			}
-			out.Links.Total = max(out.Links.Total, r.Links.Total)
-			out.Links.Manual = max(out.Links.Manual, r.Links.Manual)
-			out.Links.Auto = max(out.Links.Auto, r.Links.Auto)
-			out.Links.Untracked = max(out.Links.Untracked, r.Links.Untracked)
+		} else if r.View == manager.TrackingViewMissing {
+			out.View = r.View
 		}
-		for _, u := range r.Links.UntrackedURLs {
-			if !seen[u] {
-				seen[u] = true
-				urls = append(urls, u)
+		for _, l := range r.Links.All {
+			if !seen[l] {
+				seen[l] = true
+				links = append(links, l)
 			}
 		}
 	}
-	// Different links in different statuses: count each of them once.
-	out.Links.UntrackedURLs = urls
-	out.Links.Untracked = max(out.Links.Untracked, len(urls))
-	out.Links.Total = max(out.Links.Total, out.Links.Untracked)
+	if len(statuses) > 1 {
+		lk := manager.TrackingLinks{UntrackedURLs: []string{}, All: links}
+		for _, l := range links {
+			lk.Total++
+			switch l.Kind {
+			case manager.TrackingViewManual:
+				lk.Manual++
+			case manager.TrackingViewAuto:
+				lk.Auto++
+			default:
+				lk.Untracked++
+				if len(lk.UntrackedURLs) < manager.MaxUntrackedURLs {
+					lk.UntrackedURLs = append(lk.UntrackedURLs, l.Dest)
+				}
+			}
+		}
+		out.Links = lk
+	}
 	if out.State != manager.TrackingStateOff && (out.View == manager.TrackingViewMissing || out.Links.Untracked > 0) {
 		out.State = manager.TrackingStateWarn
 	}
