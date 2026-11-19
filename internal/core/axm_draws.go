@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/jmoiron/sqlx/types"
@@ -16,9 +15,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 )
-
-// drawNameMax is the longest list name a draw makes (the list form allows 200 characters).
-const drawNameMax = 200
 
 // DrawOpts is what a draw needs besides its settings.
 type DrawOpts struct {
@@ -99,35 +95,7 @@ func (c *Core) PreviewListDraw(sourceID int, s models.DrawSettings) (models.Draw
 // drawDefaultName is "{source} · {date} · {n}명" with the source name cut to fit.
 func drawDefaultName(source string, at time.Time, n int) string {
 	suffix := fmt.Sprintf(" · %s · %s명", at.Format("2006-01-02"), groupThousands(n))
-	if room := drawNameMax - utf8.RuneCountInString(suffix); utf8.RuneCountInString(source) > room {
-		source = string([]rune(source)[:room])
-	}
-	return source + suffix
-}
-
-func groupThousands(n int) string {
-	s := fmt.Sprint(n)
-	for i := len(s) - 3; i > 0; i -= 3 {
-		s = s[:i] + "," + s[i:]
-	}
-	return s
-}
-
-// uniqueDrawName returns name, or name with " (2)", " (3)"... when a list has it already.
-func uniqueDrawName(taken map[string]bool, name string) string {
-	if !taken[name] {
-		return name
-	}
-	for i := 2; ; i++ {
-		suffix := fmt.Sprintf(" (%d)", i)
-		base := name
-		if room := drawNameMax - utf8.RuneCountInString(suffix); utf8.RuneCountInString(base) > room {
-			base = string([]rune(base)[:room])
-		}
-		if n := base + suffix; !taken[n] {
-			return n
-		}
-	}
+	return listNameWithSuffix(source, suffix)
 }
 
 // DrawList picks the people of a list that are not yet drawn or sent to and puts them on a
@@ -171,15 +139,10 @@ func (c *Core) DrawList(sourceID int, s models.DrawSettings, o DrawOpts) (models
 	if name == "" {
 		name = drawDefaultName(src.Name, now, counts.WillDraw)
 	}
-	var names []string
-	if err := tx.Stmtx(c.q.AxmDrawNames).Select(&names, name, name+" (%"); err != nil {
+	name, err = c.uniqueDerivedListName(context.Background(), tx, name)
+	if err != nil {
 		return models.List{}, none, err
 	}
-	taken := map[string]bool{}
-	for _, n := range names {
-		taken[n] = true
-	}
-	name = uniqueDrawName(taken, name)
 
 	tags := normalizeTags(append([]string{}, src.Tags...))
 	if o.SetTeams {
@@ -200,11 +163,12 @@ func (c *Core) DrawList(sourceID int, s models.DrawSettings, o DrawOpts) (models
 	if err != nil {
 		return models.List{}, none, err
 	}
-	var newID int
-	if err := tx.Stmtx(c.q.AxmDrawCreateList).Get(&newID, uu.String(), name, pq.StringArray(tags), desc, src.Preset); err != nil {
+	var row models.Base
+	if err := tx.Stmtx(c.q.AxmDrawCreateList).Get(&row, uu.String(), name, pq.StringArray(tags), desc, src.Preset); err != nil {
 		c.log.Printf("error creating a drawn list: %v", pqErrMsg(err))
 		return models.List{}, none, err
 	}
+	newID := row.ID
 	res, err := tx.Stmtx(c.q.AxmDrawAddMembers).Exec(sourceID, newID, s.ExcludeScope, s.ExcludeDays, counts.WillDraw)
 	if err != nil {
 		c.log.Printf("error filling a drawn list: %v", pqErrMsg(err))

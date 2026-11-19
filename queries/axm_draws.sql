@@ -23,7 +23,7 @@ SELECT name FROM lists WHERE name = $1 OR name LIKE $2;
 
 -- name: axm-draw-create-list
 INSERT INTO lists (uuid, name, type, optin, status, tags, description, axm_preset)
-VALUES ($1, $2, 'private', 'single', 'active', $3, $4, $5) RETURNING id;
+VALUES ($1, $2, 'private', 'single', 'active', $3, $4, $5) RETURNING id, created_at, updated_at;
 
 -- name: axm-draw-add-members
 -- Puts the first $5 candidates of source $1 on the new list $2, in a fixed pseudo-random

@@ -7,6 +7,13 @@ let idA;
 let idB;
 let subId;
 
+// Earlier specs can fill the first page. Search for the lists owned by this spec.
+function openFixtureLists() {
+  cy.visit('/admin/lists');
+  cy.get('[data-cy=query]').type(`${stamp}`);
+  cy.get('[data-cy=btn-query]').click();
+}
+
 describe('list trash', () => {
   before(() => {
     cy.loginAndVisit('/admin/lists');
@@ -32,7 +39,7 @@ describe('list trash', () => {
   });
 
   it('asks for the list name before the delete button works', () => {
-    cy.visit('/admin/lists');
+    openFixtureLists();
     cy.contains('tbody tr', nameA).find('[data-cy=btn-delete]').click();
     cy.get('[data-cy=list-delete-confirm]').should('contain', nameA).and('contain', '14');
     cy.get('[data-cy=btn-delete-confirm]').should('be.disabled');
@@ -55,7 +62,7 @@ describe('list trash', () => {
     cy.get('.modal button.is-primary').click();
     cy.contains('tbody tr', nameA).should('not.exist');
 
-    cy.visit('/admin/lists');
+    openFixtureLists();
     cy.contains('tbody tr', nameA).find('td[data-label=Subscribers]').should('contain', '1');
     cy.request(`/api/subscribers/${subId}`).then(({ body }) => {
       expect(body.data.lists.map((l) => l.id)).to.include(idA);
@@ -63,7 +70,7 @@ describe('list trash', () => {
   });
 
   it('asks for the number when several lists are deleted', () => {
-    cy.visit('/admin/lists');
+    openFixtureLists();
     cy.contains('tbody tr', nameA).find('.b-checkbox').first().click();
     cy.contains('tbody tr', nameB).find('.b-checkbox').first().click();
     cy.get('a[data-cy=btn-delete-lists]').click();
