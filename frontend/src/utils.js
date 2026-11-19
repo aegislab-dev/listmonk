@@ -186,6 +186,16 @@ export default class Utils {
     });
   };
 
+  // A titled notice with one button (the text is escaped), for an action that cannot be done.
+  notice = (title, text) => {
+    Dialog.alert({
+      scroll: 'keep',
+      title: this.escapeHTML(title),
+      message: `<div class="notification is-warning is-light" data-cy="warn-box">${this.escapeHTML(text)}</div>`,
+      confirmText: this.i18n.t('globals.buttons.ok'),
+    });
+  };
+
   prompt = (msg, inputAttrs, onConfirm, onCancel, params) => {
     const p = params || {};
 
