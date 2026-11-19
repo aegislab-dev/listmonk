@@ -115,13 +115,15 @@ export default {
 
     // An edit: check again once the typing pauses.
     schedule() {
+      // An answer still on its way is about the content before this edit.
+      this.seq += 1;
       this.pending = true;
       clearTimeout(this.timer);
       this.timer = setTimeout(() => this.run(), DEBOUNCE);
     },
 
     // Checks the content as it is now. Resolves with the report, or null when the
-    // check could not be made. A newer check makes an older answer void.
+    // check could not be made, or when a newer check or an edit made it void.
     run() {
       clearTimeout(this.timer);
       this.timer = null;
@@ -129,14 +131,14 @@ export default {
       const { seq } = this;
       this.pending = true;
       this.inflight = this.$api.checkCampaignTracking(this.campaignId, this.payload).then((report) => {
-        if (seq !== this.seq) return this.inflight;
+        if (seq !== this.seq) return null;
         this.report = report;
         this.error = '';
         this.pending = false;
         if (report.links.untracked === 0) this.open = false;
         return report;
       }).catch((err) => {
-        if (seq !== this.seq) return this.inflight;
+        if (seq !== this.seq) return null;
         this.report = null;
         this.error = err.response?.data?.message || err.toString();
         this.pending = false;

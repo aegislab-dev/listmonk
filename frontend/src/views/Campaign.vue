@@ -26,19 +26,19 @@
         <div v-if="canManage || canSend" class="buttons">
           <b-field grouped v-if="isEditing && canEdit">
             <b-field v-if="canManage" expanded>
-              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns || savingCampaign || startingCampaign" type="is-primary"
+              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
                 icon-left="content-save-outline" data-cy="btn-save" aria-keyshortcuts="ctrl+s">
                 <span class="has-kbd">{{ $t('globals.buttons.saveChanges') }} <span class="kbd">Ctrl+S</span></span>
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canStart">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startingCampaign" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
                 icon-left="rocket-launch-outline" data-cy="btn-start">
                 {{ $t('campaigns.start') }}
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canSchedule">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startingCampaign" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
                 icon-left="clock-start" data-cy="btn-schedule">
                 {{ $t('campaigns.schedule') }}
               </b-button>
@@ -400,6 +400,7 @@ export default Vue.extend({
 
       // A start/schedule in progress (LST-44): its number, and its open confirmation.
       startingCampaign: false,
+      startBusy: false,
       startSeq: 0,
       startAsk: null,
       isDestroyed: false,
@@ -716,7 +717,8 @@ export default Vue.extend({
       }
     },
 
-    async updateCampaign(typ) {
+    // quiet: no notice (the start shows it after its questions).
+    async updateCampaign(typ, { quiet = false } = {}) {
       if (this.savingCampaign) return undefined;
       const data = {
         archive_slug: this.form.archiveSlug,
@@ -763,7 +765,7 @@ export default Vue.extend({
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
         await this.saveRecentRule(d.id);
-        this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        if (!quiet) this.$utils.toast(this.$t(typMsg, { name: d.name }));
         return d;
       } finally {
         this.savingCampaign = false;
@@ -802,24 +804,39 @@ export default Vue.extend({
       }
 
       const { id } = this.data;
-      const status = this.canStart ? 'running' : 'scheduled';
       this.startSeq += 1;
       const seq = this.startSeq;
       const current = () => !this.isDestroyed && this.startSeq === seq && this.data.id === id;
-      const check = (payload) => this.$api.checkCampaignTracking(id, payload).catch(() => null)
-        .then((r) => trackingConfirmLines(r));
+      // Start or schedule: decided by the page as it is when asking, and again by what
+      // was saved (the send time may be switched off while the check is on its way).
+      const action = () => {
+        if (this.canStart) return 'running';
+        return this.canSchedule ? 'scheduled' : null;
+      };
+      // Only the requests show as loading on the buttons; an open question does not.
+      const busy = async (p) => {
+        this.startBusy = true;
+        try {
+          return await p;
+        } finally {
+          if (this.startSeq === seq) this.startBusy = false;
+        }
+      };
+      const check = (payload) => busy(this.$api.checkCampaignTracking(id, payload).catch(() => null)
+        .then((r) => trackingConfirmLines(r)));
 
       this.startingCampaign = true;
+      let saved = null;
       try {
-        if (!await this.checkReplyTo() || !current()) return;
+        if (!await busy(this.checkReplyTo()) || !current()) return;
         if (!this.parseFormJSON()) return;
 
         // The box checks the same values, so it shows what the question says.
         if (this.$refs.tracking) this.$refs.tracking.run();
         let lines = await check(this.trackingPayload);
-        let saved = null;
+        let status = action();
         for (;;) {
-          if (!current()) return;
+          if (!current() || !status) return;
           // eslint-disable-next-line no-await-in-loop
           if (!await this.askStart(lines, status) || !current()) return;
 
@@ -829,27 +846,33 @@ export default Vue.extend({
             if (!this.parseFormJSON()) return;
             try {
               // eslint-disable-next-line no-await-in-loop
-              saved = await this.updateCampaign();
+              saved = await this.updateCampaign(undefined, { quiet: true });
             } catch (e) {
               return;
             }
             if (!saved || !current()) return;
           }
 
+          const after = action();
+          if (!after) return;
           // eslint-disable-next-line no-await-in-loop
-          const now = await check({});
+          const now = await check({ status: after });
           if (!current()) return;
-          if (warningsCovered(lines, now)) break;
+          if (after === status && warningsCovered(lines, now)) break;
           lines = now;
+          status = after;
         }
 
-        await this.$api.changeCampaignStatus(id, status).then(() => {
+        await busy(this.$api.changeCampaignStatus(id, status).then(() => {
           if (current()) this.$router.push({ name: 'campaigns' });
         }).catch((err) => {
           if (this.senderPolicyEnabled && current()) this.replyError = err.response?.data?.message || '';
-        });
+        }));
       } finally {
         if (this.startSeq === seq) this.startingCampaign = false;
+        // The save notice waits until the questions are answered: it does not belong
+        // over the confirmation (approved design v1).
+        if (saved) this.$utils.toast(this.$t('globals.messages.updated', { name: saved.name }));
       }
     },
 
@@ -908,6 +931,9 @@ export default Vue.extend({
         ...(attribs && typeof attribs === 'object' && !Array.isArray(attribs) ? { attribs } : {}),
         ...(altbody === null || altbody === undefined ? {} : { altbody }),
         ...(this.senderPolicyEnabled ? {} : { from_email: this.form.fromEmail }),
+        // What the send will be: templates can read the status (LST-44 review).
+        status: this.form.sendLater && this.form.sendAtDate ? 'scheduled' : 'running',
+        send_at: this.form.sendLater ? this.form.sendAtDate : null,
       };
     },
 

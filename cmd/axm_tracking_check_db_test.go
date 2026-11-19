@@ -150,6 +150,74 @@ func TestCampaignTrackingCheck(t *testing.T) {
 		t.Fatalf("unsaved template id: %+v", rep)
 	}
 
+	// A template can read the status, which the start changes: the check renders the
+	// campaign as the manager sends it (started: "running"; with a send time: the row as
+	// it was read, "scheduled"), and a test send as it is now (LST-44 review).
+	st := map[string]any{"content_type": "html", "template_id": bare,
+		"body": `{{ if eq .Campaign.Status "draft" }}{{ TrackView }}{{ end }}<p>x</p>`}
+	if rep = check(js(st)); rep.View != "missing" {
+		t.Fatalf("draft-only pixel, started: %+v", rep)
+	}
+	st["mode"] = "test"
+	if rep = check(js(st)); rep.View != "manual" {
+		t.Fatalf("draft-only pixel, test send: %+v", rep)
+	}
+	delete(st, "mode")
+	st["body"] = `{{ if eq .Campaign.Status "scheduled" }}{{ TrackView }}{{ end }}<p>x</p>`
+	for _, c := range []struct {
+		status, sendAt any
+		view           string
+	}{
+		{nil, nil, "missing"},
+		{"running", nil, "missing"},
+		{"scheduled", nil, "manual"},
+		{"running", "2099-01-02T03:04:05Z", "manual"},
+	} {
+		req := map[string]any{}
+		for k, v := range st {
+			req[k] = v
+		}
+		if c.status != nil {
+			req["status"] = c.status
+		}
+		if c.sendAt != nil {
+			req["send_at"] = c.sendAt
+		}
+		if rep = check(js(req)); rep.View != c.view {
+			t.Fatalf("status %v, send_at %v: %+v", c.status, c.sendAt, rep)
+		}
+	}
+	// A stored send time counts unless the page takes it off.
+	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() + INTERVAL '30 days' WHERE id=$1`, e.campID)
+	if rep = check(js(st)); rep.View != "manual" {
+		t.Fatalf("stored send time: %+v", rep)
+	}
+	st["send_at"] = nil
+	if rep = check(js(st)); rep.View != "missing" {
+		t.Fatalf("send time taken off on the page: %+v", rep)
+	}
+	e.db.MustExec(`UPDATE campaigns SET send_at=NULL WHERE id=$1`, e.campID)
+	if code, _ := e.call(e.a.CheckCampaignTracking, member, http.MethodPost, target, strconv.Itoa(e.campID), `{"status":"finished"}`); code != http.StatusBadRequest {
+		t.Errorf("status finished: %d, want 400", code)
+	}
+
+	// With sender domains, starting a draft sets the sender from the account of the
+	// person who starts it; the check reads that sender, a test send the stored one.
+	e.a.cfg = &Config{SenderDomains: []string{"example.test"}, FromEmail: "App <app@example.test>"}
+	from := map[string]any{"content_type": "html", "template_id": bare,
+		"body": `<a href="https://a.example.test/{{ .Campaign.FromEmail | urlquery }}">x</a>`}
+	var storedFrom string
+	e.get(&storedFrom, `SELECT from_email FROM campaigns WHERE id=$1`, e.campID)
+	want := "https://a.example.test/" + url.QueryEscape(resolveFrom(member, "", e.a.cfg.FromEmail, e.a.cfg.SenderDomains))
+	if rep = check(js(from)); !slices.Equal(rep.Links.UntrackedURLs, []string{want}) {
+		t.Fatalf("sender after the start: %+v, want %s", rep, want)
+	}
+	from["mode"] = "test"
+	if rep = check(js(from)); !slices.Equal(rep.Links.UntrackedURLs, []string{"https://a.example.test/" + url.QueryEscape(storedFrom)}) {
+		t.Fatalf("sender of a test send: %+v, stored %q", rep, storedFrom)
+	}
+	e.a.cfg = nil
+
 	// The same request as a form post, the way the preview is posted.
 	form := url.Values{"content_type": {"richtext"}, "template_id": {strconv.Itoa(tracked)}, "body": {`<a href="https://a.example.test/x">A</a>`}}
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))

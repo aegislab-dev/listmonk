@@ -446,7 +446,8 @@ export default Vue.extend({
     async confirmSend(c, status) {
       if (this.checkingSend) return;
       this.checkingSend = true;
-      const check = () => this.$api.checkCampaignTracking(c.id, {}).catch(() => null)
+      // The status says what templates will read when it is sent (LST-44 review).
+      const check = () => this.$api.checkCampaignTracking(c.id, { status }).catch(() => null)
         .then((r) => trackingConfirmLines(r));
       try {
         let lines = await check();

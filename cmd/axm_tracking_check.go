@@ -34,6 +34,12 @@ type trackingCheckReq struct {
 	Mode    string       `json:"mode" form:"mode"`
 	Tags    *[]string    `json:"tags"`
 	Attribs *models.JSON `json:"attribs"`
+
+	// What the campaign will be when it is sent (not for mode "test", which sends it as
+	// it is now): Status is the action ("running" to start or resume, "scheduled"), and
+	// SendAt the send time on the page (null for none; left out: the stored one).
+	Status *string         `json:"status"`
+	SendAt json.RawMessage `json:"send_at"`
 }
 
 // CheckCampaignTracking tells, before a campaign is sent, whether its views and clicks
@@ -125,6 +131,15 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 		camp.Attribs = *req.Attribs
 	}
 
+	// Templates can read the campaign's status and sender. A test send renders the
+	// campaign as it is; a real send renders it as it is when the manager picks it up,
+	// after the status change. Render it that way here too.
+	if req.Mode != "test" {
+		if err := a.trackingSendState(c, &camp, req); err != nil {
+			return err
+		}
+	}
+
 	rep, err := a.manager.CheckTracking(&camp, dummySubscriber)
 	if err != nil {
 		key := "templates.errorRendering"
@@ -136,4 +151,41 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, okResp{rep})
+}
+
+// trackingSendState sets what a real send of the campaign will see and a test send does
+// not: the status and the sender after the start or schedule (LST-44 review: a template
+// with {{ if eq .Campaign.Status "draft" }} added the pixel to a test send only).
+func (a *App) trackingSendState(c echo.Context, camp *models.Campaign, req trackingCheckReq) error {
+	if len(req.SendAt) > 0 {
+		var at null.Time
+		if err := json.Unmarshal(req.SendAt, &at); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "send_at"))
+		}
+		camp.SendAt = at
+	}
+
+	status := models.CampaignStatusRunning
+	if req.Status != nil {
+		switch *req.Status {
+		case models.CampaignStatusRunning, models.CampaignStatusScheduled:
+			status = *req.Status
+		default:
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "status"))
+		}
+	}
+	// As the update-campaign-status query: starting a campaign with a send time
+	// schedules it. The manager then sends the row as it read it, before it marks it
+	// running, so a scheduled campaign is sent with the status "scheduled".
+	if status == models.CampaignStatusRunning && camp.SendAt.Valid {
+		status = models.CampaignStatusScheduled
+	}
+
+	// As UpdateCampaignStatus: with sender domains, starting a draft sets the sender
+	// from the account of the person who starts it.
+	if a.cfg != nil && len(a.cfg.SenderDomains) > 0 && camp.Status == models.CampaignStatusDraft {
+		camp.FromEmail = resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+	}
+	camp.Status = status
+	return nil
 }

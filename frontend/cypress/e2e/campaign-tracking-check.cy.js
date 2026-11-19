@@ -122,6 +122,9 @@ describe('Pre-send tracking check', () => {
       .and('contain', '2 links do not record clicks.');
     cy.get('.modal.is-active [data-cy=warn-box] strong').should('have.length', 2);
     cy.get('.modal.is-active button.is-primary').should('contain', 'Start anyway');
+    // While the question is open, the buttons behind it keep their labels (design v1).
+    cy.get('[data-cy=btn-start]').should('not.have.class', 'is-loading');
+    cy.get('[data-cy=btn-save]').should('not.have.class', 'is-loading');
     cy.get('.modal.is-active .modal-card-foot button:not(.is-primary)').click();
     cy.get('.modal.is-active').should('not.exist');
     cy.request(`/api/campaigns/${ids.warn}`).its('body.data.status').should('eq', 'draft');
@@ -246,7 +249,7 @@ describe('Pre-send tracking check', () => {
     cy.wait('@save').its('request.body.attribs.track').should('eq', true);
     cy.wait('@start');
     cy.get('@attribs.all').then((calls) => {
-      const stored = calls.filter((c) => Object.keys(c.request.body).length === 0).pop();
+      const stored = calls.filter((c) => !('body' in c.request.body)).pop();
       expect(stored.response.body.data.view).to.equal('manual');
     });
     cy.get('@save.all').should('have.length', 1);
@@ -286,10 +289,82 @@ describe('Pre-send tracking check', () => {
     cy.wait('@save').its('request.body.attribs.track').should('eq', false);
     cy.get('.modal.is-active [data-cy=warn-box]', { timeout: 10000 }).should('contain', 'There is no view tracking.');
     cy.get('@start.all').should('have.length', 0);
+    // No save notice over the question (design v1): it comes after the answer.
+    cy.get('.toast').should('not.exist');
     // The first dialog may still be fading out: answer the new one.
     cy.get('.modal.is-active button.is-primary').last().should('contain', 'Start anyway').click();
     cy.wait('@start');
+    cy.get('.toast').should('contain', 'updated');
     cy.get('@save.all').should('have.length', 1);
+  });
+
+  it('checks the status that the send will have, not the draft status a test send has', () => {
+    cy.request('PUT', `/api/campaigns/${ids.ok}`, {
+      name: `Tracking ok ${stamp}`,
+      subject: 'Status',
+      type: 'regular',
+      messenger: 'email',
+      lists: [listId],
+      content_type: 'html',
+      template_id: bareTpl,
+      attribs: {},
+      body: '{{ if eq .Campaign.Status "draft" }}{{ TrackView }}{{ end }}<p>Hello</p>',
+    });
+    open('ok');
+    // Started, the campaign is "running": no pixel. The box says so.
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn');
+    cy.get('@check').its('request.body.status').should('eq', 'running');
+    cy.get('[data-cy=btn-start]').click();
+    cy.get('.modal.is-active [data-cy=warn-box]').should('contain', 'There is no view tracking.');
+    cy.get('.modal.is-active .modal-card-foot button:not(.is-primary)').click();
+    // A test send goes out as the draft it is: with the pixel, and its notice says nothing.
+    cy.intercept('POST', `/api/campaigns/${ids.ok}/test`, { statusCode: 200, body: { data: true } }).as('testSend');
+    cy.get('.box .taginput input').type('demo@example.invalid{enter}');
+    cy.contains('.box button', 'Send').click();
+    cy.wait('@testSend');
+    cy.get('.toast').should('contain', 'Test message sent').and('not.contain', 'no view tracking');
+  });
+
+  it('starts when the send time is switched off while the schedule is checked', () => {
+    cy.request(`/api/campaigns/${ids.warn}`).then(({ body }) => {
+      const c = body.data;
+      cy.request('PUT', `/api/campaigns/${ids.warn}`, {
+        name: c.name,
+        subject: c.subject,
+        type: 'regular',
+        messenger: 'email',
+        lists: [listId],
+        content_type: c.content_type,
+        template_id: c.template_id,
+        body: c.body,
+        send_at: new Date(Date.now() + 86400000 * 30).toISOString(),
+      });
+    });
+    open('warn');
+    cy.intercept('POST', check, (req) => { req.on('response', (res) => { res.setDelay(1500); }); }).as('slowCheck');
+    cy.intercept('PUT', `/api/campaigns/${ids.warn}`).as('save');
+    cy.intercept('PUT', `/api/campaigns/${ids.warn}/status`, { statusCode: 200, body: { data: {} } }).as('status');
+    cy.get('[data-cy=btn-schedule]').click();
+    cy.get('[data-cy=btn-send-later] .check').click();
+    // The question is about what the page does now: start.
+    cy.get('.modal.is-active button.is-primary', { timeout: 10000 }).should('contain', 'Start anyway').click();
+    cy.wait('@save').its('request.body.send_at').should('eq', null);
+    cy.wait('@status').its('request.body.status').should('eq', 'running');
+    cy.request(`/api/campaigns/${ids.warn}`).then(({ body }) => {
+      expect(body.data.send_at).to.equal(null);
+      // Put the draft back as the next tests expect it.
+      cy.request('PUT', `/api/campaigns/${ids.warn}`, {
+        name: body.data.name,
+        subject: body.data.subject,
+        type: 'regular',
+        messenger: 'email',
+        lists: [listId],
+        content_type: body.data.content_type,
+        template_id: body.data.template_id,
+        body: body.data.body,
+        send_at: null,
+      });
+    });
   });
 
   it('does not save over another tab when the start is cancelled', () => {
