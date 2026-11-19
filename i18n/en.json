@@ -1,4 +1,6 @@
 {
+    "addressCheck.invalid": "Invalid address check request.",
+    "addressCheck.error": "Could not read the recipients for the address check.",
     "lists.dynamic.composition": "Membership",
     "lists.dynamic.static": "Standard",
     "lists.dynamic.dynamic": "Dynamic",

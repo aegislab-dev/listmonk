@@ -28,6 +28,9 @@ type Queries struct {
 	AxmLockRecentCampaign  *sqlx.Stmt `query:"axm-lock-recent-campaign"`
 	AxmRecentCampaignLists *sqlx.Stmt `query:"axm-recent-campaign-lists"`
 
+	AxmAddressCheckCount    *sqlx.Stmt `query:"axm-address-check-count"`
+	AxmAddressCheckAudience *sqlx.Stmt `query:"axm-address-check-audience"`
+
 	AxmDrawLock                    *sqlx.Stmt `query:"axm-draw-lock"`
 	AxmDrawSource                  *sqlx.Stmt `query:"axm-draw-source"`
 	AxmDrawCounts                  *sqlx.Stmt `query:"axm-draw-counts"`

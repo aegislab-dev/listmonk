@@ -15,6 +15,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
+	"github.com/knadh/listmonk/internal/addrcheck"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/bounce"
 	"github.com/knadh/listmonk/internal/buflog"
@@ -43,6 +44,7 @@ type App struct {
 	messengers []manager.Messenger
 	emailMsgr  manager.Messenger
 	importer   *subimporter.Importer
+	addrCheck  *addrcheck.Checker
 	auth       *auth.Auth
 	media      media.Store
 	bounce     *bounce.Manager
@@ -282,6 +284,7 @@ func main() {
 		messengers: msgrs,
 		emailMsgr:  emailMsgr,
 		importer:   importer,
+		addrCheck:  initAddrCheck(),
 		auth:       auth,
 		media:      media,
 		bounce:     bounce,

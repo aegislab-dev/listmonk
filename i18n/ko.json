@@ -1,4 +1,6 @@
 {
+    "addressCheck.invalid": "주소 검사 요청이 올바르지 않습니다.",
+    "addressCheck.error": "주소 검사 대상을 읽지 못했습니다.",
     "lists.dynamic.composition": "구성 방식",
     "lists.dynamic.static": "일반",
     "lists.dynamic.dynamic": "동적",
