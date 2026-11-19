@@ -64,14 +64,8 @@ func (a *App) errSharedLocked(ids []int) error {
 	return echo.NewHTTPError(http.StatusForbidden, a.i18n.Ts("teams.sharedLocked", "ids", strings.Join(parts, ", ")))
 }
 
-// hasSubWritePerm checks that the user may change the subscribers themselves: they must be
-// readable (hasSubPerm) and none of them locked. One locked subscriber refuses the whole
-// request, the way one unreadable subscriber does.
-func (a *App) hasSubWritePerm(u auth.User, subIDs []int) error {
-	if err := a.hasSubPerm(u, subIDs); err != nil {
-		return err
-	}
-	locked, err := a.lockedSubs(u, subIDs)
+// refuseLocked turns the locked IDs a bounded write gave back into the 403.
+func (a *App) refuseLocked(locked []int, err error) error {
 	if err != nil {
 		return err
 	}
@@ -79,6 +73,49 @@ func (a *App) hasSubWritePerm(u auth.User, subIDs []int) error {
 		return a.errSharedLocked(locked)
 	}
 	return nil
+}
+
+// deleteSubs deletes subscribers for the user. A user who may not manage all lists deletes
+// them only when none is locked; the check and the delete are one transaction (core).
+func (a *App) deleteSubs(u auth.User, ids []int) error {
+	all, manage := u.GetPermittedLists(auth.PermTypeManage)
+	if all {
+		return a.core.DeleteSubscribers(ids, nil)
+	}
+	return a.refuseLocked(a.core.DeleteSubscribersBounded(ids, manage))
+}
+
+// blocklistSubs blocklists subscribers for the user, by the same rule as deleteSubs.
+func (a *App) blocklistSubs(u auth.User, ids []int) error {
+	all, manage := u.GetPermittedLists(auth.PermTypeManage)
+	if all {
+		return a.core.BlocklistSubscribers(ids)
+	}
+	return a.refuseLocked(a.core.BlocklistSubscribersBounded(ids, manage))
+}
+
+// deleteSubBounces deletes a subscriber's bounce records for the user, by the same rule.
+func (a *App) deleteSubBounces(u auth.User, id int) error {
+	all, manage := u.GetPermittedLists(auth.PermTypeManage)
+	if all {
+		return a.core.DeleteSubscriberBounces(id, "")
+	}
+	return a.refuseLocked(a.core.DeleteSubscriberBouncesBounded(id, manage))
+}
+
+// updateSub saves a subscriber (PUT, PATCH) for the user. For a user who may not manage all
+// lists a locked subscriber keeps their profile: a save that changes it is refused, and a
+// save that leaves it as it is (the edit form changing only the lists) changes the
+// subscriptions on the user's own lists without writing the subscriber row.
+func (a *App) updateSub(u auth.User, id int, sub models.Subscriber, listIDs []int, preconfirm, deleteLists bool) (models.Subscriber, error) {
+	all, manage := u.GetPermittedLists(auth.PermTypeManage)
+	if all {
+		out, _, err := a.core.UpdateSubscriberWithLists(id, sub, listIDs, nil, preconfirm, deleteLists, false, []int{}, false)
+		return out, err
+	}
+	out, locked, err := a.core.UpdateSubscriberBounded(id, sub, listIDs, preconfirm, deleteLists, ownListsOnly(false, manage), manage,
+		func(cur models.Subscriber) bool { return profileChanged(profileOf(cur), sub) })
+	return out, a.refuseLocked(locked, err)
 }
 
 // attachLocked marks the subscribers that are locked for the user (edit_locked), so that the
@@ -154,34 +191,6 @@ func sameJSON(a, b models.JSON) bool {
 	return reflect.DeepEqual(norm(a), norm(b))
 }
 
-// keepLockedProfile guards a subscriber save (PUT, PATCH) by a user for whom the subscriber is
-// locked. A save that changes the profile is refused. A save that leaves it as it is (the
-// edit form changing only the lists) goes on, with the present values put in the request so
-// that the row is written back unchanged. before is the profile read ahead of the request
-// (PATCH); nil reads it now.
-func (a *App) keepLockedProfile(u auth.User, id int, req *models.Subscriber, before *subProfile) error {
-	locked, err := a.lockedSubs(u, []int{id})
-	if err != nil {
-		return err
-	}
-	if len(locked) == 0 {
-		return nil
-	}
-	if before == nil {
-		cur, err := a.core.GetSubscriber(id, "", "")
-		if err != nil {
-			return err
-		}
-		p := profileOf(cur)
-		before = &p
-	}
-	if profileChanged(*before, *req) {
-		return a.errSharedLocked(locked)
-	}
-	req.Email, req.Name, req.Status, req.Attribs = before.Email, before.Name, before.Status, before.Attribs
-	return nil
-}
-
 // ownListsOnly returns the lists whose subscriptions a subscriber save may remove, for the
 // update query, where an empty array means "every list". A user who manages no list at all
 // must not reach any subscription, so the array gets an ID no list has.
@@ -207,16 +216,26 @@ func (a *App) guardBulkQuery(u auth.User, req subQueryReq, cond string, listIDs 
 		return cond, bq
 	}
 	guarded := core.AndSQLExp(cond, core.SharedSubscriberExclusion(manage))
-	n, err := a.core.CountSubscribersMatching(req.Search, guarded, listIDs, req.SubscriptionStatus)
-	if err != nil || !bq.counted {
-		if err != nil {
-			a.log.Printf("error counting subscribers for the audit log: %v", err)
-		}
+	// Both numbers are counted now and exactly. With no condition at all the first count
+	// above is the cached total, which may be older than the people it is compared with.
+	exact := cond
+	if exact == "" {
+		exact = "TRUE"
+	}
+	total, err := a.core.CountSubscribersMatching(req.Search, exact, listIDs, req.SubscriptionStatus)
+	n, err2 := a.core.CountSubscribersMatching(req.Search, guarded, listIDs, req.SubscriptionStatus)
+	if err != nil || err2 != nil {
+		a.log.Printf("error counting subscribers for the audit log: %v %v", err, err2)
 		bq.counted = false
 		return guarded, bq
 	}
-	bq.detail["skipped_shared"] = bq.count - n
-	bq.count = n
+	skipped := total - n
+	if skipped < 0 {
+		// Somebody was added between the two counts.
+		skipped = 0
+	}
+	bq.detail["skipped_shared"] = skipped
+	bq.count, bq.counted = n, true
 	return guarded, bq
 }
 

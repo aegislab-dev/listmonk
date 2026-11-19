@@ -336,10 +336,6 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 	if err := a.hasSubPerm(user, []int{id}); err != nil {
 		return err
 	}
-	// A subscriber who is on other lists too keeps their profile; only the lists may change.
-	if err := a.keepLockedProfile(user, id, &req.Subscriber, nil); err != nil {
-		return err
-	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {
 		return err
 	}
@@ -350,10 +346,11 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 	if allPerm {
 		permittedLists = []int{}
 	}
-	permittedLists = ownListsOnly(allPerm, permittedLists)
+	_ = permittedLists
 
 	wasBlocked := a.isBlocklisted(id, req.Status)
-	out, _, err := a.core.UpdateSubscriberWithLists(id, req.Subscriber, listIDs, nil, req.PreconfirmSubs, true, false, permittedLists, false)
+	// The save follows the team boundary: see updateSub.
+	out, err := a.updateSub(user, id, req.Subscriber, listIDs, req.PreconfirmSubs, true)
 	if err != nil {
 		return err
 	}
@@ -384,9 +381,6 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 		return err
 	}
 
-	// The profile as it is now, to tell whether the request changes it.
-	before := profileOf(sub)
-
 	// Prepopulate the incoming request struct with existing values.
 	// Rather than tediously and conditionally checking each incoming field, we can simply
 	// overwrite everything in the DB with the incoming fields+existing fields.
@@ -406,10 +400,6 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
 		req.Email = em
-	}
-	// A subscriber who is on other lists too keeps their profile; only the lists may change.
-	if err := a.keepLockedProfile(user, id, &req.Subscriber, &before); err != nil {
-		return err
 	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {
 		return err
@@ -434,9 +424,10 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 	if allPerm {
 		permittedLists = []int{}
 	}
-	permittedLists = ownListsOnly(allPerm, permittedLists)
+	_ = permittedLists
 
-	out, _, err := a.core.UpdateSubscriberWithLists(id, req.Subscriber, listIDs, nil, req.PreconfirmSubs, overwriteSubs, false, permittedLists, false)
+	// The save follows the team boundary: see updateSub.
+	out, err := a.updateSub(user, id, req.Subscriber, listIDs, req.PreconfirmSubs, overwriteSubs)
 	if err != nil {
 		return err
 	}
@@ -478,11 +469,11 @@ func (a *App) BlocklistSubscriber(c echo.Context) error {
 
 	// Update the subscribers in the DB.
 	id := getID(c)
-	if err := a.hasSubWritePerm(user, []int{id}); err != nil {
+	if err := a.hasSubPerm(user, []int{id}); err != nil {
 		return err
 	}
 
-	if err := a.core.BlocklistSubscribers([]int{id}); err != nil {
+	if err := a.blocklistSubs(user, []int{id}); err != nil {
 		return err
 	}
 	a.auditSubscribersByID(c, auditSubBlocklist, []int{id}, nil)
@@ -504,12 +495,12 @@ func (a *App) BlocklistSubscribers(c echo.Context) error {
 			a.i18n.Ts("globals.messages.errorInvalidIDs", "error", "ids"))
 	}
 
-	if err := a.hasSubWritePerm(user, req.SubscriberIDs); err != nil {
+	if err := a.hasSubPerm(user, req.SubscriberIDs); err != nil {
 		return err
 	}
 
 	// Update the subscribers in the DB.
-	if err := a.core.BlocklistSubscribers(req.SubscriberIDs); err != nil {
+	if err := a.blocklistSubs(user, req.SubscriberIDs); err != nil {
 		return err
 	}
 	a.auditSubscribersByID(c, auditSubBlocklist, req.SubscriberIDs, nil)
@@ -607,11 +598,11 @@ func (a *App) DeleteSubscriber(c echo.Context) error {
 
 	// Delete the subscribers from the DB.
 	id := getID(c)
-	if err := a.hasSubWritePerm(user, []int{id}); err != nil {
+	if err := a.hasSubPerm(user, []int{id}); err != nil {
 		return err
 	}
 
-	if err := a.core.DeleteSubscribers([]int{id}, nil); err != nil {
+	if err := a.deleteSubs(user, []int{id}); err != nil {
 		return err
 	}
 	a.auditSubscribersByID(c, auditSubDelete, []int{id}, nil)
@@ -634,12 +625,12 @@ func (a *App) DeleteSubscribers(c echo.Context) error {
 			a.i18n.Ts("globals.messages.errorInvalidIDs", "error", "ids"))
 	}
 
-	if err := a.hasSubWritePerm(user, ids); err != nil {
+	if err := a.hasSubPerm(user, ids); err != nil {
 		return err
 	}
 
 	// Delete the subscribers from the DB.
-	if err := a.core.DeleteSubscribers(ids, nil); err != nil {
+	if err := a.deleteSubs(user, ids); err != nil {
 		return err
 	}
 	a.auditSubscribersByID(c, auditSubDelete, ids, nil)
@@ -815,13 +806,13 @@ func (a *App) ManageSubscriberListsByQuery(c echo.Context) error {
 func (a *App) DeleteSubscriberBounces(c echo.Context) error {
 	id := getID(c)
 
-	// The bounce records belong to the subscriber: the user must be able to change it.
-	if err := a.hasSubWritePerm(auth.GetUser(c), []int{id}); err != nil {
+	// Check if the user has access to at least one of the lists on the subscriber.
+	if err := a.hasSubPerm(auth.GetUser(c), []int{id}); err != nil {
 		return err
 	}
 
-	// Delete the bounces from the DB.
-	if err := a.core.DeleteSubscriberBounces(id, ""); err != nil {
+	// Delete the bounces from the DB. They belong to the subscriber: see deleteSubBounces.
+	if err := a.deleteSubBounces(auth.GetUser(c), id); err != nil {
 		return err
 	}
 

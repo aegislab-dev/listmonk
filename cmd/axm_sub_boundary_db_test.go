@@ -319,13 +319,6 @@ func TestBoundaryBulkByIDsIsAllOrNothing(t *testing.T) {
 	if n := len(e.audits("action IN ($1, $2)", auditSubBlocklist, auditSubDelete)); n != 0 {
 		t.Fatalf("a refused action left %d audit rows", n)
 	}
-	// The error names the locked subscriber, not the others.
-	err := e.a.hasSubWritePerm(ua, []int{e.s1, e.s2, e.s3})
-	he, ok := err.(*echo.HTTPError)
-	if !ok || he.Code != http.StatusForbidden {
-		t.Fatalf("%v", err)
-	}
-
 	// Without the locked one both go through.
 	ok2 := fmt.Sprintf(`{"ids":[%d,%d]}`, e.s1, e.s5)
 	if code, _ := e.call(e.a.BlocklistSubscribers, ua, "PUT", "/x", "", ok2); code != 200 {
@@ -809,5 +802,90 @@ func TestProfileChanged(t *testing.T) {
 	}
 	if got := ownListsOnly(false, []int{3}); len(got) != 1 || got[0] != 3 {
 		t.Fatalf("%v", got)
+	}
+}
+
+// A save that only changes the lists of a locked subscriber does not write the subscriber
+// row: a number that JSON numbers cannot carry exactly stays as it is.
+func TestBoundaryListSaveLeavesProfileBytes(t *testing.T) {
+	e := newBoundaryEnv(t)
+	ua := e.as(e.ua)
+	e.db.MustExec(`UPDATE subscribers SET attribs = '{"big": 9007199254740993, "customer_id": "c-1"}', updated_at = '2020-01-01' WHERE id = $1`, e.s2)
+	before := e.row(e.s2)
+	var stamp string
+	e.get(&stamp, `SELECT updated_at::TEXT FROM subscribers WHERE id = $1`, e.s2)
+
+	if code, _ := e.call(e.a.PatchSubscriber, ua, "PATCH", "/x", itoa(e.s2), `{"lists":[`+itoa(e.aList)+`,`+itoa(e.bothList)+`]}`); code != 200 {
+		t.Fatalf("PATCH lists: %d", code)
+	}
+	e.wantLists(e.s2, "PATCH lists", "A1:confirmed", "B1:confirmed", "Both:unconfirmed")
+	if code, _ := e.call(e.a.UpdateSubscriber, ua, "PUT", "/x", itoa(e.s2), e.putBody(e.s2, nil, e.aList)); code != 200 {
+		t.Fatalf("PUT with the profile as the form reads it: %d", code)
+	}
+	e.wantLists(e.s2, "PUT lists", "A1:confirmed", "B1:confirmed")
+	after := e.row(e.s2)
+	var stamp2 string
+	e.get(&stamp2, `SELECT updated_at::TEXT FROM subscribers WHERE id = $1`, e.s2)
+	if after.Attribs != before.Attribs || !strings.Contains(after.Attribs, "9007199254740993") || stamp2 != stamp {
+		t.Fatalf("the subscriber row was written: %s (%s -> %s)", after.Attribs, stamp, stamp2)
+	}
+	// A blocklisted locked subscriber joins the member's list unsubscribed, as upstream does.
+	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, e.s3)
+	if code, _ := e.call(e.a.PatchSubscriber, ua, "PATCH", "/x", itoa(e.s3), `{"lists":[`+itoa(e.aList)+`,`+itoa(e.bothList)+`]}`); code != 200 {
+		t.Fatalf("PATCH lists of a blocklisted subscriber: %d", code)
+	}
+	e.wantLists(e.s3, "blocklisted", "A1:unsubscribed", "Both:unsubscribed", "Plain:confirmed")
+}
+
+// A subscription that another team adds while a member deletes or blocklists the person is
+// seen: the check and the change hold the subscriber's row lock together.
+func TestBoundaryWriteWaitsForConcurrentSubscription(t *testing.T) {
+	e := newBoundaryEnv(t)
+	ua := e.as(e.ua)
+	for what, h := range map[string]echo.HandlerFunc{"delete": e.a.DeleteSubscriber, "blocklist": e.a.BlocklistSubscriber} {
+		id := e.person("race-"+what, e.aList, "confirmed")
+		// The other team's insert is open: not visible yet, and it holds a lock on the subscriber.
+		tx := e.db.MustBegin()
+		tx.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, id, e.bList)
+		done := make(chan int, 1)
+		go func() {
+			code, _ := e.call(h, ua, "PUT", "/x", itoa(id), "")
+			done <- code
+		}()
+		select {
+		case code := <-done:
+			tx.Rollback()
+			t.Fatalf("%s did not wait for the open subscription: %d", what, code)
+		case <-time.After(300 * time.Millisecond):
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if code := <-done; code != http.StatusForbidden {
+			t.Fatalf("%s after the other team's subscription: %d", what, code)
+		}
+		if r := e.row(id); !r.Exists || r.Status != "enabled" {
+			t.Fatalf("%s reached a subscriber of two teams: %+v", what, r)
+		}
+		e.wantLists(id, what, "A1:confirmed", "B1:confirmed")
+	}
+}
+
+// The audit numbers of a bulk action without conditions are counted now, not read from the
+// cached total: the number left out is never negative.
+func TestBoundaryBulkAllCountsAreCurrent(t *testing.T) {
+	e := newBoundaryEnv(t)
+	var role, user int
+	e.get(&role, `INSERT INTO roles(type,name,permissions) VALUES('user','sees-all','{subscribers:get_all,subscribers:manage}') RETURNING id`)
+	e.get(&user, `INSERT INTO users(username,email,name,user_role_id,list_role_id,status,type) VALUES('sees-all','sees-all@example.invalid','s',$1,$2,'enabled','user') RETURNING id`, role, e.team1)
+	u := e.as(user)
+	e.db.MustExec(`REFRESH MATERIALIZED VIEW mat_list_subscriber_stats`)
+	for i := 0; i < 10; i++ {
+		e.person(fmt.Sprintf("late-%d", i), e.aList, "confirmed")
+	}
+	_, bq := e.a.guardBulkQuery(u, subQueryReq{All: true}, "", u.GetPermittedListIDs(nil))
+	// 16 people: s2, s3, s4 are on other lists too.
+	if !bq.counted || bq.count != 13 || bq.detail["skipped_shared"] != 3 {
+		t.Fatalf("count %d, detail %+v", bq.count, bq.detail)
 	}
 }

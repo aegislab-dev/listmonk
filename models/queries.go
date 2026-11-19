@@ -69,6 +69,8 @@ type Queries struct {
 	AxmTeamlessListIDs             *sqlx.Stmt `query:"axm-teamless-list-ids"`
 	AxmSubscriberOtherTeams        *sqlx.Stmt `query:"axm-subscriber-other-teams"`
 	AxmSubscriberLocked            *sqlx.Stmt `query:"axm-subscriber-locked"`
+	AxmLockSubscribers             *sqlx.Stmt `query:"axm-lock-subscribers"`
+	AxmUpdateSubscriberLists       *sqlx.Stmt `query:"axm-update-subscriber-lists"`
 	AxmQuerySubscribersMulti       string     `query:"axm-query-subscribers-multi"`
 	AxmQuerySubscribersMultiCount  string     `query:"axm-query-subscribers-multi-count"`
 	NextCampaignSubscribersDynamic *sqlx.Stmt `query:"next-campaign-subscribers-dynamic"`

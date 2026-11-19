@@ -150,3 +150,39 @@ SELECT COUNT(DISTINCT subscribers.id) AS total FROM subscribers
     WHERE (CARDINALITY($1) = 0 OR subscriber_lists.list_id = ANY($1::INT[]))
     AND (CASE WHEN $3 != '' THEN name ~* $3 OR email ~* $3 ELSE TRUE END)
     AND %query%;
+
+-- name: axm-lock-subscribers
+-- Team boundary (LST-42). Takes the row locks of subscribers $1 for the rest of the
+-- transaction. A new subscription row needs a key-share lock on its subscriber, so no
+-- subscription can be added to these people between the "locked?" check and the change.
+SELECT id FROM subscribers WHERE id = ANY($1::INT[]) ORDER BY id FOR UPDATE;
+
+-- name: axm-update-subscriber-lists
+-- The subscriptions part of update-subscriber-with-lists, without writing the subscriber row
+-- (LST-42): for a subscriber whose profile the user may not change. $2 are the lists to be
+-- on, $3 the status of new subscriptions, $4 whether to remove the others, $5 the lists
+-- whose subscriptions may be removed (never empty: an ID no list has when there is none).
+WITH s AS (
+    SELECT id, status FROM subscribers WHERE id = $1
+),
+listIDs AS (
+    SELECT id FROM lists WHERE id = ANY($2::INT[])
+),
+d AS (
+    DELETE FROM subscriber_lists WHERE $4 = TRUE AND subscriber_id = $1
+        AND list_id != ALL(SELECT id FROM listIDs)
+        AND list_id = ANY($5::INT[])
+)
+INSERT INTO subscriber_lists (subscriber_id, list_id, status)
+    SELECT s.id, l.id,
+        (CASE WHEN s.status = 'blocklisted' THEN 'unsubscribed'::subscription_status ELSE $3::subscription_status END)
+    FROM s, listIDs l
+    ON CONFLICT (subscriber_id, list_id) DO UPDATE
+    SET status = (
+        CASE
+            WHEN (SELECT status FROM s) = 'blocklisted' THEN 'unsubscribed'::subscription_status
+            WHEN subscriber_lists.status = 'confirmed' THEN 'confirmed'
+            WHEN subscriber_lists.status = 'unsubscribed' THEN 'unsubscribed'::subscription_status
+            ELSE $3::subscription_status
+        END
+    );

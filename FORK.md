@@ -394,11 +394,12 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - **대상**: `lists:manage_all`이 없는 사용자(Super Admin 제외). 팀원, 일반 리스트 역할, `lists:get_all`만 있는 역할, API 토큰 사용자가 모두 같다.
 - **잠긴 구독자**: 구독 행(`subscriber_lists`, 상태 무관 — 수신거부 행과 동적 리스트의 제외 행 포함)이 **내가 `list:manage`를 가진 리스트 밖에 하나라도 있는** 구독자. 팀 태그가 둘인 리스트는 두 팀 모두 manage라서 그 리스트에만 있는 사람은 두 팀 모두에게 잠기지 않는다. 팀 없는 리스트에 함께 있는 사람은 잠긴다. 구독 행이 하나도 없는 사람(어느 팀의 것도 아님)은 잠기지 않는다. 팀원은 읽기 판정(내 리스트에 있어야 함)에서 걸려 손댈 수 없고, `lists:get_all`이 있는 역할은 종전처럼 읽고 바꿀 수 있다.
 - **읽기는 그대로**: 목록, 상세, 활동, 개인정보 내보내기, CSV 내보내기, 옵트인 메일 재발송(`hasSubPerm`).
-- **구독자 행을 바꾸는 일은 잠긴 사람에게 403**(`hasSubWritePerm`, 문구 `teams.sharedLocked`에 잠긴 ID): 차단(`PUT /api/subscribers/:id/blocklist`, `PUT /api/subscribers/blocklist`), 삭제(`DELETE /api/subscribers/:id`, `DELETE /api/subscribers`), 반송 기록 삭제(`DELETE /api/subscribers/:id/bounces`). ID 여러 개 중 하나라도 잠겼으면 **요청 전체가 거부**되고 아무도 바뀌지 않는다.
-- **수정(`PUT`·`PATCH /api/subscribers/:id`)**: 잠긴 사람은 이름·이메일·상태·속성 중 하나라도 지금 값과 다르면 403. 모두 같으면 통과하고(수정 창에서 리스트만 바꾼 저장), 서버가 프로필을 지금 값으로 다시 넣어 행은 그대로 둔다(`keepLockedProfile`). 비교는 저장 쿼리가 읽는 방식대로다: 빈 이메일·이름·상태는 「변경 없음」, 이메일은 대소문자 무시, 이름은 앞뒤 공백 무시, 속성은 JSON 값 비교(`PUT`에서 `attribs`를 빼면 `{}`로 덮는 요청이라 「변경」).
+- **구독자 행을 바꾸는 일은 잠긴 사람에게 403**(`deleteSubs`·`blocklistSubs`·`deleteSubBounces`, 문구 `teams.sharedLocked`에 잠긴 ID): 차단(`PUT /api/subscribers/:id/blocklist`, `PUT /api/subscribers/blocklist`), 삭제(`DELETE /api/subscribers/:id`, `DELETE /api/subscribers`), 반송 기록 삭제(`DELETE /api/subscribers/:id/bounces`). ID 여러 개 중 하나라도 잠겼으면 **요청 전체가 거부**되고 아무도 바뀌지 않는다.
+- **수정(`PUT`·`PATCH /api/subscribers/:id`)**: 잠긴 사람은 이름·이메일·상태·속성 중 하나라도 지금 값과 다르면 403. 모두 같으면 통과하고(수정 창에서 리스트만 바꾼 저장), **구독자 행은 아예 쓰지 않고** 내 리스트의 구독 행만 바꾼다(`updateSub` → `core.UpdateSubscriberBounded`, 쿼리 `axm-update-subscriber-lists`). 속성을 다시 직렬화해 쓰지 않으므로 JSON 숫자로 정확히 못 담는 큰 정수(2^53 초과)도 그대로 남고 `updated_at`도 안 바뀐다. 비교는 저장 쿼리가 읽는 방식대로다: 빈 이메일·이름·상태는 「변경 없음」, 이메일은 대소문자 무시, 이름은 앞뒤 공백 무시, 속성은 JSON 값 비교(`PUT`에서 `attribs`를 빼면 `{}`로 덮는 요청이라 「변경」).
 - **내 리스트의 구독 바꾸기는 잠긴 사람에게도 된다**: `PUT /api/subscribers/lists(/:id)`, `PUT /api/subscribers/query/lists`, 수정 저장의 `lists`. 내 manage 리스트의 행만 바뀐다. **manage 리스트가 하나도 없는 사용자의 수정 저장은 어떤 구독도 지우지 않는다**(`ownListsOnly`): upstream은 빈 배열을 「모든 리스트」로 읽어, 읽기 전용 역할이 수정 창을 그대로 저장하면 그 사람의 모든 구독을 지웠다.
-- **조건 일괄 삭제·차단**(`POST /api/subscribers/query/delete`, `PUT /api/subscribers/query/blocklist`, 화면의 「전체 선택」): 사용자의 조건에 `core.SharedSubscriberExclusion(manage 리스트)`를 `AND`로 붙여 잠긴 사람을 건너뛴다(오류 없음). 붙이는 조건은 정수 ID만 들어간 `NOT EXISTS`이고 `subscribers:sql_query` 검사 대상이 아니다. 감사 기록의 건수는 실제 대상 수, `detail.skipped_shared`는 건너뛴 수(붙이기 전 수 − 붙인 뒤 수), `detail.query`에는 사용자의 조건만 남는다.
+- **조건 일괄 삭제·차단**(`POST /api/subscribers/query/delete`, `PUT /api/subscribers/query/blocklist`, 화면의 「전체 선택」): 사용자의 조건에 `core.SharedSubscriberExclusion(manage 리스트)`를 `AND`로 붙여 잠긴 사람을 건너뛴다(오류 없음). 붙이는 조건은 정수 ID만 들어간 `NOT EXISTS`이고 `subscribers:sql_query` 검사 대상이 아니다. 감사 기록의 건수는 실제 대상 수, `detail.skipped_shared`는 건너뛴 수(붙이기 전 수 − 붙인 뒤 수, 둘 다 직전에 정확히 센다 — 조건 없는 「전체」의 캐시된 총원은 쓰지 않는다), `detail.query`에는 사용자의 조건만 남는다.
 - **가져오기**: 이 사용자의 `overwrite_userinfo`는 서버가 끈다(옛 `overwrite`는 `overwrite_subscription_status`만 남긴다). 이미 있는 주소의 이름·속성은 바뀌지 않고, 새 사람은 파일대로 들어가며, 내 리스트의 구독 상태 덮어쓰기는 그대로 된다. 감사 기록 `import.start`에 실제 적용된 값이 남는다. 차단 모드 가져오기는 그대로다(전사 차단).
+- **판정과 변경은 한 트랜잭션**이다(`internal/core/axm_sub_boundary.go`의 `boundedTx`): 대상 구독자 행을 `FOR UPDATE`로 잠그고(`axm-lock-subscribers`) 잠김 여부를 읽은 뒤 삭제·차단·반송 삭제·수정을 실행한다. 새 구독 행은 외래 키 때문에 구독자 행의 key-share 잠금이 필요하므로, 다른 팀이 같은 순간에 넣는 구독은 판정에 보이거나 변경이 끝날 때까지 기다린다. ID로 하는 쓰기에만 해당한다. 조건 일괄은 한 문장의 `NOT EXISTS`로 걸러 문장 스냅숏 이후에 커밋된 구독은 보지 못한다.
 - 차단 해제는 종전대로 `subscribers:get_all` 보유자만.
 
 ### API 응답
@@ -410,7 +411,7 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 
 ### 화면
 - 구독자 목록: 잠긴 행은 삭제 아이콘 자리에 자물쇠(`data-cy=btn-delete-locked`, 툴팁 `teams.lockedRow`). `other_teams` 배지가 없는 잠긴 행에는 「다른 팀 리스트에 기록 있음」(`data-cy=locked-record`). 선택 일괄 차단·삭제는 잠긴 사람을 빼고 보내며 확인 창이 「선택한 N명 중 K명 제외」를 알린다. 전원이 잠겼으면 실행 버튼 없는 안내만 뜬다. 「전체 선택」은 「이 중 다른 팀 리스트에도 있는 사람은 제외됩니다」를 알리고 끝난 뒤 건수 없는 알림을 띄운다(화면이 미리 셀 수 없다).
-- 구독자 수정 창: 잠긴 사람은 맨 위 안내(`data-cy=locked-notice`)와 함께 이메일·이름·상태·추가 정보가 잠긴다. 리스트 선택과 저장은 그대로다. 반송 기록 「삭제」 링크는 숨긴다.
+- 구독자 수정 창: 잠긴 사람은 맨 위 안내(`data-cy=locked-notice`)와 함께 이메일·이름·상태·추가 정보가 잠긴다. 리스트 선택과 저장은 그대로이고, 저장은 `PATCH`로 리스트(`lists`, 사전 확인을 켰으면 `preconfirm_subscriptions`)만 보낸다. 상세 링크(`/subscribers/:id`)로 열 때 응답의 속성 키를 camelCase로 바꾸던 것을 그만뒀다(`getSubscriber`; 전에는 `customer_id`가 `customerId`로 보이고 저장하면 그렇게 바뀌었다). 반송 기록 「삭제」 링크는 숨긴다.
 - 가져오기: 대상 사용자에게 「사용자 정보 덮어쓰기」 스위치는 꺼진 채 잠기고 이유를 적는다.
 - 활동 기록: `skipped_shared`가 「다른 팀 리스트에도 있어 제외한 수」로 나온다.
 - 관리자(`lists:manage_all`) 화면은 그대로다.
@@ -437,9 +438,9 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - 옵트인 메일 재발송은 읽기 규칙을 따른다(구독자를 바꾸지 않는다).
 
 ### upstream을 따라갈 때
-- `cmd/subscribers.go`: `GetSubscriber`·`QuerySubscribers`의 `attachLocked`, `UpdateSubscriber`·`PatchSubscriber`의 `keepLockedProfile`·`ownListsOnly`, 차단·삭제·반송 삭제 5곳의 `hasSubWritePerm`, 조건 일괄 2곳의 `guardBulkQuery`. `cmd/import.go`의 `restrictImportOverwrite` 한 줄. `internal/core/subscribers.go`의 `QuerySubscribers`·`getSubscriberCount`에 「리스트 2개 이상이면 multi 문장」 두 블록(upstream의 `stmt` 줄은 그대로 두고 그 아래에 덧붙였다 — CodeQL이 그 줄의 변경을 새 경고로 본다).
+- `cmd/subscribers.go`: `GetSubscriber`·`QuerySubscribers`의 `attachLocked`, `UpdateSubscriber`·`PatchSubscriber`의 `updateSub`, 차단·삭제·반송 삭제 5곳의 `blocklistSubs`·`deleteSubs`·`deleteSubBounces`(upstream의 `hasSubPerm` 줄은 그대로), 조건 일괄 2곳의 `guardBulkQuery`. upstream이 `update-subscriber-with-lists`의 구독 부분을 바꾸면 `axm-update-subscriber-lists`에도 넣는다. `cmd/import.go`의 `restrictImportOverwrite` 한 줄. `internal/core/subscribers.go`의 `QuerySubscribers`·`getSubscriberCount`에 「리스트 2개 이상이면 multi 문장」 두 블록(upstream의 `stmt` 줄은 그대로 두고 그 아래에 덧붙였다 — CodeQL이 그 줄의 변경을 새 경고로 본다).
 - upstream이 `query-subscribers`의 조인·조건을 바꾸면 `axm-query-subscribers-multi`(-count)에도 같은 변경을 넣는다.
-- 판정 코드는 `cmd/axm_sub_boundary.go`, 시험은 `cmd/axm_sub_boundary_db_test.go`·`internal/core/axm_sub_boundary_test.go`·`frontend/cypress/e2e/list-teams.cy.js`.
+- 판정 코드는 `cmd/axm_sub_boundary.go`·`internal/core/axm_sub_boundary.go`, 시험은 `cmd/axm_sub_boundary_db_test.go`·`internal/core/axm_sub_boundary_test.go`·`frontend/cypress/e2e/list-teams.cy.js`.
 
 ## 감사 기록과 리스트 휴지통 (LST-27)
 

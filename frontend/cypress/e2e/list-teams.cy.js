@@ -126,6 +126,7 @@ describe('teams', () => {
     // A subscriber on a list of each team.
     cy.request('POST', '/api/subscribers', {
       email: `shared-${stamp}@example.invalid`, name: `공유 ${stamp}`, status: 'enabled', lists: [listAId, listBId],
+      attribs: { customer_id: 'c-1', follower_count: 12 },
     });
     // Somebody on the member's list only, and somebody who unsubscribed from the other team's list.
     cy.request('POST', '/api/subscribers', {
@@ -191,6 +192,22 @@ describe('teams', () => {
       cy.request({ method: 'PUT', url: `/api/subscribers/${sub.id}/blocklist`, failOnStatusCode: false }).its('status').should('eq', 403);
       cy.request({ method: 'PATCH', url: `/api/subscribers/${sub.id}`, body: { name: 'renamed' }, failOnStatusCode: false })
         .its('status').should('eq', 403);
+
+      // Opened by its own link: the attribute keys stay as they are stored, and saving the
+      // lists goes through without touching the profile.
+      cy.visit(`/admin/subscribers/${sub.id}`);
+      cy.get('[data-cy=locked-notice]').should('be.visible');
+      cy.get('.modal-card textarea[name=attribs]').invoke('val').should('contain', 'customer_id').and('not.contain', 'customerId');
+      cy.intercept('PATCH', `/api/subscribers/${sub.id}`).as('saveLists');
+      cy.get('.modal-card-foot button[type=submit]').click();
+      cy.wait('@saveLists').then(({ request, response }) => {
+        expect(response.statusCode).to.eq(200);
+        expect(request.body).to.have.property('lists');
+        expect(request.body).to.not.have.any.keys('email', 'name', 'status', 'attribs');
+      });
+      cy.request(`/api/subscribers/${sub.id}`).then(({ body: one }) => {
+        expect(one.data.attribs).to.deep.eq({ customer_id: 'c-1', follower_count: 12 });
+      });
     });
   });
 

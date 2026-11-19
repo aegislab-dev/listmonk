@@ -302,6 +302,20 @@ export default Vue.extend({
     },
 
     updateSubscriber() {
+      // A locked profile is not sent at all: only the lists are saved, so nothing the form
+      // shows of the profile can count as a change.
+      if (this.profileLocked) {
+        this.$api.updateSubscriberLists(this.form.id, {
+          lists: this.form.lists.map((l) => l.id),
+          preconfirm_subscriptions: this.form.preconfirm,
+        }).then((d) => {
+          this.$emit('finished');
+          this.$parent.close();
+          this.$utils.toast(this.$t('globals.messages.updated', { name: d.name }));
+        });
+        return;
+      }
+
       let attribs = {};
       if (this.form.strAttribs) {
         attribs = this.validateAttribs(this.form.strAttribs);
