@@ -463,7 +463,19 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 	if got := level(read().Checks, "unsubscribe.missing"); got != "ok" {
 		t.Fatalf("shown link: %q", got)
 	}
-	// The mail is rendered as it is when sent (a running campaign), and only an <a> counts.
+	// A body that only has the link while the campaign is "running" is fine for a start, and
+	// not for a campaign with a send time, which the sender reads as "scheduled".
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News {{ if eq .Campaign.Status "running" }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}</p>' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "ok" {
+		t.Fatalf("link while running, a start: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() + INTERVAL '1 day' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
+		t.Fatalf("link while running, a scheduled one: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET send_at=NULL WHERE id=$1`, e.campID)
+
+	// The mail is rendered as it is when sent, and only an <a> counts.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>News {{ if eq .Campaign.Status "draft" }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}</p>' WHERE id=$1`, e.campID)
 	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
 		t.Fatalf("link only while draft: %q", got)
@@ -566,6 +578,7 @@ func TestCampaignStatusSeenUpdatedAt(t *testing.T) {
 		e.get(&s, `SELECT status FROM campaigns WHERE id=$1`, e.campID)
 		return code, s
 	}
+	// The sender of the test app runs a started campaign, so it may already be finished.
 	// Give the timestamp microseconds: a value cut to milliseconds would never match.
 	e.db.MustExec(`UPDATE campaigns SET updated_at = DATE_TRUNC('second', NOW()) + INTERVAL '123456 microseconds' WHERE id=$1`, e.campID)
 	seen := read()
@@ -577,13 +590,13 @@ func TestCampaignStatusSeenUpdatedAt(t *testing.T) {
 	}
 	// The value read again goes through.
 	seen = read()
-	if code, s := status(fmt.Sprintf(`{"status":"running","updated_at":%q}`, seen)); code != http.StatusOK || s != "running" {
+	if code, s := status(fmt.Sprintf(`{"status":"running","updated_at":%q}`, seen)); code != http.StatusOK || (s != "running" && s != "finished") {
 		t.Fatalf("fresh: %d %s", code, s)
 	}
 
 	// Without the value it behaves as before.
 	e.db.MustExec(`UPDATE campaigns SET status='draft', updated_at=updated_at + INTERVAL '5 microseconds' WHERE id=$1`, e.campID)
-	if code, s := status(`{"status":"running"}`); code != http.StatusOK || s != "running" {
+	if code, s := status(`{"status":"running"}`); code != http.StatusOK || (s != "running" && s != "finished") {
 		t.Fatalf("no value: %d %s", code, s)
 	}
 

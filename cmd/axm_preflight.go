@@ -300,7 +300,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1, HeadersVary: headersVary,
 	}
 	// Whether the e-mail that is rendered has the link to leave, as the recipient gets it.
-	if has, err := a.manager.HasUnsubscribeLink(&camp, dummySubscriber); err == nil {
+	if has, err := a.manager.HasUnsubscribeLink(&camp, dummySubscriber, manager.SendStatus(camp.SendAt)); err == nil {
 		facts.Unsubscribe, facts.UnsubscribeKnown = has, true
 	}
 	var listIDs []int

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/knadh/listmonk/models"
+	"gopkg.in/volatiletech/null.v6"
 )
 
 // HasUnsubscribeLink renders the campaign for one subscriber and tells whether the e-mail
@@ -15,13 +16,16 @@ import (
 // get, not the template source: a link behind a condition that does not hold, or in a
 // template that is not used, does not count. It registers no links and writes nothing.
 //
+// status is the state of the campaign when the sender reads it, see SendStatus.
+//
 // The business footer (LST-7) is not added: it carries no unsubscribe link.
-func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber) (bool, error) {
+func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber, status string) (bool, error) {
 	// Compile on a copy, with the tracking functions that do not touch the database.
 	camp := *c
 	camp.UUID = dummyUUID
-	// A body may ask what state the campaign is in: render it as it is when it is sent.
-	camp.Status = models.CampaignStatusRunning
+	// A body may ask what state the campaign is in: render it with the one the sender will
+	// read it in (see SendStatus).
+	camp.Status = status
 	funcs := m.TemplateFuncs(&camp)
 	funcs["TrackLink"] = func(u string, _ *CampaignMessage) string { return u }
 	funcs["TrackView"] = func(_ *CampaignMessage) template.HTML { return "" }
@@ -57,4 +61,15 @@ func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber) 
 		return value
 	})
 	return found, nil
+}
+
+// SendStatus is the status a campaign has when the sender reads it to render its mail. The
+// sender reads a campaign in the state it was found in, before it marks it as running
+// (next-campaigns): a campaign that was started with a send time is "scheduled" then, and
+// one without is "running". A body that depends on the status renders differently.
+func SendStatus(sendAt null.Time) string {
+	if sendAt.Valid {
+		return models.CampaignStatusScheduled
+	}
+	return models.CampaignStatusRunning
 }
