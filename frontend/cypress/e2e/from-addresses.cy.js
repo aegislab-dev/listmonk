@@ -131,8 +131,10 @@ describe('Team From address list', () => {
     // Opening it changed nothing.
     cy.then(() => cy.request(`/api/campaigns/${oldDraft.id}`)).then(({ body }) => expect(body.data.from_email).to.eq('old@crevasse.ai'));
 
+    cy.intercept('PUT', `/api/campaigns/${oldDraft.id}`).as('save');
     cy.get('select[name=from_email]').select(team);
     cy.get('[data-cy=btn-save]').first().click();
+    cy.wait('@save').its('response.statusCode').should('eq', 200);
     cy.get('[data-cy=from-warning]').should('not.exist');
     cy.then(() => cy.request(`/api/campaigns/${oldDraft.id}`)).then(({ body }) => expect(body.data.from_email).to.eq(team));
   });

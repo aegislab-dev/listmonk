@@ -347,6 +347,17 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	// unchanged.
 	cm.Attribs = nil
 
+	// Bind below writes into the maps that cm shares with o, so keep a deep
+	// copy of the stored headers to compare with later.
+	origHeaders := make(models.Headers, 0, len(cm.Headers))
+	for _, set := range cm.Headers {
+		cp := make(map[string]string, len(set))
+		for k, v := range set {
+			cp[k] = v
+		}
+		origHeaders = append(origHeaders, cp)
+	}
+
 	// Read the incoming params into the existing campaign fields from the DB.
 	// This allows updating of values that have been sent whereas fields
 	// that are not in the request retain the old values.
@@ -361,7 +372,7 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	}
 	if cm.Status == models.CampaignStatusPaused {
 		o.storedFrom = &cm.FromEmail
-		o.storedHeaders = cm.Headers
+		o.storedHeaders = origHeaders
 	}
 
 	// Filter lists against the current user's permitted lists.
@@ -807,12 +818,13 @@ func (a *App) validateFrom(c campReq) (campReq, error) {
 		// No From sent: the app default, or with a list its closest entry.
 		// The default goes through the same checks, so a placeholder or a
 		// stray space in app.from_email is not saved into campaigns.
-		if strings.ContainsAny(a.cfg.FromEmail, "\r\n") {
-			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
-		}
-		c.FromEmail = strings.TrimSpace(a.cfg.FromEmail)
 		if len(fromList) > 0 {
-			c.FromEmail = defaultFromFor(c.FromEmail, fromList)
+			// The list decides; the default only picks the entry.
+			c.FromEmail = defaultFromFor(strings.TrimSpace(a.cfg.FromEmail), fromList)
+		} else if strings.ContainsAny(a.cfg.FromEmail, "\r\n") {
+			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
+		} else {
+			c.FromEmail = strings.TrimSpace(a.cfg.FromEmail)
 		}
 	}
 

@@ -469,6 +469,10 @@ export default Vue.extend({
       const fromOk = (this.serverConfig.sender_domains || []).length > 0
         || (list.length > 0 ? !!matchFromEntry(c.fromEmail, list) : !isPlaceholderFrom(c.fromEmail));
 
+      // With a From list a custom From header is refused, so a copy goes without one.
+      const fromHeaderFree = (this.serverConfig.sender_domains || []).length === 0 && list.length > 0;
+      const dropFromHeader = (set) => Object.fromEntries(Object.entries(set).filter(([k]) => k.trim().toLowerCase() !== 'from'));
+
       const data = {
         name,
         subject: c.subject,
@@ -483,7 +487,7 @@ export default Vue.extend({
         body,
         body_source: bodySource,
         altbody: c.altbody,
-        headers: c.headers,
+        headers: fromHeaderFree ? (c.headers || []).map(dropFromHeader).filter((h) => Object.keys(h).length) : c.headers,
         send_later: sendLater,
         send_at: sendAt,
         archive: c.archive,

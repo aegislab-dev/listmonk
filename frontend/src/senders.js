@@ -11,7 +11,8 @@ export function senderMailbox(value) {
 // as the address without quotes, as the server does. Used to compare a From
 // with the From list.
 export function fromAddress(value) {
-  const s = (value || '').trim();
+  // A trailing comment, as in "Team <a@x> (Newsletter)", is not part of the address.
+  const s = (value || '').trim().replace(/\s*\([^()]*\)$/, '');
   if (!s || /[\r\n]/.test(s)) return '';
   const match = s.match(/^(?:[^<>]*)<([^<>]+)>$/);
   const email = match ? match[1] : s;
