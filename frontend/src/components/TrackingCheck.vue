@@ -145,12 +145,6 @@ export default {
       return this.inflight;
     },
 
-    // The report for the campaign as it is at this moment, for the start confirmation.
-    // It always asks again: a template that someone else edited since the last check
-    // changes the answer without anything changing on this page.
-    current() {
-      return this.run();
-    },
   },
 };
 </script>

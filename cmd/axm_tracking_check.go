@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -26,9 +27,13 @@ type trackingCheckReq struct {
 	Subject   *string         `json:"subject" form:"subject"`
 	FromEmail *string         `json:"from_email" form:"from_email"`
 	AltBody   *string         `json:"altbody" form:"altbody"`
-	Headers   *models.Headers `json:"headers"`
-	Tags      *[]string       `json:"tags"`
-	Attribs   *models.JSON    `json:"attribs"`
+	Headers   json.RawMessage `json:"headers"`
+
+	// Mode "test" checks what a test send does with these values; otherwise what saving
+	// them does. The two differ for custom headers (see below).
+	Mode    string       `json:"mode" form:"mode"`
+	Tags    *[]string    `json:"tags"`
+	Attribs *models.JSON `json:"attribs"`
 }
 
 // CheckCampaignTracking tells, before a campaign is sent, whether its views and clicks
@@ -101,8 +106,17 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 		// The editor state without an alt body: there is none.
 		camp.AltBody = null.String{}
 	}
-	if req.Headers != nil {
-		camp.Headers = *req.Headers
+	if len(req.Headers) > 0 {
+		// A test send replaces the headers. Saving decodes the request into the stored
+		// campaign, where a header that is no longer in the request stays in the set it
+		// was in (UpdateCampaign binds over the stored row). Decode the same way, so the
+		// check sees the headers that will really be sent.
+		if req.Mode == "test" {
+			camp.Headers = nil
+		}
+		if err := json.Unmarshal(req.Headers, &camp.Headers); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "headers"))
+		}
 	}
 	if req.Tags != nil {
 		camp.Tags = pq.StringArray(*req.Tags)

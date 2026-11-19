@@ -234,17 +234,72 @@ describe('Pre-send tracking check', () => {
     cy.get('.b-tabs nav a').eq(2).click();
     cy.get('.b-tabs .tab-item:visible textarea').clear().type('{"track": true}', { parseSpecialCharSequences: false });
     cy.get('[data-cy=btn-start]').click();
+    // Saved first, then the saved campaign is checked, then the question.
+    cy.wait('@save').its('request.body.attribs.track').should('eq', true);
     cy.get('.modal.is-active').should('be.visible');
     cy.get('@attribs.all').then((calls) => {
-      const last = calls[calls.length - 1];
-      expect(last.request.body.attribs.track).to.equal(true);
-      expect(last.response.body.data.view).to.equal('manual');
+      const stored = calls.filter((c) => Object.keys(c.request.body).length === 0).pop();
+      expect(stored.response.body.data.view).to.equal('manual');
     });
     cy.get('.modal.is-active [data-cy=warn-box]').should('not.exist');
     cy.get('.modal.is-active button.is-primary').click();
-    cy.wait('@save').its('request.body.attribs.track').should('eq', true);
     cy.wait('@start');
+    cy.get('@save.all').should('have.length', 1);
     cy.request(`/api/campaigns/${ids.ok}`).its('body.data.attribs.track').should('eq', true);
+  });
+
+  it('warns about what is saved when the page is edited while the check is on its way', () => {
+    cy.request('PUT', `/api/campaigns/${ids.ok}`, {
+      name: `Tracking ok ${stamp}`,
+      subject: 'Attributes',
+      type: 'regular',
+      messenger: 'email',
+      lists: [listId],
+      content_type: 'html',
+      template_id: bareTpl,
+      attribs: { track: false },
+      body: '{{ if .Campaign.Attribs.track }}{{ TrackView }}{{ end }}<p>Hello</p>',
+    });
+    open('ok');
+    cy.get('.b-tabs nav a').eq(2).click();
+    cy.intercept('POST', check, (req) => { req.on('response', (res) => { res.setDelay(1500); }); }).as('slow');
+    cy.intercept('PUT', `/api/campaigns/${ids.ok}/status`, { statusCode: 200, body: { data: {} } }).as('start');
+    cy.get('[data-cy=btn-start]').click();
+    cy.get('.b-tabs .tab-item:visible textarea').clear().type('{"track": true}', { parseSpecialCharSequences: false });
+    // The question is about the campaign as it was saved: no pixel.
+    cy.get('.modal.is-active [data-cy=warn-box]', { timeout: 10000 }).should('contain', 'There is no view tracking.');
+    cy.request(`/api/campaigns/${ids.ok}`).its('body.data.attribs.track').should('eq', false);
+    cy.get('.modal.is-active button.is-primary').should('contain', 'Start anyway').click();
+    cy.wait('@start');
+    // Nothing was saved after the question.
+    cy.request(`/api/campaigns/${ids.ok}`).its('body.data.attribs.track').should('eq', false);
+  });
+
+  it('warns when a replaced custom header is still sent', () => {
+    cy.request('PUT', `/api/campaigns/${ids.ok}`, {
+      name: `Tracking ok ${stamp}`,
+      subject: 'Headers',
+      type: 'regular',
+      messenger: 'email',
+      lists: [listId],
+      content_type: 'html',
+      template_id: bareTpl,
+      headers: [{ 'X-No-Track': '1' }],
+      body: '{{ $no := false }}{{ range .Campaign.Headers }}{{ if index . "X-No-Track" }}{{ $no = true }}{{ end }}{{ end }}'
+        + '{{ if not $no }}{{ TrackView }}{{ end }}<p>Hello</p>',
+    });
+    open('ok');
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn');
+    cy.intercept('POST', check).as('headers');
+    cy.intercept('PUT', `/api/campaigns/${ids.ok}/status`, { statusCode: 200, body: { data: {} } }).as('start');
+    cy.get('textarea[name=headers]').clear().type('[{"X-Other": "1"}]', { parseSpecialCharSequences: false });
+    // The server keeps the old header beside the new one, and the box says so already.
+    cy.wait('@headers');
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn');
+    cy.get('[data-cy=btn-start]').click();
+    cy.get('.modal.is-active [data-cy=warn-box]').should('contain', 'There is no view tracking.');
+    cy.request(`/api/campaigns/${ids.ok}`).its('body.data.headers').should('deep.equal', [{ 'X-No-Track': '1', 'X-Other': '1' }]);
+    cy.get('.modal.is-active .modal-card-foot button:not(.is-primary)').click();
   });
 
   it('warns on the campaigns list too, for start and for schedule', () => {

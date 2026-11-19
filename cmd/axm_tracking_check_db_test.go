@@ -122,6 +122,20 @@ func TestCampaignTrackingCheck(t *testing.T) {
 		t.Fatalf("unsaved subject, name, tags and attributes: %+v", rep)
 	}
 
+	// Custom headers: saving keeps a stored header that the request no longer has, in
+	// the set it was in; a test send replaces them. The check follows each.
+	e.db.MustExec(`UPDATE campaigns SET headers='[{"X-No-Track":"1"}]' WHERE id=$1`, e.campID)
+	hdr := map[string]any{"content_type": "html", "template_id": bare, "headers": []map[string]string{{"X-Other": "1"}},
+		"body": `{{ $no := false }}{{ range .Campaign.Headers }}{{ if index . "X-No-Track" }}{{ $no = true }}{{ end }}{{ end }}{{ if not $no }}{{ TrackView }}{{ end }}`}
+	if rep = check(js(hdr)); rep.View != "missing" {
+		t.Fatalf("headers as saving keeps them: %+v", rep)
+	}
+	hdr["mode"] = "test"
+	if rep = check(js(hdr)); rep.View != "manual" {
+		t.Fatalf("headers as a test send replaces them: %+v", rep)
+	}
+	e.db.MustExec(`UPDATE campaigns SET headers='[]' WHERE id=$1`, e.campID)
+
 	// The unsaved template is also the one the campaign names to its templates.
 	byTpl := map[string]any{"content_type": "html", "template_id": bare,
 		"body": fmt.Sprintf(`{{ if eq .Campaign.TemplateID.Int %d }}{{ TrackView }}{{ end }}<p>x</p>`, bare)}

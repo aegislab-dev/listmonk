@@ -662,6 +662,7 @@ export default Vue.extend({
         name: data.name,
         subject: data.subject,
         headers: data.headers,
+        mode: 'test',
         ...(data.altbody === null ? {} : { altbody: data.altbody }),
         ...(this.senderPolicyEnabled ? {} : { from_email: data.from_email }),
       }).catch(() => null);
@@ -787,51 +788,36 @@ export default Vue.extend({
 
       if (!await this.checkReplyTo()) return;
 
-      // Starting saves the campaign first. The headers and attributes typed on the page
-      // must be what is saved, and what the tracking check below was made with (LST-44).
+      // Save first, then check what was saved, then ask (LST-44). The tracking warning is
+      // about the campaign exactly as the server will send it: a check of the form could
+      // differ from it (an edit made while the check is on its way, or values the server
+      // merges on save, such as custom headers). After the confirmation nothing is saved
+      // again, only the status changes.
       if (!this.parseFormJSON()) return;
+      const status = this.canStart ? 'running' : 'scheduled';
+      let saved;
+      try {
+        saved = await this.updateCampaign();
+      } catch (e) {
+        return;
+      }
+      if (!saved) return;
+      const report = await this.$api.checkCampaignTracking(saved.id, {}).catch(() => null);
+      this.$refs.tracking?.run();
 
-      // Views or clicks that would not be recorded are said here, before anything is
-      // sent (LST-44). It is a warning: the campaign can still be started.
-      const warnings = trackingConfirmLines(await this.trackingReport()).map(({ key, params }) => this.$t(key, params));
+      const warnings = trackingConfirmLines(report).map(({ key, params }) => this.$t(key, params));
       const msg = this.recentRule.enabled
         ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null;
-      const confirm = warnings.length
-        ? (fn) => this.$utils.confirmWithWarnings(
-          msg,
-          warnings,
-          this.$t(this.canStart ? 'campaigns.tracking.confirm.start' : 'campaigns.tracking.confirm.schedule'),
-          fn,
-        )
-        : (fn) => this.$utils.confirm(msg, fn);
-      confirm(
-        () => {
-          if (this.savingCampaign) return;
-          // First save the campaign.
-          this.updateCampaign().then(() => {
-            // Then start/schedule it.
-            let status = '';
-            if (this.canStart) {
-              status = 'running';
-            } else if (this.canSchedule) {
-              status = 'scheduled';
-            } else {
-              return undefined;
-            }
-
-            return this.$api.changeCampaignStatus(this.data.id, status).then(() => {
-              this.$router.push({ name: 'campaigns' });
-            }).catch((err) => {
-              if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
-            });
-          }).catch(() => {});
-        },
-      );
-    },
-
-    // The tracking report for the content as it is now; null when the check failed.
-    trackingReport() {
-      return this.$refs.tracking ? this.$refs.tracking.current() : Promise.resolve(null);
+      const start = () => this.$api.changeCampaignStatus(saved.id, status).then(() => {
+        this.$router.push({ name: 'campaigns' });
+      }).catch((err) => {
+        if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
+      });
+      if (warnings.length) {
+        this.$utils.confirmWithWarnings(msg, warnings, this.$t(`campaigns.tracking.confirm.${status === 'running' ? 'start' : 'schedule'}`), start);
+      } else {
+        this.$utils.confirm(msg, start);
+      }
     },
 
     unscheduleCampaign() {
