@@ -5,6 +5,7 @@ import (
 	"net/mail"
 	"net/textproto"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -292,6 +293,8 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 			server, headersVary = em.ServerHeaders(from, "From", "Subject", "Reply-To")
 		}
 	}
+	// The sender address the campaign itself has when it is sent, which templates can read.
+	campFrom := from
 	subject, from, replyTo := sendEnvelope(camp.Subject, from, camp.ReplyTo, camp.Messenger, server, camp.Headers, len(a.cfg.SenderDomains) > 0)
 
 	facts := preflightFacts{
@@ -299,10 +302,17 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		Total: aud.Total, Remaining: aud.Remaining, ListCount: len(lists),
 		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1, HeadersVary: headersVary,
 	}
-	// Whether the e-mail that is rendered has the link to leave, as the recipient gets it.
-	if has, err := a.manager.HasUnsubscribeLink(&camp, dummySubscriber, manager.SendStatus(camp.SendAt)); err == nil {
-		facts.Unsubscribe, facts.UnsubscribeKnown = has, true
-	}
+	// The campaign as the sender reads it: with the sender set at the start of a draft, and
+	// in each status it may be read in (a scheduled one is read again as "running" after a
+	// restart). The mail has to be right in all of them.
+	sendCamp := camp
+	sendCamp.FromEmail = campFrom
+	statuses := manager.SendStatuses(camp.SendAt)
+
+	// Whether the e-mail that is rendered has the link to leave, as every recipient gets it.
+	facts.Unsubscribe, facts.UnsubscribeKnown = unsubscribeInAll(statuses, func(status string) (bool, error) {
+		return a.manager.HasUnsubscribeLink(&sendCamp, dummySubscriber, status)
+	})
 	var listIDs []int
 	for _, l := range lists {
 		if !l.Deleted {
@@ -340,12 +350,66 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		out.PausedAt = a.core.GetCampaignPausedAt(id, camp.UpdatedAt)
 	}
 
-	// The tracking of the saved campaign, as the tracking check reports it.
-	if rep, err := a.manager.CheckTracking(&camp, dummySubscriber); err != nil {
+	// The tracking of the saved campaign, as the tracking check reports it for the send (the
+	// status and sender of LST-44's trackingSendState), the worst of the statuses it is read in.
+	rep, err := worstTracking(statuses, func(status string) (manager.TrackingReport, error) {
+		c := sendCamp
+		c.Status = status
+		return a.manager.CheckTracking(&c, dummySubscriber)
+	})
+	if err != nil {
 		out.TrackingError = err.Error()
 	} else {
 		out.Tracking = &rep
 	}
 
 	return c.JSON(http.StatusOK, okResp{out})
+}
+
+// unsubscribeInAll tells whether the mail has the link to leave in every status the sender
+// may render it in. known is false when nothing can be said: no status rendered without the
+// link, and one could not be rendered at all.
+func unsubscribeInAll(statuses []string, has func(status string) (bool, error)) (ok, known bool) {
+	rendered, missing := 0, false
+	for _, st := range statuses {
+		h, err := has(st)
+		if err != nil {
+			continue
+		}
+		rendered++
+		if !h {
+			missing = true
+		}
+	}
+	return !missing, missing || (rendered == len(statuses) && rendered > 0)
+}
+
+// worstTracking checks the tracking in each status and returns the report that warns the
+// most: views not tracked, then the most links without click tracking. A status that cannot
+// be rendered is an error, as the send of it would be.
+func worstTracking(statuses []string, check func(status string) (manager.TrackingReport, error)) (manager.TrackingReport, error) {
+	rank := func(r manager.TrackingReport) [3]int {
+		warn, view := 0, 0
+		if r.State != manager.TrackingStateOK {
+			warn = 1
+		}
+		if r.View == manager.TrackingViewMissing {
+			view = 1
+		}
+		return [3]int{warn, view, r.Links.Untracked}
+	}
+	var (
+		worst manager.TrackingReport
+		found bool
+	)
+	for _, st := range statuses {
+		r, err := check(st)
+		if err != nil {
+			return manager.TrackingReport{}, err
+		}
+		if wr, rr := rank(worst), rank(r); !found || slices.Compare(wr[:], rr[:]) < 0 {
+			worst, found = r, true
+		}
+	}
+	return worst, nil
 }

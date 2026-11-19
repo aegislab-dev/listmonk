@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/models"
 	"gopkg.in/volatiletech/null.v6"
 )
@@ -157,5 +159,68 @@ func TestPreflightChecks(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A scheduled campaign is read as "scheduled" and, after a restart, as "running": a check
+// holds only when it holds in every one of them (LST-48 review).
+func TestPreflightEveryStatus(t *testing.T) {
+	if got := manager.SendStatuses(null.Time{}); len(got) != 1 || got[0] != models.CampaignStatusRunning {
+		t.Fatalf("start: %v", got)
+	}
+	if got := manager.SendStatuses(null.TimeFrom(time.Now())); len(got) != 2 || got[0] != models.CampaignStatusScheduled || got[1] != models.CampaignStatusRunning {
+		t.Fatalf("scheduled: %v", got)
+	}
+
+	both := []string{"scheduled", "running"}
+	errBad := errors.New("bad")
+	for _, tc := range []struct {
+		name      string
+		has       map[string]bool // missing key: cannot be rendered
+		ok, known bool
+	}{
+		{"in both", map[string]bool{"scheduled": true, "running": true}, true, true},
+		{"scheduled only", map[string]bool{"scheduled": true, "running": false}, false, true},
+		{"running only", map[string]bool{"scheduled": false, "running": true}, false, true},
+		{"missing in one, the other not rendered", map[string]bool{"running": false}, false, true},
+		{"in one, the other not rendered", map[string]bool{"running": true}, true, false},
+		{"none rendered", map[string]bool{}, true, false},
+	} {
+		ok, known := unsubscribeInAll(both, func(s string) (bool, error) {
+			h, found := tc.has[s]
+			if !found {
+				return false, errBad
+			}
+			return h, nil
+		})
+		if ok != tc.ok || known != tc.known {
+			t.Errorf("%s: got %v %v", tc.name, ok, known)
+		}
+	}
+
+	reps := map[string]manager.TrackingReport{
+		"scheduled": {State: manager.TrackingStateOK, View: manager.TrackingViewManual},
+		"running":   {State: manager.TrackingStateWarn, View: manager.TrackingViewMissing, Links: manager.TrackingLinks{Untracked: 1}},
+	}
+	get := func(s string) (manager.TrackingReport, error) { return reps[s], nil }
+	if r, err := worstTracking(both, get); err != nil || r.View != manager.TrackingViewMissing {
+		t.Fatalf("worst of ok and missing: %+v %v", r, err)
+	}
+	if r, err := worstTracking([]string{"scheduled"}, get); err != nil || r.View != manager.TrackingViewManual {
+		t.Fatalf("one status: %+v %v", r, err)
+	}
+	// More untracked links is worse when the view is the same.
+	reps["scheduled"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: manager.TrackingLinks{Untracked: 3}}
+	reps["running"] = manager.TrackingReport{State: manager.TrackingStateWarn, View: manager.TrackingViewManual, Links: manager.TrackingLinks{Untracked: 1}}
+	if r, _ := worstTracking(both, get); r.Links.Untracked != 3 {
+		t.Fatalf("more untracked links: %+v", r)
+	}
+	if _, err := worstTracking(both, func(s string) (manager.TrackingReport, error) {
+		if s == "running" {
+			return manager.TrackingReport{}, errBad
+		}
+		return reps[s], nil
+	}); err == nil {
+		t.Fatal("an error in one status is an error")
 	}
 }

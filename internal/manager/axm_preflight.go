@@ -16,15 +16,15 @@ import (
 // get, not the template source: a link behind a condition that does not hold, or in a
 // template that is not used, does not count. It registers no links and writes nothing.
 //
-// status is the state of the campaign when the sender reads it, see SendStatus.
+// status is a state the campaign has when the sender reads it, see SendStatuses.
 //
 // The business footer (LST-7) is not added: it carries no unsubscribe link.
 func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber, status string) (bool, error) {
 	// Compile on a copy, with the tracking functions that do not touch the database.
 	camp := *c
 	camp.UUID = dummyUUID
-	// A body may ask what state the campaign is in: render it with the one the sender will
-	// read it in (see SendStatus).
+	// A body may ask what state the campaign is in: render it with the one given (see
+	// SendStatuses).
 	camp.Status = status
 	funcs := m.TemplateFuncs(&camp)
 	funcs["TrackLink"] = func(u string, _ *CampaignMessage) string { return u }
@@ -63,13 +63,17 @@ func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber, 
 	return found, nil
 }
 
-// SendStatus is the status a campaign has when the sender reads it to render its mail. The
-// sender reads a campaign in the state it was found in, before it marks it as running
-// (next-campaigns): a campaign that was started with a send time is "scheduled" then, and
-// one without is "running". A body that depends on the status renders differently.
-func SendStatus(sendAt null.Time) string {
+// SendStatuses are the statuses a campaign may have when the sender reads it to render its
+// mail, for any of the people it is sent to. The sender reads a campaign in the state it was
+// found in, before it marks it as running (next-campaigns): a campaign started without a
+// send time is "running"; one with a send time is "scheduled" when it is first picked up.
+// That pick-up marks it "running" in the database, so when the sender reads it again for the
+// rest of the list (after a restart of the app, which continues it, LST-20) it renders the
+// remaining mail as "running" (LST-48 review: 9 of 12 mails lost the link that only the
+// "scheduled" state had). A body that depends on the status must be right in every one.
+func SendStatuses(sendAt null.Time) []string {
 	if sendAt.Valid {
-		return models.CampaignStatusScheduled
+		return []string{models.CampaignStatusScheduled, models.CampaignStatusRunning}
 	}
-	return models.CampaignStatusRunning
+	return []string{models.CampaignStatusRunning}
 }

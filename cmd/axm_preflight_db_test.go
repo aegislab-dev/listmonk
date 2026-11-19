@@ -473,6 +473,13 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
 		t.Fatalf("link while running, a scheduled one: %q", got)
 	}
+	// A body that only has the link while "scheduled" loses it for the rest of the list when
+	// the sender reads the campaign again as "running" (a restart while it is being sent,
+	// LST-48 review): it warns.
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News {{ if eq .Campaign.Status "scheduled" }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}</p>' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
+		t.Fatalf("link while scheduled, a scheduled one: %q", got)
+	}
 	e.db.MustExec(`UPDATE campaigns SET send_at=NULL WHERE id=$1`, e.campID)
 
 	// The mail is rendered as it is when sent, and only an <a> counts.
@@ -489,6 +496,36 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 		t.Fatalf("plain text with the address: %q", got)
 	}
 	e.db.MustExec(`UPDATE campaigns SET content_type='richtext' WHERE id=$1`, e.campID)
+	// The tracking line reads the mail the same way: a pixel only while "running" is there for
+	// a start, and is missing for a scheduled one, which is first read as "scheduled"; a pixel
+	// only while "scheduled" is missing after a restart.
+	view := func() string {
+		t.Helper()
+		code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		var o struct {
+			Tracking *struct {
+				View string `json:"view"`
+			} `json:"tracking"`
+		}
+		if code != http.StatusOK || json.Unmarshal(data, &o) != nil || o.Tracking == nil {
+			t.Fatalf("%d %s", code, data)
+		}
+		return o.Tracking.View
+	}
+	e.db.MustExec(`UPDATE campaigns SET content_type='html', body='<p>News</p>{{ if eq .Campaign.Status "running" }}{{ TrackView }}{{ end }}' WHERE id=$1`, e.campID)
+	if got := view(); got != "manual" {
+		t.Fatalf("pixel while running, a start: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() + INTERVAL '1 day' WHERE id=$1`, e.campID)
+	if got := view(); got != "missing" {
+		t.Fatalf("pixel while running, a scheduled one: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p>{{ if eq .Campaign.Status "scheduled" }}{{ TrackView }}{{ end }}' WHERE id=$1`, e.campID)
+	if got := view(); got != "missing" {
+		t.Fatalf("pixel while scheduled, a scheduled one: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET send_at=NULL, content_type='richtext' WHERE id=$1`, e.campID)
+
 	// A body that cannot be rendered says nothing about it.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>{{ .Subscriber.NoSuchField }}</p>' WHERE id=$1`, e.campID)
 	if got := level(read().Checks, "unsubscribe.missing"); got != "" {
