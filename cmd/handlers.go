@@ -155,6 +155,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/import/subscribers/logs", pm(a.GetImportSubscriberStats, "subscribers:import"))
 		g.POST("/api/import/subscribers", pm(a.ImportSubscribers, "subscribers:import"))
 		g.DELETE("/api/import/subscribers", pm(a.StopImportSubscribers, "subscribers:import"))
+		g.POST("/api/subscribers/address-check", pm(a.CheckImportAddresses, "subscribers:import"))
 
 		// Individual list permissions are applied directly within handleGetLists.
 		g.GET("/api/lists", a.GetLists)
@@ -168,6 +169,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/api/lists/trash/:id/restore", hasID(a.RestoreList))
 		g.GET("/api/lists/:id", hasID(a.GetList))
 		g.POST("/api/lists/dynamic/preview", a.PreviewDynamicList)
+		// Individual list permissions are applied within the handler.
+		g.POST("/api/lists/address-check", a.CheckListAddresses)
 		g.GET("/api/lists/draws", a.GetListDraws)
 		g.POST("/api/lists/:id/draw/preview", a.listMaker(hasID(a.PreviewListDraw)))
 		g.POST("/api/lists/:id/draw", a.listMaker(hasID(a.DrawList)))
