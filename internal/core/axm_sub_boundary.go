@@ -20,6 +20,12 @@ import (
 // boundedTx locks the subscribers, finds the locked ones among them (LockedSubscribers) and
 // runs fn. fn returns false to give up without changing anything.
 func (c *Core) boundedTx(subIDs, manageListIDs []int, fn func(tx *sqlx.Tx, locked []int) (bool, error)) ([]int, error) {
+	return c.boundedTxPresent(subIDs, manageListIDs, func(tx *sqlx.Tx, locked, _ []int) (bool, error) { return fn(tx, locked) })
+}
+
+// boundedTxPresent is boundedTx that also tells fn which of the subscribers exist (and are
+// not locked): somebody else may have deleted one in the meantime.
+func (c *Core) boundedTxPresent(subIDs, manageListIDs []int, fn func(tx *sqlx.Tx, locked, open []int) (bool, error)) ([]int, error) {
 	if manageListIDs == nil {
 		manageListIDs = []int{}
 	}
@@ -39,15 +45,18 @@ func (c *Core) boundedTx(subIDs, manageListIDs []int, fn func(tx *sqlx.Tx, locke
 	if err := tx.Stmtx(c.q.AxmSubscriberLocked).Select(&rows, pq.Array(subIDs), pq.Array(manageListIDs)); err != nil {
 		return nil, c.teamFail(err)
 	}
-	locked := []int{}
+	locked, open := []int{}, []int{}
 	for _, r := range rows {
 		if r.Locked {
 			locked = append(locked, r.SubID)
+		} else {
+			open = append(open, r.SubID)
 		}
 	}
 	sort.Ints(locked)
+	sort.Ints(open)
 
-	ok, err := fn(tx, locked)
+	ok, err := fn(tx, locked, open)
 	if err != nil {
 		return nil, err
 	}
@@ -176,18 +185,16 @@ func (c *Core) UpdateSubscriberBounded(id int, sub models.Subscriber, listIDs []
 	return out, nil, nil
 }
 
-// bulkChunk is how many subscribers a bounded bulk action locks and changes at a time.
-const bulkChunk = 5000
-
 // BulkByQueryBounded deletes (or, with blocklist, blocklists) the subscribers a bulk action by
 // query reaches, for a user who may not manage all lists. The single statement upstream uses
 // picks its people as they were when it started, so a subscription another team adds while
 // it runs would go with them. Here the people are picked first (with the export query, which
-// reads the same conditions), and then, a chunk at a time, their rows are locked, who is on a
-// list outside manageListIDs is read again, and only the others are changed. It returns how
-// many were changed and how many were left out at that second look.
+// reads the same conditions). Then, in one transaction, their rows are locked, who is on a
+// list outside manageListIDs is read again, and only the others are changed. An error rolls
+// everything back: nobody is changed. It returns how many were changed (people who still
+// existed when they were locked) and how many were left out at that second look.
 func (c *Core) BulkByQueryBounded(searchStr, queryExp string, listIDs []int, subStatus string, manageListIDs []int, blocklist bool) (int, int, error) {
-	next, err := c.ExportSubscribers(searchStr, sanitizeSQLExp(queryExp), nil, listIDs, subStatus, bulkChunk)
+	next, err := c.ExportSubscribers(searchStr, sanitizeSQLExp(queryExp), nil, listIDs, subStatus, 5000)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -204,27 +211,13 @@ func (c *Core) BulkByQueryBounded(searchStr, queryExp string, listIDs []int, sub
 			ids = append(ids, r.ID)
 		}
 	}
+	if len(ids) == 0 {
+		return 0, 0, nil
+	}
 
 	done, late := 0, 0
-	for len(ids) > 0 {
-		n := min(len(ids), bulkChunk)
-		chunk := ids[:n]
-		ids = ids[n:]
-		_, err := c.boundedTx(chunk, manageListIDs, func(tx *sqlx.Tx, locked []int) (bool, error) {
-			skip := map[int]bool{}
-			for _, id := range locked {
-				skip[id] = true
-			}
-			open := make([]int, 0, len(chunk))
-			for _, id := range chunk {
-				if !skip[id] {
-					open = append(open, id)
-				}
-			}
-			if len(open) == 0 {
-				late += len(locked)
-				return true, nil
-			}
+	_, err = c.boundedTxPresent(ids, manageListIDs, func(tx *sqlx.Tx, locked, open []int) (bool, error) {
+		if len(open) > 0 {
 			var err error
 			if blocklist {
 				_, err = tx.Stmtx(c.q.BlocklistSubscribers).Exec(pq.Array(open))
@@ -240,13 +233,12 @@ func (c *Core) BulkByQueryBounded(searchStr, queryExp string, listIDs []int, sub
 				return false, echo.NewHTTPError(http.StatusInternalServerError,
 					c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.subscribers}", "error", pqErrMsg(err)))
 			}
-			done += len(open)
-			late += len(locked)
-			return true, nil
-		})
-		if err != nil {
-			return done, late, err
 		}
+		done, late = len(open), len(locked)
+		return true, nil
+	})
+	if err != nil {
+		return 0, 0, err
 	}
 	return done, late, nil
 }

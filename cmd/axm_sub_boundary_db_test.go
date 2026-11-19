@@ -932,3 +932,56 @@ func TestBoundaryBulkByQueryWaitsForConcurrentSubscription(t *testing.T) {
 		t.Fatalf("shared subscribers left: %s", got)
 	}
 }
+
+// A bulk action by query of a member is one transaction, and its count is what it changed.
+func TestBoundaryBulkByQueryIsAtomicAndCountsItsOwn(t *testing.T) {
+	e := newBoundaryEnv(t)
+	ua := e.as(e.ua)
+	_, manage := ua.GetPermittedLists(auth.PermTypeManage)
+
+	// Somebody else deletes one of the people while the bulk delete waits for the row.
+	gone := e.person("gone", e.aList, "confirmed")
+	tx := e.db.MustBegin()
+	tx.MustExec(`DELETE FROM subscribers WHERE id = $1`, gone)
+	type res struct {
+		done, late int
+		err        error
+	}
+	out := make(chan res, 1)
+	go func() {
+		d, l, err := e.core.BulkByQueryBounded("", "subscribers.name IN ('gone', 's1')", []int{e.aList}, "", manage, false)
+		out <- res{d, l, err}
+	}()
+	time.Sleep(300 * time.Millisecond)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if r := <-out; r.err != nil || r.done != 1 || r.late != 0 {
+		t.Fatalf("one of two was already gone: %+v", r)
+	}
+	if e.row(e.s1).Exists {
+		t.Fatal("s1 was not deleted")
+	}
+
+	// An error part of the way changes nobody: one row refuses to be written.
+	for i := 0; i < 3; i++ {
+		e.person(fmt.Sprintf("keep-%d", i), e.aList, "confirmed")
+	}
+	e.person("zz-boom", e.aList, "confirmed")
+	e.db.MustExec(`CREATE FUNCTION lst42_boom() RETURNS TRIGGER AS $$ BEGIN RAISE EXCEPTION 'boom'; END $$ LANGUAGE plpgsql`)
+	e.db.MustExec(`CREATE TRIGGER lst42_boom BEFORE UPDATE OR DELETE ON subscribers FOR EACH ROW WHEN (OLD.name = 'zz-boom') EXECUTE FUNCTION lst42_boom()`)
+	body := fmt.Sprintf(`{"all":true,"list_ids":[%d]}`, e.aList)
+	for what, h := range map[string]echo.HandlerFunc{"delete": e.a.DeleteSubscribersByQuery, "blocklist": e.a.BlocklistSubscribersByQuery} {
+		before := e.names(`status = 'enabled'`)
+		audits := len(e.audits(""))
+		if code, _ := e.call(h, ua, "POST", "/x", "", body); code != http.StatusInternalServerError {
+			t.Fatalf("%s with a row that fails: %d", what, code)
+		}
+		if got := e.names(`status = 'enabled'`); got != before || !strings.Contains(got, "keep-0") {
+			t.Fatalf("a failed %s changed somebody: %s -> %s", what, before, got)
+		}
+		if n := len(e.audits("")); n != audits {
+			t.Fatalf("a failed %s that changed nobody wrote %d audit rows", what, n-audits)
+		}
+	}
+}
