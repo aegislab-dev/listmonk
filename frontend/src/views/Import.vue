@@ -97,7 +97,8 @@
             :existing-keys="existingKeys" :standard="standardAttribs" :values="csv.values"
             :validation="mappingMessages" :total="csv.total" :summary="csv.summary"
             :examples="csv.examples" :preview="csv.preview" :error="csv.error" :busy="csv.busy"
-            :overwrite="form.mode === 'subscribe' && form.overwriteUserInfo"
+            :overwrite="form.mode === 'subscribe' && form.overwriteUserInfo" :address="addressView"
+            @address-exclude="setAddressExclude" @address-download="downloadExcluded"
             @mapping="updateMapping" @mode="setCSVMode" @encoding="setEncoding" @header="setHeader" />
           <div class="buttons">
             <b-button native-type="submit" type="is-primary"
@@ -152,6 +153,10 @@
       </p>
       <br />
 
+      <address-check v-if="isSuccessful() && importLists.length" :list-ids="importLists.map(({ id }) => id)"
+        :lists="lists.results || importLists"
+        :scope-note="$t('addressCheck.listScope', { lists: importLists.map(({ name }) => name).join(', ') })" />
+
       <div class="import-logs">
         <log-view :lines="logs" :loading="false" />
       </div>
@@ -165,7 +170,23 @@ import { mapState } from 'vuex';
 import ListSelector from '../components/ListSelector.vue';
 import LogView from '../components/LogView.vue';
 import ImportColumnMapper from '../components/ImportColumnMapper.vue';
-import { LIMITS, readMemory, rememberMapping } from '../lib/csv-import';
+import AddressCheck from '../components/AddressCheck.vue';
+import {
+  LIMITS, readMemory, rememberMapping, ADDRESS_CONFIRMED, ADDRESS_WARNING, addressExcludedRows, excludedRowsCSV,
+} from '../lib/csv-import';
+
+// The lists of the import that runs or has just finished, kept for the address check in the
+// finished box across a reload of the page.
+const IMPORT_LISTS_KEY = 'listmonk.axm.importLists';
+// While DNS lookups are unfinished the address check is asked again, this often and this many times.
+const ADDRESS_POLL_MS = 3000;
+const ADDRESS_MAX_POLLS = 10;
+
+function addressState() {
+  return {
+    state: 'idle', result: null, issues: Object.freeze({}), emails: Object.freeze({}), polls: 0,
+  };
+}
 
 function csvState() {
   return {
@@ -202,6 +223,7 @@ export default Vue.extend({
     ListSelector,
     LogView,
     ImportColumnMapper,
+    AddressCheck,
   },
 
   props: {
@@ -230,6 +252,10 @@ export default Vue.extend({
       csvRequest: 0,
       keyRequest: 0,
       existingKeys: [],
+      // The address check of the rows to import, and the two switches of what it leaves out.
+      addr: addressState(),
+      addrExclude: { confirmed: true, warning: false },
+      importLists: [],
       sentCount: null,
       isProcessing: false,
       status: { status: '' },
@@ -265,6 +291,9 @@ export default Vue.extend({
       if (this.isCSV) this.loadAttributeKeys();
     },
     'form.mode': function formMode() {
+      // A blocklist import has no address check; coming back to subscribe runs it again.
+      this.resetAddressCheck();
+      if (this.form.mode === 'subscribe' && this.addrInput) this.checkAddresses(this.addrInput.emails, this.addrInput.rows);
       // Select the appropriate status radio whenever mode changes.
       this.$nextTick(() => {
         if (this.form.mode === 'subscribe') {
@@ -293,6 +322,103 @@ export default Vue.extend({
       this.csvBytes = null;
       this.csvSourceRows = null;
       this.csvKeysSent = '';
+      this.addrInput = null;
+      this.csvExclude = [];
+      this.csvExcludeKey = '';
+      this.resetAddressCheck(false);
+    },
+
+    // Forgets the address check. With apply, an upload built without the rows it left out is rebuilt.
+    resetAddressCheck(apply = true) {
+      clearTimeout(this.addrTimer);
+      if (this.addrController) this.addrController.abort();
+      this.addrKey = '';
+      this.addr = addressState();
+      if (apply) this.applyAddressExclusion();
+    },
+
+    // Checks the addresses of the rows to import. The same addresses are not asked about twice,
+    // so rebuilding the upload without some rows does not start a new check.
+    checkAddresses(emails, rows) {
+      if (!emails) return;
+      this.addrInput = { emails, rows };
+      if (this.form.mode !== 'subscribe') return;
+      const key = emails.join('\n');
+      if (key === this.addrKey) return;
+      this.resetAddressCheck();
+      this.addrKey = key;
+      if (!emails.length) return;
+      this.addr.state = 'checking';
+      this.addrTimer = setTimeout(() => this.runAddressCheck(key), 400);
+    },
+
+    async runAddressCheck(key) {
+      if (this.addrController) this.addrController.abort();
+      const controller = new AbortController();
+      this.addrController = controller;
+      const { emails, rows } = this.addrInput;
+      try {
+        const result = await this.$api.checkImportAddresses({ emails }, controller.signal);
+        if (controller.signal.aborted || key !== this.addrKey) return;
+        const issues = {};
+        const shown = {};
+        Object.entries(result.issues || {}).forEach(([index, classes]) => {
+          issues[rows[index]] = classes;
+          shown[rows[index]] = emails[index];
+        });
+        const polls = this.addr.polls + (result.pending > 0 ? 1 : 0);
+        this.addr = {
+          state: 'done', result, issues: Object.freeze(issues), emails: Object.freeze(shown), polls,
+        };
+        this.applyAddressExclusion();
+        if (result.pending > 0 && polls <= ADDRESS_MAX_POLLS) {
+          this.addrTimer = setTimeout(() => this.runAddressCheck(key), ADDRESS_POLL_MS);
+        }
+      } catch (_) {
+        // A failed check never blocks the upload.
+        if (!controller.signal.aborted && key === this.addrKey && this.addr.state !== 'done') this.addr.state = 'error';
+      }
+    },
+
+    // Rebuilds the upload when the rows the address check leaves out have changed.
+    applyAddressExclusion() {
+      const rows = addressExcludedRows(this.addr.issues, this.addrExclude);
+      const key = rows.join(',');
+      if (key === (this.csvExcludeKey || '')) return;
+      this.csvExclude = rows;
+      this.csvExcludeKey = key;
+      if (this.csv.parsed && this.csv.mode === 'mapping') this.convertCSV(true);
+    },
+
+    setAddressExclude(patch) {
+      this.addrExclude = { ...this.addrExclude, ...patch };
+      this.applyAddressExclusion();
+    },
+
+    // The rows the address check left out, with why: made here and never sent anywhere.
+    downloadExcluded() {
+      const reasons = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING];
+      const rows = (this.csvExclude || []).map((row) => ({
+        row,
+        email: this.addr.emails[row] || '',
+        reasons: (this.addr.issues[row] || []).filter((c) => reasons.includes(c)).map((c) => this.$t(`addressCheck.class.${c}`)),
+      }));
+      const csv = excludedRowsCSV(rows, [this.$t('import.addr.csvRow'), this.$t('import.addr.csvEmail'), this.$t('import.addr.csvReason')]);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' }));
+      link.download = `${this.form.file.name.replace(/\.csv$/i, '')}-excluded.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    },
+
+    rememberImportLists(lists) {
+      this.importLists = lists;
+      try {
+        if (lists.length) window.sessionStorage.setItem(IMPORT_LISTS_KEY, JSON.stringify(lists));
+        else window.sessionStorage.removeItem(IMPORT_LISTS_KEY);
+      } catch (_) { /* Optional: without it the finished box has no address check after a reload. */ }
     },
 
     async parseCSV(initial = false, manualDelimiter = false) {
@@ -373,6 +499,7 @@ export default Vue.extend({
               // A reply without a conversion (another column is wrong) keeps the last counts.
               values: data.values || this.csv.values,
             });
+            this.checkAddresses(data.checkEmails, data.checkRows);
           }
         };
         const delimiter = initial || (!manualDelimiter && !this.csv.delimiter) ? '' : this.form.delim;
@@ -422,13 +549,17 @@ export default Vue.extend({
       this.csv.error = this.$t(`import.mapError${code}`);
     },
 
-    convertCSV() {
+    // keep leaves the review on screen while the upload is rebuilt (the address check changed
+    // only which rows are left out).
+    convertCSV(keep = false) {
       clearTimeout(this.csvTimer);
       this.csvRequest += 1;
       this.csvBytes = null;
       this.csv.ready = false;
-      this.csv.summary = null;
-      this.csv.preview = [];
+      if (!keep) {
+        this.csv.summary = null;
+        this.csv.preview = [];
+      }
       if (this.csv.limit) {
         this.csv.error = this.csv.mode === 'mapping' ? this.$t(`import.mapError${this.csv.limit}`) : '';
         this.csv.busy = false;
@@ -444,7 +575,7 @@ export default Vue.extend({
       this.csvTimer = setTimeout(() => {
         if (this.csvWorker) {
           this.csvWorker.postMessage({
-            id: this.csvRequest, type: 'convert', mapping: this.csv.mapping, keys: this.existingKeys, standard: this.standardAttribs,
+            id: this.csvRequest, type: 'convert', mapping: this.csv.mapping, keys: this.existingKeys, standard: this.standardAttribs, exclude: this.csvExclude || [],
           });
         }
       }, 100);
@@ -591,6 +722,7 @@ export default Vue.extend({
         this.pollStatus();
         this.form.file = null;
         this.sentCount = null;
+        this.rememberImportLists([]);
       });
     },
 
@@ -632,6 +764,7 @@ export default Vue.extend({
         } catch (_) { /* Remembering assignments is optional. */ }
       }
       this.isProcessing = true;
+      this.rememberImportLists(this.form.mode === 'subscribe' ? this.form.lists.map(({ id, name }) => ({ id, name })) : []);
 
       // Prepare the upload payload.
       const params = new FormData();
@@ -703,6 +836,49 @@ export default Vue.extend({
       const count = this.csv.summary ? this.csv.summary.empty + this.csv.summary.invalid : 0;
       return count ? { [this.csv.mapping.findIndex(({ role }) => role === 'email')]: this.$t('import.mapEmailErrors', { count }) } : {};
     },
+    // What the column mapper shows of the address check: counts, one line per class with the
+    // first source rows, and how many rows each switch leaves out.
+    addressView() {
+      const {
+        state, result, issues, emails,
+      } = this.addr;
+      if (state === 'idle' || this.form.mode !== 'subscribe') return null;
+      if (state !== 'done') return { state };
+      const rows = Object.keys(issues).map(Number).sort((a, b) => a - b);
+      const has = (row, classes) => issues[row].some((c) => classes.includes(c));
+      const confirmed = rows.filter((row) => has(row, ADDRESS_CONFIRMED));
+      const polling = result.pending > 0 && this.addr.polls <= ADDRESS_MAX_POLLS;
+      const lines = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING, 'unknown'].map((name) => {
+        const found = rows.filter((row) => issues[row].includes(name));
+        let kind = 'unknown';
+        if (ADDRESS_CONFIRMED.includes(name)) kind = 'confirmed';
+        else if (ADDRESS_WARNING.includes(name)) kind = 'warning';
+        let help = '';
+        if (name === 'role') help = this.$t('addressCheck.classHelp.role');
+        else if (name === 'unknown') help = this.$t('import.addr.unknownHelp');
+        return {
+          name,
+          kind,
+          help,
+          count: found.length,
+          examples: `${found.slice(0, 5).map((row) => `${row} (${emails[row]})`).join(', ')}${found.length > 5 ? ' …' : ''}`,
+        };
+      }).filter(({ count }) => count);
+      return {
+        state,
+        lines,
+        total: result.total,
+        risky: result.risky,
+        confirmed: result.confirmed,
+        warning: result.warning,
+        pending: polling ? result.pending : 0,
+        unknown: result.unknown + (polling ? 0 : result.pending),
+        confirmedRows: confirmed.length,
+        warningRows: rows.filter((row) => has(row, ADDRESS_WARNING) && !confirmed.includes(row)).length,
+        excludeConfirmed: this.addrExclude.confirmed,
+        excludeWarning: this.addrExclude.warning,
+      };
+    },
     countMismatch() {
       return this.sentCount !== null && this.isDone() && this.status.imported !== this.sentCount;
     },
@@ -718,11 +894,18 @@ export default Vue.extend({
 
   beforeDestroy() {
     clearInterval(this.pollID);
+    clearTimeout(this.addrTimer);
     this.stopCSV();
     this.keyRequest += 1;
   },
 
   mounted() {
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(IMPORT_LISTS_KEY) || '[]');
+      this.importLists = saved.filter((l) => l && Number.isInteger(l.id) && typeof l.name === 'string');
+    } catch (_) {
+      this.importLists = [];
+    }
     this.renderExample();
     this.pollStatus();
 

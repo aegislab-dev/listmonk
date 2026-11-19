@@ -49,6 +49,13 @@ describe('CSV column mapping with the real Worker and import API', () => {
 
   beforeEach(() => {
     cy.viewport(1440, 1000);
+    // The address check (address-check.cy.js) would look these synthetic *.invalid domains up
+    // in real DNS and leave their rows out. Here it finds nothing.
+    cy.intercept('POST', '/api/subscribers/address-check', (req) => req.reply({
+      data: {
+        total: req.body.emails.length, risky: 0, confirmed: 0, warning: 0, unknown: 0, pending: 0, classes: {}, issues: {},
+      },
+    }));
     cy.loginAndVisit('/admin/subscribers/import');
     cy.location('pathname').should('eq', '/admin/subscribers/import');
     cy.request('DELETE', '/api/import/subscribers');
