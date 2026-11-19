@@ -1388,6 +1388,16 @@ section.analytics {
   }
 }
 
+/* Proof summary modal (LST-36): the block is a fixed text; long lines wrap on screen only. */
+.proof-summary-modal .proof-summary-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  resize: none;
+}
+
 .chart canvas {
   height: 400px;
   max-width: 100%;

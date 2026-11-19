@@ -49,6 +49,44 @@
       </div><!-- columns -->
     </form>
 
+    <!-- LST-36: copy the counts of one campaign as a proof summary (block v1). -->
+    <div class="proof-summary columns is-vcentered is-mobile mt-1 mb-0" data-cy="proof-summary">
+      <div class="column is-narrow">
+        <b-button icon-left="content-copy" :disabled="!!proofDisabledReason" :loading="proof.loading"
+          data-cy="btn-proof-summary" @click="onProofSummary">
+          {{ $t('analytics.proofSummary') }}
+        </b-button>
+      </div>
+      <div class="column">
+        <p class="is-size-7 has-text-grey" data-cy="proof-summary-help">
+          <template v-if="proofDisabledReason === 'one'">{{ $t('analytics.proofSummaryOne') }}</template>
+          <template v-else-if="proofDisabledReason === 'notSent'">{{ $t('analytics.proofSummaryNotSent') }}</template>
+          <template v-else>{{ $t('analytics.proofSummaryScope') }}</template>
+        </p>
+      </div>
+    </div>
+
+    <b-modal scroll="keep" :aria-modal="true" :active.sync="proof.open" :width="680" has-modal-card>
+      <div class="modal-card content proof-summary-modal" style="width: auto">
+        <header class="modal-card-head">
+          <h4>{{ $t('analytics.proofSummaryTitle') }}</h4>
+        </header>
+        <section class="modal-card-body">
+          <p class="is-size-7 has-text-grey">{{ $t('analytics.proofSummaryModalHelp') }}</p>
+          <textarea ref="proofText" class="textarea proof-summary-text" rows="10" readonly spellcheck="false"
+            :aria-label="$t('analytics.proofSummaryTitle')"
+            data-cy="proof-summary-text" :value="proof.text" @focus="$event.target.select()" />
+          <p class="notification is-info is-light is-size-7 mt-3 mb-0">{{ $t('analytics.proofSummaryAsOf') }}</p>
+        </section>
+        <footer class="modal-card-foot">
+          <b-button @click="proof.open = false">{{ $t('globals.buttons.close') }}</b-button>
+          <b-button type="is-primary" icon-left="content-copy" data-cy="btn-proof-copy" @click="copyProof">
+            {{ $t('globals.buttons.copy') }}
+          </b-button>
+        </footer>
+      </div>
+    </b-modal>
+
     <section class="charts mt-5">
       <div class="chart" v-for="(v, k) in charts" :key="k">
         <div class="columns">
@@ -75,6 +113,7 @@ import Vue from 'vue';
 import { mapState } from 'vuex';
 import { colors } from '../constants';
 import Chart from '../components/Chart.vue';
+import { buildProofSummaryV1, teamsOfCampaign, trackingStateFor } from '../proof-summary';
 
 const chartColorRed = '#ee7d5b';
 const chartColors = [
@@ -151,6 +190,9 @@ export default Vue.extend({
         from: null,
         to: null,
       },
+
+      // The proof summary (LST-36): the text of the modal and whether it is being made.
+      proof: { open: false, loading: false, text: '' },
     };
   },
 
@@ -282,6 +324,94 @@ export default Vue.extend({
       });
     },
 
+    // The proof summary of the one selected campaign (LST-36). The numbers are those of the
+    // campaign's whole life (created .. now), not of the dates picked on this screen, and
+    // they do not touch the charts above.
+    async onProofSummary() {
+      const sel = this.form.campaigns[0];
+      if (this.proofDisabledReason || !sel || this.proof.loading) {
+        return;
+      }
+
+      this.proof.loading = true;
+      try {
+        // The selector shows "#id: name" in place of the name, so ask for the campaign again.
+        const camp = await this.$api.getCampaign(sel.id);
+        if (['draft', 'scheduled'].includes(camp.status)) {
+          this.$utils.toast(this.$t('analytics.proofSummaryNotSent'), 'is-danger');
+          return;
+        }
+
+        const at = new Date(Math.floor(Date.now() / 1000) * 1000);
+        const range = { id: [camp.id], from: new Date(camp.createdAt), to: at };
+        const [views, clicks, bounces] = await Promise.all([
+          this.$api.getCampaignViewCounts(range),
+          this.$api.getCampaignClickCounts(range),
+          this.$api.getCampaignBounceCounts(range),
+        ]);
+        const total = (rows) => rows.reduce((sum, d) => sum + d.count, 0);
+
+        // The teams are the team tags of the campaign's lists; the lists this screen already
+        // has carry the tags, any other list is asked for once.
+        let known = (this.lists && this.lists.results) || [];
+        if (camp.lists.some((l) => !known.find((k) => k.id === l.id))) {
+          const all = await this.$api.queryLists({ minimal: true, per_page: 'all' });
+          known = [...known, ...((all && all.results) || [])];
+        }
+
+        const sent = camp.sent || 0;
+        const tracking = trackingStateFor({
+          privacy: this.serverConfig.privacy,
+          sent,
+          viewsTotal: total(views),
+          clicksTotal: total(clicks),
+        });
+        this.proof.text = buildProofSummaryV1({
+          campaign: camp,
+          teams: teamsOfCampaign(camp.lists, known),
+          sent,
+          views: total(views),
+          clicks: total(clicks),
+          bounces: total(bounces),
+          tracking,
+          at,
+          rootURL: this.serverConfig.root_url,
+        });
+        this.proof.open = true;
+      } catch (e) {
+        // The HTTP layer has shown the error.
+      } finally {
+        this.proof.loading = false;
+      }
+    },
+
+    async copyProof() {
+      let ok = false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(this.proof.text);
+          ok = true;
+        }
+      } catch (e) {
+        ok = false;
+      }
+      if (!ok) {
+        const el = this.$refs.proofText;
+        try {
+          el.focus();
+          el.select();
+          ok = document.execCommand('copy');
+        } catch (e) {
+          ok = false;
+        }
+      }
+      if (ok) {
+        this.$utils.toast(this.$t('analytics.proofSummaryCopied'));
+      } else {
+        this.$utils.toast(this.$t('analytics.proofSummaryCopyFailed'), 'is-danger');
+      }
+    },
+
     onLinkClick(e) {
       const bars = e.chart.getElementsAtEventForMode(e, 'nearest', { intersect: true }, true);
       if (bars.length > 0) {
@@ -291,7 +421,16 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['serverConfig']),
+    ...mapState(['serverConfig', 'lists']),
+
+    // Why the proof summary button is off: '' (on), 'one' (not exactly one campaign) or
+    // 'notSent' (a draft or a scheduled campaign has nothing to count yet).
+    proofDisabledReason() {
+      if (this.form.campaigns.length !== 1) {
+        return 'one';
+      }
+      return ['draft', 'scheduled'].includes(this.form.campaigns[0].status) ? 'notSent' : '';
+    },
   },
 
   created() {
