@@ -69,6 +69,11 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 		return err
 	}
 
+	// The query above read the body of the requested template; the campaign that the
+	// templates see must name the same one ({{ .Campaign.TemplateID }}), as in a test send.
+	if tplID > 0 {
+		camp.TemplateID = null.IntFrom(tplID)
+	}
 	if req.ContentType != nil {
 		camp.ContentType = contentType
 	}

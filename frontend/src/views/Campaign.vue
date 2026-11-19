@@ -517,14 +517,32 @@ export default Vue.extend({
 
     onSubmit(typ) {
       if (this.savingCampaign) return;
+      if (!this.parseFormJSON()) return;
 
+      switch (typ) {
+        case 'create':
+          this.createCampaign().catch(() => {});
+          break;
+        case 'test':
+          this.sendTest();
+          break;
+        default:
+          this.updateCampaign().catch(() => {});
+          break;
+      }
+    },
+
+    // Reads the JSON text fields (headers, archive meta, attributes) into the form values
+    // that are saved. Every path that saves calls this first: saving without it writes the
+    // values of the last save, not what is on the page. False: one of them does not parse.
+    parseFormJSON() {
       // Validate custom JSON headers.
       if (this.form.headersStr && this.form.headersStr !== '[]') {
         try {
           this.form.headers = JSON.parse(this.form.headersStr);
         } catch (e) {
           this.$utils.toast(e.toString(), 'is-danger');
-          return;
+          return false;
         }
       } else {
         this.form.headers = [];
@@ -536,7 +554,7 @@ export default Vue.extend({
           this.form.archiveMeta = JSON.parse(this.form.archiveMetaStr);
         } catch (e) {
           this.$utils.toast(e.toString(), 'is-danger');
-          return;
+          return false;
         }
       }
 
@@ -552,22 +570,11 @@ export default Vue.extend({
 
             3000,
           );
-          return;
+          return false;
         }
       }
       this.form.attribs = attribs;
-
-      switch (typ) {
-        case 'create':
-          this.createCampaign().catch(() => {});
-          break;
-        case 'test':
-          this.sendTest();
-          break;
-        default:
-          this.updateCampaign().catch(() => {});
-          break;
-      }
+      return true;
     },
 
     getCampaign(id) {
@@ -780,6 +787,10 @@ export default Vue.extend({
 
       if (!await this.checkReplyTo()) return;
 
+      // Starting saves the campaign first. The headers and attributes typed on the page
+      // must be what is saved, and what the tracking check below was made with (LST-44).
+      if (!this.parseFormJSON()) return;
+
       // Views or clicks that would not be recorded are said here, before anything is
       // sent (LST-44). It is a warning: the campaign can still be started.
       const warnings = trackingConfirmLines(await this.trackingReport()).map(({ key, params }) => this.$t(key, params));
@@ -839,7 +850,8 @@ export default Vue.extend({
     trackingPayload() {
       const json = (str) => { try { return JSON.parse(str); } catch (e) { return undefined; } };
       const headers = this.form.headersStr && this.form.headersStr !== '[]' ? json(this.form.headersStr) : [];
-      const attribs = this.form.attribsStr && this.form.attribsStr.trim() ? json(this.form.attribsStr) : undefined;
+      // Empty or null attributes are saved as none: say so, or the saved ones would count.
+      const attribs = this.form.attribsStr && this.form.attribsStr.trim() ? (json(this.form.attribsStr) ?? {}) : {};
       const altbody = this.form.content.contentType !== 'plain' ? this.form.altbody : null;
       return {
         content_type: this.form.content.contentType,

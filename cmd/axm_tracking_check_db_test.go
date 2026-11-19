@@ -122,6 +122,20 @@ func TestCampaignTrackingCheck(t *testing.T) {
 		t.Fatalf("unsaved subject, name, tags and attributes: %+v", rep)
 	}
 
+	// The unsaved template is also the one the campaign names to its templates.
+	byTpl := map[string]any{"content_type": "html", "template_id": bare,
+		"body": fmt.Sprintf(`{{ if eq .Campaign.TemplateID.Int %d }}{{ TrackView }}{{ end }}<p>x</p>`, bare)}
+	if rep = check(js(byTpl)); rep.View != "manual" {
+		t.Fatalf("stored template id: %+v", rep)
+	}
+	e.db.MustExec(`INSERT INTO templates(name,type,subject,body) VALUES('bare2','campaign','','<html><body>{{ template "content" . }}</body></html>')`)
+	var bare2 int
+	e.get(&bare2, `SELECT id FROM templates WHERE name='bare2'`)
+	byTpl["template_id"] = bare2
+	if rep = check(js(byTpl)); rep.View != "missing" {
+		t.Fatalf("unsaved template id: %+v", rep)
+	}
+
 	// The same request as a form post, the way the preview is posted.
 	form := url.Values{"content_type": {"richtext"}, "template_id": {strconv.Itoa(tracked)}, "body": {`<a href="https://a.example.test/x">A</a>`}}
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))

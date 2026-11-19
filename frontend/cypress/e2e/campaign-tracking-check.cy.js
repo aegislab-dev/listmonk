@@ -214,6 +214,35 @@ describe('Pre-send tracking check', () => {
     cy.get(box).should('have.attr', 'data-state', 'warn');
   });
 
+  it('starts with the attributes that are on the page: the check and the save agree', () => {
+    cy.request('PUT', `/api/campaigns/${ids.ok}`, {
+      name: `Tracking ok ${stamp}`,
+      subject: 'Attributes',
+      type: 'regular',
+      messenger: 'email',
+      lists: [listId],
+      content_type: 'html',
+      template_id: bareTpl,
+      attribs: { track: false },
+      body: '{{ if .Campaign.Attribs.track }}{{ TrackView }}{{ end }}<p>Hello</p>',
+    });
+    open('ok');
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn');
+    cy.intercept('POST', check).as('attribs');
+    cy.intercept('PUT', `/api/campaigns/${ids.ok}`).as('save');
+    cy.intercept('PUT', `/api/campaigns/${ids.ok}/status`, { statusCode: 200, body: { data: {} } }).as('start');
+    cy.get('.b-tabs nav a').eq(2).click();
+    cy.get('.b-tabs .tab-item:visible textarea').clear().type('{"track": true}', { parseSpecialCharSequences: false });
+    cy.get('[data-cy=btn-start]').click();
+    cy.wait('@attribs');
+    cy.get('@attribs.last').its('request.body.attribs.track').should('eq', true);
+    cy.get('.modal.is-active [data-cy=warn-box]').should('not.exist');
+    cy.get('.modal.is-active button.is-primary').click();
+    cy.wait('@save').its('request.body.attribs.track').should('eq', true);
+    cy.wait('@start');
+    cy.request(`/api/campaigns/${ids.ok}`).its('body.data.attribs.track').should('eq', true);
+  });
+
   it('warns on the campaigns list too, for start and for schedule', () => {
     cy.visit('/admin/campaigns');
     cy.intercept('POST', check).as('listCheck');
