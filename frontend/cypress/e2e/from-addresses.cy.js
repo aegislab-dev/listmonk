@@ -255,10 +255,12 @@ describe('Team From address list', () => {
 
   it('takes a comma inside quotes as one address in the settings list', () => {
     cy.visit('/admin/settings');
-    cy.get('[data-cy=from-addresses] input').type('"news,team"@crevasse.ai{enter}');
-    cy.get('[data-cy=from-addresses] .tag').should('have.length.at.least', 1)
-      .then(($t) => expect([...$t].map((t) => t.textContent.trim()).filter((x) => x.includes('news,team'))).to.have.length(1));
-    cy.get('[data-cy=from-addresses] .tag').should('not.contain', '"news');
+    cy.get('input[data-cy=from-addresses]').type('"news,team"@crevasse.ai{enter}');
+    cy.get('input[data-cy=from-addresses]').parents('.taginput').find('.tag').then(($t) => {
+      const texts = [...$t].map((t) => t.textContent.trim());
+      expect(texts.filter((x) => x.includes('news,team'))).to.have.length(1);
+      expect(texts.filter((x) => x.includes('"news') && !x.includes('team'))).to.have.length(0);
+    });
   });
 
   it('goes back to free input when the list is emptied', () => {
