@@ -1,6 +1,7 @@
 {
     "addressCheck.invalid": "Invalid address check request.",
     "addressCheck.error": "Could not read the recipients for the address check.",
+    "addressCheck.noAccess": "Not checked: you cannot see these lists.",
     "import.addr.wait": "You can upload when it is done.",
     "addressCheck.linked": "Lists tied by a draw ({lists}) are unsubscribed too.",
     "addressCheck.linkedMore": "{lists} and {count} more",

@@ -60,7 +60,10 @@ type App struct {
 	importBy importActor
 	// The lists the current or last import subscribes people to (nil for a blocklist
 	// import), after the permission filter. The import screen checks their addresses.
-	importLists []int
+	// importListsMu is held while an import session is created and while the status is
+	// read, so a status answer always has the lists of the import it describes.
+	importListsMu sync.Mutex
+	importLists   []int
 
 	about         about
 	fnOptinNotify func(models.Subscriber, []int) (int, error)

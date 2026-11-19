@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/knadh/listmonk/internal/addrcheck"
@@ -58,6 +59,9 @@ type addrCheckListResp struct {
 	// also reaches, because a draw ties them. LinkedHidden counts those the user cannot see.
 	Linked       []string `json:"linked"`
 	LinkedHidden int      `json:"linked_hidden"`
+	// CheckedLists is how many of the asked lists the user may see and were checked. With
+	// none, the zero counts say nothing about the lists.
+	CheckedLists int `json:"checked_lists"`
 	// Targets are the chosen ordinary lists the user may manage: where an unsubscribe from
 	// this screen can change something. The direct marks and Linked are about these lists.
 	Targets []int `json:"targets"`
@@ -108,12 +112,16 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 	}
 
 	user := auth.GetUser(c)
-	lists := user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, req.ListIDs)
+	lists := slices.Clone(user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, req.ListIDs))
+	slices.Sort(lists)
+	lists = slices.Compact(lists)
 	out := addrCheckListResp{
 		Limit:   addrCheckMaxAudience,
 		Detail:  user.HasPerm(auth.PermSubscribersGetAll) || user.HasPerm(auth.PermSubscribersGet),
 		Linked:  []string{},
 		Targets: []int{},
+
+		CheckedLists: len(lists),
 	}
 	if len(lists) == 0 {
 		out.Summary = addrcheck.Summarize(nil, nil, nil, false)

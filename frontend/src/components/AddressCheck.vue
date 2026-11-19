@@ -7,6 +7,7 @@
       <span class="ac-summary" role="status" data-cy="address-summary">
         <template v-if="error">{{ error }}</template>
         <template v-else-if="!result">{{ $t('addressCheck.checking') }}</template>
+        <template v-else-if="!result.checkedLists">{{ $t('addressCheck.noAccess') }}</template>
         <template v-else-if="result.tooLarge">
           {{ $t('addressCheck.tooLarge', { total: n(result.total), limit: n(result.limit) }) }}
         </template>
@@ -166,13 +167,13 @@ export default {
     },
 
     stateClass() {
-      if (this.error || !this.result || this.result.tooLarge) return 'is-busy';
+      if (this.error || !this.result || this.result.tooLarge || !this.result.checkedLists) return 'is-busy';
       return this.result.risky ? 'is-risk' : 'is-ok';
     },
 
     canOpen() {
       const r = this.result;
-      return !!r && !this.error && !r.tooLarge && (r.risky > 0 || r.unknown > 0 || r.pending > 0);
+      return !!r && !this.error && !r.tooLarge && !!r.checkedLists && (r.risky > 0 || r.unknown > 0 || r.pending > 0);
     },
 
     groups() {

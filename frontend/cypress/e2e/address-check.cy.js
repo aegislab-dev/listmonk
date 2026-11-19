@@ -38,6 +38,7 @@ const risky = () => ({
   linked: ['Tied source list'],
   linked_hidden: 2,
   targets: [listId],
+  checked_lists: 1,
   classes: {
     format: empty, dead: cls([1, 2]), nullmx: empty, disposable: empty, role: cls([2, 3]), unknown: empty,
   },
@@ -55,6 +56,7 @@ const clean = (total) => ({
   linked: [],
   linked_hidden: 0,
   targets: [listId],
+  checked_lists: 1,
   classes: {
     format: empty, dead: empty, nullmx: empty, disposable: empty, role: empty, unknown: empty,
   },
@@ -211,6 +213,13 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=address-toggle]').click();
     cy.get('[data-cy=address-list-dead]').should('exist');
     cy.get('[data-cy=address-unsub-dead], [data-cy=address-unsub-role]').should('not.exist');
+
+    // Lists the user cannot see were not checked: that is said, not shown as "no risk".
+    cy.intercept('POST', listCheck, { data: { ...clean(0), targets: [], checked_lists: 0 } }).as('noAccess');
+    cy.visit(`/admin/campaigns/${campaignId}`);
+    cy.wait('@noAccess');
+    cy.get('[data-cy=address-check]').should('have.class', 'is-busy').and('not.have.class', 'is-ok');
+    cy.get('[data-cy=address-summary]').should('contain', 'Not checked');
 
     // A failed check is one grey line and nothing else.
     cy.intercept('POST', listCheck, { statusCode: 500, body: { message: 'Synthetic failure' } }).as('failed');

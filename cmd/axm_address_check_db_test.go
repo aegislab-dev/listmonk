@@ -16,7 +16,6 @@ import (
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/subimporter"
-	"github.com/labstack/echo/v4"
 )
 
 // addrFakeDNS answers the address check from a table, so the tests never touch real
@@ -156,7 +155,10 @@ func TestAddressCheckListAudienceAndClasses(t *testing.T) {
 	if all, raw := e.check(e.as(e.admin), e.aList, e.bList); all.Total != 10 || all.Confirmed != 5 {
 		t.Fatalf("operator: %s", raw)
 	}
-	if none, raw := e.check(member, e.bList); none.Total != 0 || none.Risky != 0 || len(none.Classes) != 6 {
+	if strings.Contains(raw, `"checked_lists":0`) || !strings.Contains(raw, `"checked_lists":1`) {
+		t.Fatalf("checked lists: %s", raw)
+	}
+	if none, raw := e.check(member, e.bList); none.Total != 0 || none.Risky != 0 || len(none.Classes) != 6 || !strings.Contains(raw, `"checked_lists":0`) {
 		t.Fatalf("no access: %s", raw)
 	}
 	if none, raw := e.check(member); none.Total != 0 || none.Risky != 0 {
@@ -474,13 +476,13 @@ func TestAddressCheckTargetsAreManageableLists(t *testing.T) {
 }
 
 // The import status carries the lists the import subscribes people to, after the permission
-// filter, and none for a blocklist import.
+// filter, none for a blocklist import, and only those the asking user may see.
 func TestImportStatusCarriesItsLists(t *testing.T) {
 	e := newAddrEnv(t)
 	e.a.importer = subimporter.New(subimporter.Options{}, e.db.DB, &i18n.I18n{})
-	status := func() (string, []int) {
+	status := func(user auth.User) (string, []int) {
 		t.Helper()
-		code, data := e.call(e.a.GetImportSubscribers, e.as(e.admin), "GET", "/api/import/subscribers", "", "")
+		code, data := e.call(e.a.GetImportSubscribers, user, "GET", "/api/import/subscribers", "", "")
 		var out struct {
 			Status   string `json:"status"`
 			AxmLists []int  `json:"axm_lists"`
@@ -490,50 +492,102 @@ func TestImportStatusCarriesItsLists(t *testing.T) {
 		}
 		return out.Status, out.AxmLists
 	}
-	if st, lists := status(); st != subimporter.StatusNone || len(lists) != 0 {
+	admin := e.as(e.admin)
+	if st, lists := status(admin); st != subimporter.StatusNone || len(lists) != 0 {
 		t.Fatalf("idle: %s %v", st, lists)
 	}
 	// Lists remembered while no import exists are not reported.
 	e.a.importLists = []int{e.aList}
-	if _, lists := status(); len(lists) != 0 {
+	if _, lists := status(admin); len(lists) != 0 {
 		t.Fatalf("idle with stale lists: %v", lists)
 	}
 
 	start := func(mode string, lists ...int) {
 		t.Helper()
-		opt := subimporter.SessionOpt{Filename: "same-name.csv", Mode: mode, ListIDs: lists}
-		if _, err := e.a.importer.NewSession(opt); err != nil {
+		e.a.importer = subimporter.New(subimporter.Options{}, e.db.DB, &i18n.I18n{})
+		if _, err := e.a.newImportSession(subimporter.SessionOpt{Filename: "same-name.csv", Mode: mode, ListIDs: lists}); err != nil {
 			t.Fatal(err)
 		}
-		h := func(c echo.Context) error {
-			e.a.importStarted(c, opt)
-			return c.JSON(http.StatusOK, okResp{true})
-		}
-		if code, _ := e.call(h, e.as(e.admin), "POST", "/x", "", ""); code != http.StatusOK {
-			t.Fatalf("start HTTP %d", code)
-		}
-		e.a.importer.Stop() // back to idle for the next session
 	}
 	// Two imports of a file with the same name: the status names the lists of the later one.
 	start(subimporter.ModeSubscribe, e.aList)
-	e.a.importer = subimporter.New(subimporter.Options{}, e.db.DB, &i18n.I18n{})
-	if _, err := e.a.importer.NewSession(subimporter.SessionOpt{Filename: "same-name.csv", Mode: subimporter.ModeSubscribe, ListIDs: []int{e.bList}}); err != nil {
-		t.Fatal(err)
-	}
-	h := func(c echo.Context) error {
-		e.a.importStarted(c, subimporter.SessionOpt{Mode: subimporter.ModeSubscribe, ListIDs: []int{e.bList}})
-		return nil
-	}
-	e.call(h, e.as(e.admin), "POST", "/x", "", "")
-	if st, lists := status(); st != subimporter.StatusImporting || !reflect.DeepEqual(lists, []int{e.bList}) {
+	start(subimporter.ModeSubscribe, e.bList, e.aList)
+	if st, lists := status(admin); st != subimporter.StatusImporting || !reflect.DeepEqual(lists, []int{e.bList, e.aList}) {
 		t.Fatalf("second import: %s %v", st, lists)
 	}
-	h = func(c echo.Context) error {
-		e.a.importStarted(c, subimporter.SessionOpt{Mode: subimporter.ModeBlocklist, ListIDs: []int{e.bList}})
-		return nil
+	// Someone else sees only the lists they may see, and none if there is no such list.
+	if _, lists := status(e.as(e.ua)); !reflect.DeepEqual(lists, []int{e.aList}) {
+		t.Fatalf("team member: %v", lists)
 	}
-	e.call(h, e.as(e.admin), "POST", "/x", "", "")
-	if _, lists := status(); len(lists) != 0 {
+	if _, lists := status(e.as(e.ub)); !reflect.DeepEqual(lists, []int{e.bList}) {
+		t.Fatalf("other team member: %v", lists)
+	}
+	start(subimporter.ModeSubscribe, e.bList)
+	if _, lists := status(e.as(e.ua)); len(lists) != 0 {
+		t.Fatalf("no visible list: %v", lists)
+	}
+	start(subimporter.ModeBlocklist, e.bList)
+	if _, lists := status(admin); len(lists) != 0 {
 		t.Fatalf("blocklist import: %v", lists)
+	}
+	// A session that cannot start leaves the lists of the running import alone.
+	start(subimporter.ModeSubscribe, e.aList)
+	if _, err := e.a.newImportSession(subimporter.SessionOpt{Filename: "late.csv", Mode: subimporter.ModeSubscribe, ListIDs: []int{e.bList}}); err == nil {
+		t.Fatal("a second session started while one runs")
+	}
+	if _, lists := status(admin); !reflect.DeepEqual(lists, []int{e.aList}) {
+		t.Fatalf("after a refused start: %v", lists)
+	}
+}
+
+// A status read that overlaps the start of the next import never gets the name and counts
+// of one import with the lists of the other.
+func TestImportStatusAndListsAreReadTogether(t *testing.T) {
+	e := newAddrEnv(t)
+	e.a.importer = subimporter.New(subimporter.Options{}, e.db.DB, &i18n.I18n{})
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	bad := make(chan string, 1)
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				s, lists := e.a.importStatus()
+				if s.Status == subimporter.StatusNone {
+					continue
+				}
+				if len(lists) != 1 || s.Name != fmt.Sprintf("job-%d.csv", lists[0]) {
+					select {
+					case bad <- fmt.Sprintf("status of %s with lists %v", s.Name, lists):
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	for i := 1; i <= 3000; i++ {
+		// The previous session is over (a new importer stands in for that): the next may start.
+		e.a.importListsMu.Lock()
+		e.a.importer = subimporter.New(subimporter.Options{}, e.db.DB, &i18n.I18n{})
+		e.a.importListsMu.Unlock()
+		if _, err := e.a.newImportSession(subimporter.SessionOpt{
+			Filename: fmt.Sprintf("job-%d.csv", i), Mode: subimporter.ModeSubscribe, ListIDs: []int{i},
+		}); err != nil {
+			t.Fatal(i, err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	select {
+	case msg := <-bad:
+		t.Fatal(msg)
+	default:
 	}
 }
