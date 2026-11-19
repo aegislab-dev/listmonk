@@ -300,13 +300,15 @@ describe('Pre-send confirmation window', () => {
     cy.then(() => cy.visit(`/admin/campaigns/${camp.busy}`));
     cy.get('[data-cy=btn-schedule]').click();
     ready();
-    cy.intercept('PUT', statusPath, (req) => { req.on('response', (res) => { res.setDelay(2500); }); }).as('slowStatus');
+    cy.intercept('PUT', statusPath, (req) => { req.on('response', (res) => { res.setDelay(6000); }); }).as('slowStatus');
     cy.get('[data-cy=send-ok]').click();
     // Esc, the cancel button and a click outside do not close it.
     cy.get('body').type('{esc}');
     cy.get('[data-cy=send-cancel]').should('be.disabled');
     cy.get('.modal.is-active .modal-background').click({ force: true });
-    cy.get(win).should('be.visible');
+    // Still open (the page's loading cover is over it while the request is on its way).
+    cy.get(win).should('exist');
+    cy.get('[data-cy=send-ok]').should('have.class', 'is-loading');
     cy.wait('@slowStatus').its('response.statusCode').should('eq', 200);
     // The answer arrives: the page goes to the list, as after any start.
     cy.location('pathname').should('eq', '/admin/campaigns');
