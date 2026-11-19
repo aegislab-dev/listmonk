@@ -38,6 +38,11 @@ type campReq struct {
 
 	// This is only relevant to campaign test requests.
 	SubscriberEmails pq.StringArray `json:"subscribers"`
+
+	// The From value stored for a paused campaign being updated. Set by
+	// UpdateCampaign (never bound from JSON): an unchanged From on a paused
+	// campaign is not re-checked against the From list.
+	storedFrom *string
 }
 
 // campContentReq wraps params coming from API requests for converting
@@ -352,6 +357,9 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	if len(a.cfg.SenderDomains) > 0 && cm.Status == models.CampaignStatusPaused {
 		o.FromEmail = cm.FromEmail
 	}
+	if cm.Status == models.CampaignStatusPaused {
+		o.storedFrom = &cm.FromEmail
+	}
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
@@ -409,6 +417,20 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 		}
 		if camp.Status == models.CampaignStatusDraft {
 			from = resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+		}
+	}
+	// A draft is only started or scheduled with a From that the From list (or,
+	// with no list, the placeholder rule) allows. This also covers the start
+	// button on the campaigns list, which sends without opening the campaign.
+	if len(a.cfg.SenderDomains) == 0 && (req.Status == models.CampaignStatusRunning || req.Status == models.CampaignStatusScheduled) {
+		camp, err := a.core.GetCampaign(id, "", "")
+		if err != nil {
+			return err
+		}
+		if camp.Status == models.CampaignStatusDraft {
+			if _, err := a.checkFromAllowed(strings.TrimSpace(camp.FromEmail), a.cfg.FromAddresses); err != nil {
+				return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+			}
 		}
 	}
 	// Update the campaign status in the DB.
@@ -740,6 +762,26 @@ func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign) erro
 	return a.manager.PushCampaignMessage(msg)
 }
 
+// checkFromAllowed checks a trimmed, non-empty-or-default From value against
+// the team's From list. With a list, the value must match an entry and is
+// returned in the list's spelling. With no list, free input stays allowed
+// except for placeholder addresses.
+func (a *App) checkFromAllowed(from string, list []string) (string, error) {
+	if len(list) == 0 {
+		if from != "" && placeholderFrom(from) {
+			return from, errors.New(a.i18n.Ts("campaigns.fromPlaceholder", "email", from))
+		}
+		return from, nil
+	}
+	if e, ok := matchFromAddress(from, list); ok {
+		return e, nil
+	}
+	if placeholderFrom(from) {
+		return from, errors.New(a.i18n.Ts("campaigns.fromPlaceholder", "email", from))
+	}
+	return from, errors.New(a.i18n.Ts("campaigns.fromNotAllowed", "email", from))
+}
+
 // validateCampaignFields validates incoming campaign field values.
 func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error) {
 	if len(a.cfg.SenderDomains) > 0 {
@@ -766,11 +808,34 @@ func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error)
 	} else {
 		c.ReplyTo = ""
 	}
+	// With account senders on, the From was set above and the From list is
+	// not used.
+	fromList := a.cfg.FromAddresses
+	if len(a.cfg.SenderDomains) > 0 {
+		fromList = nil
+	}
+	c.FromEmail = strings.TrimSpace(c.FromEmail)
+	defaulted := c.FromEmail == ""
 	if c.FromEmail == "" {
 		c.FromEmail = a.cfg.FromEmail
+		if len(fromList) > 0 {
+			c.FromEmail = defaultFromFor(a.cfg.FromEmail, fromList)
+		}
+	} else if strings.ContainsAny(c.FromEmail, "\r\n") {
+		return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
 	} else if !reFromAddress.Match([]byte(c.FromEmail)) {
 		if _, err := a.importer.SanitizeEmail(c.FromEmail); err != nil {
 			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
+		}
+	}
+	// A paused campaign (maybe already sending) keeps a From it was saved with.
+	unchanged := c.Status == models.CampaignStatusPaused && c.storedFrom != nil &&
+		c.FromEmail == strings.TrimSpace(*c.storedFrom)
+	if !unchanged && !(defaulted && len(fromList) == 0) {
+		if from, err := a.checkFromAllowed(c.FromEmail, fromList); err != nil {
+			return c, err
+		} else {
+			c.FromEmail = from
 		}
 	}
 

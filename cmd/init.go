@@ -83,6 +83,7 @@ type Config struct {
 	SenderDomains                 []string
 	DefaultFrom                   string
 	DefaultReplyTo                string
+	FromAddresses                 []string
 	SiteName                      string   `koanf:"site_name"`
 	FromEmail                     string   `koanf:"from_email"`
 	NotifyEmails                  []string `koanf:"notify_emails"`
@@ -515,6 +516,7 @@ func initConstConfig(ko *koanf.Koanf) *Config {
 	c.SenderDomains = ko.Strings("axm.sender_domains")
 	c.DefaultFrom = ko.String("axm.default_from")
 	c.DefaultReplyTo = ko.String("axm.default_reply_to")
+	c.FromAddresses = ko.Strings("axm.from_addresses")
 	c.Lang = ko.String("app.lang")
 	c.Privacy.Exportable = koanfmaps.StringSliceToLookupMap(ko.Strings("privacy.exportable"))
 	c.MediaUpload.Provider = ko.String("upload.provider")

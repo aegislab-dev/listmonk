@@ -18,6 +18,7 @@ type serverConfig struct {
 	SenderDomains      []string `json:"sender_domains"`
 	DefaultFrom        string   `json:"default_from"`
 	DefaultReplyTo     string   `json:"default_reply_to"`
+	FromAddresses      []string `json:"from_addresses"`
 	ResolvedFrom       string   `json:"resolved_from"`
 	RootURL            string   `json:"root_url"`
 	FromEmail          string   `json:"from_email"`
@@ -68,6 +69,7 @@ func (a *App) GetServerConfig(c echo.Context) error {
 		SenderDomains:  append([]string{}, a.cfg.SenderDomains...),
 		DefaultFrom:    a.cfg.DefaultFrom,
 		DefaultReplyTo: a.cfg.DefaultReplyTo,
+		FromAddresses:  append([]string{}, a.cfg.FromAddresses...),
 		ResolvedFrom:   resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains),
 		RootURL:        a.urlCfg.RootURL,
 		FromEmail:      a.cfg.FromEmail,

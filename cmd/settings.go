@@ -351,7 +351,7 @@ func (a *App) UpdateSettingsByKey(c echo.Context) error {
 		b, _ = json.Marshal(footer)
 	}
 
-	if key == "axm.sender_domains" || key == "axm.default_from" || key == "axm.default_reply_to" {
+	if key == "axm.sender_domains" || key == "axm.default_from" || key == "axm.default_reply_to" || key == "axm.from_addresses" {
 		set, err := a.core.GetSettings()
 		if err != nil {
 			return err
@@ -363,6 +363,8 @@ func (a *App) UpdateSettingsByKey(c echo.Context) error {
 			err = json.Unmarshal(b, &set.AxmDefaultFrom)
 		case "axm.default_reply_to":
 			err = json.Unmarshal(b, &set.AxmDefaultReplyTo)
+		case "axm.from_addresses":
+			err = json.Unmarshal(b, &set.AxmFromAddresses)
 		}
 		if err != nil || normalizeSenderSettings(&set) != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("senders.invalidSettings"))
@@ -374,6 +376,8 @@ func (a *App) UpdateSettingsByKey(c echo.Context) error {
 			b, _ = json.Marshal(set.AxmDefaultFrom)
 		case "axm.default_reply_to":
 			b, _ = json.Marshal(set.AxmDefaultReplyTo)
+		case "axm.from_addresses":
+			b, _ = json.Marshal(set.AxmFromAddresses)
 		}
 	}
 	// Update the value in the DB.

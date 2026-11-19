@@ -116,3 +116,102 @@ func TestDefaultReply(t *testing.T) {
 		}
 	}
 }
+
+func TestPlaceholderFrom(t *testing.T) {
+	for v, want := range map[string]bool{
+		"change-me@crevasse.ai":          true,
+		"Team <Change-Me@crevasse.ai>":   true,
+		"changeme@crevasse.ai":           true,
+		"change_me@crevasse.ai":          true,
+		"a@example.com":                  true,
+		"a@mail.example.org":             true,
+		"a@example.net":                  true,
+		"a@foo.example":                  true,
+		"a@foo.invalid":                  true,
+		"a@foo.test":                     true,
+		"aegislab_us@crevasse.ai":        false,
+		"Team <aegislab_us@crevasse.ai>": false,
+		"noreply@listmonk.yoursite.com":  false, // only the settings list refuses the stock address
+		"a@notexample.com":               false,
+		"change-me-not@crevasse.ai":      false,
+		"not an address":                 false,
+		"":                               false,
+	} {
+		if got := placeholderFrom(v); got != want {
+			t.Errorf("placeholderFrom(%q) = %v, want %v", v, got, want)
+		}
+	}
+	if !placeholderListFrom("noreply@listmonk.yoursite.com") || !placeholderListFrom("a@x.yoursite.com") || placeholderListFrom("a@crevasse.ai") {
+		t.Fatal("placeholderListFrom")
+	}
+}
+
+func TestMatchFromAddress(t *testing.T) {
+	list := []string{"aegislab_us@crevasse.ai", "AEGIS 팀 <team@crevasse.ai>"}
+	for _, tc := range []struct {
+		in, want string
+		ok       bool
+	}{
+		{"aegislab_us@crevasse.ai", "aegislab_us@crevasse.ai", true},
+		{"  aegislab_us@crevasse.ai", "aegislab_us@crevasse.ai", true},
+		{"AegisLab_US@Crevasse.AI", "aegislab_us@crevasse.ai", true},
+		{"Other name <aegislab_us@crevasse.ai>", "aegislab_us@crevasse.ai", true},
+		{"AEGIS 팀 <team@crevasse.ai>", "AEGIS 팀 <team@crevasse.ai>", true},
+		{"team@crevasse.ai", "AEGIS 팀 <team@crevasse.ai>", true},
+		{"change-me@crevasse.ai", "", false},
+		{"other@crevasse.ai", "", false},
+		{"", "", false},
+		{"   ", "", false},
+		{"not an address", "", false},
+	} {
+		got, ok := matchFromAddress(tc.in, list)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("matchFromAddress(%q) = %q,%v want %q,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+	if _, ok := matchFromAddress("aegislab_us@crevasse.ai", nil); ok {
+		t.Fatal("empty list matches nothing")
+	}
+	if got := defaultFromFor("team@crevasse.ai", list); got != "AEGIS 팀 <team@crevasse.ai>" {
+		t.Fatal(got)
+	}
+	if got := defaultFromFor("listmonk <noreply@listmonk.yoursite.com>", list); got != list[0] {
+		t.Fatal(got)
+	}
+}
+
+func TestNormalizeFromAddresses(t *testing.T) {
+	got, err := normalizeFromAddresses([]string{
+		"  Aegislab_US@Crevasse.ai ", "aegislab_us@crevasse.ai", "AEGIS 팀 <Team@Crevasse.ai>",
+		`"Kim, Min" <kim@crevasse.ai>`, "AEGIS 팀 <team@crevasse.ai>",
+	})
+	want := []string{"aegislab_us@crevasse.ai", "AEGIS 팀 <team@crevasse.ai>", `"Kim, Min" <kim@crevasse.ai>`}
+	if err != nil || len(got) != len(want) {
+		t.Fatalf("%v %v", got, err)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("%d: %q != %q", i, got[i], want[i])
+		}
+	}
+	if got, err := normalizeFromAddresses(nil); err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("nil must become an empty list: %#v %v", got, err)
+	}
+	for _, bad := range []string{
+		"", "   ", "not an address", "change-me@crevasse.ai", "a@example.com", "noreply@listmonk.yoursite.com",
+		"a@foo.yoursite.com", "a@crevasse.ai\r\nBcc: x@y.z", "Team <a@crevasse.ai\n>", "a@foo.invalid",
+	} {
+		if _, err := normalizeFromAddresses([]string{"ok@crevasse.ai", bad}); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+	// The settings normalizer applies it too.
+	set := models.Settings{AxmFromAddresses: []string{" A@crevasse.ai "}}
+	if err := normalizeSenderSettings(&set); err != nil || set.AxmFromAddresses[0] != "a@crevasse.ai" {
+		t.Fatal(set.AxmFromAddresses, err)
+	}
+	set = models.Settings{AxmFromAddresses: []string{"change-me@crevasse.ai"}}
+	if normalizeSenderSettings(&set) == nil {
+		t.Fatal("placeholder must be refused in settings")
+	}
+}

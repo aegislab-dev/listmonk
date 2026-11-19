@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/mail"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,129 @@ func internalSender(addr string, domains []string) bool {
 		}
 	}
 	return false
+}
+
+// placeholderLocals are local parts that stand for "fill in the real address".
+var placeholderLocals = map[string]bool{"change-me": true, "changeme": true, "change_me": true}
+
+// addrOf returns the lowercased address part of a From value, or "" if the
+// value cannot be parsed.
+func addrOf(v string) string {
+	a, err := mail.ParseAddress(strings.TrimSpace(v))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(a.Address)
+}
+
+// placeholderFrom reports whether a From value is a placeholder that was never
+// replaced (change-me@..., or an address on a domain reserved for examples).
+// It is a pure function so other checks can reuse it.
+func placeholderFrom(v string) bool {
+	addr := addrOf(v)
+	at := strings.LastIndexByte(addr, '@')
+	if at < 1 {
+		return false
+	}
+	local, domain := addr[:at], addr[at+1:]
+	if placeholderLocals[local] {
+		return true
+	}
+	for _, d := range []string{"example.com", "example.org", "example.net"} {
+		if domain == d || strings.HasSuffix(domain, "."+d) {
+			return true
+		}
+	}
+	for _, tld := range []string{"example", "invalid", "test"} {
+		if strings.HasSuffix(domain, "."+tld) {
+			return true
+		}
+	}
+	return false
+}
+
+// placeholderListFrom is the stricter rule for the settings list: it also
+// rejects the stock install address (noreply@listmonk.yoursite.com).
+func placeholderListFrom(v string) bool {
+	if placeholderFrom(v) {
+		return true
+	}
+	addr := addrOf(v)
+	at := strings.LastIndexByte(addr, '@')
+	if at < 1 {
+		return false
+	}
+	d := addr[at+1:]
+	return d == "yoursite.com" || strings.HasSuffix(d, ".yoursite.com")
+}
+
+var reFromNameSpecial = regexp.MustCompile(`[,"<>@;:\\()\[\]]`)
+
+// matchFromAddress finds the list entry a From value stands for. A value equal
+// to an entry (after trimming) matches it; otherwise a value with the same
+// address (case-insensitive) matches the first entry with that address, so a
+// stray space or a different display name is replaced by the list's spelling.
+func matchFromAddress(value string, list []string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return "", false
+	}
+	for _, e := range list {
+		if e == v {
+			return e, true
+		}
+	}
+	if a := addrOf(v); a != "" {
+		for _, e := range list {
+			if addrOf(e) == a {
+				return e, true
+			}
+		}
+	}
+	return "", false
+}
+
+// defaultFromFor is the From a new campaign gets when none is sent: the app
+// default if it is on the list, else the first list entry.
+func defaultFromFor(appFrom string, list []string) string {
+	if e, ok := matchFromAddress(appFrom, list); ok {
+		return e
+	}
+	return list[0]
+}
+
+// normalizeFromAddresses cleans the team's From list. Entries are "Name <addr>"
+// or "addr"; the address part is lowercased, exact duplicates are dropped and
+// placeholder addresses are refused.
+func normalizeFromAddresses(in []string) ([]string, error) {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" || len(v) > 200 || strings.ContainsAny(v, "\r\n") {
+			return nil, errors.New("invalid from address")
+		}
+		a, err := mail.ParseAddress(v)
+		if err != nil || placeholderListFrom(a.Address) {
+			return nil, errors.New("invalid from address")
+		}
+		e := strings.ToLower(a.Address)
+		if a.Name != "" {
+			name := a.Name
+			if reFromNameSpecial.MatchString(name) {
+				name = strconv.Quote(name)
+			}
+			e = name + " <" + e + ">"
+		}
+		if !seen[e] {
+			seen[e] = true
+			out = append(out, e)
+		}
+	}
+	if len(out) > 50 {
+		return nil, errors.New("too many from addresses")
+	}
+	return out, nil
 }
 
 func resolveFrom(user auth.User, defaultFrom, appFrom string, domains []string) string {
@@ -233,6 +357,11 @@ func normalizeSenderSettings(set *models.Settings) error {
 		}
 	}
 	set.AxmSenderDomains = domains
+	froms, err := normalizeFromAddresses(set.AxmFromAddresses)
+	if err != nil {
+		return err
+	}
+	set.AxmFromAddresses = froms
 	for _, v := range []*string{&set.AxmDefaultFrom, &set.AxmDefaultReplyTo} {
 		*v = strings.TrimSpace(*v)
 		if *v != "" {

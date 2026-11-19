@@ -87,6 +87,19 @@
                   <sender-address-input ref="replyTo" v-model="form.replyTo" :label="$t('campaigns.replyTo')"
                     :disabled="!canEdit" @addresses="onReplyAddresses" />
                 </template>
+                <template v-else-if="useFromSelect">
+                  <b-notification v-if="fromWarning" type="is-warning" :closable="false" class="mb-4"
+                    data-cy="from-warning" role="alert">
+                    {{ fromWarning }}
+                  </b-notification>
+                  <b-field :label="$t('campaigns.fromAddress')" label-position="on-border"
+                    :message="$t('campaigns.fromAddressListHelp')">
+                    <b-select v-model="fromSelected" name="from_email" :placeholder="$t('campaigns.fromAddressPick')"
+                      :disabled="!canEdit" required expanded data-cy="from-select">
+                      <option v-for="a in fromList" :value="a" :key="a">{{ a }}</option>
+                    </b-select>
+                  </b-field>
+                </template>
                 <b-field v-else :label="$t('campaigns.fromAddress')" label-position="on-border">
                   <b-input :maxlength="200" v-model="form.fromEmail" name="from_email" :disabled="!canEdit"
                     :placeholder="$t('campaigns.fromAddressPlaceholder')" required />
@@ -355,7 +368,7 @@ import ListSelector from '../components/ListSelector.vue';
 import RecentSendExclude from '../components/RecentSendExclude.vue';
 import Media from './Media.vue';
 import SenderAddressInput from '../components/SenderAddressInput.vue';
-import { isSenderDomain } from '../senders';
+import { isPlaceholderFrom, isSenderDomain, matchFromEntry } from '../senders';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
 
 export default Vue.extend({
@@ -807,6 +820,20 @@ export default Vue.extend({
       return this.canShowRecentRule && this.recentRuleKey !== this.savedRecentRule;
     },
 
+    fromList() { return this.serverConfig.from_addresses || []; },
+    // The From list replaces free input only while it can be edited and the
+    // account-sender feature (which decides the From itself) is off.
+    useFromSelect() { return !this.senderPolicyEnabled && this.fromList.length > 0 && this.canEdit; },
+    fromSelected: {
+      get() { return matchFromEntry(this.form.fromEmail, this.fromList) || null; },
+      set(v) { this.form.fromEmail = v; },
+    },
+    fromWarning() {
+      const email = (this.form.fromEmail || '').trim();
+      if (!this.isEditing || !email || matchFromEntry(email, this.fromList)) return '';
+      return this.$t(isPlaceholderFrom(email) ? 'campaigns.fromPlaceholderWarn' : 'campaigns.fromNotInListWarn', { email });
+    },
+
     senderPolicyEnabled() { return (this.serverConfig.sender_domains || []).length > 0; },
     usesAccountFrom() { return isSenderDomain(this.profile.email, this.serverConfig.sender_domains); },
     resolvedFrom() {
@@ -894,6 +921,9 @@ export default Vue.extend({
 
     // Fill default form fields.
     this.form.fromEmail = this.serverConfig.from_email;
+    if (!this.senderPolicyEnabled && this.fromList.length > 0) {
+      this.form.fromEmail = matchFromEntry(this.form.fromEmail, this.fromList) || this.fromList[0];
+    }
     if (this.senderPolicyEnabled && !this.usesAccountFrom) this.form.replyTo = this.serverConfig.default_reply_to;
 
     // New campaign.

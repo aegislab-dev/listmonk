@@ -234,6 +234,7 @@ INSERT INTO settings (key, value) VALUES
     ('axm.sender_domains', '[]'),
     ('axm.default_from', '""'),
     ('axm.default_reply_to', '""'),
+    ('axm.from_addresses', '[]'),
     ('axm.business_footer', '{"enabled": false, "company_name": "", "representative": "", "registration_no": "", "address": "", "phone": "", "email": "", "extra": ""}'),
     ('app.site_name', '"Mailing list"'),
     ('app.root_url', '"http://localhost:9000"'),

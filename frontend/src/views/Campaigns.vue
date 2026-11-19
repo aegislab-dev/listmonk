@@ -293,6 +293,7 @@ import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
 import CopyText from '../components/CopyText.vue';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
+import { isPlaceholderFrom, matchFromEntry } from '../senders';
 
 export default Vue.extend({
   components: {
@@ -459,12 +460,18 @@ export default Vue.extend({
         sendAt = dayjs(c.sendAt).isAfter(now) ? c.sendAt : now.add(7, 'day');
       }
 
+      // A From that the From list does not allow (or a placeholder) is left
+      // out so the server fills in the default instead of refusing the copy.
+      const list = this.serverConfig.from_addresses || [];
+      const fromOk = (this.serverConfig.sender_domains || []).length > 0
+        || (list.length > 0 ? !!matchFromEntry(c.fromEmail, list) : !isPlaceholderFrom(c.fromEmail));
+
       const data = {
         name,
         subject: c.subject,
         lists: c.lists.map((l) => l.id),
         type: c.type,
-        from_email: c.fromEmail,
+        ...(fromOk ? { from_email: c.fromEmail } : {}),
         reply_to: c.replyTo,
         content_type: c.contentType,
         messenger: c.messenger,
@@ -544,7 +551,7 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['campaigns', 'loading']),
+    ...mapState(['campaigns', 'loading', 'serverConfig']),
 
     numSelectedCampaigns() {
       return this.bulk.all ? this.campaigns.total : this.bulk.checked.length;
