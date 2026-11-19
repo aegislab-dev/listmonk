@@ -933,7 +933,5 @@ func (a *App) checkCampaignPerm(types auth.PermType, id int, c echo.Context) err
 // canEditCampaign returns true if a campaign is in a status where updating
 // its properties is allowed.
 func canEditCampaign(status string) bool {
-	return status == models.CampaignStatusDraft ||
-		status == models.CampaignStatusPaused ||
-		status == models.CampaignStatusScheduled
+	return models.CanEditCampaign(status)
 }

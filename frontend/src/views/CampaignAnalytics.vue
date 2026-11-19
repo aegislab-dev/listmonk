@@ -87,6 +87,14 @@
       </div>
     </b-modal>
 
+    <b-button v-if="canReact" type="is-light" icon-left="format-list-bulleted-square"
+      class="reaction-analytics-action" data-cy="btn-analytics-reaction"
+      @click="reactionCampaign = form.campaigns[0]">
+      {{ $t('campaigns.reactionList.title') }}
+    </b-button>
+    <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
+      @close="reactionCampaign = null" />
+
     <section class="charts mt-5">
       <div class="chart" v-for="(v, k) in charts" :key="k">
         <div class="columns">
@@ -112,6 +120,8 @@ import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import { colors } from '../constants';
+import reactionStatuses from '../campaign-reaction-list';
+import CampaignReactionList from '../components/CampaignReactionList.vue';
 import Chart from '../components/Chart.vue';
 import { buildProofSummaryV1, teamsOfCampaign, trackingStateFor } from '../proof-summary';
 
@@ -130,12 +140,14 @@ const chartColors = [
 export default Vue.extend({
   components: {
     Chart,
+    CampaignReactionList,
   },
 
   data() {
     return {
       isSearchLoading: false,
       queriedCampaigns: [],
+      reactionCampaign: null,
 
       // Data for each view.
       counts: {
@@ -443,6 +455,13 @@ export default Vue.extend({
       }
       return ['draft', 'scheduled'].includes(this.form.campaigns[0].status) ? 'notSent' : '';
     },
+
+    canReact() {
+      return this.form.campaigns.length === 1 && this.$canCreateList()
+        && this.$can('campaigns:get_analytics')
+        && this.$can('campaigns:get', 'campaigns:get_all')
+        && reactionStatuses.includes(this.form.campaigns[0].status);
+    },
   },
 
   created() {
@@ -488,3 +507,7 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.reaction-analytics-action { border-color: #d7e3f5; color: #1e5ab4; }
+</style>

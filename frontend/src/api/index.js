@@ -368,6 +368,22 @@ export const getCampaign = async (id) => http.get(`/api/campaigns/${id}`, {
   camelCase: (keyPath) => !keyPath.startsWith('.headers'),
 });
 
+export const previewRecentExclude = (data, signal) => http.post('/api/campaigns/recent-exclude/preview', data, {
+  disableToast: true, signal,
+});
+export const getRecentRule = (id) => http.get(`/api/campaigns/${id}/recent-exclude`);
+export const saveRecentRule = (id, data) => http.put(`/api/campaigns/${id}/recent-exclude`, data);
+export const getRecentCampaignOption = (id) => http.get(`/api/campaigns/${id}`, { disableToast: true });
+export const searchRecentCampaigns = (query, signal) => http.get('/api/campaigns', {
+  params: { query, status: ['finished', 'running', 'paused'], no_body: true },
+  disableToast: true,
+  signal,
+});
+
+export const previewCampaignReactionList = (id, data) => http.post(`/api/campaigns/${id}/reaction-list/preview`, data, { disableToast: true });
+
+export const makeCampaignReactionList = (id, data) => http.post(`/api/campaigns/${id}/reaction-list`, data, { disableToast: true });
+
 export const getCampaignStats = async () => http.get('/api/campaigns/running/stats', {});
 
 export const createCampaign = async (data) => http.post(
