@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
+	"html/template"
 	"io"
 	"log"
 	"math/big"
@@ -20,7 +22,11 @@ import (
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/i18n"
+	"github.com/knadh/listmonk/internal/notifs"
+	"github.com/knadh/listmonk/internal/tmptokens"
+	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	"github.com/pquerna/otp/totp"
 )
 
 // These tests run the real login handlers, the real session store and the real
@@ -125,11 +131,20 @@ func (testRenderer) Render(w io.Writer, name string, data any, c echo.Context) e
 	return err
 }
 
+// testMailbox is a messenger that keeps what it is asked to send.
+type testMailbox struct{ msgs []models.Message }
+
+func (m *testMailbox) Name() string                  { return "email" }
+func (m *testMailbox) Push(msg models.Message) error { m.msgs = append(m.msgs, msg); return nil }
+func (m *testMailbox) Flush() error                  { return nil }
+func (m *testMailbox) Close() error                  { return nil }
+
 type authEnv struct {
 	*sendsEnv
-	a   *App
-	srv *echo.Echo
-	idp *fakeIdP
+	a    *App
+	srv  *echo.Echo
+	idp  *fakeIdP
+	mail *testMailbox
 }
 
 func newAuthEnv(t *testing.T) *authEnv {
@@ -162,7 +177,9 @@ func newAuthEnv(t *testing.T) *authEnv {
 		t.Fatal(err)
 	}
 
-	e.a = &App{core: e.core, auth: au, i18n: &i18n.I18n{}, cfg: &Config{}, urlCfg: &UrlConfig{}, log: log.New(io.Discard, "", 0)}
+	e.mail = &testMailbox{}
+	e.a = &App{core: e.core, auth: au, i18n: &i18n.I18n{}, cfg: &Config{}, urlCfg: &UrlConfig{RootURL: "http://listmonk.invalid"},
+		emailMsgr: e.mail, log: log.New(io.Discard, "", 0)}
 	e.a.cfg.Security.OIDC.Enabled = true
 	e.a.cfg.Security.OIDC.ProviderURL = e.idp.srv.URL
 
@@ -170,6 +187,12 @@ func newAuthEnv(t *testing.T) *authEnv {
 	e.srv = echo.New()
 	e.srv.Renderer = testRenderer{}
 	e.srv.GET("/auth/oidc", e.a.OIDCFinish)
+	for _, m := range []string{http.MethodGet, http.MethodPost} {
+		e.srv.Add(m, "/admin/login", e.a.LoginPage)
+		e.srv.Add(m, "/admin/login/twofa", e.a.TwofaPage)
+		e.srv.Add(m, "/admin/forgot", e.a.ForgotPage)
+		e.srv.Add(m, "/admin/reset", e.a.ResetPage)
+	}
 	e.srv.GET("/api/profile", func(c echo.Context) error {
 		u, ok := c.Get(auth.UserHTTPCtxKey).(auth.User)
 		if !ok {
@@ -306,5 +329,229 @@ func TestOIDCUserInfoSubjectMustMatch(t *testing.T) {
 	rec = login("sub-1")
 	if rec.Code != http.StatusFound || sessionCookie(rec) == nil {
 		t.Fatalf("match: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// addPasswordUser adds a user that logs in with a password, optionally with TOTP on.
+func (e *authEnv) addPasswordUser(username, password string, withTOTP bool) (id int, totpKey string) {
+	e.t.Helper()
+	twofa := "none"
+	if withTOTP {
+		key, err := totp.Generate(totp.GenerateOpts{Issuer: "listmonk", AccountName: username})
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		twofa, totpKey = "totp", key.Secret()
+	}
+	e.get(&id, `INSERT INTO users(username,email,name,user_role_id,status,type,password_login,password,twofa_type,twofa_key)
+		VALUES($1,$1||'@example.invalid',$1,1,'enabled','user',true,CRYPT($2, GEN_SALT('bf')),$3::twofa_type,NULLIF($4,'')) RETURNING id`,
+		username, password, twofa, totpKey)
+
+	// The 2FA attempt budget is kept in memory by user ID, and every test's
+	// schema starts its IDs at 1: do not inherit another test's count.
+	attempts := fmt.Sprintf("twofa-attempts:%d", id)
+	tmptokens.Delete(attempts)
+	e.t.Cleanup(func() { tmptokens.Delete(attempts) })
+	return id, totpKey
+}
+
+func totpNow(t *testing.T, key string) string {
+	t.Helper()
+	code, err := totp.GenerateCode(key, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code
+}
+
+// forgot asks for a reset link and returns the link that was mailed.
+func (e *authEnv) forgot(email string) *url.URL {
+	e.t.Helper()
+	n := len(e.mail.msgs)
+	rec := e.do(http.MethodPost, "/admin/forgot", url.Values{"email": {email}})
+	if rec.Code != http.StatusOK || len(e.mail.msgs) != n+1 {
+		e.t.Fatalf("forgot: %d %q, %d mails", rec.Code, rec.Body.String(), len(e.mail.msgs)-n)
+	}
+	// The mail is HTML: the link's "&" arrives escaped.
+	u, err := url.Parse(html.UnescapeString(strings.TrimSpace(string(e.mail.msgs[n].Body))))
+	if err != nil || u.Query().Get("token") == "" {
+		e.t.Fatalf("no reset link in mail %q: %v", e.mail.msgs[n].Body, err)
+	}
+	return u
+}
+
+func (e *authEnv) reset(link *url.URL, token, password string) *httptest.ResponseRecorder {
+	q := link.Query()
+	q.Set("token", token)
+	return e.do(http.MethodPost, "/admin/reset?"+q.Encode(), url.Values{"password": {password}, "password2": {password}})
+}
+
+// useResetMailTemplate makes the reset mail's body the bare link.
+func useResetMailTemplate(t *testing.T) {
+	t.Helper()
+	old := notifs.Tpls
+	notifs.Tpls = template.Must(template.New(notifs.TplForgotPassword).Parse("{{ .ResetURL }}"))
+	t.Cleanup(func() { notifs.Tpls = old })
+}
+
+// Logging in with a password still works as before: straight in without 2FA,
+// through the 2FA page with it.
+func TestPasswordLogin(t *testing.T) {
+	e := newAuthEnv(t)
+	plain, _ := e.addPasswordUser("plain", "password-1", false)
+	withTOTP, key := e.addPasswordUser("totp", "password-2", true)
+
+	rec := e.do(http.MethodPost, "/admin/login", url.Values{"username": {"plain"}, "password": {"password-1"}, "next": {"/admin/lists"}})
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/admin/lists" || sessionCookie(rec) == nil || e.sessions(plain) != 1 {
+		t.Fatalf("login: %d %q %q", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+
+	rec = e.do(http.MethodPost, "/admin/login", url.Values{"username": {"plain"}, "password": {"wrong-password"}})
+	if rec.Code != http.StatusOK || rec.Body.String() != "admin-login|users.invalidLogin" || sessionCookie(rec) != nil {
+		t.Fatalf("wrong password: %d %q", rec.Code, rec.Body.String())
+	}
+
+	// With TOTP the password alone gives no session.
+	rec = e.do(http.MethodPost, "/admin/login", url.Values{"username": {"totp"}, "password": {"password-2"}, "next": {"/admin/lists"}})
+	loc, _ := url.Parse(rec.Header().Get("Location"))
+	if rec.Code != http.StatusFound || loc.Path != "/admin/login/twofa" || loc.Query().Get("next") != "/admin/lists" ||
+		sessionCookie(rec) != nil || e.sessions(withTOTP) != 0 {
+		t.Fatalf("totp login: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	form := url.Values{"token": {loc.Query().Get("token")}, "next": {"/admin/lists"}, "totp_code": {totpNow(t, key)}}
+	rec = e.do(http.MethodPost, "/admin/login/twofa", form)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/admin/lists" || sessionCookie(rec) == nil || e.sessions(withTOTP) != 1 {
+		t.Fatalf("totp verify: %d %q %q", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+
+	// The login token is used up: the same form does not give a second session.
+	rec = e.do(http.MethodPost, "/admin/login/twofa", form)
+	if sessionCookie(rec) != nil || e.sessions(withTOTP) != 1 {
+		t.Fatalf("replayed 2FA form got a session: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// A password reset is not a way around 2FA.
+func TestPasswordResetAsksForTOTP(t *testing.T) {
+	useResetMailTemplate(t)
+	e := newAuthEnv(t)
+	id, key := e.addPasswordUser("totp", "password-1", true)
+
+	link := e.forgot("totp@example.invalid")
+	rec := e.reset(link, link.Query().Get("token"), "password-new")
+	loc, _ := url.Parse(rec.Header().Get("Location"))
+	if rec.Code != http.StatusFound || loc.Path != "/admin/login/twofa" || loc.Query().Get("token") == "" {
+		t.Fatalf("reset: %d %q %q", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	if sessionCookie(rec) != nil || e.sessions(id) != 0 {
+		t.Fatal("reset gave a session without the TOTP code")
+	}
+
+	// The password did change, and the 2FA step finishes the login.
+	if _, err := e.core.LoginUser("totp", "password-new"); err != nil {
+		t.Fatalf("new password does not work: %v", err)
+	}
+	rec = e.do(http.MethodPost, "/admin/login/twofa", url.Values{"token": {loc.Query().Get("token")}, "next": {loc.Query().Get("next")}, "totp_code": {"000000"}})
+	if sessionCookie(rec) != nil {
+		t.Fatal("wrong TOTP code gave a session")
+	}
+	rec = e.do(http.MethodPost, "/admin/login/twofa", url.Values{"token": {loc.Query().Get("token")}, "next": {loc.Query().Get("next")}, "totp_code": {totpNow(t, key)}})
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/admin" || sessionCookie(rec) == nil {
+		t.Fatalf("totp verify: %d %q %q", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+}
+
+// Without 2FA, a reset logs the user in directly, as before.
+func TestPasswordResetWithoutTOTP(t *testing.T) {
+	useResetMailTemplate(t)
+	e := newAuthEnv(t)
+	id, _ := e.addPasswordUser("plain", "password-1", false)
+
+	link := e.forgot("plain@example.invalid")
+	if rec := e.do(http.MethodGet, "/admin/reset?"+link.RawQuery, nil); rec.Code != http.StatusOK || rec.Body.String() != "admin-reset-password|" {
+		t.Fatalf("reset page: %d %q", rec.Code, rec.Body.String())
+	}
+	rec := e.reset(link, link.Query().Get("token"), "password-new")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/admin" || sessionCookie(rec) == nil || e.sessions(id) != 1 {
+		t.Fatalf("reset: %d %q %q", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+
+	// The link works once.
+	rec = e.reset(link, link.Query().Get("token"), "password-again")
+	if rec.Code != http.StatusBadRequest || sessionCookie(rec) != nil {
+		t.Fatalf("second use of the link: %d %q", rec.Code, rec.Body.String())
+	}
+	if _, err := e.core.LoginUser("plain", "password-new"); err != nil {
+		t.Fatalf("password after the second try: %v", err)
+	}
+}
+
+// Anyone who knows an e-mail address can post to the reset page. Wrong tokens
+// must not use up the link that was mailed, and asking again must not replace it.
+func TestPasswordResetLinkSurvivesWrongTokens(t *testing.T) {
+	useResetMailTemplate(t)
+	e := newAuthEnv(t)
+	e.addPasswordUser("plain", "password-1", false)
+
+	link := e.forgot("plain@example.invalid")
+	wrong := strings.Repeat("x", tmpAuthTokenLen)
+	for i := 0; i < 20; i++ {
+		if rec := e.reset(link, wrong, "attacker-password"); rec.Code != http.StatusBadRequest || sessionCookie(rec) != nil {
+			t.Fatalf("wrong token POST %d: %d %q", i, rec.Code, rec.Body.String())
+		}
+		q := link.Query()
+		q.Set("token", wrong)
+		if rec := e.do(http.MethodGet, "/admin/reset?"+q.Encode(), nil); rec.Code != http.StatusBadRequest {
+			t.Fatalf("wrong token GET %d: %d %q", i, rec.Code, rec.Body.String())
+		}
+	}
+	if _, err := e.core.LoginUser("plain", "attacker-password"); err == nil {
+		t.Fatal("a wrong token changed the password")
+	}
+
+	// A second request mails the same link instead of replacing it.
+	if again := e.forgot("plain@example.invalid"); again.Query().Get("token") != link.Query().Get("token") {
+		t.Fatal("a repeated request replaced the pending reset link")
+	}
+
+	if rec := e.reset(link, link.Query().Get("token"), "password-new"); rec.Code != http.StatusFound || sessionCookie(rec) == nil {
+		t.Fatalf("the mailed link stopped working: %d %q", rec.Code, rec.Body.String())
+	}
+	// Once used, the next request gets a new link.
+	if next := e.forgot("plain@example.invalid"); next.Query().Get("token") == link.Query().Get("token") {
+		t.Fatal("a used link was mailed again")
+	}
+}
+
+// TOTP guesses are counted per user, not per login: logging in again with the
+// password does not buy more guesses.
+func TestTOTPAttemptBudgetPerUser(t *testing.T) {
+	e := newAuthEnv(t)
+	id, key := e.addPasswordUser("totp", "password-1", true)
+
+	login := func() string {
+		rec := e.do(http.MethodPost, "/admin/login", url.Values{"username": {"totp"}, "password": {"password-1"}})
+		loc, _ := url.Parse(rec.Header().Get("Location"))
+		if loc.Query().Get("token") == "" {
+			t.Fatalf("login: %d %q", rec.Code, rec.Header().Get("Location"))
+		}
+		return loc.Query().Get("token")
+	}
+	guess := func(token, code string) *httptest.ResponseRecorder {
+		return e.do(http.MethodPost, "/admin/login/twofa", url.Values{"token": {token}, "totp_code": {code}})
+	}
+
+	// 15 wrong guesses, each on a new login.
+	for i := 0; i < 15; i++ {
+		if rec := guess(login(), "000000"); rec.Code != http.StatusOK || rec.Body.String() != "admin-twofa|globals.messages.invalidValue" {
+			t.Fatalf("guess %d: %d %q", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	// The 16th is refused, even with the right code and a new login.
+	if rec := guess(login(), totpNow(t, key)); rec.Code != http.StatusTooManyRequests || sessionCookie(rec) != nil {
+		t.Fatalf("16th try: %d %q, want 429", rec.Code, rec.Body.String())
+	}
+	if e.sessions(id) != 0 {
+		t.Fatal("got a session after the budget was used up")
 	}
 }
