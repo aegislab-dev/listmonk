@@ -1435,6 +1435,7 @@
     "audit.value.query": "by search or condition",
     "audit.value.ids": "by selection",
     "audit.value.before": "counted just before the action",
+    "audit.value.done": "Number actually changed",
     "audit.value.edit": "edit form",
     "audit.value.bounces": "bounce screen",
     "audit.value.orphan": "subscribers without a list",

@@ -889,3 +889,46 @@ func TestBoundaryBulkAllCountsAreCurrent(t *testing.T) {
 		t.Fatalf("count %d, detail %+v", bq.count, bq.detail)
 	}
 }
+
+// "Select all, then delete or blocklist" looks again at who is on another team's list after
+// it has locked the people: a subscription that is added while it runs is not lost.
+func TestBoundaryBulkByQueryWaitsForConcurrentSubscription(t *testing.T) {
+	e := newBoundaryEnv(t)
+	ua := e.as(e.ua)
+	body := fmt.Sprintf(`{"all":true,"list_ids":[%d]}`, e.aList)
+	for what, h := range map[string]echo.HandlerFunc{"blocklist": e.a.BlocklistSubscribersByQuery, "delete": e.a.DeleteSubscribersByQuery} {
+		id := e.person("race-"+what, e.aList, "confirmed")
+		tx := e.db.MustBegin()
+		tx.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, id, e.bList)
+		done := make(chan int, 1)
+		go func() {
+			code, _ := e.call(h, ua, "POST", "/x", "", body)
+			done <- code
+		}()
+		select {
+		case code := <-done:
+			tx.Rollback()
+			t.Fatalf("%s did not wait for the open subscription: %d", what, code)
+		case <-time.After(300 * time.Millisecond):
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if code := <-done; code != 200 {
+			t.Fatalf("%s: %d", what, code)
+		}
+		if r := e.row(id); !r.Exists || r.Status != "enabled" {
+			t.Fatalf("%s reached a subscriber of two teams: %+v", what, r)
+		}
+		e.wantLists(id, what, "A1:confirmed", "B1:confirmed")
+		rows := e.audits("action = $1", map[string]string{"blocklist": auditSubBlocklist, "delete": auditSubDelete}[what])
+		r := rows[len(rows)-1]
+		// s1 and s5 were the member's alone (the first round); s2, s3, s4 and the late one were not.
+		if n, _ := skippedShared(t, r); n < 4 || r.Count == nil {
+			t.Fatalf("%s audit: count %v, detail %s", what, r.Count, r.Detail)
+		}
+	}
+	if got := e.names(`name IN ('s2','s3','s4')`); got != "s2,s3,s4" {
+		t.Fatalf("shared subscribers left: %s", got)
+	}
+}

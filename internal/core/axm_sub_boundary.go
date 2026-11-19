@@ -175,3 +175,78 @@ func (c *Core) UpdateSubscriberBounded(id int, sub models.Subscriber, listIDs []
 	}
 	return out, nil, nil
 }
+
+// bulkChunk is how many subscribers a bounded bulk action locks and changes at a time.
+const bulkChunk = 5000
+
+// BulkByQueryBounded deletes (or, with blocklist, blocklists) the subscribers a bulk action by
+// query reaches, for a user who may not manage all lists. The single statement upstream uses
+// picks its people as they were when it started, so a subscription another team adds while
+// it runs would go with them. Here the people are picked first (with the export query, which
+// reads the same conditions), and then, a chunk at a time, their rows are locked, who is on a
+// list outside manageListIDs is read again, and only the others are changed. It returns how
+// many were changed and how many were left out at that second look.
+func (c *Core) BulkByQueryBounded(searchStr, queryExp string, listIDs []int, subStatus string, manageListIDs []int, blocklist bool) (int, int, error) {
+	next, err := c.ExportSubscribers(searchStr, sanitizeSQLExp(queryExp), nil, listIDs, subStatus, bulkChunk)
+	if err != nil {
+		return 0, 0, err
+	}
+	ids := []int{}
+	for {
+		rows, err := next()
+		if err != nil {
+			return 0, 0, err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, r := range rows {
+			ids = append(ids, r.ID)
+		}
+	}
+
+	done, late := 0, 0
+	for len(ids) > 0 {
+		n := min(len(ids), bulkChunk)
+		chunk := ids[:n]
+		ids = ids[n:]
+		_, err := c.boundedTx(chunk, manageListIDs, func(tx *sqlx.Tx, locked []int) (bool, error) {
+			skip := map[int]bool{}
+			for _, id := range locked {
+				skip[id] = true
+			}
+			open := make([]int, 0, len(chunk))
+			for _, id := range chunk {
+				if !skip[id] {
+					open = append(open, id)
+				}
+			}
+			if len(open) == 0 {
+				late += len(locked)
+				return true, nil
+			}
+			var err error
+			if blocklist {
+				_, err = tx.Stmtx(c.q.BlocklistSubscribers).Exec(pq.Array(open))
+			} else {
+				_, err = tx.Stmtx(c.q.DeleteSubscribers).Exec(pq.Array(open), pq.Array([]string{}))
+			}
+			if err != nil {
+				c.log.Printf("error in a bulk action on subscribers: %v", err)
+				if blocklist {
+					return false, echo.NewHTTPError(http.StatusInternalServerError,
+						c.i18n.Ts("subscribers.errorBlocklisting", "error", pqErrMsg(err)))
+				}
+				return false, echo.NewHTTPError(http.StatusInternalServerError,
+					c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.subscribers}", "error", pqErrMsg(err)))
+			}
+			done += len(open)
+			late += len(locked)
+			return true, nil
+		})
+		if err != nil {
+			return done, late, err
+		}
+	}
+	return done, late, nil
+}

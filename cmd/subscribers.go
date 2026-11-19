@@ -681,7 +681,7 @@ func (a *App) DeleteSubscribersByQuery(c echo.Context) error {
 	cond, bq := a.guardBulkQuery(user, req, core.AndSQLExp(req.Query, attribExp), listIDs)
 
 	// Delete the subscribers from the DB.
-	if err := a.core.DeleteSubscribersByQuery(req.Search, cond, listIDs, req.SubscriptionStatus); err != nil {
+	if err := a.bulkByQuery(user, false, req, cond, listIDs, &bq); err != nil {
 		return err
 	}
 	a.auditBulkQuery(c, auditSubDelete, bq, nil)
@@ -731,7 +731,7 @@ func (a *App) BlocklistSubscribersByQuery(c echo.Context) error {
 	cond, bq := a.guardBulkQuery(user, req, core.AndSQLExp(req.Query, attribExp), listIDs)
 
 	// Update the subscribers in the DB.
-	if err := a.core.BlocklistSubscribersByQuery(req.Search, cond, listIDs, req.SubscriptionStatus); err != nil {
+	if err := a.bulkByQuery(user, true, req, cond, listIDs, &bq); err != nil {
 		return err
 	}
 	a.auditBulkQuery(c, auditSubBlocklist, bq, nil)

@@ -254,3 +254,26 @@ func restrictImportOverwrite(u auth.User, opt *subimporter.SessionOpt) {
 	}
 	opt.OverwriteUserInfo = false
 }
+
+// bulkByQuery runs a bulk delete or blocklist by query for the user. cond and bq come from
+// guardBulkQuery. Whoever may manage all lists runs the upstream statement. Everybody else
+// goes through core.BulkByQueryBounded, which locks the people and looks again at who is on
+// another list before it changes them; the audit numbers then say what was done.
+func (a *App) bulkByQuery(u auth.User, blocklist bool, req subQueryReq, cond string, listIDs []int, bq *bulkQuery) error {
+	all, manage := u.GetPermittedLists(auth.PermTypeManage)
+	if all {
+		if blocklist {
+			return a.core.BlocklistSubscribersByQuery(req.Search, cond, listIDs, req.SubscriptionStatus)
+		}
+		return a.core.DeleteSubscribersByQuery(req.Search, cond, listIDs, req.SubscriptionStatus)
+	}
+	done, late, err := a.core.BulkByQueryBounded(req.Search, cond, listIDs, req.SubscriptionStatus, manage, blocklist)
+	if err != nil {
+		return err
+	}
+	skipped, _ := bq.detail["skipped_shared"].(int)
+	bq.detail["skipped_shared"] = skipped + late
+	bq.detail["counted"] = "done"
+	bq.count, bq.counted = done, true
+	return nil
+}

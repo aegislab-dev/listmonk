@@ -1441,6 +1441,7 @@
     "audit.value.query": "검색·조건으로",
     "audit.value.ids": "선택한 대상으로",
     "audit.value.before": "실행 직전에 센 수",
+    "audit.value.done": "실제로 처리한 수",
     "audit.value.edit": "편집 창",
     "audit.value.bounces": "반송 화면",
     "audit.value.orphan": "리스트 없는 구독자",
