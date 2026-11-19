@@ -286,7 +286,8 @@ describe('Pre-send tracking check', () => {
     cy.wait('@save').its('request.body.attribs.track').should('eq', false);
     cy.get('.modal.is-active [data-cy=warn-box]', { timeout: 10000 }).should('contain', 'There is no view tracking.');
     cy.get('@start.all').should('have.length', 0);
-    cy.get('.modal.is-active button.is-primary').should('contain', 'Start anyway').click();
+    // The first dialog may still be fading out: answer the new one.
+    cy.get('.modal.is-active button.is-primary').last().should('contain', 'Start anyway').click();
     cy.wait('@start');
     cy.get('@save.all').should('have.length', 1);
   });
@@ -427,6 +428,8 @@ describe('Pre-send tracking check', () => {
     cy.wait('@listCheck');
     cy.get('.modal.is-active [data-cy=warn-box]').should('contain', 'There is no view tracking.');
     cy.get('.modal.is-active button.is-primary').should('contain', 'Schedule anyway').click();
+    // Confirmed: checked once more before the status changes.
+    cy.wait('@listCheck').its('response.body.data.state').should('eq', 'warn');
     cy.wait('@listStatus').its('request.body.status').should('eq', 'scheduled');
 
     // A campaign without a warning keeps the usual confirmation.
@@ -453,8 +456,10 @@ describe('Pre-send tracking check', () => {
         body: mixedBody,
       });
       cy.get('.modal.is-active button.is-primary').click();
+      // The first dialog may still be fading out: answer the new one.
       cy.get('.modal.is-active [data-cy=warn-box]').should('contain', 'There is no view tracking.');
-      cy.get('.modal.is-active .modal-card-foot button:not(.is-primary)').click();
+      cy.get('.modal.is-active .modal-card-foot button:not(.is-primary)').last().click();
+      cy.get('.modal.is-active').should('not.exist');
       cy.get('@listStatus.all').should('have.length', n);
     });
   });

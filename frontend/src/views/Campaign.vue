@@ -814,6 +814,8 @@ export default Vue.extend({
         if (!await this.checkReplyTo() || !current()) return;
         if (!this.parseFormJSON()) return;
 
+        // The box checks the same values, so it shows what the question says.
+        if (this.$refs.tracking) this.$refs.tracking.run();
         let lines = await check(this.trackingPayload);
         let saved = null;
         for (;;) {
@@ -822,6 +824,9 @@ export default Vue.extend({
           if (!await this.askStart(lines, status) || !current()) return;
 
           if (!saved) {
+            // Saves the page as it is now (it may have been edited while the check was
+            // on its way); the check of the saved campaign below covers the difference.
+            if (!this.parseFormJSON()) return;
             try {
               // eslint-disable-next-line no-await-in-loop
               saved = await this.updateCampaign();
@@ -829,7 +834,6 @@ export default Vue.extend({
               return;
             }
             if (!saved || !current()) return;
-            if (this.$refs.tracking) this.$refs.tracking.run();
           }
 
           // eslint-disable-next-line no-await-in-loop
