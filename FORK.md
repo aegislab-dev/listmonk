@@ -416,7 +416,20 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - 관리자(`lists:manage_all`) 화면은 그대로다.
 
 ### 측정 (로컬 Postgres 17, 합성 데이터)
-__LST42_MEASURE__
+구독자 400,000명, 구독 행 546,227개, 리스트 14개(팀 가 6개·팀 나 6개·팀 없음 2개), 2개 이상 리스트에 있는 사람 130,730명(32.7%), 한 리스트는 156,428명. 팀 가의 리스트에는 270,986명(구독 행 306,436개)이 있고 그중 76,877명이 잠긴 구독자다. 앱이 보내는 SQL을 psql에서 7회 돌린 중앙값이다(`~/.herdr-projects/reports/listmonk/42/harness/perf.py`).
+
+| 항목 | 시간 |
+|---|---|
+| 팀원 목록 첫 페이지(20명), upstream 쿼리(중복 있음) / multi 쿼리 | 0.5ms / 0.8ms |
+| 팀원 목록 500쪽(offset 10,000), upstream / multi | 3.4ms / 6.1ms |
+| 팀원 목록 수 세기, upstream(행 306,436) / multi(사람 270,986) | 56.5ms / 80.2ms |
+| 팀원 이름 검색(「Person 1234」, 111명) multi 목록 / 수 | 424.7ms / 193.9ms |
+| 관리자 목록 첫 페이지(리스트 없음, 쿼리 변경 없음) | 0.4ms |
+| 리스트 하나(15만 명) 첫 페이지(쿼리 변경 없음) | 0.7ms |
+| 잠김 판정 50명(`axm-subscriber-locked`) | 0.5ms |
+| 15만 명 리스트 조건 일괄 수 세기, 제외 조건 없음 / 있음(120,758명 남음) | 42.7ms / 89.9ms |
+
+이름 검색은 upstream과 같은 정규식 전체 훑기라 느리다(이번 변경과 무관). 운영 수치(Q1~Q3)는 코디네이터가 Railway Query 복구 뒤 실행한다.
 
 ### 남긴 것
 - 반송 화면의 「모두 차단」(`PUT /api/bounces/blocklist`, `bounces:manage`)은 팀과 무관하게 반송된 사람 전원을 차단한다(전사 차단, upstream 그대로). 선택 차단은 구독자 ID로 보내므로 잠긴 사람이 섞이면 403이다.
