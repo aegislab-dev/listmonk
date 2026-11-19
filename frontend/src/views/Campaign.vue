@@ -57,7 +57,7 @@
     <b-loading :active="loading.campaigns || savingCampaign" />
 
     <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
-      @close="sendAsk = null">
+      @close="onSendClosed">
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
         :campaign-name="sendAsk.name" :campaign-subject="sendAsk.subject || ''" @done="onSendDone" @failed="onSendFailed" />
     </b-modal>
@@ -676,7 +676,9 @@ export default Vue.extend({
         headers: data.headers,
         mode: 'test',
         ...(data.altbody === null ? {} : { altbody: data.altbody }),
-        ...(this.senderPolicyEnabled ? {} : { from_email: data.from_email }),
+        // The sender fields as the test sends them: with sender domains the server sets
+        // the sender from the account of the person sending the test (LST-44 review).
+        ...this.senderFields(),
       }).catch(() => null);
       this.$api.testCampaign(data).then(async () => {
         const parts = trackingToastParts(await tracking).map(({ key, params }) => this.$t(key, params));
@@ -721,7 +723,8 @@ export default Vue.extend({
       }
     },
 
-    async updateCampaign(typ) {
+    // quiet: no notice (the start shows it after its questions).
+    async updateCampaign(typ, { quiet = false } = {}) {
       if (this.savingCampaign) return undefined;
       const data = {
         archive_slug: this.form.archiveSlug,
@@ -768,7 +771,10 @@ export default Vue.extend({
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
         await this.saveRecentRule(d.id);
-        this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        if (!quiet) this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        // Saving can change what the check reads beyond the page (the sender of the
+        // person who saves, merged headers): check again (LST-44).
+        if (this.$refs.tracking) this.$refs.tracking.run();
         return d;
       } finally {
         this.savingCampaign = false;
@@ -793,43 +799,52 @@ export default Vue.extend({
     },
 
     // Starts or schedule a campaign.
+    //
+    // Saves the page first, then opens the pre-send window (LST-48) on the saved campaign:
+    // the window reads from the server what will really be sent (the people, the sender,
+    // the tracking and the other checks) and, when confirmed, only changes the status. The
+    // server refuses the change when the campaign was edited after the window read it.
+    // Cancelling the window leaves the edits saved (approved LST-48 design, A1 note).
     async startCampaign() {
       if (this.savingCampaign || (!this.canStart && !this.canSchedule)) {
         return;
       }
 
       if (!await this.checkReplyTo()) return;
-
-      // Save first, then check what was saved, then ask (LST-44). The tracking warning is
-      // about the campaign exactly as the server will send it: a check of the form could
-      // differ from it (an edit made while the check is on its way, or values the server
-      // merges on save, such as custom headers). After the confirmation nothing is saved
-      // again, only the status changes.
       if (!this.parseFormJSON()) return;
       const status = this.canStart ? 'running' : 'scheduled';
       let saved;
       try {
-        saved = await this.updateCampaign();
+        // The save notice is not shown over the window; closing the window shows it.
+        saved = await this.updateCampaign(undefined, { quiet: true });
       } catch (e) {
         return;
       }
       if (!saved) return;
-      // The tracking box shows the saved campaign again; the window checks it itself.
-      this.$refs.tracking?.run();
 
       // The window shows the campaign as saved and, when confirmed, only changes its status.
       this.sendAsk = {
-        id: saved.id, name: saved.name, subject: saved.subject, status,
+        id: saved.id, name: saved.name, subject: saved.subject, status, handled: false,
       };
       this.isSendVisible = true;
     },
 
     onSendDone() {
+      if (this.sendAsk) this.sendAsk.handled = true;
       this.$router.push({ name: 'campaigns' });
     },
 
     onSendFailed(err) {
+      // The error is shown by the window.
+      if (this.sendAsk) this.sendAsk.handled = true;
       if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
+    },
+
+    // The window was closed without sending: say that the edits were saved before it opened.
+    onSendClosed() {
+      const ask = this.sendAsk;
+      this.sendAsk = null;
+      if (ask && !ask.handled) this.$utils.toast(this.$t('globals.messages.updated', { name: ask.name }));
     },
 
     unscheduleCampaign() {
@@ -862,7 +877,10 @@ export default Vue.extend({
         ...(Array.isArray(headers) ? { headers } : {}),
         ...(attribs && typeof attribs === 'object' && !Array.isArray(attribs) ? { attribs } : {}),
         ...(altbody === null || altbody === undefined ? {} : { altbody }),
-        ...(this.senderPolicyEnabled ? {} : { from_email: this.form.fromEmail }),
+        ...this.senderFields(),
+        // What the send will be: templates can read the status (LST-44 review).
+        status: this.form.sendLater && this.form.sendAtDate ? 'scheduled' : 'running',
+        send_at: this.form.sendLater ? this.form.sendAtDate : null,
       };
     },
 

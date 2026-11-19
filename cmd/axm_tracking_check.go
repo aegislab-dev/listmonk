@@ -26,6 +26,7 @@ type trackingCheckReq struct {
 	Name      *string         `json:"name" form:"name"`
 	Subject   *string         `json:"subject" form:"subject"`
 	FromEmail *string         `json:"from_email" form:"from_email"`
+	ReplyTo   *string         `json:"reply_to" form:"reply_to"`
 	AltBody   *string         `json:"altbody" form:"altbody"`
 	Headers   json.RawMessage `json:"headers"`
 
@@ -34,6 +35,12 @@ type trackingCheckReq struct {
 	Mode    string       `json:"mode" form:"mode"`
 	Tags    *[]string    `json:"tags"`
 	Attribs *models.JSON `json:"attribs"`
+
+	// What the campaign will be when it is sent (not for mode "test", which sends it as
+	// it is now): Status is the action ("running" to start or resume, "scheduled"), and
+	// SendAt the send time on the page (null for none; left out: the stored one).
+	Status *string         `json:"status"`
+	SendAt json.RawMessage `json:"send_at"`
 }
 
 // CheckCampaignTracking tells, before a campaign is sent, whether its views and clicks
@@ -97,8 +104,8 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 	if req.Subject != nil {
 		camp.Subject = *req.Subject
 	}
-	if req.FromEmail != nil {
-		camp.FromEmail = *req.FromEmail
+	if err := a.trackingSender(c, &camp, req); err != nil {
+		return err
 	}
 	if req.AltBody != nil {
 		camp.AltBody = null.StringFrom(*req.AltBody)
@@ -125,6 +132,15 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 		camp.Attribs = *req.Attribs
 	}
 
+	// Templates can read the campaign's status and sender. A test send renders the
+	// campaign as it is; a real send renders it as it is when the manager picks it up,
+	// after the status change. Render it that way here too.
+	if req.Mode != "test" {
+		if err := a.trackingSendState(c, &camp, req); err != nil {
+			return err
+		}
+	}
+
 	rep, err := a.manager.CheckTracking(&camp, dummySubscriber)
 	if err != nil {
 		key := "templates.errorRendering"
@@ -136,4 +152,89 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, okResp{rep})
+}
+
+// trackingSendState sets what a real send of the campaign will see and a test send does
+// not: the status and the sender after the start or schedule (LST-44 review: a template
+// with {{ if eq .Campaign.Status "draft" }} added the pixel to a test send only).
+func (a *App) trackingSendState(c echo.Context, camp *models.Campaign, req trackingCheckReq) error {
+	if len(req.SendAt) > 0 {
+		var at null.Time
+		if err := json.Unmarshal(req.SendAt, &at); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "send_at"))
+		}
+		camp.SendAt = at
+	}
+
+	status := models.CampaignStatusRunning
+	if req.Status != nil {
+		switch *req.Status {
+		case models.CampaignStatusRunning, models.CampaignStatusScheduled:
+			status = *req.Status
+		default:
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "status"))
+		}
+	}
+	// As the update-campaign-status query: starting a campaign with a send time
+	// schedules it. The manager then sends the row as it read it, before it marks it
+	// running, so a scheduled campaign is sent with the status "scheduled".
+	if status == models.CampaignStatusRunning && camp.SendAt.Valid {
+		status = models.CampaignStatusScheduled
+	}
+
+	// As UpdateCampaignStatus: with sender domains, starting a draft sets the sender
+	// from the account of the person who starts it.
+	if a.cfg != nil && len(a.cfg.SenderDomains) > 0 && camp.Status == models.CampaignStatusDraft {
+		camp.FromEmail = resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+	}
+	camp.Status = status
+	return nil
+}
+
+// trackingSender sets the sender (from, reply-to) that templates read, the way the send
+// that is checked sets it (LST-44 review: a template that adds the pixel for one sender
+// only). A test send takes the sender from the request and, with sender domains, from
+// the account of the person who sends the test (TestCampaign), not the stored one.
+// Otherwise the sender is the stored one (a reply-to on the page counts, as saving it
+// does); the start of a draft then sets the starter's (trackingSendState).
+func (a *App) trackingSender(c echo.Context, camp *models.Campaign, req trackingCheckReq) error {
+	user := auth.GetUser(c)
+	var s campReq
+	if req.Mode == "test" {
+		if req.FromEmail != nil {
+			s.FromEmail = *req.FromEmail
+		}
+	} else {
+		s.FromEmail, s.ReplyTo, s.Status = camp.FromEmail, camp.ReplyTo, camp.Status
+		if req.FromEmail != nil {
+			s.FromEmail = *req.FromEmail
+		}
+	}
+	s.ReplyToInput = req.ReplyTo
+
+	stored := s
+	s, err := a.campaignSender(s, user)
+	if err != nil && req.Mode != "test" {
+		// Saving refuses an invalid sender (one that is still being typed) and keeps the
+		// stored one: check with that.
+		stored.ReplyToInput = nil
+		stored.FromEmail = camp.FromEmail
+		s, err = a.campaignSender(stored, user)
+	}
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+	camp.ReplyTo = s.ReplyTo
+	switch {
+	case req.Mode == "test" && len(a.cfg.SenderDomains) > 0:
+		camp.FromEmail = resolveFrom(user, a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+	case req.Mode == "test" || len(a.cfg.SenderDomains) == 0:
+		camp.FromEmail = s.FromEmail
+	default:
+		// With sender domains, saving would set the sender of the person who saves, but
+		// a campaign that is only looked at (a reader, or a scheduled campaign that is
+		// not saved again) is sent with the stored sender. Keep it; the start of a draft
+		// sets the starter's (trackingSendState), and the page checks again after a save.
+	}
+	return nil
 }

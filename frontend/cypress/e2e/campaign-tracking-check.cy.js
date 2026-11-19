@@ -289,6 +289,74 @@ describe('Pre-send tracking check', () => {
     cy.request(`/api/campaigns/${ids.ok}`).its('body.data.attribs.track').should('eq', false);
   });
 
+  it('checks the status that the send will have, not the draft status a test send has', () => {
+    cy.request('PUT', `/api/campaigns/${ids.ok}`, {
+      name: `Tracking ok ${stamp}`,
+      subject: 'Status',
+      type: 'regular',
+      messenger: 'email',
+      lists: [listId],
+      content_type: 'html',
+      template_id: bareTpl,
+      attribs: {},
+      body: '{{ if eq .Campaign.Status "draft" }}{{ TrackView }}{{ end }}<p>Hello</p>',
+    });
+    open('ok');
+    // Started, the campaign is "running": no pixel. The box says so.
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn');
+    cy.get('@check').its('request.body.status').should('eq', 'running');
+    // The window reads the saved campaign as the sender will: the same warning.
+    cy.get('[data-cy=btn-start]').click();
+    ready();
+    cy.get(warnLines).should('contain', 'There is no view tracking.');
+    cy.get('[data-cy=send-cancel]').click();
+    cy.get('.modal.is-active').should('not.exist');
+    // A test send goes out as the draft it is: with the pixel, and its notice says nothing.
+    cy.intercept('POST', `/api/campaigns/${ids.ok}/test`, { statusCode: 200, body: { data: true } }).as('testSend');
+    cy.get('.box .taginput input').type('demo@example.invalid{enter}');
+    cy.contains('.box button', 'Send').click();
+    cy.wait('@testSend');
+    cy.get('.toast').should('contain', 'Test message sent').and('not.contain', 'no view tracking');
+  });
+
+  it('drops a start whose window is still open or loading when the page is left', () => {
+    let slow = true;
+    cy.intercept('PUT', '/api/campaigns/*/status').as('anyStatus');
+    cy.intercept('GET', preflight, (req) => {
+      if (slow) req.on('response', (res) => { res.setDelay(2500); });
+    }).as('anyPreflight');
+    const openFromList = (key) => {
+      cy.contains('tbody tr a', `Tracking ${key} ${stamp}`).click();
+      cy.location('pathname').should('eq', `/admin/campaigns/${ids[key]}`);
+      cy.get(box, { timeout: 10000 }).should('have.attr', 'data-state').and('not.eq', 'checking');
+    };
+    cy.visit('/admin/campaigns');
+    openFromList('warn');
+
+    // Leave for the list and open another draft while the window is still reading.
+    cy.get('[data-cy=btn-start]').click();
+    cy.get('[data-cy=send-loading]').should('be.visible');
+    cy.window().then((win) => win.history.back());
+    cy.location('pathname').should('eq', '/admin/campaigns');
+    openFromList('visual');
+    cy.wait(3000);
+    cy.get('.modal.is-active').should('not.exist');
+    cy.get('@anyStatus.all').should('have.length', 0);
+    cy.request(`/api/campaigns/${ids.warn}`).its('body.data.status').should('eq', 'draft');
+
+    // A window that is open goes away with its page, too.
+    cy.then(() => { slow = false; });
+    cy.window().then((win) => win.history.back());
+    cy.location('pathname').should('eq', '/admin/campaigns');
+    openFromList('warn');
+    cy.get('[data-cy=btn-start]').click();
+    ready();
+    cy.window().then((win) => win.history.back());
+    cy.location('pathname').should('eq', '/admin/campaigns');
+    cy.get('.modal.is-active').should('not.exist');
+    cy.get('@anyStatus.all').should('have.length', 0);
+  });
+
   it('warns when a replaced custom header is still sent', () => {
     cy.request('PUT', `/api/campaigns/${ids.ok}`, {
       name: `Tracking ok ${stamp}`,

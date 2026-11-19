@@ -36,12 +36,13 @@ func TestCampaignTrackingCheck(t *testing.T) {
 	e.a.i18n = lang
 	e.a.log = log.New(io.Discard, "", 0)
 	e.a.manager = e.startManager(e.store, &bodyMessenger{}, io.Discard)
+	e.a.cfg = &Config{FromEmail: "App <app@example.invalid>"}
 
 	var bare, tracked int
 	e.get(&bare, `INSERT INTO templates(name,type,subject,body) VALUES('bare','campaign','','<html><body>{{ template "content" . }}<a href="{{ UnsubscribeURL }}">leave</a></body></html>') RETURNING id`)
 	e.get(&tracked, `INSERT INTO templates(name,type,subject,body) VALUES('tracked','campaign','','<html><body>{{ template "content" . }}{{ TrackView }}</body></html>') RETURNING id`)
 	const stored = `<p><a href="https://a.example.test/x">A</a> <a href="https://b.example.test/y@TrackLink">B</a></p>`
-	e.db.MustExec(`UPDATE campaigns SET status='draft', content_type='richtext', body=$2, template_id=$3 WHERE id=$1`, e.campID, stored, bare)
+	e.db.MustExec(`UPDATE campaigns SET status='draft', content_type='richtext', body=$2, template_id=$3, from_email='Test <t@example.invalid>' WHERE id=$1`, e.campID, stored, bare)
 	e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, e.aList)
 
 	type counts struct{ Links, Views, Clicks, Sends int }
@@ -149,6 +150,145 @@ func TestCampaignTrackingCheck(t *testing.T) {
 	if rep = check(js(byTpl)); rep.View != "missing" {
 		t.Fatalf("unsaved template id: %+v", rep)
 	}
+
+	// A template can read the status, which the start changes: the check renders the
+	// campaign as the manager sends it (started: "running"; with a send time: the row as
+	// it was read, "scheduled"), and a test send as it is now (LST-44 review).
+	st := map[string]any{"content_type": "html", "template_id": bare,
+		"body": `{{ if eq .Campaign.Status "draft" }}{{ TrackView }}{{ end }}<p>x</p>`}
+	if rep = check(js(st)); rep.View != "missing" {
+		t.Fatalf("draft-only pixel, started: %+v", rep)
+	}
+	st["mode"] = "test"
+	if rep = check(js(st)); rep.View != "manual" {
+		t.Fatalf("draft-only pixel, test send: %+v", rep)
+	}
+	delete(st, "mode")
+	st["body"] = `{{ if eq .Campaign.Status "scheduled" }}{{ TrackView }}{{ end }}<p>x</p>`
+	for _, c := range []struct {
+		status, sendAt any
+		view           string
+	}{
+		{nil, nil, "missing"},
+		{"running", nil, "missing"},
+		{"scheduled", nil, "manual"},
+		{"running", "2099-01-02T03:04:05Z", "manual"},
+	} {
+		req := map[string]any{}
+		for k, v := range st {
+			req[k] = v
+		}
+		if c.status != nil {
+			req["status"] = c.status
+		}
+		if c.sendAt != nil {
+			req["send_at"] = c.sendAt
+		}
+		if rep = check(js(req)); rep.View != c.view {
+			t.Fatalf("status %v, send_at %v: %+v", c.status, c.sendAt, rep)
+		}
+	}
+	// A stored send time counts unless the page takes it off.
+	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() + INTERVAL '30 days' WHERE id=$1`, e.campID)
+	if rep = check(js(st)); rep.View != "manual" {
+		t.Fatalf("stored send time: %+v", rep)
+	}
+	st["send_at"] = nil
+	if rep = check(js(st)); rep.View != "missing" {
+		t.Fatalf("send time taken off on the page: %+v", rep)
+	}
+	e.db.MustExec(`UPDATE campaigns SET send_at=NULL WHERE id=$1`, e.campID)
+	if code, _ := e.call(e.a.CheckCampaignTracking, member, http.MethodPost, target, strconv.Itoa(e.campID), `{"status":"finished"}`); code != http.StatusBadRequest {
+		t.Errorf("status finished: %d, want 400", code)
+	}
+
+	// The sender, which templates can read (LST-44 review). With sender domains, a test
+	// send takes it from the account of the person who sends the test, and a start from
+	// the person who starts; neither is the stored one, which the author's save set.
+	// A draft that two people edit gets a pixel for its author only: the check must
+	// warn the other one.
+	e.a.cfg = &Config{SenderDomains: []string{"example.invalid"}, FromEmail: "App <app@example.invalid>"}
+	var uc int
+	e.get(&uc, `INSERT INTO users(username,email,name,user_role_id,list_role_id,status,type) VALUES('uc','uc@example.invalid','uc',$1,$2,'enabled','user') RETURNING id`, e.memberRole, e.team1)
+	author, editor := member, e.as(uc)
+	authorFrom := resolveFrom(author, "", e.a.cfg.FromEmail, e.a.cfg.SenderDomains)
+	if editorFrom := resolveFrom(editor, "", e.a.cfg.FromEmail, e.a.cfg.SenderDomains); authorFrom == editorFrom || !strings.Contains(authorFrom, "ua@") {
+		t.Fatalf("senders: author %q, editor %q", authorFrom, editorFrom)
+	}
+	var storedFrom, storedReply string
+	e.get(&storedFrom, `SELECT from_email FROM campaigns WHERE id=$1`, e.campID)
+	e.get(&storedReply, `SELECT reply_to FROM campaigns WHERE id=$1`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET from_email=$2, reply_to='stored@example.test' WHERE id=$1`, e.campID, authorFrom)
+	checkAs := func(u auth.User, body map[string]any) manager.TrackingReport {
+		t.Helper()
+		code, data := e.call(e.a.CheckCampaignTracking, u, http.MethodPost, target, strconv.Itoa(e.campID), js(body))
+		var rep manager.TrackingReport
+		if code != http.StatusOK || json.Unmarshal(data, &rep) != nil {
+			t.Fatalf("%v: %d %s", body, code, data)
+		}
+		return rep
+	}
+	byFrom := map[string]any{"content_type": "html", "template_id": bare,
+		"body": fmt.Sprintf(`{{ if eq .Campaign.FromEmail %q }}{{ TrackView }}{{ end }}<p>x</p>`, authorFrom)}
+	for _, mode := range []string{"test", ""} {
+		byFrom["mode"] = mode
+		if rep = checkAs(author, byFrom); rep.View != "manual" {
+			t.Fatalf("mode %q, the author: %+v", mode, rep)
+		}
+		if rep = checkAs(editor, byFrom); rep.View != "missing" {
+			t.Fatalf("mode %q, another editor: %+v", mode, rep)
+		}
+	}
+	// A campaign the author scheduled is sent with the stored sender, whoever looks at
+	// it: another person's check (stored or with the page) must not read theirs.
+	e.db.MustExec(`UPDATE campaigns SET status='scheduled', send_at=NOW() + INTERVAL '30 days' WHERE id=$1`, e.campID)
+	delete(byFrom, "mode")
+	for _, body := range []map[string]any{{}, {"status": "scheduled"}, byFrom} {
+		probe := map[string]any{}
+		for k, v := range body {
+			probe[k] = v
+		}
+		probe["content_type"], probe["template_id"], probe["body"] = "html", bare, byFrom["body"]
+		if len(body) == 0 {
+			// The stored body: put the probe there.
+			e.db.MustExec(`UPDATE campaigns SET content_type='html', body=$2 WHERE id=$1`, e.campID, byFrom["body"])
+			probe = map[string]any{}
+		}
+		if rep = checkAs(editor, probe); rep.View != "manual" {
+			t.Fatalf("scheduled by the author, %v checked by another person: %+v", body, rep)
+		}
+	}
+	e.db.MustExec(`UPDATE campaigns SET status='draft', send_at=NULL, content_type='richtext', body=$2 WHERE id=$1`, e.campID, stored)
+
+	// The reply-to of a test send is the one in the request, read as the send reads it;
+	// none in the request is none, not the stored one.
+	byReply := map[string]any{"content_type": "html", "template_id": bare, "mode": "test",
+		"body": `{{ if eq .Campaign.ReplyTo "a@example.test" }}{{ TrackView }}{{ end }}{{ if eq .Campaign.ReplyTo "stored@example.test" }}<a href="https://a.example.test/stored">s</a>{{ end }}<p>x</p>`}
+	if rep = checkAs(author, byReply); rep.View != "missing" || rep.Links.Total != 0 {
+		t.Fatalf("test send without a reply-to: %+v", rep)
+	}
+	byReply["reply_to"] = " <a@example.test> "
+	if rep = checkAs(author, byReply); rep.View != "manual" {
+		t.Fatalf("test send with a reply-to: %+v", rep)
+	}
+	// Saving keeps the stored reply-to unless the request has one.
+	delete(byReply, "mode")
+	delete(byReply, "reply_to")
+	if rep = checkAs(author, byReply); rep.View != "missing" || rep.Links.Total != 1 {
+		t.Fatalf("saved reply-to: %+v", rep)
+	}
+	// A reply-to that is still being typed: saving would refuse it and keep the stored
+	// one, so the check reads the stored one; a test send with it fails, so does its check.
+	byReply["reply_to"] = "not an address"
+	if rep = checkAs(author, byReply); rep.View != "missing" || rep.Links.Total != 1 {
+		t.Fatalf("invalid reply-to on the page: %+v", rep)
+	}
+	byReply["mode"] = "test"
+	if code, _ := e.call(e.a.CheckCampaignTracking, author, http.MethodPost, target, strconv.Itoa(e.campID), js(byReply)); code != http.StatusBadRequest {
+		t.Errorf("invalid reply-to in a test send: %d, want 400", code)
+	}
+	e.db.MustExec(`UPDATE campaigns SET from_email=$2, reply_to=$3 WHERE id=$1`, e.campID, storedFrom, storedReply)
+	e.a.cfg = &Config{FromEmail: "App <app@example.invalid>"}
 
 	// The same request as a form post, the way the preview is posted.
 	form := url.Values{"content_type": {"richtext"}, "template_id": {strconv.Itoa(tracked)}, "body": {`<a href="https://a.example.test/x">A</a>`}}

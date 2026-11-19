@@ -70,6 +70,12 @@ export const trackingConfirmLines = (report) => {
   return lines;
 };
 
+// Whether every warning in `now` was already in the confirmed `before` (same line, same
+// numbers). Starting asks again when a later check of the saved campaign finds more.
+export const warningsCovered = (before, now) => now.every((n) => before.some(
+  (b) => b.key === n.key && JSON.stringify(b.params || {}) === JSON.stringify(n.params || {}),
+));
+
 // What the test send notice adds. Empty: the usual notice.
 export const trackingToastParts = (report) => {
   if (!report) return [];
