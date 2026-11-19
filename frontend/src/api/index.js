@@ -380,6 +380,10 @@ export const searchRecentCampaigns = (query, signal) => http.get('/api/campaigns
   signal,
 });
 
+export const previewCampaignReactionList = (id, data) => http.post(`/api/campaigns/${id}/reaction-list/preview`, data, { disableToast: true });
+
+export const makeCampaignReactionList = (id, data) => http.post(`/api/campaigns/${id}/reaction-list`, data, { disableToast: true });
+
 export const getCampaignStats = async () => http.get('/api/campaigns/running/stats', {});
 
 export const createCampaign = async (data) => http.post(

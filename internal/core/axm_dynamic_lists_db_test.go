@@ -139,14 +139,15 @@ func testCore(t *testing.T, db *sqlx.DB, q map[string]string) *Core {
 	typ := reflect.ValueOf(queries).Elem()
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Type().Field(i)
-		raw := q[field.Tag.Get("query")]
+		name := field.Tag.Get("query")
+		raw := q[name]
 		if raw == "" {
 			continue
 		}
 		if typ.Field(i).Kind() == reflect.String {
 			typ.Field(i).SetString(raw)
 		} else if !strings.Contains(raw, "%") {
-			stmt, err := db.Preparex(raw)
+			stmt, err := db.Preparex(models.WithReactionCandidates(name, raw, q["axm-reaction-candidates"]))
 			if err != nil {
 				t.Fatal(field.Name, err)
 			}

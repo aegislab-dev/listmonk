@@ -257,6 +257,13 @@
               <b-icon icon="chart-bar" size="is-small" />
             </b-tooltip>
           </router-link>
+          <a v-if="canReact(props.row)" href="#" data-cy="btn-campaign-reaction"
+            class="campaign-reaction-action" :aria-label="$t('campaigns.reactionList.title')"
+            @click.prevent="reactionCampaign = props.row">
+            <b-tooltip :label="$t('campaigns.reactionList.title')" type="is-dark">
+              <b-icon icon="format-list-bulleted-square" size="is-small" />
+            </b-tooltip>
+          </a>
           <a v-if="$can('campaigns:manage')" href="#"
             @click.prevent="$utils.confirm($t('campaigns.confirmDelete', { name: props.row.name }), () => deleteCampaign(props.row))"
             data-cy="btn-delete" :aria-label="$t('globals.buttons.delete')">
@@ -272,6 +279,8 @@
 
     <campaign-preview v-if="previewItem" type="campaign" :id="previewItem.id" :title="previewItem.name"
       @close="closePreview" />
+    <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
+      @close="reactionCampaign = null" />
   </section>
 </template>
 
@@ -279,6 +288,8 @@
 import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
+import reactionStatuses from '../campaign-reaction-list';
+import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
 import CopyText from '../components/CopyText.vue';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
@@ -286,6 +297,7 @@ import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
 export default Vue.extend({
   components: {
     CampaignPreview,
+    CampaignReactionList,
     EmptyPlaceholder,
     CopyText,
   },
@@ -293,6 +305,7 @@ export default Vue.extend({
   data() {
     return {
       previewItem: null,
+      reactionCampaign: null,
       queryParams: {
         page: 1,
         query: '',
@@ -311,6 +324,11 @@ export default Vue.extend({
   },
 
   methods: {
+    canReact(campaign) {
+      return this.$canCreateList() && this.$can('campaigns:get_analytics')
+        && this.$can('campaigns:get', 'campaigns:get_all') && reactionStatuses.includes(campaign.status);
+    },
+
     // Campaign statuses.
     canStart(c) {
       return c.status === 'draft' && !c.sendAt;
@@ -548,3 +566,7 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.campaign-reaction-action { background: #e8f0fe; border-radius: 4px; }
+</style>
