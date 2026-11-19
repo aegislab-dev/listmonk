@@ -26,19 +26,19 @@
         <div v-if="canManage || canSend" class="buttons">
           <b-field grouped v-if="isEditing && canEdit">
             <b-field v-if="canManage" expanded>
-              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns" type="is-primary"
+              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns || savingCampaign" type="is-primary"
                 icon-left="content-save-outline" data-cy="btn-save" aria-keyshortcuts="ctrl+s">
                 <span class="has-kbd">{{ $t('globals.buttons.saveChanges') }} <span class="kbd">Ctrl+S</span></span>
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canStart">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign" type="is-primary"
                 icon-left="rocket-launch-outline" data-cy="btn-start">
                 {{ $t('campaigns.start') }}
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canSchedule">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign" type="is-primary"
                 icon-left="clock-start" data-cy="btn-schedule">
                 {{ $t('campaigns.schedule') }}
               </b-button>
@@ -54,7 +54,7 @@
       </div>
     </header>
 
-    <b-loading :active="loading.campaigns" />
+    <b-loading :active="loading.campaigns || savingCampaign" />
 
     <b-tabs type="is-boxed" :animated="false" v-model="activeTab" @input="onTab">
       <b-tab-item :label="$tc('globals.terms.campaign')" label-position="on-border" value="campaign"
@@ -94,6 +94,10 @@
 
                 <list-selector v-model="form.lists" :selected="form.lists" :all="lists.results" :disabled="!canEdit"
                   :label="$t('globals.terms.lists')" :placeholder="$t('campaigns.sendToLists')" />
+
+                <recent-send-exclude v-if="canShowRecentRule" v-model="recentRule" :campaign-id="data.id || createdDraftId"
+                  :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || !recentRuleLoaded || savingCampaign" />
+                <p v-if="recentRuleError" class="help is-danger mb-4" role="alert">{{ recentRuleError }}</p>
 
                 <div class="columns">
                   <div class="column is-6">
@@ -167,7 +171,7 @@
                 <hr />
 
                 <b-field v-if="isNew">
-                  <b-button native-type="submit" type="is-primary" :loading="loading.campaigns" data-cy="btn-continue">
+                  <b-button native-type="submit" type="is-primary" :loading="loading.campaigns || savingCampaign" data-cy="btn-continue">
                     {{ $t('campaigns.continue') }}
                   </b-button>
                 </b-field>
@@ -348,9 +352,11 @@ import CampaignPreview from '../components/CampaignPreview.vue';
 import CopyText from '../components/CopyText.vue';
 import Editor from '../components/Editor.vue';
 import ListSelector from '../components/ListSelector.vue';
+import RecentSendExclude from '../components/RecentSendExclude.vue';
 import Media from './Media.vue';
 import SenderAddressInput from '../components/SenderAddressInput.vue';
 import { isSenderDomain } from '../senders';
+import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
 
 export default Vue.extend({
   components: {
@@ -360,6 +366,7 @@ export default Vue.extend({
     CopyText,
     CampaignPreview,
     SenderAddressInput,
+    RecentSendExclude,
   },
 
   data() {
@@ -380,6 +387,12 @@ export default Vue.extend({
       isPreviewingArchive: false,
       activeTab: 'campaign',
       replyError: '',
+      recentRule: defaultRecentRule(),
+      savedRecentRule: JSON.stringify({ enabled: false }),
+      recentRuleLoaded: false,
+      recentRuleError: '',
+      createdDraftId: 0,
+      savingCampaign: false,
 
       data: {},
 
@@ -478,7 +491,7 @@ export default Vue.extend({
     },
 
     isUnsaved() {
-      return this.data.body !== this.form.content.body
+      return this.recentRuleDirty || this.data.body !== this.form.content.body
         || this.data.contentType !== this.form.content.contentType;
     },
 
@@ -499,6 +512,8 @@ export default Vue.extend({
     },
 
     onSubmit(typ) {
+      if (this.savingCampaign) return;
+
       // Validate custom JSON headers.
       if (this.form.headersStr && this.form.headersStr !== '[]') {
         try {
@@ -540,7 +555,7 @@ export default Vue.extend({
 
       switch (typ) {
         case 'create':
-          this.createCampaign();
+          this.createCampaign().catch(() => {});
           break;
         case 'test':
           this.sendTest();
@@ -552,7 +567,7 @@ export default Vue.extend({
     },
 
     getCampaign(id) {
-      return this.$api.getCampaign(id).then((data) => {
+      return this.$api.getCampaign(id).then(async (data) => {
         this.data = data;
         this.form = {
           ...this.form,
@@ -577,7 +592,32 @@ export default Vue.extend({
           }
           return f;
         });
+
+        if (data.type === 'regular') {
+          try {
+            const rule = await this.$api.getRecentRule(id);
+            this.recentRule = { ...defaultRecentRule(), ...rule };
+            this.savedRecentRule = this.recentRuleKey;
+            this.recentRuleLoaded = true;
+          } catch {
+            this.recentRuleError = this.$t('campaigns.recent.loadError');
+          }
+        }
       });
+    },
+
+    async saveRecentRule(id) {
+      if (!this.recentRuleDirty) return;
+      const payload = recentRulePayload(this.recentRule);
+      try {
+        await this.$api.saveRecentRule(id, payload);
+        this.savedRecentRule = JSON.stringify(payload);
+        this.recentRuleError = '';
+      } catch (err) {
+        this.recentRuleError = this.$t('campaigns.recent.saveError');
+        this.activeTab = 'campaign';
+        throw err;
+      }
     },
 
     async sendTest() {
@@ -608,7 +648,7 @@ export default Vue.extend({
       return false;
     },
 
-    createCampaign() {
+    async createCampaign() {
       const data = {
         archiveSlug: this.form.subject,
         name: this.form.name,
@@ -625,13 +665,21 @@ export default Vue.extend({
         media: this.form.media.map((m) => m.id),
       };
 
-      this.$api.createCampaign(data).then((d) => {
+      this.savingCampaign = true;
+      try {
+        // If the draft was created but saving the rule failed, retry on the same draft.
+        const d = this.createdDraftId ? await this.$api.updateCampaign(this.createdDraftId, data)
+          : await this.$api.createCampaign(data);
+        this.createdDraftId = d.id;
+        await this.saveRecentRule(d.id);
         this.$router.push({ name: 'campaign', hash: '#content', params: { id: d.id } });
-      });
-      return false;
+      } finally {
+        this.savingCampaign = false;
+      }
     },
 
     async updateCampaign(typ) {
+      if (this.savingCampaign) return undefined;
       const data = {
         archive_slug: this.form.archiveSlug,
         name: this.form.name,
@@ -665,6 +713,7 @@ export default Vue.extend({
       }
 
       // Save and propagate errors before starting or scheduling a campaign.
+      this.savingCampaign = true;
       try {
         const d = await this.$api.updateCampaign(this.data.id, data);
         this.data = d;
@@ -672,11 +721,14 @@ export default Vue.extend({
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
+        await this.saveRecentRule(d.id);
         this.$utils.toast(this.$t(typMsg, { name: d.name }));
         return d;
       } catch (err) {
         if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
         throw err;
+      } finally {
+        this.savingCampaign = false;
       }
     },
 
@@ -699,14 +751,16 @@ export default Vue.extend({
 
     // Starts or schedule a campaign.
     async startCampaign() {
-      if (!this.canStart && !this.canSchedule) {
+      if (this.savingCampaign || (!this.canStart && !this.canSchedule)) {
         return;
       }
 
       if (!await this.checkReplyTo()) return;
       this.$utils.confirm(
-        null,
+        this.recentRule.enabled
+          ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null,
         () => {
+          if (this.savingCampaign) return;
           // First save the campaign.
           this.updateCampaign().then(() => {
             // Then start/schedule it.
@@ -738,6 +792,19 @@ export default Vue.extend({
 
   computed: {
     ...mapState(['serverConfig', 'loading', 'lists', 'templates', 'profile']),
+
+    canShowRecentRule() {
+      return this.isNew || this.data.type === 'regular';
+    },
+    recentListIds() {
+      return this.form.lists.map(({ id }) => id).filter((id) => id > 0);
+    },
+    recentRuleKey() {
+      return JSON.stringify(recentRulePayload(this.recentRule));
+    },
+    recentRuleDirty() {
+      return this.canShowRecentRule && this.recentRuleKey !== this.savedRecentRule;
+    },
 
     senderPolicyEnabled() { return (this.serverConfig.sender_domains || []).length > 0; },
     usesAccountFrom() { return isSenderDomain(this.profile.email, this.serverConfig.sender_domains); },
@@ -832,6 +899,7 @@ export default Vue.extend({
     const { id } = this.$route.params;
     if (id === 'new') {
       this.isNew = true;
+      this.recentRuleLoaded = true;
 
       if (this.$route.query.list_id) {
         // Multiple list_id query params.

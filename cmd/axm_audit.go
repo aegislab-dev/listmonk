@@ -46,6 +46,7 @@ const (
 	auditImportStop   = "import.stop"
 	auditImportFinish = "import.finish"
 
+	auditCampaignRecentRule = "campaign.recent_rule"
 	auditCampaignStart      = "campaign.start"
 	auditCampaignSchedule   = "campaign.schedule"
 	auditCampaignUnschedule = "campaign.unschedule"
