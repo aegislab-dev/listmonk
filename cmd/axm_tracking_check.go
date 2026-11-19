@@ -8,6 +8,8 @@ import (
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
+	"gopkg.in/volatiletech/null.v6"
 )
 
 // trackingCheckReq carries the unsaved editor state. A field that is left out keeps
@@ -17,6 +19,16 @@ type trackingCheckReq struct {
 	Body        *string `json:"body" form:"body"`
 	TemplateID  int     `json:"template_id" form:"template_id"`
 	Messenger   *string `json:"messenger" form:"messenger"`
+
+	// What a template can read from the campaign besides its body: a body may add the
+	// pixel or a link depending on any of these.
+	Name      *string         `json:"name" form:"name"`
+	Subject   *string         `json:"subject" form:"subject"`
+	FromEmail *string         `json:"from_email" form:"from_email"`
+	AltBody   *string         `json:"altbody" form:"altbody"`
+	Headers   *models.Headers `json:"headers"`
+	Tags      *[]string       `json:"tags"`
+	Attribs   *models.JSON    `json:"attribs"`
 }
 
 // CheckCampaignTracking tells, before a campaign is sent, whether its views and clicks
@@ -68,6 +80,30 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 	}
 	if camp.ContentType == models.CampaignContentTypeVisual {
 		camp.TemplateBody = ""
+	}
+	if req.Name != nil {
+		camp.Name = *req.Name
+	}
+	if req.Subject != nil {
+		camp.Subject = *req.Subject
+	}
+	if req.FromEmail != nil {
+		camp.FromEmail = *req.FromEmail
+	}
+	if req.AltBody != nil {
+		camp.AltBody = null.StringFrom(*req.AltBody)
+	} else if req.Body != nil {
+		// The editor state without an alt body: there is none.
+		camp.AltBody = null.String{}
+	}
+	if req.Headers != nil {
+		camp.Headers = *req.Headers
+	}
+	if req.Tags != nil {
+		camp.Tags = pq.StringArray(*req.Tags)
+	}
+	if req.Attribs != nil {
+		camp.Attribs = *req.Attribs
 	}
 
 	rep, err := a.manager.CheckTracking(&camp, dummySubscriber)

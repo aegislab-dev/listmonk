@@ -215,12 +215,12 @@ upstream v6.2.0은 비주얼 캠페인에 기본 템플릿을 씌우지 않는�
 ### 화면
 
 - 캠페인 편집 화면 캠페인 탭 오른쪽, 「테스트 메시지 발송」 위의 「추적 점검」 상자(`frontend/src/components/TrackingCheck.vue`). 저장된 캠페인이 편집 가능한 상태(초안·예약·일시정지)일 때만 보인다. 본문·서식·템플릿·메신저가 바뀌면 0.8초 뒤 다시 점검하며, **저장하지 않은 편집 내용**을 반영한다.
-- 시작/예약 확인 대화상자: 경고가 있을 때만 노란 상자가 붙고 확인 단추가 「그대로 시작」/「그대로 예약」이 된다. 점검을 못 했으면(본문 오류·응답 없음) 그 사실을 적는다. 경고가 없으면 기존 대화상자 그대로다.
-- 테스트 메시지 발송 뒤 알림: 경고가 있으면 노란 알림에 「열람 추적 없음 · 링크 N개 클릭 추적 안 됨」을 덧붙인다.
+- 시작/예약 확인 대화상자(캠페인 편집 화면과 **캠페인 목록**의 시작·재개·예약 단추 모두): 누를 때마다 다시 점검하며(다른 창에서 고친 공유 템플릿도 반영), 경고가 있을 때만 노란 상자가 붙고 확인 단추가 「그대로 시작」/「그대로 예약」이 된다. 점검을 못 했으면(본문 오류·응답 없음) 그 사실을 적는다. 경고가 없으면 기존 대화상자 그대로다.
+- 테스트 메시지 발송 뒤 알림: 그 테스트가 실제로 쓰는 값(폼의 본문·템플릿·제목 등 + 저장된 캠페인 추가 정보)으로 점검해, 경고가 있으면 노란 알림에 「열람 추적 없음 · 링크 N개 클릭 추적 안 됨」을 덧붙인다.
 
 ### 판정 (`internal/manager/tracking_check.go`, `POST /api/campaigns/:id/tracking-check`)
 
-글자 찾기가 아니라 **발송과 같은 컴파일·렌더링을 한 번 돌려** 그 결과로 판정한다. 템플릿 안의 태그, `{{ if }}` 안에 든 태그, Markdown 변환, `@TrackLink` 줄임 표기가 발송과 똑같이 반영된다. 권한은 미리보기와 같다(`campaigns:get`, 팀 리스트 범위).
+글자 찾기가 아니라 **발송과 같은 컴파일·렌더링을 한 번 돌려** 그 결과로 판정한다. 템플릿 안의 태그, `{{ if }}` 안에 든 태그, Markdown 변환, `@TrackLink` 줄임 표기가 발송과 똑같이 반영된다. 권한은 미리보기와 같다(`campaigns:get`, 팀 리스트 범위). 요청에는 본문·서식·템플릿·메신저뿐 아니라 템플릿이 읽을 수 있는 캠페인 값(이름·제목·발신 주소·대체 텍스트·헤더·태그·캠페인 추가 정보)도 실을 수 있고, 빠진 값은 저장된 값을 쓴다 — `{{ if eq .Campaign.Subject … }}`처럼 본문이 캠페인 값에 따라 태그를 넣는 경우를 위해서다. 리스트 목록(`.Campaign.Lists`)과 첨부는 저장된 값만 본다.
 
 - `TrackLink`·`TrackView` 자리에 **탐침 함수**를 넣는다(`https://axm-tracking-probe.invalid/…`). 링크를 `links` 테이블에 등록하지 않고, 실제 캠페인 UUID나 공개 추적 URL을 만들지 않으며, 아무것도 쓰지 않는다. 구독자는 미리보기와 같은 예시 구독자다.
 - 발송이 렌더링 뒤에 붙이는 것(비주얼 자동 추적, 사업자정보 푸터)은 렌더링하지 않는다. 자동 추적 여부는 발송 경로와 **같은 함수**로 판정한다(`tracksVisualAutomatically`, `canTrackVisualLink`) — 점검이 발송과 어긋나지 않게 하려는 것이다. `TestCheckTrackingMatchesSend`가 점검 결과와 실제 발송 본문을 서식별로 대조한다.
@@ -234,7 +234,7 @@ upstream v6.2.0은 비주얼 캠페인에 기본 템플릿을 씌우지 않는�
 | 이메일이 아닌 메신저 | `n/a` | 자동 없음, `@TrackLink`만 | 안 붙은 링크가 있으면 `warn` |
 | `privacy.disable_tracking=true` | `off` | 세지 않음 | `off` |
 
-- 링크는 `a`·`area`·`v:roundrect`의 `href`(텍스트 본문은 `http(s)://` 주소)를 센다. 같은 목적지는 한 번만 센다. 수신거부·구독 관리·구독 확인·브라우저 보기 등 이 인스턴스의 `/link/`·`/subscription/`·`/campaign/` 경로, `mailto:`·`tel:`, 앵커, 상대 주소, 이미지 주소는 세지 않는다. 추적 안 되는 주소는 최대 20개까지 돌려준다.
+- 링크는 `a`·`area`·`v:roundrect`의 `href`(텍스트 본문은 `http(s)://` 주소)를 센다. 같은 목적지는 종류(추적됨·자동·추적 안 됨)마다 한 번만 센다 — 한 주소를 한 곳에서는 `@TrackLink`로, 다른 곳에서는 그냥 걸었다면 추적 1개·추적 안 됨 1개다. 텍스트 본문의 주소는 `HTTPS://`처럼 대문자여도 세고, 문장 부호와 짝 없는 닫는 괄호만 떼어 낸다. 수신거부·구독 관리·구독 확인·브라우저 보기 등 이 인스턴스의 `/link/`·`/subscription/`·`/campaign/` 경로, `mailto:`·`tel:`, 앵커, 상대 주소, 이미지 주소는 세지 않는다. 추적 안 되는 주소는 최대 20개까지 돌려준다.
 - `privacy.individual_tracking=false`는 결과를 바꾸지 않고(`individual: false`) 화면에 「합계만 기록」 안내 줄을 더한다.
 - 컴파일·렌더링이 안 되는 본문은 미리보기와 같은 400 오류다.
 
@@ -250,7 +250,8 @@ upstream v6.2.0은 비주얼 캠페인에 기본 템플릿을 씌우지 않는�
 ### upstream을 따라갈 때
 
 - `internal/manager/tracking.go`의 `trackVisualMessage`·`canTrackVisualLink` 조건을 바꾸면 점검도 같이 바뀐다(공용 함수). 템플릿 함수(`TemplateFuncs`)에 추적 함수가 늘면 `CheckTracking`의 탐침 교체 목록에도 넣는다.
-- `frontend/src/views/Campaign.vue`의 `startCampaign`·`sendTest`와 오른쪽 열(`v-if`)을 건드렸다.
+- `frontend/src/views/Campaign.vue`의 `startCampaign`·`sendTest`와 오른쪽 열(`v-if`), `frontend/src/views/Campaigns.vue`의 시작·재개·예약 단추(`confirmSend`)를 건드렸다.
+- `cmd/campaigns.go` `TestCampaign`: 화면은 JSON으로 보내는데 템플릿 ID를 폼에서만 읽어, 저장 전에 고른 템플릿 대신 저장된 템플릿으로 테스트 메일이 나가던 것을 고쳤다(폼 값이 없으면 JSON의 `template_id`).
 
 ## 확정된 제품 기본값 (NEWS-30)
 

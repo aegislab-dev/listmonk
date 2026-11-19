@@ -13,6 +13,7 @@ const mixedBody = `${trackedBody}<p><a href="https://example.invalid/guide">Guid
 let listId;
 let defaultTpl;
 let bareTpl;
+let pixelTpl;
 const ids = {};
 
 const create = (key, data) => cy.request('POST', '/api/campaigns', {
@@ -42,8 +43,10 @@ describe('Pre-send tracking check', () => {
     });
     cy.request('POST', '/api/templates', { name: `No pixel ${stamp}`, type: 'campaign', body: barePixelless })
       .then(({ body }) => { bareTpl = body.data.id; });
+    cy.request('POST', '/api/templates', { name: `With pixel ${stamp}`, type: 'campaign', body: `${barePixelless}{{ TrackView }}` })
+      .then(({ body }) => { pixelTpl = body.data.id; });
     cy.then(() => {
-      create('ok', { content_type: 'richtext', body: trackedBody, template_id: defaultTpl });
+      create('ok', { content_type: 'richtext', body: trackedBody, template_id: pixelTpl });
       create('warn', { content_type: 'richtext', body: mixedBody, template_id: bareTpl });
       create('plain', {
         content_type: 'plain', body: 'Notice https://example.invalid/notice\nOffer https://example.invalid/offer@TrackLink\n',
@@ -142,7 +145,7 @@ describe('Pre-send tracking check', () => {
     cy.intercept('POST', `/api/campaigns/${ids.warn}/test`, { statusCode: 200, body: { data: true } }).as('testSend');
     cy.get('.box .taginput input').type('demo@example.invalid{enter}');
     cy.contains('.box button', 'Send').click();
-    cy.wait('@testSend');
+    cy.wait('@testSend').its('request.body.template_id').should('eq', bareTpl);
     cy.get('.toast.is-warning').should('contain', 'Test message sent')
       .and('contain', 'no view tracking').and('contain', '2 links without click tracking');
   });
@@ -177,6 +180,80 @@ describe('Pre-send tracking check', () => {
     cy.get(box).should('have.attr', 'data-state', 'ok');
     cy.get('[data-cy=tracking-view]').should('have.class', 'is-ok').and('contain', 'Automatic');
     cy.get('[data-cy=tracking-click]').should('have.class', 'is-ok').and('contain', 'automatic');
+  });
+
+  it('checks again at start: a template edited elsewhere changes the answer', () => {
+    open('ok');
+    cy.get(box).should('have.attr', 'data-state', 'ok');
+    cy.request('PUT', `/api/templates/${pixelTpl}`, { name: `With pixel ${stamp}`, type: 'campaign', body: barePixelless });
+    cy.intercept('POST', check).as('atStart');
+    cy.get('[data-cy=btn-start]').click();
+    cy.wait('@atStart').its('response.body.data.view').should('eq', 'missing');
+    cy.get('.modal.is-active [data-cy=warn-box]').should('contain', 'There is no view tracking.');
+    cy.get('.modal.is-active .modal-card-foot button:not(.is-primary)').click();
+    cy.get(box).should('have.attr', 'data-state', 'warn');
+  });
+
+  it('follows the unsaved subject when the body depends on it', () => {
+    cy.request('PUT', `/api/campaigns/${ids.ok}`, {
+      name: `Tracking ok ${stamp}`,
+      subject: 'with-pixel',
+      type: 'regular',
+      messenger: 'email',
+      lists: [listId],
+      content_type: 'html',
+      template_id: bareTpl,
+      body: '{{ if eq .Campaign.Subject "with-pixel" }}{{ TrackView }}{{ end }}<p>Hello</p>',
+    });
+    open('ok');
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-ok');
+    cy.intercept('POST', check).as('subject');
+    cy.get('input[name=subject]').clear().type('without-pixel');
+    cy.wait('@subject').its('request.body.subject').should('eq', 'without-pixel');
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn').and('contain', 'Missing');
+    cy.get(box).should('have.attr', 'data-state', 'warn');
+  });
+
+  it('warns on the campaigns list too, for start and for schedule', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('POST', check).as('listCheck');
+    cy.intercept('PUT', '/api/campaigns/*/status', { statusCode: 200, body: { data: {} } }).as('listStatus');
+    cy.contains('tbody tr', `Tracking warn ${stamp}`).find('[data-cy=btn-start]').click();
+    cy.wait('@listCheck').its('response.body.data.state').should('eq', 'warn');
+    cy.get('.modal.is-active [data-cy=warn-box]').should('contain', 'There is no view tracking.')
+      .and('contain', '2 links do not record clicks.');
+    cy.get('.modal.is-active button.is-primary').should('contain', 'Start anyway');
+    cy.get('.modal.is-active .modal-card-foot button:not(.is-primary)').click();
+    cy.get('@listStatus.all').should('have.length', 0);
+
+    // A draft with a send time has the schedule button.
+    cy.request(`/api/campaigns/${ids.warn}`).then(({ body }) => {
+      const c = body.data;
+      cy.request('PUT', `/api/campaigns/${ids.warn}`, {
+        name: c.name,
+        subject: c.subject,
+        type: 'regular',
+        messenger: 'email',
+        lists: [listId],
+        content_type: c.content_type,
+        template_id: c.template_id,
+        body: c.body,
+        send_at: new Date(Date.now() + 86400000 * 30).toISOString(),
+      });
+    });
+    cy.visit('/admin/campaigns');
+    cy.contains('tbody tr', `Tracking warn ${stamp}`).find('[data-cy=btn-schedule]').click();
+    cy.wait('@listCheck');
+    cy.get('.modal.is-active [data-cy=warn-box]').should('contain', 'There is no view tracking.');
+    cy.get('.modal.is-active button.is-primary').should('contain', 'Schedule anyway').click();
+    cy.wait('@listStatus').its('request.body.status').should('eq', 'scheduled');
+
+    // A campaign without a warning keeps the usual confirmation.
+    cy.contains('tbody tr', `Tracking visual ${stamp}`).find('[data-cy=btn-start]').click();
+    cy.wait('@listCheck').its('response.body.data.state').should('eq', 'ok');
+    cy.get('.modal.is-active [data-cy=warn-box]').should('not.exist');
+    cy.get('.modal.is-active button.is-primary').should('contain', 'Ok');
+    cy.get('.modal.is-active .modal-card-foot button:not(.is-primary)').click();
   });
 
   it('shows why a body that cannot be rendered was not checked', () => {

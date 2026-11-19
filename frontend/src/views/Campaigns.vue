@@ -186,7 +186,7 @@
           <!-- start / pause / resume / scheduled -->
           <template v-if="$can('campaigns:send')">
             <a v-if="canStart(props.row)" href="#"
-              @click.prevent="$utils.confirm(null, () => changeCampaignStatus(props.row, 'running'))"
+              @click.prevent="confirmSend(props.row, 'running')"
               data-cy="btn-start" :aria-label="$t('campaigns.start')">
               <b-tooltip :label="$t('campaigns.start')" type="is-dark">
                 <b-icon icon="rocket-launch-outline" size="is-small" />
@@ -202,7 +202,7 @@
             </a>
 
             <a v-if="canResume(props.row)" href="#"
-              @click.prevent="$utils.confirm(null, () => changeCampaignStatus(props.row, 'running'))"
+              @click.prevent="confirmSend(props.row, 'running')"
               data-cy="btn-resume" :aria-label="$t('campaigns.send')">
               <b-tooltip :label="$t('campaigns.send')" type="is-dark">
                 <b-icon icon="rocket-launch-outline" size="is-small" />
@@ -210,7 +210,7 @@
             </a>
 
             <a v-if="canSchedule(props.row)" href="#"
-              @click.prevent="$utils.confirm($t('campaigns.confirmSchedule'), () => changeCampaignStatus(props.row, 'scheduled'))"
+              @click.prevent="confirmSend(props.row, 'scheduled')"
               data-cy="btn-schedule" :aria-label="$t('campaigns.schedule')">
               <b-tooltip :label="$t('campaigns.schedule')" type="is-dark">
                 <b-icon icon="clock-start" size="is-small" />
@@ -289,6 +289,7 @@ import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import reactionStatuses from '../campaign-reaction-list';
+import { trackingConfirmLines } from '../tracking-check';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
 import CopyText from '../components/CopyText.vue';
@@ -304,6 +305,7 @@ export default Vue.extend({
 
   data() {
     return {
+      checkingSend: false,
       previewItem: null,
       reactionCampaign: null,
       queryParams: {
@@ -433,6 +435,29 @@ export default Vue.extend({
           clearInterval(this.pollID);
         });
       }, 1000);
+    },
+
+    // Starting, resuming or scheduling from the list sends the saved campaign as it is:
+    // the same tracking warning as on the campaign page comes first (LST-44).
+    async confirmSend(c, status) {
+      if (this.checkingSend) return;
+      this.checkingSend = true;
+      const report = await this.$api.checkCampaignTracking(c.id, {}).catch(() => null);
+      this.checkingSend = false;
+
+      const msg = status === 'scheduled' ? this.$t('campaigns.confirmSchedule') : null;
+      const fn = () => this.changeCampaignStatus(c, status);
+      const warnings = trackingConfirmLines(report).map(({ key, params }) => this.$t(key, params));
+      if (!warnings.length) {
+        this.$utils.confirm(msg, fn);
+        return;
+      }
+      this.$utils.confirmWithWarnings(
+        msg,
+        warnings,
+        this.$t(status === 'scheduled' ? 'campaigns.tracking.confirm.schedule' : 'campaigns.tracking.confirm.start'),
+        fn,
+      );
     },
 
     changeCampaignStatus(c, status) {

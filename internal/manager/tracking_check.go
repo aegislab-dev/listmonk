@@ -45,7 +45,8 @@ const (
 )
 
 // TrackingLinks counts the links of a rendered campaign body by how their clicks are
-// recorded. A destination is counted once per kind, however often it appears.
+// recorded. A destination is counted once per kind, however often it appears: an address
+// that is linked once with TrackLink and once without is one tracked and one untracked link.
 type TrackingLinks struct {
 	Total         int      `json:"total"`
 	Manual        int      `json:"manual"`
@@ -77,7 +78,25 @@ type TrackingCheckError struct {
 func (e *TrackingCheckError) Error() string { return e.Err.Error() }
 func (e *TrackingCheckError) Unwrap() error { return e.Err }
 
-var plainTextURL = regexp.MustCompile(`https?://[^\s<>"']+`)
+var plainTextURL = regexp.MustCompile(`(?i)https?://[^\s<>"']+`)
+
+// trimPlainURL drops the sentence punctuation after a URL in running text. A closing
+// bracket goes only when the URL does not open it: .../Thing_(example) keeps its own.
+func trimPlainURL(u string) string {
+	for u != "" {
+		last := u[len(u)-1]
+		if strings.IndexByte(".,;:!?", last) >= 0 {
+			u = u[:len(u)-1]
+			continue
+		}
+		if open := strings.IndexByte(")]}", last); open >= 0 && strings.Count(u, string(last)) > strings.Count(u, string("([{"[open])) {
+			u = u[:len(u)-1]
+			continue
+		}
+		break
+	}
+	return u
+}
 
 // CheckTracking renders the campaign for one subscriber and reports whether views and
 // clicks would be recorded. The campaign that is passed in is not changed.
@@ -158,7 +177,7 @@ func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber) (Trac
 		// A template still wraps a plain body: its {{ TrackView }} arrives as text,
 		// which is neither a view pixel nor a link.
 		for _, u := range plainTextURL.FindAllString(html.UnescapeString(string(msg.body)), -1) {
-			if u = strings.TrimRight(u, ".,;:!?)]}"); u != trackingProbePixel {
+			if u = trimPlainURL(u); u != trackingProbePixel {
 				link(u)
 			}
 		}

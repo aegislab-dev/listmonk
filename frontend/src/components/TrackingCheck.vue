@@ -62,9 +62,8 @@ const PLACEHOLDER = {
 export default {
   props: {
     campaignId: { type: Number, required: true },
-    // The editor's content: { contentType, body, templateId }.
-    content: { type: Object, required: true },
-    messenger: { type: String, default: 'email' },
+    // The unsaved state of the campaign form, as the check API takes it.
+    payload: { type: Object, required: true },
   },
 
   data() {
@@ -83,14 +82,6 @@ export default {
   },
 
   computed: {
-    payload() {
-      return {
-        content_type: this.content.contentType,
-        body: this.content.body || '',
-        template_id: this.content.templateId || 0,
-        messenger: this.messenger,
-      };
-    },
     key() { return JSON.stringify(this.payload); },
     state() {
       if (this.pending) return 'checking';
@@ -154,11 +145,11 @@ export default {
       return this.inflight;
     },
 
-    // The report for the content as it is now, for the start confirmation and the test
-    // send: it does not wait for the typing pause.
+    // The report for the campaign as it is at this moment, for the start confirmation.
+    // It always asks again: a template that someone else edited since the last check
+    // changes the answer without anything changing on this page.
     current() {
-      if (this.timer || !this.inflight) return this.run();
-      return this.inflight;
+      return this.run();
     },
   },
 };

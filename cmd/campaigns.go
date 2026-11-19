@@ -630,6 +630,11 @@ func (a *App) TestCampaign(c echo.Context) error {
 
 	// Get the campaign from the DB for previewing.
 	tplID, _ := strconv.Atoi(c.FormValue("template_id"))
+	// AXM (LST-44): the admin UI posts JSON, where FormValue finds nothing and the
+	// stored template was used instead of the one selected in the editor.
+	if tplID < 1 {
+		tplID = req.TemplateID.Int
+	}
 	camp, err := a.core.GetCampaignForPreview(id, tplID)
 	if err != nil {
 		return err

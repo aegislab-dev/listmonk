@@ -108,6 +108,20 @@ func TestCampaignTrackingCheck(t *testing.T) {
 		t.Fatalf("plain text: %+v", rep)
 	}
 
+	// A body can read the campaign itself. The unsaved subject, name, tags, headers and
+	// attributes of the editor decide with it; left out, the stored ones do.
+	cond := map[string]any{"content_type": "html", "template_id": bare,
+		"body": `{{ if eq .Campaign.Subject "with-pixel" }}{{ TrackView }}{{ end }}` +
+			`{{ if .Campaign.Attribs.cta }}<a href="https://a.example.test/{{ .Campaign.Name }}/{{ index .Campaign.Tags 0 }}">A</a>{{ end }}`}
+	if rep = check(js(cond)); rep.View != "missing" || rep.Links.Total != 0 {
+		t.Fatalf("stored subject and attributes: %+v", rep)
+	}
+	cond["subject"], cond["name"], cond["tags"], cond["attribs"] = "with-pixel", "nm", []string{"tg"}, map[string]any{"cta": true}
+	cond["headers"], cond["altbody"], cond["from_email"] = []map[string]string{{"X-A": "b"}}, "alt", "A <a@example.test>"
+	if rep = check(js(cond)); rep.View != "manual" || !slices.Equal(rep.Links.UntrackedURLs, []string{"https://a.example.test/nm/tg"}) {
+		t.Fatalf("unsaved subject, name, tags and attributes: %+v", rep)
+	}
+
 	// The same request as a form post, the way the preview is posted.
 	form := url.Values{"content_type": {"richtext"}, "template_id": {strconv.Itoa(tracked)}, "body": {`<a href="https://a.example.test/x">A</a>`}}
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
@@ -141,9 +155,10 @@ func TestCampaignTrackingCheck(t *testing.T) {
 	}
 
 	// Tracking switched off for the whole instance.
-	off := *e.a
-	off.manager = e.startManagerWith(e.store, &bodyMessenger{}, io.Discard, func(c *manager.Config) { c.DisableTracking = true })
-	code, data := e.call(off.CheckCampaignTracking, member, http.MethodPost, target, strconv.Itoa(e.campID), `{}`)
+	on := e.a.manager
+	e.a.manager = e.startManagerWith(e.store, &bodyMessenger{}, io.Discard, func(c *manager.Config) { c.DisableTracking = true })
+	code, data := e.call(e.a.CheckCampaignTracking, member, http.MethodPost, target, strconv.Itoa(e.campID), `{}`)
+	e.a.manager = on
 	if json.Unmarshal(data, &rep) != nil || code != http.StatusOK || rep.State != "off" || !rep.Disabled || rep.View != "off" {
 		t.Fatalf("tracking disabled: %d %s", code, data)
 	}

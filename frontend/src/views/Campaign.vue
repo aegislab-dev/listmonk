@@ -179,8 +179,7 @@
             </div>
             <div v-if="canManage || canCheckTracking" class="column is-4 is-offset-1">
               <br />
-              <tracking-check v-if="canCheckTracking" ref="tracking" :campaign-id="data.id" :content="form.content"
-                :messenger="form.messenger" />
+              <tracking-check v-if="canCheckTracking" ref="tracking" :campaign-id="data.id" :payload="trackingPayload" />
               <div v-if="canManage" class="box">
                 <h3 class="title is-size-6">
                   {{ $t('campaigns.sendTest') }}
@@ -646,8 +645,19 @@ export default Vue.extend({
         media: this.form.media.map((m) => m.id),
       };
 
-      // The tracking state of exactly what is being sent (LST-44).
-      const tracking = this.trackingReport();
+      // The tracking state of exactly what this test sends (LST-44): the test takes these
+      // fields from the form and the rest (the attributes) from the saved campaign.
+      const tracking = this.$api.checkCampaignTracking(this.data.id, {
+        content_type: data.content_type,
+        body: data.body || '',
+        template_id: data.template_id || 0,
+        messenger: data.messenger,
+        name: data.name,
+        subject: data.subject,
+        headers: data.headers,
+        ...(data.altbody === null ? {} : { altbody: data.altbody }),
+        ...(this.senderPolicyEnabled ? {} : { from_email: data.from_email }),
+      }).catch(() => null);
       this.$api.testCampaign(data).then(async () => {
         const parts = trackingToastParts(await tracking).map(({ key, params }) => this.$t(key, params));
         if (parts.length) {
@@ -822,6 +832,29 @@ export default Vue.extend({
 
   computed: {
     ...mapState(['serverConfig', 'loading', 'lists', 'templates', 'profile']),
+
+    // What the tracking check renders: everything a template can read from the campaign,
+    // as the form has it now. Starting saves exactly these first. JSON that is still being
+    // typed (headers, attributes) is left out until it parses, and the saved value counts.
+    trackingPayload() {
+      const json = (str) => { try { return JSON.parse(str); } catch (e) { return undefined; } };
+      const headers = this.form.headersStr && this.form.headersStr !== '[]' ? json(this.form.headersStr) : [];
+      const attribs = this.form.attribsStr && this.form.attribsStr.trim() ? json(this.form.attribsStr) : undefined;
+      const altbody = this.form.content.contentType !== 'plain' ? this.form.altbody : null;
+      return {
+        content_type: this.form.content.contentType,
+        body: this.form.content.body || '',
+        template_id: this.form.content.templateId || 0,
+        messenger: this.form.messenger,
+        name: this.form.name,
+        subject: this.form.subject,
+        tags: this.form.tags,
+        ...(Array.isArray(headers) ? { headers } : {}),
+        ...(attribs && typeof attribs === 'object' && !Array.isArray(attribs) ? { attribs } : {}),
+        ...(altbody === null || altbody === undefined ? {} : { altbody }),
+        ...(this.senderPolicyEnabled ? {} : { from_email: this.form.fromEmail }),
+      };
+    },
 
     // The pre-send tracking check is for a saved campaign that can still be edited.
     canCheckTracking() {
