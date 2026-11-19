@@ -177,9 +177,11 @@
                 </b-field>
               </form>
             </div>
-            <div v-if="canManage" class="column is-4 is-offset-1">
+            <div v-if="canManage || canCheckTracking" class="column is-4 is-offset-1">
               <br />
-              <div class="box">
+              <tracking-check v-if="canCheckTracking" ref="tracking" :campaign-id="data.id" :content="form.content"
+                :messenger="form.messenger" />
+              <div v-if="canManage" class="box">
                 <h3 class="title is-size-6">
                   {{ $t('campaigns.sendTest') }}
                 </h3>
@@ -355,8 +357,10 @@ import ListSelector from '../components/ListSelector.vue';
 import RecentSendExclude from '../components/RecentSendExclude.vue';
 import Media from './Media.vue';
 import SenderAddressInput from '../components/SenderAddressInput.vue';
+import TrackingCheck from '../components/TrackingCheck.vue';
 import { isSenderDomain } from '../senders';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
+import { trackingConfirmLines, trackingToastParts } from '../tracking-check';
 
 export default Vue.extend({
   components: {
@@ -367,6 +371,7 @@ export default Vue.extend({
     CampaignPreview,
     SenderAddressInput,
     RecentSendExclude,
+    TrackingCheck,
   },
 
   data() {
@@ -641,8 +646,15 @@ export default Vue.extend({
         media: this.form.media.map((m) => m.id),
       };
 
-      this.$api.testCampaign(data).then(() => {
-        this.$utils.toast(this.$t('campaigns.testSent'));
+      // The tracking state of exactly what is being sent (LST-44).
+      const tracking = this.trackingReport();
+      this.$api.testCampaign(data).then(async () => {
+        const parts = trackingToastParts(await tracking).map(({ key, params }) => this.$t(key, params));
+        if (parts.length) {
+          this.$utils.toast([this.$t('campaigns.testSent'), ...parts].join(' · '), 'is-warning', 6000);
+        } else {
+          this.$utils.toast(this.$t('campaigns.testSent'));
+        }
       }).catch((err) => {
         if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
       });
@@ -757,9 +769,21 @@ export default Vue.extend({
       }
 
       if (!await this.checkReplyTo()) return;
-      this.$utils.confirm(
-        this.recentRule.enabled
-          ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null,
+
+      // Views or clicks that would not be recorded are said here, before anything is
+      // sent (LST-44). It is a warning: the campaign can still be started.
+      const warnings = trackingConfirmLines(await this.trackingReport()).map(({ key, params }) => this.$t(key, params));
+      const msg = this.recentRule.enabled
+        ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null;
+      const confirm = warnings.length
+        ? (fn) => this.$utils.confirmWithWarnings(
+          msg,
+          warnings,
+          this.$t(this.canStart ? 'campaigns.tracking.confirm.start' : 'campaigns.tracking.confirm.schedule'),
+          fn,
+        )
+        : (fn) => this.$utils.confirm(msg, fn);
+      confirm(
         () => {
           if (this.savingCampaign) return;
           // First save the campaign.
@@ -784,6 +808,11 @@ export default Vue.extend({
       );
     },
 
+    // The tracking report for the content as it is now; null when the check failed.
+    trackingReport() {
+      return this.$refs.tracking ? this.$refs.tracking.current() : Promise.resolve(null);
+    },
+
     unscheduleCampaign() {
       this.$api.changeCampaignStatus(this.data.id, 'draft').then((d) => {
         this.data = d;
@@ -793,6 +822,11 @@ export default Vue.extend({
 
   computed: {
     ...mapState(['serverConfig', 'loading', 'lists', 'templates', 'profile']),
+
+    // The pre-send tracking check is for a saved campaign that can still be edited.
+    canCheckTracking() {
+      return this.isEditing && !!this.data.id && this.canEdit;
+    },
 
     canShowRecentRule() {
       return this.isNew || this.data.type === 'regular';

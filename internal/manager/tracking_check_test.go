@@ -67,6 +67,11 @@ func TestCheckTracking(t *testing.T) {
 		{"plain text with every link tracked is not a warning",
 			models.Campaign{ContentType: "plain", Messenger: "email", Body: "Offer: https://x.test/o@TrackLink\n"}, nil,
 			TrackingReport{State: "ok", View: "unsupported", Links: TrackingLinks{Total: 1, Manual: 1}}},
+		{"plain text inside a template: the template's pixel is neither a view nor a link",
+			models.Campaign{ContentType: "plain", Messenger: "email", TemplateBody: trackedTpl,
+				Body: "Offer: https://x.test/o@TrackLink\nNotice: https://y.test/n\n"}, nil,
+			TrackingReport{State: "warn", View: "unsupported", Links: TrackingLinks{Total: 2, Manual: 1, Untracked: 1,
+				UntrackedURLs: []string{"https://y.test/n"}}}},
 		{"links that are never tracked are not counted",
 			models.Campaign{ContentType: "richtext", Messenger: "email", TemplateBody: trackedTpl,
 				Body: `<a href="{{ UnsubscribeURL }}">u</a><a href="{{ ManageURL }}">m</a><a href="{{ MessageURL }}">v</a><a href="{{ OptinURL }}">o</a>` +

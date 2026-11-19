@@ -155,8 +155,12 @@ func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber) (Trac
 
 	if plain {
 		// The plain body is rendered by html/template, so its text carries entities.
+		// A template still wraps a plain body: its {{ TrackView }} arrives as text,
+		// which is neither a view pixel nor a link.
 		for _, u := range plainTextURL.FindAllString(html.UnescapeString(string(msg.body)), -1) {
-			link(strings.TrimRight(u, ".,;:!?)]}"))
+			if u = strings.TrimRight(u, ".,;:!?)]}"); u != trackingProbePixel {
+				link(u)
+			}
 		}
 	} else {
 		rewriteTrackingHTML(msg.body, func(tag, attr, value string) string {
