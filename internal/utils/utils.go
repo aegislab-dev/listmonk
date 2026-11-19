@@ -61,8 +61,11 @@ func GenerateRandomString(n int) (string, error) {
 	return string(bytes), nil
 }
 
-// SanitizeURI takes a URL or URI, removes the domain from it, returns only the URI.
-// This is used for cleaning "next" redirect URLs/URIs to prevent open redirects.
+// SanitizeURI takes a URL or URI, removes the domain from it, returns only the URI
+// (the cleaned path and, as in the URL given, its query string; LST-36: a link such as
+// /admin/campaigns/analytics?id=52 must still show the campaign after the login redirect).
+// This is used for cleaning "next" redirect URLs/URIs to prevent open redirects: the
+// host is dropped and the path stays one path on this site, whatever the query holds.
 func SanitizeURI(u string) string {
 	u = strings.TrimSpace(u)
 	if u == "" {
@@ -74,5 +77,9 @@ func SanitizeURI(u string) string {
 		return "/"
 	}
 
-	return path.Clean(p.Path)
+	out := path.Clean(p.Path)
+	if p.Path != "" && p.RawQuery != "" {
+		out += "?" + p.RawQuery
+	}
+	return out
 }
