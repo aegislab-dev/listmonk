@@ -36,12 +36,13 @@ func TestCampaignTrackingCheck(t *testing.T) {
 	e.a.i18n = lang
 	e.a.log = log.New(io.Discard, "", 0)
 	e.a.manager = e.startManager(e.store, &bodyMessenger{}, io.Discard)
+	e.a.cfg = &Config{FromEmail: "App <app@example.invalid>"}
 
 	var bare, tracked int
 	e.get(&bare, `INSERT INTO templates(name,type,subject,body) VALUES('bare','campaign','','<html><body>{{ template "content" . }}<a href="{{ UnsubscribeURL }}">leave</a></body></html>') RETURNING id`)
 	e.get(&tracked, `INSERT INTO templates(name,type,subject,body) VALUES('tracked','campaign','','<html><body>{{ template "content" . }}{{ TrackView }}</body></html>') RETURNING id`)
 	const stored = `<p><a href="https://a.example.test/x">A</a> <a href="https://b.example.test/y@TrackLink">B</a></p>`
-	e.db.MustExec(`UPDATE campaigns SET status='draft', content_type='richtext', body=$2, template_id=$3 WHERE id=$1`, e.campID, stored, bare)
+	e.db.MustExec(`UPDATE campaigns SET status='draft', content_type='richtext', body=$2, template_id=$3, from_email='Test <t@example.invalid>' WHERE id=$1`, e.campID, stored, bare)
 	e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, e.aList)
 
 	type counts struct{ Links, Views, Clicks, Sends int }
@@ -201,22 +202,72 @@ func TestCampaignTrackingCheck(t *testing.T) {
 		t.Errorf("status finished: %d, want 400", code)
 	}
 
-	// With sender domains, starting a draft sets the sender from the account of the
-	// person who starts it; the check reads that sender, a test send the stored one.
-	e.a.cfg = &Config{SenderDomains: []string{"example.test"}, FromEmail: "App <app@example.test>"}
-	from := map[string]any{"content_type": "html", "template_id": bare,
-		"body": `<a href="https://a.example.test/{{ .Campaign.FromEmail | urlquery }}">x</a>`}
-	var storedFrom string
+	// The sender, which templates can read (LST-44 review). With sender domains, a test
+	// send takes it from the account of the person who sends the test, and a start from
+	// the person who starts; neither is the stored one, which the author's save set.
+	// A draft that two people edit gets a pixel for its author only: the check must
+	// warn the other one.
+	e.a.cfg = &Config{SenderDomains: []string{"example.invalid"}, FromEmail: "App <app@example.invalid>"}
+	var uc int
+	e.get(&uc, `INSERT INTO users(username,email,name,user_role_id,list_role_id,status,type) VALUES('uc','uc@example.invalid','uc',$1,$2,'enabled','user') RETURNING id`, e.memberRole, e.team1)
+	author, editor := member, e.as(uc)
+	authorFrom := resolveFrom(author, "", e.a.cfg.FromEmail, e.a.cfg.SenderDomains)
+	if editorFrom := resolveFrom(editor, "", e.a.cfg.FromEmail, e.a.cfg.SenderDomains); authorFrom == editorFrom || !strings.Contains(authorFrom, "ua@") {
+		t.Fatalf("senders: author %q, editor %q", authorFrom, editorFrom)
+	}
+	var storedFrom, storedReply string
 	e.get(&storedFrom, `SELECT from_email FROM campaigns WHERE id=$1`, e.campID)
-	want := "https://a.example.test/" + url.QueryEscape(resolveFrom(member, "", e.a.cfg.FromEmail, e.a.cfg.SenderDomains))
-	if rep = check(js(from)); !slices.Equal(rep.Links.UntrackedURLs, []string{want}) {
-		t.Fatalf("sender after the start: %+v, want %s", rep, want)
+	e.get(&storedReply, `SELECT reply_to FROM campaigns WHERE id=$1`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET from_email=$2, reply_to='stored@example.test' WHERE id=$1`, e.campID, authorFrom)
+	checkAs := func(u auth.User, body map[string]any) manager.TrackingReport {
+		t.Helper()
+		code, data := e.call(e.a.CheckCampaignTracking, u, http.MethodPost, target, strconv.Itoa(e.campID), js(body))
+		var rep manager.TrackingReport
+		if code != http.StatusOK || json.Unmarshal(data, &rep) != nil {
+			t.Fatalf("%v: %d %s", body, code, data)
+		}
+		return rep
 	}
-	from["mode"] = "test"
-	if rep = check(js(from)); !slices.Equal(rep.Links.UntrackedURLs, []string{"https://a.example.test/" + url.QueryEscape(storedFrom)}) {
-		t.Fatalf("sender of a test send: %+v, stored %q", rep, storedFrom)
+	byFrom := map[string]any{"content_type": "html", "template_id": bare,
+		"body": fmt.Sprintf(`{{ if eq .Campaign.FromEmail %q }}{{ TrackView }}{{ end }}<p>x</p>`, authorFrom)}
+	for _, mode := range []string{"test", ""} {
+		byFrom["mode"] = mode
+		if rep = checkAs(author, byFrom); rep.View != "manual" {
+			t.Fatalf("mode %q, the author: %+v", mode, rep)
+		}
+		if rep = checkAs(editor, byFrom); rep.View != "missing" {
+			t.Fatalf("mode %q, another editor: %+v", mode, rep)
+		}
 	}
-	e.a.cfg = nil
+	// The reply-to of a test send is the one in the request, read as the send reads it;
+	// none in the request is none, not the stored one.
+	byReply := map[string]any{"content_type": "html", "template_id": bare, "mode": "test",
+		"body": `{{ if eq .Campaign.ReplyTo "a@example.test" }}{{ TrackView }}{{ end }}{{ if eq .Campaign.ReplyTo "stored@example.test" }}<a href="https://a.example.test/stored">s</a>{{ end }}<p>x</p>`}
+	if rep = checkAs(author, byReply); rep.View != "missing" || rep.Links.Total != 0 {
+		t.Fatalf("test send without a reply-to: %+v", rep)
+	}
+	byReply["reply_to"] = " <a@example.test> "
+	if rep = checkAs(author, byReply); rep.View != "manual" {
+		t.Fatalf("test send with a reply-to: %+v", rep)
+	}
+	// Saving keeps the stored reply-to unless the request has one.
+	delete(byReply, "mode")
+	delete(byReply, "reply_to")
+	if rep = checkAs(author, byReply); rep.View != "missing" || rep.Links.Total != 1 {
+		t.Fatalf("saved reply-to: %+v", rep)
+	}
+	// A reply-to that is still being typed: saving would refuse it and keep the stored
+	// one, so the check reads the stored one; a test send with it fails, so does its check.
+	byReply["reply_to"] = "not an address"
+	if rep = checkAs(author, byReply); rep.View != "missing" || rep.Links.Total != 1 {
+		t.Fatalf("invalid reply-to on the page: %+v", rep)
+	}
+	byReply["mode"] = "test"
+	if code, _ := e.call(e.a.CheckCampaignTracking, author, http.MethodPost, target, strconv.Itoa(e.campID), js(byReply)); code != http.StatusBadRequest {
+		t.Errorf("invalid reply-to in a test send: %d, want 400", code)
+	}
+	e.db.MustExec(`UPDATE campaigns SET from_email=$2, reply_to=$3 WHERE id=$1`, e.campID, storedFrom, storedReply)
+	e.a.cfg = &Config{FromEmail: "App <app@example.invalid>"}
 
 	// The same request as a form post, the way the preview is posted.
 	form := url.Values{"content_type": {"richtext"}, "template_id": {strconv.Itoa(tracked)}, "body": {`<a href="https://a.example.test/x">A</a>`}}

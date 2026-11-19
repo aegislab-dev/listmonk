@@ -220,7 +220,7 @@ upstream v6.2.0은 비주얼 캠페인에 기본 템플릿을 씌우지 않는�
 
 ### 판정 (`internal/manager/tracking_check.go`, `POST /api/campaigns/:id/tracking-check`)
 
-글자 찾기가 아니라 **발송과 같은 컴파일·렌더링을 한 번 돌려** 그 결과로 판정한다. 템플릿 안의 태그, `{{ if }}` 안에 든 태그, Markdown 변환, `@TrackLink` 줄임 표기가 발송과 똑같이 반영된다. 권한은 미리보기와 같다(`campaigns:get`, 팀 리스트 범위). 요청에는 본문·서식·템플릿·메신저뿐 아니라 템플릿이 읽을 수 있는 캠페인 값(이름·제목·발신 주소·대체 텍스트·헤더·태그·캠페인 추가 정보)도 실을 수 있고, 빠진 값은 저장된 값을 쓴다. 헤더는 저장과 같은 방식으로 저장된 헤더 위에 풀어 읽는다(v6.2.0의 저장은 요청에서 빠진 헤더 키를 같은 묶음에 남긴다). `mode: "test"`면 테스트 발송처럼 헤더를 통째로 바꾼다 — `{{ if eq .Campaign.Subject … }}`처럼 본문이 캠페인 값에 따라 태그를 넣는 경우를 위해서다. 리스트 목록(`.Campaign.Lists`)과 첨부는 저장된 값만 본다. 템플릿은 캠페인 **상태**와 발신 주소도 읽을 수 있으므로, 테스트 발송용(`mode: "test"`)이 아닌 점검은 캠페인을 **실제 발송 때의 모습**으로 렌더링한다: 요청의 `status`(시작·재개 `running`, 예약 `scheduled`)와 `send_at`(빠지면 저장된 값)으로, 상태 변경 쿼리처럼 발송 시각이 있으면 `scheduled`가 된다 — 발송 엔진은 예약 캠페인을 `running`으로 바꾸기 전에 읽은 행으로 보내므로 예약 발송 메일의 `.Campaign.Status`는 `scheduled`다(실이미지 확인). 발신 도메인이 설정돼 있으면 시작하는 사람의 계정으로 정해지는 발신 주소도 같이 반영한다. 테스트 발송은 지금 상태(초안) 그대로 렌더링한다.
+글자 찾기가 아니라 **발송과 같은 컴파일·렌더링을 한 번 돌려** 그 결과로 판정한다. 템플릿 안의 태그, `{{ if }}` 안에 든 태그, Markdown 변환, `@TrackLink` 줄임 표기가 발송과 똑같이 반영된다. 권한은 미리보기와 같다(`campaigns:get`, 팀 리스트 범위). 요청에는 본문·서식·템플릿·메신저뿐 아니라 템플릿이 읽을 수 있는 캠페인 값(이름·제목·발신 주소·대체 텍스트·헤더·태그·캠페인 추가 정보)도 실을 수 있고, 빠진 값은 저장된 값을 쓴다. 헤더는 저장과 같은 방식으로 저장된 헤더 위에 풀어 읽는다(v6.2.0의 저장은 요청에서 빠진 헤더 키를 같은 묶음에 남긴다). `mode: "test"`면 테스트 발송처럼 헤더를 통째로 바꾼다 — `{{ if eq .Campaign.Subject … }}`처럼 본문이 캠페인 값에 따라 태그를 넣는 경우를 위해서다. 리스트 목록(`.Campaign.Lists`)과 첨부는 저장된 값만 본다. 템플릿은 캠페인 **상태**와 발신 주소도 읽을 수 있으므로, 테스트 발송용(`mode: "test"`)이 아닌 점검은 캠페인을 **실제 발송 때의 모습**으로 렌더링한다: 요청의 `status`(시작·재개 `running`, 예약 `scheduled`)와 `send_at`(빠지면 저장된 값)으로, 상태 변경 쿼리처럼 발송 시각이 있으면 `scheduled`가 된다 — 발송 엔진은 예약 캠페인을 `running`으로 바꾸기 전에 읽은 행으로 보내므로 예약 발송 메일의 `.Campaign.Status`는 `scheduled`다(실이미지 확인). 발신 도메인이 설정돼 있으면 시작하는 사람의 계정으로 정해지는 발신 주소도 같이 반영한다. 테스트 발송은 지금 상태(초안) 그대로 렌더링하되, 발신 주소·답장 주소는 테스트 발송과 같게 정한다 — 요청의 값과, 발신 도메인이 있으면 **테스트를 보내는 사람의 계정**(저장된 주소가 아니다. 여럿이 고치는 초안에서 사람마다 다르다). 저장·테스트 발송·점검이 같은 함수(`campaignSender`, `validateCampaignFields`에서 떼어 냄)로 발신 필드를 정한다. 입력 중인 잘못된 답장·발신 주소는 저장이 거절해 저장된 값이 남으므로, 테스트 발송용이 아닌 점검은 저장된 값으로 본다.
 
 - `TrackLink`·`TrackView` 자리에 **탐침 함수**를 넣는다(`https://axm-tracking-probe.invalid/…`). 링크를 `links` 테이블에 등록하지 않고, 실제 캠페인 UUID나 공개 추적 URL을 만들지 않으며, 아무것도 쓰지 않는다. 구독자는 미리보기와 같은 예시 구독자다.
 - 발송이 렌더링 뒤에 붙이는 것(비주얼 자동 추적, 사업자정보 푸터)은 렌더링하지 않는다. 자동 추적 여부는 발송 경로와 **같은 함수**로 판정한다(`tracksVisualAutomatically`, `canTrackVisualLink`) — 점검이 발송과 어긋나지 않게 하려는 것이다. `TestCheckTrackingMatchesSend`가 점검 결과와 실제 발송 본문을 서식별로 대조한다.
@@ -252,6 +252,7 @@ upstream v6.2.0은 비주얼 캠페인에 기본 템플릿을 씌우지 않는�
 
 - `internal/manager/tracking.go`의 `trackVisualMessage`·`canTrackVisualLink` 조건을 바꾸면 점검도 같이 바뀐다(공용 함수). 템플릿 함수(`TemplateFuncs`)에 추적 함수가 늘면 `CheckTracking`의 탐침 교체 목록에도 넣는다.
 - `frontend/src/views/Campaign.vue`의 `startCampaign`·`sendTest`와 오른쪽 열(`v-if`), `frontend/src/views/Campaigns.vue`의 시작·재개·예약 단추(`confirmSend`)를 건드렸다.
+- `cmd/campaigns.go` `validateCampaignFields`: 발신·답장 주소 부분을 `campaignSender`로 떼어 냈다(동작 같음, 예약 헤더 오류를 먼저 본다).
 - `cmd/campaigns.go` `TestCampaign`: 화면은 JSON으로 보내는데 템플릿 ID를 폼에서만 읽어, 저장 전에 고른 템플릿 대신 저장된 템플릿으로 테스트 메일이 나가던 것을 고쳤다(폼 값이 없으면 JSON의 `template_id`).
 
 ## 확정된 제품 기본값 (NEWS-30)

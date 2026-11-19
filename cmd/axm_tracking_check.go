@@ -26,6 +26,7 @@ type trackingCheckReq struct {
 	Name      *string         `json:"name" form:"name"`
 	Subject   *string         `json:"subject" form:"subject"`
 	FromEmail *string         `json:"from_email" form:"from_email"`
+	ReplyTo   *string         `json:"reply_to" form:"reply_to"`
 	AltBody   *string         `json:"altbody" form:"altbody"`
 	Headers   json.RawMessage `json:"headers"`
 
@@ -103,8 +104,8 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 	if req.Subject != nil {
 		camp.Subject = *req.Subject
 	}
-	if req.FromEmail != nil {
-		camp.FromEmail = *req.FromEmail
+	if err := a.trackingSender(c, &camp, req); err != nil {
+		return err
 	}
 	if req.AltBody != nil {
 		camp.AltBody = null.StringFrom(*req.AltBody)
@@ -187,5 +188,45 @@ func (a *App) trackingSendState(c echo.Context, camp *models.Campaign, req track
 		camp.FromEmail = resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
 	}
 	camp.Status = status
+	return nil
+}
+
+// trackingSender sets the sender (from, reply-to) that templates read, the way the send
+// that is checked sets it (LST-44 review: a template that adds the pixel for one sender
+// only). A test send takes the sender from the request and, with sender domains, from
+// the account of the person who sends the test (TestCampaign), not the stored one.
+// Saving binds the request over the stored campaign (UpdateCampaign); the start then
+// sets the sender again (trackingSendState).
+func (a *App) trackingSender(c echo.Context, camp *models.Campaign, req trackingCheckReq) error {
+	user := auth.GetUser(c)
+	var s campReq
+	if req.Mode == "test" {
+		if req.FromEmail != nil {
+			s.FromEmail = *req.FromEmail
+		}
+	} else {
+		s.FromEmail, s.ReplyTo, s.Status = camp.FromEmail, camp.ReplyTo, camp.Status
+		if req.FromEmail != nil {
+			s.FromEmail = *req.FromEmail
+		}
+	}
+	s.ReplyToInput = req.ReplyTo
+
+	stored := s
+	s, err := a.campaignSender(s, user)
+	if err != nil && req.Mode != "test" {
+		// Saving refuses an invalid sender (one that is still being typed) and keeps the
+		// stored one: check with that.
+		stored.ReplyToInput = nil
+		stored.FromEmail = camp.FromEmail
+		s, err = a.campaignSender(stored, user)
+	}
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+	camp.FromEmail, camp.ReplyTo = s.FromEmail, s.ReplyTo
+	if req.Mode == "test" && len(a.cfg.SenderDomains) > 0 {
+		camp.FromEmail = resolveFrom(user, a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+	}
 	return nil
 }

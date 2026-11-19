@@ -672,7 +672,9 @@ export default Vue.extend({
         headers: data.headers,
         mode: 'test',
         ...(data.altbody === null ? {} : { altbody: data.altbody }),
-        ...(this.senderPolicyEnabled ? {} : { from_email: data.from_email }),
+        // The sender fields as the test sends them: with sender domains the server sets
+        // the sender from the account of the person sending the test (LST-44 review).
+        ...this.senderFields(),
       }).catch(() => null);
       this.$api.testCampaign(data).then(async () => {
         const parts = trackingToastParts(await tracking).map(({ key, params }) => this.$t(key, params));
@@ -930,7 +932,7 @@ export default Vue.extend({
         ...(Array.isArray(headers) ? { headers } : {}),
         ...(attribs && typeof attribs === 'object' && !Array.isArray(attribs) ? { attribs } : {}),
         ...(altbody === null || altbody === undefined ? {} : { altbody }),
-        ...(this.senderPolicyEnabled ? {} : { from_email: this.form.fromEmail }),
+        ...this.senderFields(),
         // What the send will be: templates can read the status (LST-44 review).
         status: this.form.sendLater && this.form.sendAtDate ? 'scheduled' : 'running',
         send_at: this.form.sendLater ? this.form.sendAtDate : null,
