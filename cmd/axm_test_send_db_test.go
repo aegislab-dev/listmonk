@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -31,6 +32,8 @@ import (
 type listMessenger struct {
 	mu   sync.Mutex
 	sent []models.Message
+	// fail makes every push an error.
+	fail bool
 }
 
 func (l *listMessenger) Name() string { return "email" }
@@ -40,6 +43,9 @@ func (l *listMessenger) Close() error { return nil }
 func (l *listMessenger) Push(m models.Message) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.fail {
+		return errors.New("synthetic mail server error")
+	}
 	l.sent = append(l.sent, m)
 	return nil
 }
@@ -688,8 +694,23 @@ func TestTestSendOwnAddressNeedsAConfirmedMailbox(t *testing.T) {
 		t.Fatalf("no link in the confirmation mail: %s", mails[0].Body)
 	}
 	token := m[1]
+	// A mail that cannot be sent is an error, and does not make the next try wait.
+	e.sys.fail = true
+	e.db.MustExec(`UPDATE axm_test_addresses SET last_sent_at = NOW() - INTERVAL '2 minutes'`)
+	if code, _, _ := send(own); code != 500 {
+		t.Errorf("mail server down: %d", code)
+	}
+	e.sys.fail = false
+	if code, _, pending := send(own); code != 400 || !pending || len(e.sys.to(own)) != 2 {
+		t.Errorf("after the mail server came back: %d pending %v, %d mails", code, pending, len(e.sys.to(own)))
+	}
+	if m2 := reTestAddrLink.FindStringSubmatch(string(e.sys.to(own)[1].Body)); m2 == nil || m2[1] == token {
+		t.Errorf("the new mail has no new link")
+	} else {
+		token = m2[1]
+	}
 	// Asking again within a minute sends no second mail; it is still refused.
-	if code, _, pending := send(own); code != 400 || !pending || len(e.sys.to(own)) != 1 {
+	if code, _, pending := send(own); code != 400 || !pending || len(e.sys.to(own)) != 2 {
 		t.Errorf("second test within a minute: %d pending %v, %d mails", code, pending, len(e.sys.to(own)))
 	}
 	if got := e.a.ownTestAddress(e.as(e.ua)); got != "" {

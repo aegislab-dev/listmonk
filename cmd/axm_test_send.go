@@ -154,6 +154,8 @@ func (a *App) requestOwnTestAddress(user auth.User) (bool, error) {
 	msg := models.Message{From: a.cfg.FromEmail, To: []string{email}, Subject: a.i18n.T("email.testAddr.subject"), Body: []byte(body)}
 	if err := a.emailMsgr.Push(msg); err != nil {
 		a.log.Printf("error sending the test address verification e-mail: %v", err)
+		// No mail went out, so the next try need not wait a minute.
+		a.core.ForgetTestAddressMail(user.ID)
 		return false, echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("senders.sendFailed"))
 	}
 	return true, nil

@@ -51,3 +51,12 @@ func (c *Core) VerifyTestAddressToken(tokenHash string) error {
 	return c.db.Get(&id, `UPDATE axm_test_addresses SET verified_at = NOW(), token_hash = NULL, token_expires_at = NULL
 		WHERE token_hash = $1 AND verified_at IS NULL AND token_expires_at > NOW() RETURNING user_id`, tokenHash)
 }
+
+// ForgetTestAddressMail lets the next request for the user mail at once: the last mail could
+// not be sent. The token of that mail is dropped with it.
+func (c *Core) ForgetTestAddressMail(userID int) {
+	if _, err := c.db.Exec(`UPDATE axm_test_addresses SET last_sent_at = NOW() - INTERVAL '1 hour', token_hash = NULL, token_expires_at = NULL
+		WHERE user_id = $1 AND verified_at IS NULL`, userID); err != nil {
+		c.log.Printf("error resetting the test address request: %v", err)
+	}
+}
