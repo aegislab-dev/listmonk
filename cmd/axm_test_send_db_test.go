@@ -71,6 +71,8 @@ type testSendEnv struct {
 	*teamsEnv
 	msgr *listMessenger
 	now  time.Time
+	// The body the next test request sends.
+	body string
 
 	camp     int
 	campUUID string
@@ -79,14 +81,21 @@ type testSendEnv struct {
 	mineEmail, foreignEmail string
 }
 
-func newTestSendEnv(t *testing.T) *testSendEnv {
-	e := &testSendEnv{teamsEnv: newTeamsEnv(t), msgr: &listMessenger{}, now: time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)}
-	m := e.startManagerWith(e.store, e.msgr, io.Discard, func(c *manager.Config) { c.ScanCampaigns = false })
+func newTestSendEnv(t *testing.T) *testSendEnv { return newTestSendEnvTracking(t, true) }
+
+// newTestSendEnvTracking chooses the individual tracking of both the manager, which writes
+// the links into a message, and the handlers that receive them.
+func newTestSendEnvTracking(t *testing.T, individual bool) *testSendEnv {
+	e := &testSendEnv{teamsEnv: newTeamsEnv(t), msgr: &listMessenger{}, now: time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC), body: testSendBody}
+	m := e.startManagerWith(e.store, e.msgr, io.Discard, func(c *manager.Config) {
+		c.ScanCampaigns = false
+		c.IndividualTracking = individual
+	})
 	t.Cleanup(m.Close)
 	e.a.manager = m
 	e.a.log = log.New(io.Discard, "", 0)
 	e.a.cfg = &Config{TestDomains: []string{testSendDomain}, FromEmail: "Sender <sender@example.invalid>"}
-	e.a.cfg.Privacy.IndividualTracking = true
+	e.a.cfg.Privacy.IndividualTracking = individual
 	e.a.testLimiter.now = func() time.Time { return e.now }
 
 	e.camp, e.campUUID = e.addCampaign("draft")
@@ -134,7 +143,7 @@ func (e *testSendEnv) send(user auth.User, emails []string, sample string) (int,
 	body := map[string]any{
 		"name": "시험 캠페인", "subject": "{{ .Subscriber.Name }} 님께", "lists": []int{e.aList},
 		"from_email": "Sender <sender@example.invalid>", "messenger": "email", "content_type": "html",
-		"body": testSendBody, "subscribers": emails,
+		"body": e.body, "subscribers": emails,
 	}
 	if sample != "" {
 		body["sample"] = json.RawMessage(sample)
@@ -197,8 +206,10 @@ func TestTestSendToNonSubscribers(t *testing.T) {
 	if got[0].Subscriber.ID != 0 || got[0].Subscriber.UUID != dummyUUID {
 		t.Errorf("rendered for subscriber %d %s", got[0].Subscriber.ID, got[0].Subscriber.UUID)
 	}
-	// Every link of the message carries the dummy subscriber UUID.
-	if strings.Count(string(got[0].Body), "/"+dummyUUID) != 3 {
+	// Every link of the message carries the dummy campaign and subscriber UUIDs, and nothing
+	// in it or in its headers names the real campaign.
+	if strings.Count(string(got[0].Body), "/"+dummyUUID+"/"+dummyUUID) != 3 || strings.Contains(string(got[0].Body), e.campUUID) ||
+		got[0].Headers.Get(models.EmailHeaderCampaignUUID) != dummyUUID {
 		t.Errorf("tracking links: %s", got[0].Body)
 	}
 
@@ -213,7 +224,8 @@ func TestTestSendToNonSubscribers(t *testing.T) {
 	}
 	// With the default sample a subscriber gets their own values and links.
 	if m := e.msgr.to(e.mineEmail); len(m) != 1 || !strings.HasPrefix(string(m[0].Body), "<p>김하늘 / 하늘상사 / "+e.mineEmail+"</p>") ||
-		m[0].Subscriber.ID != e.mine || m[0].Subscriber.UUID != e.subUUID(e.mine) {
+		m[0].Subscriber.ID != e.mine || m[0].Subscriber.UUID != e.subUUID(e.mine) ||
+		strings.Count(string(m[0].Body), "/"+e.campUUID+"/"+e.subUUID(e.mine)) != 3 {
 		t.Errorf("subscriber: %+v", m)
 	}
 
@@ -470,11 +482,13 @@ func TestPreviewWithSample(t *testing.T) {
 		sample *string
 		want   string
 	}{
-		"no sample":             {nil, demo},
-		"an empty sample":       {s(""), demo},
-		"the default sample":    {s("{}"), demo},
-		"typed-in values":       {s(`{"name":"홍길동","attribs":{"company":"크레바스"}}`), "<p>홍길동 / 크레바스 / demo@listmonk.app</p>"},
-		"typed-in attribs only": {s(`{"attribs":{"company":"크레바스"}}`), "<p>Demo Subscriber / 크레바스 / demo@listmonk.app</p>"},
+		"no sample":          {nil, demo},
+		"an empty sample":    {s(""), demo},
+		"the default sample": {s("{}"), demo},
+		"typed-in values":    {s(`{"name":"홍길동","attribs":{"company":"크레바스"}}`), "<p>홍길동 / 크레바스 / demo@listmonk.app</p>"},
+		// Typed in exactly: no name is no name, as in the message that is sent.
+		"typed-in attribs only": {s(`{"attribs":{"company":"크레바스"}}`), "<p> / 크레바스 / demo@listmonk.app</p>"},
+		"typed in, all empty":   {s(`{"name":"","attribs":{}}`), "<p> /  / demo@listmonk.app</p>"},
 		"a borrowed subscriber": {s(fmt.Sprintf(`{"subscriber_id":%d}`, e.mine)), "<p>김하늘 / 하늘상사 / demo@listmonk.app</p>"},
 	} {
 		code, body := preview(member, tc.sample)
@@ -510,73 +524,74 @@ func TestPreviewWithSample(t *testing.T) {
 
 var reTestSendLink = regexp.MustCompile(`/link/([0-9a-f-]{36})/([0-9a-f-]{36})/([0-9a-f-]{36})`)
 
-// The links and the pixel of a sample test message, and of a preview, record nothing: no
-// click, no view, no send record. Upstream recorded such a click on the real campaign.
+// The links and the pixel of a sample test message record nothing: no click, no view, no
+// send record. A real subscriber's message is counted as before, also with individual
+// tracking off, when it carries the same dummy subscriber UUID as a sample does. The links
+// are taken from messages made under the setting that is tested.
 func TestSampleMessageIsNotTracked(t *testing.T) {
-	e := newTestSendEnv(t)
-	member := e.as(e.ua)
-	internal := "design@" + testSendDomain
-	if code, _ := e.send(member, []string{internal, e.mineEmail}, ""); code != 200 {
-		t.Fatal(code)
-	}
-	e.waitSent(2)
-	link := func(email string) (linkUUID, subUUID string) {
-		m := reTestSendLink.FindStringSubmatch(string(e.msgr.to(email)[0].Body))
-		if m == nil || m[2] != e.campUUID {
-			t.Fatalf("no tracked link of the campaign in the message to %s", email)
-		}
-		return m[1], m[3]
-	}
-	linkUUID, sampleSub := link(internal)
-	_, realSub := link(e.mineEmail)
-	if sampleSub != dummyUUID || realSub != e.subUUID(e.mine) {
-		t.Fatalf("subscriber UUIDs in the links: %s %s", sampleSub, realSub)
-	}
-
-	click := func(camp, sub string) int {
-		rec, he := e.do(e.a.LinkRedirect, auth.User{}, httptest.NewRequest("GET", "/x", nil), 0,
-			map[string]string{"linkUUID": linkUUID, "campUUID": camp, "subUUID": sub})
-		if he != nil {
-			t.Fatalf("link: %v", he)
-		}
-		if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "https://example.invalid/offer" {
-			t.Fatalf("link: %d %q", rec.Code, rec.Header().Get("Location"))
-		}
-		return e.count(`SELECT COUNT(*) FROM link_clicks`)
-	}
-	view := func(camp, sub string) int {
-		rec, he := e.do(e.a.RegisterCampaignView, auth.User{}, httptest.NewRequest("GET", "/x", nil), 0,
-			map[string]string{"campUUID": camp, "subUUID": sub})
-		if he != nil || rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" {
-			t.Fatalf("pixel: %v %d", he, rec.Code)
-		}
-		return e.count(`SELECT COUNT(*) FROM campaign_views`)
-	}
-
 	for _, individual := range []bool{true, false} {
-		e.a.cfg.Privacy.IndividualTracking = individual
-		e.db.MustExec(`DELETE FROM link_clicks; DELETE FROM campaign_views`)
 		name := fmt.Sprintf("individual tracking %v", individual)
+		e := newTestSendEnvTracking(t, individual)
+		member := e.as(e.ua)
+		internal := "design@" + testSendDomain
+		if code, _ := e.send(member, []string{internal, e.mineEmail}, ""); code != 200 {
+			t.Fatal(code)
+		}
+		e.waitSent(2)
+		link := func(email string) (linkUUID, campUUID, subUUID string) {
+			m := reTestSendLink.FindStringSubmatch(string(e.msgr.to(email)[0].Body))
+			if m == nil {
+				t.Fatalf("%s: no tracked link in the message to %s", name, email)
+			}
+			return m[1], m[2], m[3]
+		}
+		linkUUID, sampleCamp, sampleSub := link(internal)
+		_, realCamp, realSub := link(e.mineEmail)
+		wantRealSub := e.subUUID(e.mine)
+		if !individual {
+			// What the manager writes for every recipient of a real campaign too.
+			wantRealSub = dummyUUID
+		}
+		if sampleCamp != dummyUUID || sampleSub != dummyUUID || realCamp != e.campUUID || realSub != wantRealSub {
+			t.Fatalf("%s: UUIDs in the links: sample %s/%s real %s/%s", name, sampleCamp, sampleSub, realCamp, realSub)
+		}
 
-		// The sample message, and a preview (dummy campaign UUID).
-		if n := click(e.campUUID, dummyUUID); n != 0 {
+		click := func(camp, sub string) int {
+			rec, he := e.do(e.a.LinkRedirect, auth.User{}, httptest.NewRequest("GET", "/x", nil), 0,
+				map[string]string{"linkUUID": linkUUID, "campUUID": camp, "subUUID": sub})
+			if he != nil {
+				t.Fatalf("%s: link: %v", name, he)
+			}
+			if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "https://example.invalid/offer" {
+				t.Fatalf("%s: link: %d %q", name, rec.Code, rec.Header().Get("Location"))
+			}
+			return e.count(`SELECT COUNT(*) FROM link_clicks`)
+		}
+		view := func(camp, sub string) int {
+			rec, he := e.do(e.a.RegisterCampaignView, auth.User{}, httptest.NewRequest("GET", "/x", nil), 0,
+				map[string]string{"campUUID": camp, "subUUID": sub})
+			if he != nil || rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" {
+				t.Fatalf("%s: pixel: %v %d", name, he, rec.Code)
+			}
+			return e.count(`SELECT COUNT(*) FROM campaign_views`)
+		}
+
+		// The sample message.
+		if n := click(sampleCamp, sampleSub); n != 0 {
 			t.Errorf("%s: a click on the sample message made %d click rows", name, n)
 		}
-		if n := click(dummyUUID, dummyUUID); n != 0 {
-			t.Errorf("%s: a click in a preview made %d click rows", name, n)
-		}
-		if n := view(e.campUUID, dummyUUID); n != 0 {
+		if n := view(sampleCamp, sampleSub); n != 0 {
 			t.Errorf("%s: the pixel of the sample message made %d view rows", name, n)
 		}
-		if n := view(dummyUUID, dummyUUID); n != 0 {
-			t.Errorf("%s: the pixel of a preview made %d view rows", name, n)
-		}
-		// A real subscriber's message is counted as before.
-		if n := click(e.campUUID, realSub); n != 1 {
+		// The real subscriber's message: one click and one view on the campaign.
+		if n := click(realCamp, realSub); n != 1 {
 			t.Errorf("%s: a real click made %d click rows", name, n)
 		}
-		if n := view(e.campUUID, realSub); n != 1 {
+		if n := view(realCamp, realSub); n != 1 {
 			t.Errorf("%s: a real view made %d view rows", name, n)
+		}
+		if n := e.count(`SELECT COUNT(*) FROM link_clicks WHERE campaign_id=$1`, e.camp) + e.count(`SELECT COUNT(*) FROM campaign_views WHERE campaign_id=$1`, e.camp); n != 2 {
+			t.Errorf("%s: %d clicks and views on the campaign, want 2", name, n)
 		}
 		want := 0
 		if individual {
@@ -585,17 +600,103 @@ func TestSampleMessageIsNotTracked(t *testing.T) {
 		if n := e.count(`SELECT COUNT(*) FROM link_clicks WHERE subscriber_id=$1`, e.mine); n != want {
 			t.Errorf("%s: %d clicks with the subscriber, want %d", name, n, want)
 		}
-	}
-	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends`); n != 0 {
-		t.Errorf("%d send records", n)
-	}
+		if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends`); n != 0 {
+			t.Errorf("%s: %d send records", name, n)
+		}
 
-	// With tracking off entirely the link still resolves.
-	e.a.cfg.Privacy.DisableTracking = true
-	e.db.MustExec(`DELETE FROM link_clicks`)
-	if n := click(e.campUUID, realSub) + click(e.campUUID, dummyUUID); n != 0 {
-		t.Errorf("tracking disabled: %d click rows", n)
+		// With tracking off entirely the link still resolves and nothing is added.
+		e.a.cfg.Privacy.DisableTracking = true
+		if n := click(realCamp, realSub); n != 1 {
+			t.Errorf("%s, tracking disabled: %d click rows", name, n)
+		}
 	}
+}
+
+// A password account types its own address into its profile and nothing checks that it owns
+// it, so that address is no reason to send it a test. An account of the identity provider
+// cannot edit its address.
+func TestTestSendOwnAddressNeedsAnUneditableProfile(t *testing.T) {
+	e := newTestSendEnv(t)
+	own := "ua@example.invalid"
+	if code, rejected := e.send(e.as(e.ua), []string{own}, ""); code != 200 || rejected != nil {
+		t.Fatalf("identity provider account: %d %v", code, rejected)
+	}
+	e.waitSent(1)
+	e.db.MustExec(`UPDATE users SET password_login=true WHERE id=$1`, e.ua)
+	e.db.MustExec(`UPDATE users SET email='victim@outside.invalid' WHERE id=$1`, e.ua)
+	typed := e.as(e.ua)
+	for _, to := range []string{"victim@outside.invalid", own} {
+		if code, rejected := e.send(typed, []string{to}, ""); code != http.StatusBadRequest || !reflect.DeepEqual(rejected, []string{to}) {
+			t.Errorf("password account to %s: %d %v", to, code, rejected)
+		}
+	}
+	// A test domain address and a subscriber still work for it.
+	if code, _ := e.send(typed, []string{"design@" + testSendDomain, e.mineEmail}, ""); code != 200 {
+		t.Errorf("password account, test domain and subscriber: %d", code)
+	}
+	e.waitSent(3)
+}
+
+// The login name of an account made by the identity provider is its e-mail address. A test
+// to that address must not put it on the audit log through the user columns.
+func TestTestSendAuditHidesEmailLoginName(t *testing.T) {
+	e := newTestSendEnv(t)
+	e.db.MustExec(`UPDATE users SET username='ua@example.invalid', name='ua@example.invalid' WHERE id=$1`, e.ua)
+	e.db.MustExec(`UPDATE campaigns SET name='To ua@example.invalid' WHERE id=$1`, e.camp)
+	user := e.as(e.ua)
+	if code, _ := e.send(user, []string{"ua@example.invalid"}, ""); code != 200 {
+		t.Fatal(code)
+	}
+	e.waitSent(1)
+	var row struct {
+		JSON   string `db:"j"`
+		UserID int    `db:"user_id"`
+	}
+	e.get(&row, `SELECT row_to_json(l)::TEXT AS j, user_id FROM axm_audit_log l WHERE action='campaign.test'`)
+	if strings.Contains(row.JSON, "@") || strings.Contains(row.JSON, "ua") || row.UserID != user.ID {
+		t.Errorf("audit row: %s", row.JSON)
+	}
+	if !strings.Contains(row.JSON, `"domains": ["example.invalid"]`) && !strings.Contains(row.JSON, `"domains":["example.invalid"]`) {
+		t.Errorf("the domain is missing: %s", row.JSON)
+	}
+}
+
+// A message that could not be rendered was not sent and does not count towards the limit.
+func TestTestSendFailedMessagesDoNotUseTheLimit(t *testing.T) {
+	e := newTestSendEnv(t)
+	member := e.as(e.ua)
+	many := []string{}
+	for i := 0; i < testMaxRecipients; i++ {
+		many = append(many, fmt.Sprintf("u%d@%s", i, testSendDomain))
+	}
+	// The default sample has no tags, so this body fails for the first recipient.
+	e.body = `<p>{{ index .Subscriber.Attribs.tags 0 }}</p>`
+	for i := 0; i < 5; i++ {
+		if code, _ := e.send(member, many, ""); code != http.StatusInternalServerError {
+			t.Fatalf("request %d with a body that cannot be rendered: %d", i, code)
+		}
+	}
+	// It renders for a subscriber with such a value and fails for the sample after it: the
+	// one message that went out counts, and is on the audit log.
+	e.db.MustExec(`UPDATE subscribers SET attribs='{"tags":["a"]}' WHERE id=$1`, e.mine)
+	if code, _ := e.send(member, []string{e.mineEmail, many[0], many[1]}, ""); code != http.StatusInternalServerError {
+		t.Fatalf("a request that fails at the second recipient: %d", code)
+	}
+	e.waitSent(1)
+	if n := e.count(`SELECT COALESCE(SUM(count), 0) FROM axm_audit_log WHERE action='campaign.test'`); n != 1 {
+		t.Errorf("audit count %d, want 1", n)
+	}
+	// 29 more fit, the 30th after them does not.
+	e.body = testSendBody
+	for i := 0; i < 29; i++ {
+		if code, _ := e.send(member, many[:1], ""); code != 200 {
+			t.Fatalf("message %d after the failures: %d", i+2, code)
+		}
+	}
+	if code, _ := e.send(member, many[:1], ""); code != http.StatusTooManyRequests {
+		t.Fatalf("message 31: %d", code)
+	}
+	e.waitSent(30)
 }
 
 // The migration gives a database the test domains setting as a copy of its sender domains,

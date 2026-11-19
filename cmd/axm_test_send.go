@@ -24,8 +24,10 @@ import (
 // address to a list and it then received real campaigns. Here an address may also receive a
 // test when it is the signed-in user's own address or belongs to a test domain
 // (axm.test_domains). Such an address gets no subscriber row: the message is rendered for a
-// stand-in ("sample") subscriber that carries the dummy UUID, so its views, clicks and
-// unsubscribe link touch nothing real.
+// stand-in ("sample") subscriber and, like a preview, with the dummy campaign UUID, so its
+// views, clicks and unsubscribe link touch nothing real. The dummy subscriber UUID alone
+// cannot mark such a message: with individual tracking off every real campaign message
+// carries it too.
 
 // How an address came to be allowed.
 const (
@@ -95,10 +97,12 @@ func cleanTestEmails(in []string) []string {
 	return out
 }
 
-// ownTestAddress is the signed-in user's own address, or "" when there is none. An API user
-// has no address of its own.
+// ownTestAddress is the signed-in user's own address, or "" when there is none that can be
+// trusted. An API user has no address of its own. A password account can type any address
+// into its own profile and nothing checks that it owns it, so only an account that signs in
+// through the identity provider (and cannot edit its address) has one.
 func ownTestAddress(user auth.User) string {
-	if user.Type == auth.UserTypeAPI || !user.Email.Valid {
+	if user.Type == auth.UserTypeAPI || user.PasswordLogin || !user.Email.Valid {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(user.Email.String))
@@ -149,7 +153,9 @@ func classifyTestRecipients(emails []string, subs map[string]models.Subscriber, 
 }
 
 // readTestSample checks the values of a sample that was typed in by hand. A sample that
-// names a subscriber is read by resolveTestSample, which needs the database.
+// names a subscriber is read by resolveTestSample, which needs the database. A sample with
+// neither a name nor attributes is the default one; one with attributes, even the empty
+// object, is typed in, so that empty values can be tested too.
 func readTestSample(s *testSample) (testSampleValues, error) {
 	if s == nil {
 		return testSampleValues{Kind: testSampleDefault}, nil
@@ -217,10 +223,9 @@ func buildTestSample(v testSampleValues, email string, own bool, user auth.User)
 	}
 	if v.Kind == testSampleDefault {
 		sub.Attribs = dummySubscriber.Attribs
-	}
-	if sub.Name == "" {
-		// No name was given: the user's own name for their own address, the part before the
-		// "@" for any other.
+		// The default sample has no name of its own: the user's name for their own address,
+		// the part before the "@" for any other. A chosen sample keeps its name as it is,
+		// empty too, and the preview shows the same.
 		if own && strings.TrimSpace(user.Name) != "" {
 			sub.Name = user.Name
 		} else if at := strings.LastIndexByte(email, '@'); at > 0 {
@@ -242,6 +247,15 @@ type testSendLimiter struct {
 	mu   sync.Mutex
 	now  func() time.Time
 	sent map[int][]time.Time
+}
+
+// giveBack returns the last n reserved messages of a user that were not sent after all.
+func (l *testSendLimiter) giveBack(userID, n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if list := l.sent[userID]; n > 0 && n <= len(list) {
+		l.sent[userID] = list[:len(list)-n]
+	}
 }
 
 // take reserves n messages for a user. When they do not fit, nothing is reserved and wait
@@ -286,6 +300,11 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 	if len(emails) == 0 {
 		return nil, none, echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.noSubsToTest"))
 	}
+	tooMany := echo.NewHTTPError(http.StatusBadRequest,
+		a.i18n.Ts("campaigns.testTooMany", "max", strconv.Itoa(testMaxRecipients)))
+	if len(emails) > testMaxRecipients {
+		return nil, none, tooMany
+	}
 
 	// The subscribers among the addresses that the user may see. The core answers 400 when
 	// none of the addresses is a subscriber, which is not an error here.
@@ -305,8 +324,7 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 
 	recips, rejected, err := classifyTestRecipients(emails, subs, user, a.cfg.TestDomains)
 	if err == errTestTooMany {
-		return nil, none, echo.NewHTTPError(http.StatusBadRequest,
-			a.i18n.Ts("campaigns.testTooMany", "max", strconv.Itoa(testMaxRecipients)))
+		return nil, none, tooMany
 	}
 	if len(rejected) > 0 {
 		// The screen marks these addresses. Whether one of them is a subscriber of a list
@@ -371,7 +389,23 @@ func (a *App) auditTestSend(c echo.Context, campID int, campName string, sent []
 	if sample.Kind == testSampleSubscriber {
 		detail["sample_subscriber_id"] = sample.SubID
 	}
-	a.audit(c, auditCampaignTest, auditTarget{Type: auditTargetCampaign, ID: campID, Name: campName}, len(sent), detail)
+	// The login name of a user can be their e-mail address (accounts made by the identity
+	// provider), and that address can be the very recipient of this test. So, unlike other
+	// rows, this one hides an address in the user columns; user_id still tells who it was.
+	user := auth.GetUser(c)
+	e := auditEntry(&user, auditCampaignTest, auditTarget{Type: auditTargetCampaign, ID: campID, Name: scrubAuditText(campName)}, len(sent))
+	e.Username, e.UserName = scrubAuditText(e.Username), scrubAuditText(e.UserName)
+	if err := a.core.AddAudit(e, scrubAuditDetail(detail)); err != nil {
+		a.log.Printf("error writing the audit log (%s): %v", auditCampaignTest, err)
+	}
+}
+
+// sampleCampaign returns the campaign a message to a sample subscriber is rendered with: a
+// copy with the dummy UUID, as a preview has, so that nothing in the message points at the
+// real campaign.
+func sampleCampaign(camp models.Campaign) *models.Campaign {
+	camp.UUID = dummyUUID
+	return &camp
 }
 
 // previewSample reads the "sample" form value of a campaign preview and returns the
@@ -393,9 +427,5 @@ func (a *App) previewSample(c echo.Context) (models.Subscriber, error) {
 	if v.Kind == testSampleDefault {
 		return dummySubscriber, nil
 	}
-	sub := buildTestSample(v, dummySubscriber.Email, false, auth.User{})
-	if strings.TrimSpace(v.Name) == "" {
-		sub.Name = dummySubscriber.Name
-	}
-	return sub, nil
+	return buildTestSample(v, dummySubscriber.Email, false, auth.User{}), nil
 }

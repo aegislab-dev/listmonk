@@ -27,10 +27,7 @@
         <b-icon icon="plus" size="is-small" /> {{ $t('campaigns.testSend.addOwn') }}
       </a>
     </p>
-    <p class="help">
-      {{ domains.length > 0 ? $t('campaigns.sendTestHelp', { domains: domains.join(', '), max: maxRecipients })
-        : $t('campaigns.testSend.helpNoDomains', { max: maxRecipients }) }}
-    </p>
+    <p class="help" data-cy="test-help">{{ $t(helpKey, { domains: domains.join(', '), max: maxRecipients }) }}</p>
 
     <div class="sample">
       <div class="sample-head">
@@ -126,7 +123,7 @@ import { mapState } from 'vuex';
 
 import CampaignPreview from './CampaignPreview.vue';
 import {
-  TEST_MAX_RECIPIENTS, addressKind, attribsTemplate, cleanEmail, sampleLabel, samplePayload,
+  TEST_MAX_RECIPIENTS, addressKind, attribsTemplate, cleanEmail, ownAddress, sampleLabel, samplePayload,
 } from '../test-send';
 
 // The test box of the campaign page (LST-41): who receives the test, and the sample values
@@ -167,10 +164,18 @@ export default {
 
     domains() { return this.serverConfig.test_domains || []; },
 
-    ownEmail() { return this.profile.type === 'api' ? '' : cleanEmail(this.profile.email); },
+    ownEmail() { return ownAddress(this.profile); },
 
     canAddOwn() {
-      return !this.disabled && !!this.ownEmail && !this.value.map(cleanEmail).includes(this.ownEmail);
+      return !this.disabled && !!this.ownEmail && this.value.length < this.maxRecipients
+        && !this.value.map(cleanEmail).includes(this.ownEmail);
+    },
+
+    // Who may receive a test depends on the test domains and on whether this account has an
+    // address of its own that counts.
+    helpKey() {
+      if (this.domains.length > 0) return this.ownEmail ? 'campaigns.sendTestHelp' : 'campaigns.testSend.helpDomainsOnly';
+      return this.ownEmail ? 'campaigns.testSend.helpNoDomains' : 'campaigns.testSend.helpNone';
     },
 
     canReadSubscribers() { return this.$can('subscribers:get_all', 'subscribers:get'); },

@@ -635,6 +635,7 @@ func (a *App) TestCampaign(c echo.Context) error {
 	tplID, _ := strconv.Atoi(c.FormValue("template_id"))
 	camp, err := a.core.GetCampaignForPreview(id, tplID)
 	if err != nil {
+		a.testLimiter.giveBack(auth.GetUser(c).ID, len(recips))
 		return err
 	}
 
@@ -663,9 +664,16 @@ func (a *App) TestCampaign(c echo.Context) error {
 	for i, r := range recips {
 		sub := r.Sub
 
-		if err := a.sendTestMessage(sub, &camp); err != nil {
+		// AXM (LST-41): a sample subscriber's message carries the dummy campaign UUID.
+		msgCamp := &camp
+		if sub.UUID == dummyUUID {
+			msgCamp = sampleCampaign(camp)
+		}
+		if err := a.sendTestMessage(sub, msgCamp); err != nil {
 			a.log.Printf("error sending test message: %v", err)
-			// AXM (LST-41): the messages that did go out are on the audit log.
+			// AXM (LST-41): the messages that did go out are on the audit log, and the
+			// ones that did not do not count towards the limit.
+			a.testLimiter.giveBack(auth.GetUser(c).ID, len(recips)-i)
 			if i > 0 {
 				a.auditTestSend(c, id, savedName, recips[:i], sample)
 			}

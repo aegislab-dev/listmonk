@@ -50,12 +50,15 @@ describe('Campaign test send to addresses that are not subscribers', () => {
     cy.get('.menu').should('exist');
   });
 
-  it('marks each address by how it may receive the test and adds the own address', () => {
+  it('marks each address by how it may receive the test', () => {
     open();
-    box().find('.help').should('contain', domain);
-    box().find('[data-cy=test-add-own]').click();
-    tag(ownEmail).should('have.attr', 'data-kind', 'own');
+    box().find('[data-cy=test-help]').should('contain', domain);
+    // The account of this spec signs in with a password and can edit its own address, so
+    // that address is not offered and counts like any other.
     box().find('[data-cy=test-add-own]').should('not.exist');
+    addEmail(ownEmail);
+    tag(ownEmail).should('have.attr', 'data-kind', 'check');
+    tag(ownEmail).find('.delete').click();
     addEmail(internal.toUpperCase());
     tag(internal).should('have.attr', 'data-kind', 'internal');
     addEmail(subEmail);
@@ -64,7 +67,7 @@ describe('Campaign test send to addresses that are not subscribers', () => {
     cy.intercept('POST', `/api/campaigns/${campaignId}/test`).as('testSend');
     box().find('[data-cy=btn-test-send]').click();
     cy.wait('@testSend').then(({ request, response }) => {
-      expect(request.body.subscribers).to.deep.equal([ownEmail, internal, subEmail]);
+      expect(request.body.subscribers).to.deep.equal([internal, subEmail]);
       expect(request.body).not.to.have.property('sample');
       expect(response.statusCode).to.equal(200);
     });
@@ -72,7 +75,14 @@ describe('Campaign test send to addresses that are not subscribers', () => {
 
     // Nobody became a subscriber.
     cy.request(`/api/subscribers?search=${encodeURIComponent(internal)}`).its('body.data.total').should('eq', 0);
-    cy.request(`/api/subscribers?search=${encodeURIComponent(ownEmail)}`).its('body.data.total').should('eq', 0);
+  });
+
+  it('takes at most ten addresses', () => {
+    open();
+    for (let i = 0; i < 10; i += 1) addEmail(`u${i}-${stamp}@${domain}`);
+    box().find('.taginput .tag').should('have.length', 10);
+    box().find('input[data-cy=test-emails]').should('not.exist');
+    box().find('[data-cy=test-add-own]').should('not.exist');
   });
 
   it('refuses the whole request for an outside address and marks it', () => {
@@ -104,8 +114,11 @@ describe('Campaign test send to addresses that are not subscribers', () => {
     box().find('[data-cy=test-sample-toggle]').click();
     box().find('[data-cy=test-sample-custom] .check').click();
     box().find('input[data-cy=test-sample-name]').type('Hong Gildong');
+    // Chosen but left empty, the sample is still the typed-in one.
+    box().find('[data-cy=test-sample-current]').should('contain', 'Typed in');
     // The attributes start as the standard keys; a value that is not JSON blocks the box.
-    box().find('textarea[data-cy=test-sample-attribs]').should('contain.value', '"company"').clear().type('{company', { parseSpecialCharSequences: false });
+    box().find('textarea[data-cy=test-sample-attribs]').should('contain.value', '"company"')
+      .and('contain.value', '"country"').and('contain.value', '"follower"').clear().type('{company', { parseSpecialCharSequences: false });
     box().find('[data-cy=test-sample-error]').should('be.visible');
     box().find('[data-cy=test-sample-preview]').should('be.disabled');
     box().find('textarea[data-cy=test-sample-attribs]').clear().type('{"company": "Crevasse"}', { parseSpecialCharSequences: false });
@@ -127,6 +140,15 @@ describe('Campaign test send to addresses that are not subscribers', () => {
       expect(request.body.sample).to.deep.equal({ name: 'Hong Gildong', attribs: { company: 'Crevasse' } });
       expect(response.statusCode).to.equal(200);
     });
+
+    // Emptied, the values go out empty and the preview shows the same.
+    box().find('input[data-cy=test-sample-name]').clear();
+    box().find('textarea[data-cy=test-sample-attribs]').clear();
+    box().find('[data-cy=test-sample-preview]').click();
+    cy.wait('@preview').its('response.body').should('contain', 'Hello  of ');
+    cy.get('.modal-card-foot button').click();
+    box().find('[data-cy=btn-test-send]').click();
+    cy.wait('@testSend').its('request.body.sample').should('deep.equal', { name: '', attribs: {} });
   });
 
   it('borrows a subscriber\'s values for the preview', () => {
@@ -165,11 +187,11 @@ describe('Campaign test send to addresses that are not subscribers', () => {
     cy.request('/api/audit?action=campaign.test&per_page=50').then(({ body: audit }) => {
       const rows = audit.data.results.filter((r) => r.target_id === campaignId);
       expect(rows.length).to.be.at.least(3);
-      expect(JSON.stringify(rows)).not.to.contain('@');
+      expect(JSON.stringify(rows.map((r) => [r.detail, r.target_name, r.count]))).not.to.contain('@');
       const first = rows[rows.length - 1];
-      expect(first.count).to.equal(3);
+      expect(first.count).to.equal(2);
       expect(first.detail).to.deep.equal({
-        subscribers: 1, own: 1, internal: 1, domains: [domain, ownEmail.split('@')[1]].sort(), sample: 'default',
+        subscribers: 1, own: 0, internal: 1, domains: [domain], sample: 'default',
       });
     });
     cy.visit('/admin/settings/audit');

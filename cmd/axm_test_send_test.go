@@ -19,6 +19,8 @@ func TestClassifyTestRecipients(t *testing.T) {
 		me      = auth.User{Type: auth.UserTypeUser, Name: "Me", Email: null.StringFrom("Me@Outside.example")}
 		api     = auth.User{Type: auth.UserTypeAPI, Name: "API", Email: null.StringFrom("api@outside.example")}
 		noEmail = auth.User{Type: auth.UserTypeUser, Name: "No mail"}
+		// A password account can type any address into its profile: it has no own address.
+		typed   = auth.User{Type: auth.UserTypeUser, Name: "Typed", PasswordLogin: true, Email: null.StringFrom("typed@outside.example")}
 		domains = []string{"corp.example"}
 		sub     = models.Subscriber{Email: "known@partner.example", Name: "Known"}
 		staff   = models.Subscriber{Email: "staff@corp.example"}
@@ -41,6 +43,8 @@ func TestClassifyTestRecipients(t *testing.T) {
 		{"the user's own address, in another case", "me@outside.example", me, subs, domains, want{kind: testKindOwn}},
 		{"an API user has no address of its own", "api@outside.example", api, subs, domains, want{rejected: true}},
 		{"a user without an address", "someone@outside.example", noEmail, subs, domains, want{rejected: true}},
+		{"a password account's profile address", "typed@outside.example", typed, subs, domains, want{rejected: true}},
+		{"a password account in a test domain", "anyone@corp.example", typed, subs, domains, want{kind: testKindInternal}},
 		{"a test domain", "anyone@corp.example", me, subs, domains, want{kind: testKindInternal}},
 		{"a subdomain of a test domain", "anyone@a.corp.example", me, subs, domains, want{rejected: true}},
 		{"a domain that only ends like a test domain", "anyone@notcorp.example", me, subs, domains, want{rejected: true}},
@@ -117,6 +121,7 @@ func TestTestSample(t *testing.T) {
 		{"blank name and null attribs", &testSample{Name: "  ", Attribs: raw("null")}, testSampleDefault, false},
 		{"a name only", &testSample{Name: "홍길동"}, testSampleCustom, false},
 		{"attribs only", &testSample{Attribs: raw(`{"company":"크레바스"}`)}, testSampleCustom, false},
+		{"empty attribs: typed in, with nothing", &testSample{Attribs: raw(`{}`)}, testSampleCustom, false},
 		{"attribs that are a list", &testSample{Attribs: raw(`["a"]`)}, "", true},
 		{"attribs that are a text", &testSample{Attribs: raw(`"a"`)}, "", true},
 		{"attribs that are not JSON", &testSample{Attribs: raw(`{company}`)}, "", true},
@@ -173,10 +178,20 @@ func TestTestSample(t *testing.T) {
 			t.Errorf("default sample: id %d uuid %s", s.ID, s.UUID)
 		}
 	}
-	// A typed-in sample without a name falls back like the default, with its own attribs.
+	// A typed-in sample is used exactly as typed: without a name the name is empty, for the
+	// user's own address too, so that a message with empty values can be tested.
 	onlyAttribs, _ := readTestSample(&testSample{Attribs: raw(`{"company":"크레바스"}`)})
-	if s := buildTestSample(onlyAttribs, "design@corp.example", false, user); s.Name != "design" || s.Attribs["company"] != "크레바스" || s.Attribs["city"] != nil {
-		t.Errorf("attribs only: name %q attribs %v", s.Name, s.Attribs)
+	for _, own := range []bool{false, true} {
+		if s := buildTestSample(onlyAttribs, "design@corp.example", own, user); s.Name != "" || s.Attribs["company"] != "크레바스" || s.Attribs["city"] != nil {
+			t.Errorf("attribs only (own %v): name %q attribs %v", own, s.Name, s.Attribs)
+		}
+	}
+	nothing, _ := readTestSample(&testSample{Attribs: raw(`{}`)})
+	if s := buildTestSample(nothing, "design@corp.example", false, user); s.Name != "" || len(s.Attribs) != 0 || s.UUID != dummyUUID {
+		t.Errorf("empty typed-in sample: name %q attribs %v", s.Name, s.Attribs)
+	}
+	if s := buildTestSample(testSampleValues{Kind: testSampleSubscriber, SubID: 7}, "design@corp.example", false, user); s.Name != "" || s.Attribs == nil {
+		t.Errorf("borrowed subscriber without a name: name %q attribs %v", s.Name, s.Attribs)
 	}
 	// A name without attribs has no attributes at all, not the demo ones.
 	onlyName, _ := readTestSample(&testSample{Name: "홍길동"})
@@ -230,6 +245,20 @@ func TestTestSendLimiter(t *testing.T) {
 	}
 	if ok, _ := l.take(1, 1); ok {
 		t.Fatal("the window let through more than the limit")
+	}
+	// Messages that were reserved but not sent are given back, the newest first.
+	l.giveBack(1, 4)
+	if ok, _ := l.take(1, 5); ok {
+		t.Fatal("more was given back than asked")
+	}
+	if ok, _ := l.take(1, 4); !ok {
+		t.Fatal("the messages given back were not free")
+	}
+	l.giveBack(1, 0)
+	l.giveBack(1, 1000)
+	l.giveBack(99, 1)
+	if ok, _ := l.take(1, 1); ok {
+		t.Fatal("a wrong give-back made room")
 	}
 	// Long after, everything is allowed again.
 	now = now.Add(time.Hour)

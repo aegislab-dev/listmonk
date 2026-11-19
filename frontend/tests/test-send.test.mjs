@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   SAMPLE_CUSTOM, SAMPLE_DEFAULT, SAMPLE_MAX_ATTRIBS, SAMPLE_MAX_NAME, SAMPLE_SUBSCRIBER,
-  addressKind, attribsTemplate, newSample, rejectedOf, sampleLabel, samplePayload,
+  addressKind, attribsTemplate, newSample, ownAddress, rejectedOf, sampleLabel, samplePayload,
 } from '../src/test-send.js';
 
 test('an address is the own one, in a test domain, or left for the server to check', () => {
@@ -48,10 +49,11 @@ test('typed-in values are checked the way the server checks them', () => {
     { payload: { name: '홍길동', attribs: { company: '크레바스' } } });
   assert.deepEqual(samplePayload(custom('홍길동', '')), { payload: { name: '홍길동', attribs: {} } });
   assert.deepEqual(samplePayload(custom('', '{"n": 0, "ok": false}')), { payload: { name: '', attribs: { n: 0, ok: false } } });
-  // Nothing typed in, or only the empty template, is the default sample.
-  assert.deepEqual(samplePayload(custom('', '')), { payload: null });
-  assert.deepEqual(samplePayload(custom(' ', attribsTemplate([{ key: 'company', kind: 'text' }]))), { payload: null });
-  assert.deepEqual(sampleLabel(custom('', '{}')), { kind: SAMPLE_DEFAULT, name: '' });
+  // Nothing typed in, or only the empty template, is still typed in: empty values are sent
+  // as empty values and never replaced by a subscriber's own.
+  assert.deepEqual(samplePayload(custom('', '')), { payload: { name: '', attribs: {} } });
+  assert.deepEqual(samplePayload(custom(' ', attribsTemplate([{ key: 'company', kind: 'text' }]))), { payload: { name: '', attribs: {} } });
+  assert.deepEqual(sampleLabel(custom('', '{}')), { kind: SAMPLE_CUSTOM, name: '' });
   assert.deepEqual(sampleLabel(custom('홍길동', '{}')), { kind: SAMPLE_CUSTOM, name: '홍길동' });
   assert.deepEqual(sampleLabel(custom('', '{"company":"크레바스"}')), { kind: SAMPLE_CUSTOM, name: '' });
 
@@ -67,11 +69,22 @@ test('typed-in values are checked the way the server checks them', () => {
   assert.deepEqual(samplePayload(custom('', long)), { error: 'campaigns.testSend.attribsTooLong' });
 });
 
-test('the attribute template holds the standard text keys', () => {
-  const tpl = attribsTemplate([{ key: 'country', kind: 'country' }, { key: 'follower', kind: 'integer' },
-    { key: 'company', kind: 'text' }, { key: 'title', kind: 'text' }]);
-  assert.deepEqual(JSON.parse(tpl), { company: '', title: '' });
+test('the attribute template holds every standard key', () => {
+  const dict = JSON.parse(readFileSync(new URL('../../internal/core/axm_standard_attribs.json', import.meta.url), 'utf8'));
+  const tpl = JSON.parse(attribsTemplate(dict));
+  assert.deepEqual(Object.keys(tpl), dict.map((a) => a.key));
+  assert.ok(Object.keys(tpl).includes('country') && Object.keys(tpl).includes('follower'));
+  assert.ok(Object.values(tpl).every((v) => v === ''));
   assert.equal(attribsTemplate(undefined), '{}');
+});
+
+test('only an account that cannot edit its address has an own address', () => {
+  assert.equal(ownAddress({ type: 'user', email: ' Me@Corp.example ', passwordLogin: false }), 'me@corp.example');
+  assert.equal(ownAddress({ type: 'user', email: 'me@corp.example', passwordLogin: true }), '');
+  assert.equal(ownAddress({ type: 'user', email: 'me@corp.example', password_login: true }), '');
+  assert.equal(ownAddress({ type: 'api', email: 'api@corp.example' }), '');
+  assert.equal(ownAddress({ type: 'user', email: null }), '');
+  assert.equal(ownAddress(undefined), '');
 });
 
 test('the refused addresses are read from the error of a test request', () => {
