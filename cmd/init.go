@@ -1005,7 +1005,7 @@ func initHTTPServer(cfg *Config, urlCfg *UrlConfig, i *i18n.I18n, fs stuffbin.Fi
 	)
 	switch {
 	case uploadProvider == "filesystem" && uploadFsURI != "":
-		srv.Static(uploadFsURI, ko.String("upload.filesystem.upload_path"))
+		serveUploadDir(srv, uploadFsURI, ko.String("upload.filesystem.upload_path"))
 	case uploadProvider == "s3" && strings.HasPrefix(publicURL, "/"):
 		srv.GET(path.Join(publicURL, "/:filepath"), app.ServeS3Media)
 	}
@@ -1025,6 +1025,19 @@ func initHTTPServer(cfg *Config, urlCfg *UrlConfig, i *i18n.I18n, fs stuffbin.Fi
 	}()
 
 	return srv
+}
+
+// serveUploadDir serves the filesystem media upload directory under the given
+// URI prefix. It is srv.Static() with path unescaping kept on: since echo
+// v4.15.4, Static() no longer unescapes the request path, which would turn
+// every uploaded file whose name is not sent in Go's default encoding
+// (e.g. "a(1).png" requested as "a%281%29.png") into a 404, including image
+// links in e-mails that have already been sent. The handler rejects ".", ".."
+// and empty path segments before and after unescaping, and there are no
+// guarded routes under the upload URI.
+func serveUploadDir(srv *echo.Echo, uri, root string, m ...echo.MiddlewareFunc) *echo.Route {
+	return srv.Add(http.MethodGet, uri+"*",
+		echo.StaticDirectoryHandler(echo.MustSubFS(srv.Filesystem, root), false), m...)
 }
 
 // initCaptcha initializes the captcha service.
