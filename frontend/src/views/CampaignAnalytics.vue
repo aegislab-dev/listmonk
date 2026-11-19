@@ -52,7 +52,7 @@
     <!-- LST-36: copy the counts of one campaign as a proof summary (block v1). -->
     <div class="proof-summary columns is-vcentered is-mobile mt-1 mb-0" data-cy="proof-summary">
       <div class="column is-narrow">
-        <b-button icon-left="content-copy" :disabled="!!proofDisabledReason" :loading="proof.loading"
+        <b-button icon-left="file-multiple-outline" :disabled="!!proofDisabledReason" :loading="proof.loading"
           data-cy="btn-proof-summary" @click="onProofSummary">
           {{ $t('analytics.proofSummary') }}
         </b-button>
@@ -80,7 +80,7 @@
         </section>
         <footer class="modal-card-foot">
           <b-button @click="proof.open = false">{{ $t('globals.buttons.close') }}</b-button>
-          <b-button type="is-primary" icon-left="content-copy" data-cy="btn-proof-copy" @click="copyProof">
+          <b-button type="is-primary" icon-left="file-multiple-outline" data-cy="btn-proof-copy" @click="copyProof">
             {{ $t('globals.buttons.copy') }}
           </b-button>
         </footer>
@@ -378,11 +378,23 @@ export default Vue.extend({
           rootURL: this.serverConfig.root_url,
         });
         this.proof.open = true;
+        this.$nextTick(this.fitProofText);
       } catch (e) {
         // The HTTP layer has shown the error.
       } finally {
         this.proof.loading = false;
       }
+    },
+
+    // The text box is as tall as its text: the lines wrap on a narrow screen, and the copied
+    // text must be seen to the last line.
+    fitProofText() {
+      const el = this.$refs.proofText;
+      if (!el) {
+        return;
+      }
+      el.style.height = 'auto';
+      el.style.height = `${el.scrollHeight + 2}px`;
     },
 
     async copyProof() {
