@@ -98,7 +98,7 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 
 	// Start the importer session.
 	opt.Filename = file.Filename
-	sess, err := a.importer.NewSession(opt)
+	sess, err := a.newImportSession(opt)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			a.i18n.Ts("import.errorStarting", "error", err.Error()))
@@ -129,8 +129,45 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 
 // GetImportSubscribers returns import statistics.
 func (a *App) GetImportSubscribers(c echo.Context) error {
+	s, all := a.importStatus()
+	// Only the lists this user may see: the screen checks their addresses. The others are
+	// counted so that the screen can say that they were not checked.
+	user := auth.GetUser(c)
+	lists := append([]int{}, user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, all)...)
+	return c.JSON(http.StatusOK, okResp{struct {
+		subimporter.Status
+		AxmLists       []int `json:"axm_lists"`
+		AxmListsHidden int   `json:"axm_lists_hidden"`
+	}{s, lists, len(all) - len(lists)}})
+}
+
+// newImportSession creates the import session and records the lists it subscribes people
+// to as one step with respect to importStatus.
+func (a *App) newImportSession(opt subimporter.SessionOpt) (*subimporter.Session, error) {
+	a.importListsMu.Lock()
+	defer a.importListsMu.Unlock()
+	sess, err := a.importer.NewSession(opt)
+	if err != nil {
+		return nil, err
+	}
+	a.importLists = nil
+	if opt.Mode == subimporter.ModeSubscribe {
+		a.importLists = append([]int{}, opt.ListIDs...)
+	}
+	return sess, nil
+}
+
+// importStatus returns the importer's status together with the lists of that same import
+// (none when there is no import or it is a blocklist import). A page never gets the status
+// of one import with the lists of another.
+func (a *App) importStatus() (subimporter.Status, []int) {
+	a.importListsMu.Lock()
+	defer a.importListsMu.Unlock()
 	s := a.importer.GetStats()
-	return c.JSON(http.StatusOK, okResp{s})
+	if s.Status == subimporter.StatusNone {
+		return s, nil
+	}
+	return s, a.importLists
 }
 
 // GetImportSubscriberStats returns import statistics.

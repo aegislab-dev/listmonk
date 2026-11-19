@@ -1273,6 +1273,19 @@ section.import {
     .map-issues p { font-size: .85rem; margin-bottom: 8px; }
     .map-issues strong, .map-issues span { display: block; }
     .map-issues span { color: $grey; }
+    .map-address { border-top: 1px solid $grey-lighter; margin-top: 16px; padding-top: 16px; font-size: .85rem; }
+    .map-address .title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .map-address-line { margin-bottom: 10px; font-size: .9rem; }
+    .map-address-line b { color: #8a4b08; }
+    .map-address-classes p { margin-bottom: 8px; }
+    .map-address-classes p > strong, .map-address-classes p > span { display: block; }
+    .map-address-classes p > span { color: $grey; overflow-wrap: anywhere; }
+    .map-address-chip { display: inline-block; border-radius: 999px; padding: 1px 10px; margin-right: 6px; font-size: .75rem; font-weight: 600; line-height: 1.7; }
+    .map-address-chip.is-confirmed { background: #fff0f1; color: #852330; }
+    .map-address-chip.is-warning { background: #fff5db; color: #614600; }
+    .map-address-chip.is-unknown { background: #f1f1f1; color: #4a4a4a; }
+    .map-address-switches { display: grid; gap: 8px; margin: 14px 0 10px; }
+    .map-address-result { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-radius: 4px; padding: 8px 10px; background: #eef2fc; color: #263675; }
     .map-preview .title { margin-bottom: 8px; }
     .map-preview-scroll { overflow: auto; margin-top: 12px; max-width: 100%; }
     .map-preview table { table-layout: fixed; font-size: .85rem; }
