@@ -37,6 +37,10 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 			a.i18n.Ts("globals.messages.permissionDenied", "name", "lists"))
 	}
 
+	// Only a user who may manage all lists overwrites the names and attributes of people who
+	// already exist: they may be on other teams' lists too.
+	restrictImportOverwrite(user, &opt)
+
 	if err := a.rejectDynamicTargets(opt.ListIDs); err != nil {
 		return err
 	}
