@@ -78,6 +78,7 @@ func (a *App) GetSubscriber(c echo.Context) error {
 	maskRestrictedSubLists(user, &out)
 	one := []models.Subscriber{out}
 	a.attachOtherTeams(user, one)
+	a.attachLocked(user, one)
 	out = one[0]
 
 	return c.JSON(http.StatusOK, okResp{out})
@@ -147,6 +148,7 @@ func (a *App) QuerySubscribers(c echo.Context) error {
 		maskRestrictedSubLists(user, &res[i])
 	}
 	a.attachOtherTeams(user, res)
+	a.attachLocked(user, res)
 
 	out := models.PageResults{
 		Query:   query,
@@ -344,9 +346,11 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 	if allPerm {
 		permittedLists = []int{}
 	}
+	_ = permittedLists
 
 	wasBlocked := a.isBlocklisted(id, req.Status)
-	out, _, err := a.core.UpdateSubscriberWithLists(id, req.Subscriber, listIDs, nil, req.PreconfirmSubs, true, false, permittedLists, false)
+	// The save follows the team boundary: see updateSub.
+	out, err := a.updateSub(user, id, req.Subscriber, listIDs, req.PreconfirmSubs, true)
 	if err != nil {
 		return err
 	}
@@ -420,8 +424,10 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 	if allPerm {
 		permittedLists = []int{}
 	}
+	_ = permittedLists
 
-	out, _, err := a.core.UpdateSubscriberWithLists(id, req.Subscriber, listIDs, nil, req.PreconfirmSubs, overwriteSubs, false, permittedLists, false)
+	// The save follows the team boundary: see updateSub.
+	out, err := a.updateSub(user, id, req.Subscriber, listIDs, req.PreconfirmSubs, overwriteSubs)
 	if err != nil {
 		return err
 	}
@@ -467,7 +473,7 @@ func (a *App) BlocklistSubscriber(c echo.Context) error {
 		return err
 	}
 
-	if err := a.core.BlocklistSubscribers([]int{id}); err != nil {
+	if err := a.blocklistSubs(user, []int{id}); err != nil {
 		return err
 	}
 	a.auditSubscribersByID(c, auditSubBlocklist, []int{id}, nil)
@@ -494,7 +500,7 @@ func (a *App) BlocklistSubscribers(c echo.Context) error {
 	}
 
 	// Update the subscribers in the DB.
-	if err := a.core.BlocklistSubscribers(req.SubscriberIDs); err != nil {
+	if err := a.blocklistSubs(user, req.SubscriberIDs); err != nil {
 		return err
 	}
 	a.auditSubscribersByID(c, auditSubBlocklist, req.SubscriberIDs, nil)
@@ -596,7 +602,7 @@ func (a *App) DeleteSubscriber(c echo.Context) error {
 		return err
 	}
 
-	if err := a.core.DeleteSubscribers([]int{id}, nil); err != nil {
+	if err := a.deleteSubs(user, []int{id}); err != nil {
 		return err
 	}
 	a.auditSubscribersByID(c, auditSubDelete, []int{id}, nil)
@@ -624,7 +630,7 @@ func (a *App) DeleteSubscribers(c echo.Context) error {
 	}
 
 	// Delete the subscribers from the DB.
-	if err := a.core.DeleteSubscribers(ids, nil); err != nil {
+	if err := a.deleteSubs(user, ids); err != nil {
 		return err
 	}
 	a.auditSubscribersByID(c, auditSubDelete, ids, nil)
@@ -670,11 +676,12 @@ func (a *App) DeleteSubscribersByQuery(c echo.Context) error {
 	// Filter list IDs against the current user's permitted lists.
 	listIDs := user.GetPermittedListIDs(req.ListIDs)
 
-	// Count the subscribers the conditions reach before they go (for the audit log).
-	bq := a.countBulkQuery(req, core.AndSQLExp(req.Query, attribExp), listIDs)
+	// Count the subscribers the conditions reach before they go (for the audit log). A user
+	// who may not manage all lists leaves out the people who are on other lists too.
+	cond, bq := a.guardBulkQuery(user, req, core.AndSQLExp(req.Query, attribExp), listIDs)
 
 	// Delete the subscribers from the DB.
-	if err := a.core.DeleteSubscribersByQuery(req.Search, core.AndSQLExp(req.Query, attribExp), listIDs, req.SubscriptionStatus); err != nil {
+	if err := a.bulkByQuery(user, false, req, cond, listIDs, &bq); err != nil {
 		return err
 	}
 	a.auditBulkQuery(c, auditSubDelete, bq, nil)
@@ -719,11 +726,12 @@ func (a *App) BlocklistSubscribersByQuery(c echo.Context) error {
 	// Filter list IDs against the current user's permitted lists.
 	listIDs := user.GetPermittedListIDs(req.ListIDs)
 
-	// Count the subscribers the conditions reach before they change (for the audit log).
-	bq := a.countBulkQuery(req, core.AndSQLExp(req.Query, attribExp), listIDs)
+	// Count the subscribers the conditions reach before they change (for the audit log). A
+	// user who may not manage all lists leaves out the people who are on other lists too.
+	cond, bq := a.guardBulkQuery(user, req, core.AndSQLExp(req.Query, attribExp), listIDs)
 
 	// Update the subscribers in the DB.
-	if err := a.core.BlocklistSubscribersByQuery(req.Search, core.AndSQLExp(req.Query, attribExp), listIDs, req.SubscriptionStatus); err != nil {
+	if err := a.bulkByQuery(user, true, req, cond, listIDs, &bq); err != nil {
 		return err
 	}
 	a.auditBulkQuery(c, auditSubBlocklist, bq, nil)
@@ -803,8 +811,8 @@ func (a *App) DeleteSubscriberBounces(c echo.Context) error {
 		return err
 	}
 
-	// Delete the bounces from the DB.
-	if err := a.core.DeleteSubscriberBounces(id, ""); err != nil {
+	// Delete the bounces from the DB. They belong to the subscriber: see deleteSubBounces.
+	if err := a.deleteSubBounces(auth.GetUser(c), id); err != nil {
 		return err
 	}
 
