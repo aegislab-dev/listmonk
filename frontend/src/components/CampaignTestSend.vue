@@ -20,17 +20,14 @@
       </b-taginput>
     </b-field>
     <p v-if="rejected.length > 0" class="help is-danger rejected-help" role="alert" data-cy="test-rejected">
-      {{ $t('campaigns.testSend.rejectedHelp') }}
+      {{ $t(ownUnverified ? 'campaigns.testSend.ownUnverifiedHelp' : 'campaigns.testSend.rejectedHelp') }}
     </p>
     <p v-if="canAddOwn" class="own-link">
       <a href="#" role="button" @click.prevent="addOwn" data-cy="test-add-own">
         <b-icon icon="plus" size="is-small" /> {{ $t('campaigns.testSend.addOwn') }}
       </a>
     </p>
-    <p class="help" data-cy="test-help">
-      {{ $t(helpKey, { domains: domains.join(', '), max: maxRecipients }) }}
-      <template v-if="showOwnHint"> {{ $t('campaigns.testSend.ownHint') }}</template>
-    </p>
+    <p class="help" data-cy="test-help">{{ $t(helpKey, { domains: domains.join(', '), max: maxRecipients }) }}</p>
 
     <div class="sample">
       <div class="sample-head">
@@ -128,7 +125,6 @@ import CampaignPreview from './CampaignPreview.vue';
 import {
   TEST_MAX_RECIPIENTS, addressKind, attribsTemplate, cleanEmail, sampleLabel, samplePayload,
 } from '../test-send';
-import { isSenderDomain } from '../senders';
 
 // The test box of the campaign page (LST-41): who receives the test, and the sample values
 // for the addresses that are not subscribers.
@@ -144,6 +140,8 @@ export default {
     sample: { type: Object, required: true },
     // The addresses the server refused in the last request (.sync).
     rejected: { type: Array, default: () => [] },
+    // The refused address is the user's own, and a mail to confirm it went to it.
+    ownUnverified: { type: Boolean, default: false },
     disabled: { type: Boolean, default: false },
     loading: { type: Boolean, default: false },
     // What the preview renders: { id, title, contentType, templateId, body, sample, sampleLabel }.
@@ -168,30 +166,16 @@ export default {
 
     domains() { return this.serverConfig.test_domains || []; },
 
-    // The user's own address counts only after its mailbox confirmed it (the server says so).
-    ownEmail() { return cleanEmail(this.serverConfig.test_own_address); },
-
-    // How to get there, for someone whose address is not confirmed yet and is not covered by
-    // a test domain. Reply addresses are verified by mail only when the sender policy is on.
-    showOwnHint() {
-      const email = cleanEmail(this.profile.email);
-      return !this.ownEmail && !!email && this.profile.type !== 'api'
-        && (this.serverConfig.sender_domains || []).length > 0
-        && !isSenderDomain(email, this.serverConfig.sender_domains)
-        && addressKind(email, '', this.domains) !== 'internal';
-    },
+    // The address on the user's profile. The first test to it makes the server mail a link
+    // that confirms it; until then the server refuses it like any other address.
+    ownEmail() { return this.profile.type === 'api' ? '' : cleanEmail(this.profile.email); },
 
     canAddOwn() {
       return !this.disabled && !!this.ownEmail && this.value.length < this.maxRecipients
         && !this.value.map(cleanEmail).includes(this.ownEmail);
     },
 
-    // Who may receive a test depends on the test domains and on whether this account has an
-    // address of its own that counts.
-    helpKey() {
-      if (this.domains.length > 0) return this.ownEmail ? 'campaigns.sendTestHelp' : 'campaigns.testSend.helpDomainsOnly';
-      return this.ownEmail ? 'campaigns.testSend.helpNoDomains' : 'campaigns.testSend.helpNone';
-    },
+    helpKey() { return this.domains.length > 0 ? 'campaigns.sendTestHelp' : 'campaigns.testSend.helpNoDomains'; },
 
     canReadSubscribers() { return this.$can('subscribers:get_all', 'subscribers:get'); },
 

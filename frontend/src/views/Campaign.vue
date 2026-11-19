@@ -179,7 +179,7 @@
             </div>
             <div v-if="canManage" class="column is-4 is-offset-1">
               <br />
-              <campaign-test-send v-model="form.testEmails" :sample.sync="testSample" :rejected.sync="testRejected"
+              <campaign-test-send v-model="form.testEmails" :sample.sync="testSample" :rejected.sync="testRejected" :own-unverified="testOwnUnverified"
                 :disabled="isNew" :loading="loading.campaigns" :preview="testPreview" @send="() => onSubmit('test')" />
             </div>
           </div>
@@ -390,6 +390,7 @@ export default Vue.extend({
       // addresses the server refused last time.
       testSample: newSample(),
       testRejected: [],
+      testOwnUnverified: false,
 
       data: {},
 
@@ -647,6 +648,7 @@ export default Vue.extend({
       }).catch((err) => {
         // Refused addresses are marked in the test box itself.
         this.testRejected = rejectedOf(err);
+        this.testOwnUnverified = !!err.response?.data?.data?.own_unverified;
         if (this.senderPolicyEnabled && this.testRejected.length === 0) this.replyError = err.response?.data?.message || '';
       });
       return false;

@@ -53,12 +53,21 @@ describe('Campaign test send to addresses that are not subscribers', () => {
   it('marks each address by how it may receive the test', () => {
     open();
     box().find('[data-cy=test-help]').should('contain', domain);
-    // The mailbox of this spec's account never confirmed its address, so that address is
-    // not offered and counts like any other.
+    // The own address is offered. Its mailbox has not confirmed it yet, so the first test
+    // to it is refused, says so, and a confirmation mail goes to that address.
+    box().find('[data-cy=test-add-own]').click();
+    tag(ownEmail).should('have.attr', 'data-kind', 'own');
     box().find('[data-cy=test-add-own]').should('not.exist');
-    addEmail(ownEmail);
-    tag(ownEmail).should('have.attr', 'data-kind', 'check');
+    cy.intercept('POST', `/api/campaigns/${campaignId}/test`).as('ownSend');
+    box().find('[data-cy=btn-test-send]').click();
+    cy.wait('@ownSend').then(({ response }) => {
+      expect(response.statusCode).to.equal(400);
+      expect(response.body.data).to.deep.equal({ rejected: [ownEmail], own_unverified: true });
+    });
+    tag(ownEmail).should('have.attr', 'data-kind', 'rejected');
+    box().find('[data-cy=test-rejected]').should('contain', 'not confirmed yet');
     tag(ownEmail).find('.delete').click();
+    box().find('[data-cy=test-rejected]').should('not.exist');
     addEmail(internal.toUpperCase());
     tag(internal).should('have.attr', 'data-kind', 'internal');
     addEmail(subEmail);
@@ -82,6 +91,7 @@ describe('Campaign test send to addresses that are not subscribers', () => {
     for (let i = 0; i < 10; i += 1) addEmail(`u${i}-${stamp}@${domain}`);
     box().find('.taginput .tag').should('have.length', 10);
     box().find('input[data-cy=test-emails]').should('not.exist');
+    // The eleventh address cannot be added through the own address link either.
     box().find('[data-cy=test-add-own]').should('not.exist');
   });
 

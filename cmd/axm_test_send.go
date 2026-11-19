@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"html"
 	"math"
 	"net/http"
 	"net/mail"
@@ -97,20 +98,29 @@ func cleanTestEmails(in []string) []string {
 	return out
 }
 
-// ownTestAddress is the address the signed-in user may send a test to as their own, or "".
-// The profile address alone proves nothing: a password account can type any address into
-// its profile, and an identity provider may hand over an address it never checked. It only
-// counts once the mailbox has confirmed it: the address is a verified reply address
-// (sender_addresses) that this same user asked to verify. An API user has none.
-func (a *App) ownTestAddress(user auth.User) string {
+// profileAddress is the address on the signed-in user's profile, or "". An API user has none.
+func profileAddress(user auth.User) string {
 	if user.Type == auth.UserTypeAPI || !user.Email.Valid {
 		return ""
 	}
 	email := strings.ToLower(strings.TrimSpace(user.Email.String))
-	if email == "" || !plainAddress(email) {
+	if !plainAddress(email) {
 		return ""
 	}
-	ok, err := a.core.SenderAddressVerifiedBy(email, user.ID)
+	return email
+}
+
+// ownTestAddress is the address the signed-in user may send a test to as their own, or "".
+// The profile address alone proves nothing: a password account can type any address into
+// its profile, and an identity provider may hand over an address it never checked. It
+// counts once its mailbox has confirmed it through the link of requestOwnTestAddress,
+// whatever the kind of account and whatever the sender settings.
+func (a *App) ownTestAddress(user auth.User) string {
+	email := profileAddress(user)
+	if email == "" {
+		return ""
+	}
+	ok, err := a.core.TestAddressVerified(user.ID, email)
 	if err != nil {
 		a.log.Printf("error checking the user's own test address: %v", err)
 		return ""
@@ -119,6 +129,63 @@ func (a *App) ownTestAddress(user auth.User) string {
 		return ""
 	}
 	return email
+}
+
+// requestOwnTestAddress mails the user's profile address a link that confirms it as their
+// own test address. It tells whether a mail went out: at most one goes out per user and
+// minute. The mail is a system mail, like the reply address verification.
+func (a *App) requestOwnTestAddress(user auth.User) (bool, error) {
+	email := profileAddress(user)
+	if email == "" {
+		return false, nil
+	}
+	token, err := generateRandomString(32)
+	if err != nil {
+		return false, err
+	}
+	ok, err := a.core.RequestTestAddress(user.ID, email, tokenHash(token))
+	if err != nil || !ok {
+		return false, err
+	}
+	link := strings.TrimRight(a.urlCfg.RootURL, "/") + "/test-address/verify/" + token
+	body := "<p>" + html.EscapeString(a.i18n.Ts("email.testAddr.request", "name", user.Name, "username", user.Username)) + "</p>" +
+		`<p><a href="` + html.EscapeString(link) + `">` + html.EscapeString(a.i18n.T("email.testAddr.button")) + "</a></p>" +
+		"<p>" + html.EscapeString(a.i18n.T("email.testAddr.info")) + "</p>"
+	msg := models.Message{From: a.cfg.FromEmail, To: []string{email}, Subject: a.i18n.T("email.testAddr.subject"), Body: []byte(body)}
+	if err := a.emailMsgr.Push(msg); err != nil {
+		a.log.Printf("error sending the test address verification e-mail: %v", err)
+		return false, echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("senders.sendFailed"))
+	}
+	return true, nil
+}
+
+// TestAddressVerify is the page the link of requestOwnTestAddress opens. As with reply
+// addresses, opening it uses nothing up: only the form's POST confirms the address.
+func (a *App) TestAddressVerify(c echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "no-store")
+	c.Response().Header().Set("Referrer-Policy", "no-referrer")
+	title := a.i18n.T("campaigns.testAddr.verifyTitle")
+	invalid := func() error {
+		return c.Render(http.StatusBadRequest, tplMessage, makeMsgTpl(title, "", a.i18n.T("senders.invalidLink")))
+	}
+	token := c.Param("token")
+	if len(token) != 32 {
+		return invalid()
+	}
+	email, err := a.core.GetTestAddressToken(tokenHash(token))
+	if err != nil {
+		return invalid()
+	}
+	if c.Request().Method == http.MethodPost {
+		if c.FormValue("confirm") != "yes" || a.core.VerifyTestAddressToken(tokenHash(token)) != nil {
+			return invalid()
+		}
+		return c.Render(http.StatusOK, tplMessage, makeMsgTpl(a.i18n.T("campaigns.testAddr.verifiedTitle"), "", a.i18n.T("campaigns.testAddr.verifiedMessage")))
+	}
+	return c.Render(http.StatusOK, "test-address-verify", struct {
+		publicTpl
+		Email, Action string
+	}{publicTpl{Title: title}, email, c.Request().URL.Path})
 }
 
 // plainAddress says whether s is one bare e-mail address (no display name, no brackets).
@@ -360,10 +427,23 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 	if len(rejected) > 0 {
 		// The screen marks these addresses. Whether one of them is a subscriber of a list
 		// the user may not see is not told.
-		return nil, none, 0, echo.NewHTTPError(http.StatusBadRequest, map[string]any{
-			"message": a.i18n.T("campaigns.testRejected"),
-			"data":    map[string]any{"rejected": rejected},
-		})
+		data := map[string]any{"rejected": rejected}
+		msg := a.i18n.T("campaigns.testRejected")
+		// The user's own address, not confirmed yet: its mailbox gets the link that
+		// confirms it, and the user is told to try again after that.
+		if profile := profileAddress(user); profile != "" && own == "" {
+			for _, e := range rejected {
+				if e != profile {
+					continue
+				}
+				if _, err := a.requestOwnTestAddress(user); err != nil {
+					return nil, none, 0, err
+				}
+				data["own_unverified"] = true
+				msg = a.i18n.T("campaigns.testOwnUnverified")
+			}
+		}
+		return nil, none, 0, echo.NewHTTPError(http.StatusBadRequest, map[string]any{"message": msg, "data": data})
 	}
 
 	sample, err := a.resolveTestSample(req.Sample, user)

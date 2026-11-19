@@ -288,6 +288,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 
 		g.GET("/sender/verify/:token", noIndex(a.SenderVerify))
 		g.POST("/sender/verify/:token", noIndex(a.SenderVerify))
+		g.GET("/test-address/verify/:token", noIndex(a.TestAddressVerify))
+		g.POST("/test-address/verify/:token", noIndex(a.TestAddressVerify))
 		// Public APIs.
 		g.GET("/api/public/lists", a.GetPublicLists)
 		g.POST("/api/public/subscription", a.PublicSubscription)

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -70,6 +72,7 @@ const (
 type testSendEnv struct {
 	*teamsEnv
 	msgr *listMessenger
+	sys  *listMessenger
 	now  time.Time
 	// The body the next test request sends.
 	body string
@@ -94,6 +97,10 @@ func newTestSendEnvTracking(t *testing.T, individual bool) *testSendEnv {
 	t.Cleanup(m.Close)
 	e.a.manager = m
 	e.a.log = log.New(io.Discard, "", 0)
+	// System mails (the own address confirmation) go to a messenger of their own.
+	e.sys = &listMessenger{}
+	e.a.emailMsgr = e.sys
+	e.a.urlCfg = &UrlConfig{RootURL: "https://lists.example.invalid"}
 	e.a.cfg = &Config{TestDomains: []string{testSendDomain}, FromEmail: "Sender <sender@example.invalid>"}
 	e.a.cfg.Privacy.IndividualTracking = individual
 	e.a.testLimiter.now = func() time.Time { return e.now }
@@ -168,12 +175,11 @@ func (e *testSendEnv) send(user auth.User, emails []string, sample string) (int,
 	return he.Code, nil
 }
 
-// confirmOwn records that the mailbox email confirmed a verification request of the user
-// (the reply address verification of the sender settings).
+// confirmOwn records that the mailbox email confirmed it as the user's own test address.
 func (e *testSendEnv) confirmOwn(userID int, email string) {
 	e.t.Helper()
-	e.db.MustExec(`INSERT INTO sender_addresses (email, status, requested_by, verified_at) VALUES ($1, 'verified', $2, NOW())
-		ON CONFLICT (email) DO UPDATE SET status='verified', requested_by=$2`, email, userID)
+	e.db.MustExec(`INSERT INTO axm_test_addresses (user_id, email, verified_at) VALUES ($1, $2, NOW())
+		ON CONFLICT (user_id) DO UPDATE SET email=$2, verified_at=NOW(), token_hash=NULL`, userID, email)
 }
 
 func (e *testSendEnv) count(query string, args ...any) int {
@@ -622,69 +628,149 @@ func TestSampleMessageIsNotTracked(t *testing.T) {
 	}
 }
 
+var reTestAddrLink = regexp.MustCompile(`/test-address/verify/([0-9A-Za-z]{32})`)
+
 // A profile address is no reason to send it a test: a password account types it in freely
-// and an identity provider may pass on an address nobody checked. It counts only when the
-// mailbox confirmed a verification request of this very user, whatever the kind of account.
+// and an identity provider may pass on an address nobody checked. The first test to it is
+// refused and mails that address a link; once the mailbox has confirmed through the link,
+// the address counts. This works for every kind of account and with every sender setting
+// (the test environment has no sender domains and, below, no test domains: a new install).
 func TestTestSendOwnAddressNeedsAConfirmedMailbox(t *testing.T) {
 	e := newTestSendEnv(t)
-	own := "ua@example.invalid"
-	send := func(want int, to string) {
+	e.a.cfg.TestDomains = nil
+	e.db.MustExec(`DELETE FROM axm_test_addresses`)
+	e.db.MustExec(`UPDATE users SET password_login=true, password=CRYPT('synthetic-password', GEN_SALT('bf')), email='me@outside.invalid' WHERE id=$1`, e.ua)
+	own := "me@outside.invalid"
+	// send returns the status, the rejected addresses and whether the answer says that the
+	// own address awaits confirmation.
+	send := func(to ...string) (int, []string, bool) {
 		t.Helper()
-		code, rejected := e.send(e.as(e.ua), []string{to}, "")
-		if code != want || (want == 400 && !reflect.DeepEqual(rejected, []string{to})) {
-			t.Errorf("to %s: %d %v, want %d", to, code, rejected, want)
+		b, _ := json.Marshal(map[string]any{"name": "n", "subject": "s", "lists": []int{e.aList}, "messenger": "email",
+			"content_type": "html", "body": testSendBody, "subscribers": to})
+		req := httptest.NewRequest("POST", "/x", strings.NewReader(string(b)))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		_, he := e.do(e.a.TestCampaign, e.as(e.ua), req, e.camp, nil)
+		if he == nil {
+			return 200, nil, false
 		}
+		m, _ := he.Message.(map[string]any)
+		data, _ := m["data"].(map[string]any)
+		rejected, _ := data["rejected"].([]string)
+		pending, _ := data["own_unverified"].(bool)
+		return he.Code, rejected, pending
 	}
-	ownAddr := func() string { return e.a.ownTestAddress(e.as(e.ua)) }
+	verify := func(method, token string, form url.Values) int {
+		req := httptest.NewRequest(method, "/test-address/verify/"+token, strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(req, rec)
+		c.SetParamNames("token")
+		c.SetParamValues(token)
+		// The handler renders a page; only its status matters here.
+		c.Echo().Renderer = nopRenderer{}
+		if err := e.a.TestAddressVerify(c); err != nil {
+			t.Fatal(err)
+		}
+		return rec.Code
+	}
 
-	// Confirmed on this user's request: allowed, for an account with and without a password.
-	send(200, own)
-	e.db.MustExec(`UPDATE users SET password_login=true, password=CRYPT('synthetic-password', GEN_SALT('bf')) WHERE id=$1`, e.ua)
-	send(200, own)
-	if got := ownAddr(); got != own {
-		t.Errorf("own address of the password account: %q", got)
+	// Not confirmed: refused, and the mailbox gets the link. Nothing else is sent.
+	code, rejected, pending := send(own, e.mineEmail)
+	if code != 400 || !reflect.DeepEqual(rejected, []string{own}) || !pending {
+		t.Fatalf("first test to the own address: %d %v pending %v", code, rejected, pending)
+	}
+	mails := e.sys.to(own)
+	if len(mails) != 1 || len(e.msgr.all()) != 0 {
+		t.Fatalf("%d confirmation mails, %d test messages", len(mails), len(e.msgr.all()))
+	}
+	m := reTestAddrLink.FindStringSubmatch(string(mails[0].Body))
+	if m == nil || !strings.Contains(string(mails[0].Body), "https://lists.example.invalid/test-address/verify/") {
+		t.Fatalf("no link in the confirmation mail: %s", mails[0].Body)
+	}
+	token := m[1]
+	// Asking again within a minute sends no second mail; it is still refused.
+	if code, _, pending := send(own); code != 400 || !pending || len(e.sys.to(own)) != 1 {
+		t.Errorf("second test within a minute: %d pending %v, %d mails", code, pending, len(e.sys.to(own)))
+	}
+	if got := e.a.ownTestAddress(e.as(e.ua)); got != "" {
+		t.Errorf("own address before confirmation: %q", got)
+	}
+	// Opening the link confirms nothing; a wrong token and a POST without the form value neither.
+	if code := verify("GET", token, nil); code != 200 {
+		t.Errorf("opening the link: %d", code)
+	}
+	if code := verify("POST", token, url.Values{}); code != 400 {
+		t.Errorf("POST without confirm: %d", code)
+	}
+	if code := verify("POST", strings.Repeat("x", 32), url.Values{"confirm": {"yes"}}); code != 400 {
+		t.Errorf("wrong token: %d", code)
+	}
+	if code, _, _ := send(own); code != 400 {
+		t.Errorf("after only opening the link: %d", code)
+	}
+	// The mailbox confirms: the address counts, and the link is used up.
+	if code := verify("POST", token, url.Values{"confirm": {"yes"}}); code != 200 {
+		t.Fatalf("confirming: %d", code)
+	}
+	if code := verify("POST", token, url.Values{"confirm": {"yes"}}); code != 400 {
+		t.Errorf("the link worked twice: %d", code)
+	}
+	if code, rejected, _ := send(own, e.mineEmail); code != 200 || rejected != nil {
+		t.Fatalf("after confirmation: %d %v", code, rejected)
 	}
 	e.waitSent(2)
+	if got := e.a.ownTestAddress(e.as(e.ua)); got != own {
+		t.Errorf("own address after confirmation: %q", got)
+	}
 
-	// The profile now names a mailbox that never confirmed anything.
+	// Another address typed into the profile is not confirmed, and the old one is no longer
+	// the user's own. The confirmation of one user says nothing about another user.
 	e.db.MustExec(`UPDATE users SET email='victim@outside.invalid' WHERE id=$1`, e.ua)
-	send(400, "victim@outside.invalid")
-	send(400, own)
-	// A request that is still pending does not count.
-	e.db.MustExec(`INSERT INTO sender_addresses (email, status, requested_by, token_hash, token_expires_at) VALUES ('victim@outside.invalid', 'pending', $1, 'x', NOW() + INTERVAL '1 day')`, e.ua)
-	send(400, "victim@outside.invalid")
-	// Confirmed, but on another user's request (or the requester is gone).
-	e.db.MustExec(`UPDATE sender_addresses SET status='verified', verified_at=NOW(), requested_by=$1 WHERE email='victim@outside.invalid'`, e.ub)
-	send(400, "victim@outside.invalid")
-	e.db.MustExec(`UPDATE sender_addresses SET requested_by=NULL WHERE email='victim@outside.invalid'`)
-	send(400, "victim@outside.invalid")
-	if got := ownAddr(); got != "" {
-		t.Errorf("own address without a confirmation of its own: %q", got)
+	e.db.MustExec(`UPDATE axm_test_addresses SET last_sent_at = NOW() - INTERVAL '2 minutes'`)
+	if code, rejected, pending := send("victim@outside.invalid"); code != 400 || !pending || !reflect.DeepEqual(rejected, []string{"victim@outside.invalid"}) {
+		t.Errorf("a new profile address: %d %v pending %v", code, rejected, pending)
 	}
-	// Confirmed on this user's request: allowed again.
-	e.confirmOwn(e.ua, "victim@outside.invalid")
-	send(200, "victim@outside.invalid")
+	if code, _, pending := send(own); code != 400 || pending {
+		t.Errorf("the former own address: %d pending %v", code, pending)
+	}
+	if len(e.sys.to("victim@outside.invalid")) != 1 {
+		t.Errorf("%d confirmation mails to the new address", len(e.sys.to("victim@outside.invalid")))
+	}
+	e.confirmOwn(e.ub, "victim@outside.invalid")
+	if code, _, _ := send("victim@outside.invalid"); code != 400 {
+		t.Errorf("confirmed for another user only: %d", code)
+	}
 
-	// An account without a password (as the identity provider makes them) is held to the
-	// same rule: its address counts only when confirmed.
+	// An account without a password (as the identity provider makes them): the same rule.
 	e.db.MustExec(`UPDATE users SET password_login=false, password=NULL, email='sso@outside.invalid' WHERE id=$1`, e.ua)
-	send(400, "sso@outside.invalid")
+	if code, _, pending := send("sso@outside.invalid"); code != 400 || !pending {
+		t.Errorf("unconfirmed address of an account without a password: %d pending %v", code, pending)
+	}
 	e.confirmOwn(e.ua, "sso@outside.invalid")
-	send(200, "SSO@outside.invalid")
-	// An API user never has one.
+	if code, _, _ := send("SSO@outside.invalid"); code != 200 {
+		t.Errorf("confirmed address of an account without a password: %d", code)
+	}
+	// An API user has no own address, and nothing is mailed for it.
 	e.db.MustExec(`UPDATE users SET type='api' WHERE id=$1`, e.ua)
-	if got := ownAddr(); got != "" {
-		t.Errorf("own address of an API user: %q", got)
+	before := len(e.sys.all())
+	if code, _, pending := send("sso@outside.invalid"); code != 400 || pending || len(e.sys.all()) != before {
+		t.Errorf("API user: %d pending %v", code, pending)
 	}
-	e.db.MustExec(`UPDATE users SET type='user' WHERE id=$1`, e.ua)
-
-	// A test domain address and a subscriber never needed any of this.
-	e.db.MustExec(`DELETE FROM sender_addresses`)
-	if code, _ := e.send(e.as(e.ua), []string{"design@" + testSendDomain, e.mineEmail}, ""); code != 200 {
-		t.Errorf("test domain and subscriber: %d", code)
+	// A user that is deleted takes the confirmation along.
+	e.db.MustExec(`DELETE FROM users WHERE id=$1`, e.ub)
+	if n := e.count(`SELECT COUNT(*) FROM axm_test_addresses WHERE user_id=$1`, e.ub); n != 0 {
+		t.Errorf("%d rows of a deleted user", n)
 	}
-	e.waitSent(6)
+	// No confirmation mail and no token is on the audit log.
+	if n := e.count(`SELECT COUNT(*) FROM axm_audit_log l WHERE row_to_json(l)::TEXT LIKE '%@%'`); n != 0 {
+		t.Errorf("%d audit rows hold an address", n)
+	}
 }
+
+// nopRenderer stands in for the public page templates.
+type nopRenderer struct{}
+
+func (nopRenderer) Render(io.Writer, string, interface{}, echo.Context) error { return nil }
 
 // The login name of an account made by the identity provider is its e-mail address. A test
 // to that address must not put it on the audit log through the user columns.
@@ -787,6 +873,31 @@ func TestTestDomainsMigration(t *testing.T) {
 	if v := value(); v != "[]" {
 		t.Fatalf("without sender domains: %s", v)
 	}
+	// The table of confirmed own addresses: the same SQL in schema.sql and in the migration,
+	// made again by the migration when it is missing, and reset by a new install.
+	root := repoRoot(t)
+	schema, _ := os.ReadFile(filepath.Join(root, "schema.sql"))
+	mig, _ := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm.14.go"))
+	const start, end = "-- AXM test addresses (LST-41). Keep this block identical to V6_2_1_axm_14.", "-- End of AXM test addresses."
+	_, tail, ok := strings.Cut(string(schema), start)
+	block, _, endOK := strings.Cut(tail, end)
+	if !ok || !endOK || !strings.Contains(string(mig), "`"+start+block+end+"`") {
+		t.Fatal("schema and migration SQL of axm_test_addresses differ")
+	}
+	e.db.MustExec(`DROP TABLE axm_test_addresses`)
+	run()
+	run()
+	var uid int
+	e.db.MustExec(`INSERT INTO roles(id,type,name) VALUES(1,'user','Super Admin')`)
+	e.get(&uid, `INSERT INTO users(username,email,name,status,type,user_role_id) VALUES('m','m@example.invalid','m','enabled','user',1) RETURNING id`)
+	e.db.MustExec(`INSERT INTO axm_test_addresses (user_id, email, verified_at) VALUES ($1, 'm@example.invalid', NOW())`, uid)
+	e.reinstall()
+	var n int
+	e.get(&n, `SELECT COUNT(*) FROM axm_test_addresses`)
+	if n != 0 {
+		t.Fatal("a new install kept confirmed addresses")
+	}
+
 	// The app reads the setting as a list.
 	set, err := e.core.GetSettings()
 	if err != nil || set.AxmTestDomains == nil || len(set.AxmTestDomains) != 0 {

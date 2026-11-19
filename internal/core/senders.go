@@ -23,17 +23,6 @@ func (c *Core) SenderAddressVerified(email string) (bool, error) {
 	return out.Status == "verified", err
 }
 
-// SenderAddressVerifiedBy tells whether an address was verified on the request of the given
-// user: someone who reads that mailbox confirmed a request that named this user.
-func (c *Core) SenderAddressVerifiedBy(email string, userID int) (bool, error) {
-	var out models.SenderAddress
-	err := c.q.GetSenderAddress.Get(&out, email)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	return out.Status == "verified" && out.RequestedBy.Valid && out.RequestedBy.Int == userID, err
-}
-
 // RequestSenderAddress atomically rotates a pending token, enforcing the resend interval.
 func (c *Core) RequestSenderAddress(email, hash string, userID int) (models.SenderAddress, error) {
 	var out models.SenderAddress
