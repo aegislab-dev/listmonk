@@ -75,7 +75,8 @@ const unix = (d) => Math.floor(new Date(d).getTime() / 1000);
 export function buildProofSummaryV1({
   campaign, teams, sent, views, clicks, bounces, tracking, at, rootURL,
 }) {
-  const team = teams && teams.length > 0 ? teams.join(', ') : NO_TEAM_NAME;
+  // A team name has no spaces, as in the list tag (so ', ' and ' (팀: ' never occur inside one).
+  const team = teams && teams.length > 0 ? teams.map((t) => oneLine(t).replace(/ /g, '-')).join(', ') : NO_TEAM_NAME;
   const stat = (label, n) => `${label} ${num(n)} (${pct(n, sent)})`;
   const link = `${String(rootURL || '').replace(/\/+$/, '')}/admin/campaigns/analytics`
     + `?id=${campaign.id}&from=${unix(campaign.createdAt)}&to=${unix(at)} ${LINK_SUFFIX}`;
@@ -128,7 +129,8 @@ export function parseProofSummaryV1(text) {
   const bounces = count(parts[3], '반송');
   if (!sent || !views || !clicks || !bounces) return null;
 
-  const linkURL = new URL(link[1]);
+  // A link without a root URL is relative: read it against a placeholder base.
+  const linkURL = new URL(link[1], 'http://placeholder.invalid');
   return {
     at: at[1],
     id: parseInt(head[1], 10),

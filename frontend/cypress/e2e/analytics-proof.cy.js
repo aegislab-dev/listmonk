@@ -103,23 +103,45 @@ describe('proof summary (fixed answers)', () => {
     cy.get('.toast').should('contain', '·');
   });
 
-  it('turns the button off for two campaigns and for a draft or scheduled one', () => {
+  // Every state is read once the campaign(s) are loaded into the selector: before that the button
+  // is off for lack of a campaign, which would make these checks pass whatever the rules are.
+  const loaded = (chips, reason) => {
+    cy.get('.taginput .tag').should('have.length', chips);
+    cy.get('[data-cy=proof-summary-help]').should('have.attr', 'data-reason', reason);
+    cy.get('[data-cy=btn-proof-summary]').should(reason === '' ? 'not.be.disabled' : 'be.disabled');
+  };
+
+  it('turns the button off for a draft and for a scheduled campaign, on for a sent one', () => {
     cy.loginAndVisit('/admin/campaigns/analytics');
     fixed({ camp: campaign({ status: 'draft' }) });
     cy.visit('/admin/campaigns/analytics?id=52');
-    cy.get('[data-cy=btn-proof-summary]').should('be.disabled');
-    cy.get('[data-cy=proof-summary-help]').should('not.be.empty');
+    cy.wait('@camp');
+    loaded(1, 'notSent');
 
     fixed({ camp: campaign({ status: 'scheduled' }) });
     cy.visit('/admin/campaigns/analytics?id=52');
+    cy.wait('@camp');
+    loaded(1, 'notSent');
+
+    ['running', 'paused', 'finished', 'cancelled'].forEach((status) => {
+      fixed({ camp: campaign({ status }) });
+      cy.visit('/admin/campaigns/analytics?id=52');
+      cy.wait('@camp');
+      loaded(1, '');
+    });
+  });
+
+  it('turns the button off for no campaign and for two campaigns', () => {
+    cy.loginAndVisit('/admin/campaigns/analytics');
+    fixed();
+    cy.visit('/admin/campaigns/analytics');
+    cy.get('[data-cy=proof-summary-help]').should('have.attr', 'data-reason', 'one');
     cy.get('[data-cy=btn-proof-summary]').should('be.disabled');
 
-    fixed({ camp: campaign({ status: 'running' }) });
-    cy.visit('/admin/campaigns/analytics?id=52');
-    cy.get('[data-cy=btn-proof-summary]').should('not.be.disabled');
-    cy.intercept('GET', '/api/campaigns/53', { data: campaign({ id: 53, uuid: '00000000-0000-4000-8000-000000000053' }) });
+    cy.intercept('GET', '/api/campaigns/53', { data: campaign({ id: 53, uuid: '00000000-0000-4000-8000-000000000053' }) }).as('camp53');
     cy.visit('/admin/campaigns/analytics?id=52&id=53');
-    cy.get('[data-cy=btn-proof-summary]').should('be.disabled');
+    cy.wait(['@camp', '@camp53']);
+    loaded(2, 'one');
   });
 
   it('writes "추적 없음" when individual tracking is off, and when nothing was ever recorded', () => {
@@ -200,10 +222,7 @@ describe('proof summary (a team member, a real server)', () => {
   });
 
   it('gives a member the block of their own team campaign, with the team name', () => {
-    // The login keeps no query string of the page it goes to: log in, then open the page.
-    loginAs(user, pass, '/admin/campaigns/analytics');
-    cy.get('[data-cy=btn-proof-summary]').should('exist');
-    cy.visit(`/admin/campaigns/analytics?id=${campA.id}`);
+    loginAs(user, pass, encodeURIComponent(`/admin/campaigns/analytics?id=${campA.id}`));
     cy.get('[data-cy=btn-proof-summary]').should('not.be.disabled').click();
     cy.get('[data-cy=proof-summary-text]').invoke('val').then((text) => {
       const lines = text.split('\n');
@@ -216,12 +235,24 @@ describe('proof summary (a team member, a real server)', () => {
     });
   });
 
+  it('keeps the campaign of the confirm link through the login of a person who is not logged in', () => {
+    cy.clearCookies();
+    const link = `/admin/campaigns/analytics?id=${campA.id}&from=1794445920&to=1795069800`;
+    cy.visit(link);
+    cy.location('pathname').should('eq', '/admin/login');
+    cy.get('input[name=username]').invoke('val', user);
+    cy.get('input[name=password]').invoke('val', pass);
+    cy.get('button').click();
+    cy.location('pathname').should('eq', '/admin/campaigns/analytics');
+    cy.location('search').should('eq', `?id=${campA.id}&from=1794445920&to=1795069800`);
+    cy.get('.taginput .tag').should('have.length', 1);
+    cy.get('[data-cy=btn-proof-summary]').should('not.be.disabled');
+  });
+
   it('refuses the other team campaign: the server says 403 and no block is made', () => {
     cy.request({ url: `/api/campaigns/analytics/views?id=${campB.id}&from=2020-01-01T00:00:00Z&to=2099-01-01T00:00:00Z`, failOnStatusCode: false })
       .its('status').should('eq', 403);
-    loginAs(user, pass, '/admin/campaigns/analytics');
-    cy.get('[data-cy=btn-proof-summary]').should('exist');
-    cy.visit(`/admin/campaigns/analytics?id=${campB.id}`);
+    loginAs(user, pass, encodeURIComponent(`/admin/campaigns/analytics?id=${campB.id}`));
     cy.location('search').should('contain', `id=${campB.id}`);
     cy.get('[data-cy=btn-proof-summary]').should('be.disabled');
     cy.get('[data-cy=proof-summary-text]').should('not.exist');

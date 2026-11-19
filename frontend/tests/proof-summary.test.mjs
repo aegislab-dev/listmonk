@@ -207,3 +207,19 @@ test('no personal data: an email, a subject or a body in the inputs never reache
   ['SECRET-SUBJECT', 'SECRET-BODY', 'SECRET-NAME', 'example.test'].forEach((s) => assert.equal(text.includes(s), false, s));
   assert.equal(text.split('\n').length, 9);
 });
+
+test('a block with no root URL (a relative link) is still read, not thrown at', () => {
+  const text = buildProofSummaryV1(base({ rootURL: '' }));
+  assert.equal(text.split('\n')[8], `확인 링크: /admin/campaigns/analytics?id=52&from=${FROM}&to=${TO} (listmonk 권한 필요)`);
+  const got = parseProofSummaryV1(text);
+  assert.equal(got.link.id, 52);
+  assert.equal(got.link.from, FROM);
+  assert.equal(got.link.to, TO);
+});
+
+test('a team name never holds a space, so it reads back as the same team', () => {
+  const text = buildProofSummaryV1(base({ teams: ['가, 나', 'A (팀: B)'] }));
+  const got = parseProofSummaryV1(text);
+  assert.deepEqual(got.teams, ['가,-나', 'A-(팀:-B)']);
+  assert.equal(got.name, '북미 틱톡 어필리에이트');
+});

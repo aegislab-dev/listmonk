@@ -52,13 +52,13 @@
     <!-- LST-36: copy the counts of one campaign as a proof summary (block v1). -->
     <div class="proof-summary columns is-vcentered is-mobile mt-1 mb-0" data-cy="proof-summary">
       <div class="column is-narrow">
-        <b-button icon-left="file-multiple-outline" :disabled="!!proofDisabledReason" :loading="proof.loading"
+        <b-button :disabled="!!proofDisabledReason" :loading="proof.loading"
           data-cy="btn-proof-summary" @click="onProofSummary">
           {{ $t('analytics.proofSummary') }}
         </b-button>
       </div>
       <div class="column">
-        <p class="is-size-7 has-text-grey" data-cy="proof-summary-help">
+        <p class="is-size-7 has-text-grey" data-cy="proof-summary-help" :data-reason="proofDisabledReason">
           <template v-if="proofDisabledReason === 'one'">{{ $t('analytics.proofSummaryOne') }}</template>
           <template v-else-if="proofDisabledReason === 'notSent'">{{ $t('analytics.proofSummaryNotSent') }}</template>
           <template v-else>{{ $t('analytics.proofSummaryScope') }}</template>
@@ -80,7 +80,7 @@
         </section>
         <footer class="modal-card-foot">
           <b-button @click="proof.open = false">{{ $t('globals.buttons.close') }}</b-button>
-          <b-button type="is-primary" icon-left="file-multiple-outline" data-cy="btn-proof-copy" @click="copyProof">
+          <b-button type="is-primary" data-cy="btn-proof-copy" @click="copyProof">
             {{ $t('globals.buttons.copy') }}
           </b-button>
         </footer>
