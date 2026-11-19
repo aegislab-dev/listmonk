@@ -12,6 +12,7 @@ import (
 	"log"
 	"log/slog"
 	"maps"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
@@ -1005,9 +1006,9 @@ func initHTTPServer(cfg *Config, urlCfg *UrlConfig, i *i18n.I18n, fs stuffbin.Fi
 	)
 	switch {
 	case uploadProvider == "filesystem" && uploadFsURI != "":
-		serveUploadDir(srv, uploadFsURI, ko.String("upload.filesystem.upload_path"))
+		serveUploadDir(srv, uploadFsURI, ko.String("upload.filesystem.upload_path"), uploadSecurityHeaders)
 	case uploadProvider == "s3" && strings.HasPrefix(publicURL, "/"):
-		srv.GET(path.Join(publicURL, "/:filepath"), app.ServeS3Media)
+		srv.GET(path.Join(publicURL, "/:filepath"), app.ServeS3Media, uploadSecurityHeaders)
 	}
 
 	// Register all HTTP handlers.
@@ -1025,6 +1026,38 @@ func initHTTPServer(cfg *Config, urlCfg *UrlConfig, i *i18n.I18n, fs stuffbin.Fi
 	}()
 
 	return srv
+}
+
+// uploadSecurityHeaders sandboxes uploaded media that is served from the app's
+// own origin, so that an uploaded HTML or SVG file opened directly cannot run
+// script with the admin session. Images and PDFs render inline; every other
+// type is forced to download.
+func uploadSecurityHeaders(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		// All uploaded media is sandboxed.
+		c.Response().Header().Set("Content-Security-Policy", "sandbox")
+		c.Response().Header().Set("X-Content-Type-Options", "nosniff")
+
+		// The Content-Type is only known once the handler is about to write
+		// the response header.
+		c.Response().Before(func() {
+			// A 304 has no Content-Type, and its headers replace the ones
+			// the browser cached with the file. Leave the disposition alone.
+			if c.Response().Status == http.StatusNotModified {
+				return
+			}
+
+			h := c.Response().Header()
+			// Render images and PDFs inline; force a download for all other types.
+			typ, _, _ := mime.ParseMediaType(h.Get("Content-Type"))
+			if strings.HasPrefix(typ, "image/") || typ == "application/pdf" {
+				h.Set("Content-Disposition", "inline")
+			} else {
+				h.Set("Content-Disposition", "attachment")
+			}
+		})
+		return next(c)
+	}
 }
 
 // serveUploadDir serves the filesystem media upload directory under the given

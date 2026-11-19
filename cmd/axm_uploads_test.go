@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -106,5 +107,153 @@ func TestUploadDirRejectsTraversal(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d %q, want 404", target, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+const (
+	testSVG = `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(2)</script></svg>`
+	testPNG = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+	testPDF = "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
+)
+
+// Every uploaded file is sandboxed. Images and PDFs render inline, anything
+// else (an HTML page with script, most of all) is downloaded instead of shown.
+func TestUploadSecurityHeaders(t *testing.T) {
+	srv := newUploadTestServer(t, map[string]string{
+		"a.png":      testPNG,
+		"a.svg":      testSVG,
+		"a.pdf":      testPDF,
+		"a.html":     "<script>alert(document.cookie)</script>",
+		"a.txt":      "hello",
+		"a.csv":      "a,b\n1,2\n",
+		"noext":      "<html><script>alert(1)</script></html>",
+		"한글-이미지.png": testPNG,
+	}, uploadSecurityHeaders)
+
+	for _, tc := range []struct {
+		target, ctype, disposition string
+	}{
+		{"/uploads/a.png", "image/png", "inline"},
+		{"/uploads/a.svg", "image/svg+xml", "inline"},
+		{"/uploads/a.pdf", "application/pdf", "inline"},
+		{"/uploads/%ED%95%9C%EA%B8%80-%EC%9D%B4%EB%AF%B8%EC%A7%80.png", "image/png", "inline"},
+		{"/uploads/a.html", "text/html; charset=utf-8", "attachment"},
+		{"/uploads/a.txt", "text/plain; charset=utf-8", "attachment"},
+		{"/uploads/a.csv", "text/csv; charset=utf-8", "attachment"},
+		{"/uploads/noext", "text/html; charset=utf-8", "attachment"},
+	} {
+		rec := uploadGet(srv, tc.target)
+		h := rec.Header()
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", tc.target, rec.Code)
+			continue
+		}
+		if got := h.Get("Content-Type"); got != tc.ctype {
+			t.Errorf("GET %s Content-Type = %q, want %q", tc.target, got, tc.ctype)
+		}
+		if got := h.Get("Content-Disposition"); got != tc.disposition {
+			t.Errorf("GET %s Content-Disposition = %q, want %q", tc.target, got, tc.disposition)
+		}
+		if got := h.Values("Content-Security-Policy"); len(got) != 1 || got[0] != "sandbox" {
+			t.Errorf("GET %s Content-Security-Policy = %q, want [sandbox]", tc.target, got)
+		}
+		if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("GET %s X-Content-Type-Options = %q, want nosniff", tc.target, got)
+		}
+	}
+
+	// Errors are sandboxed too and are not rendered.
+	rec := uploadGet(srv, "/uploads/missing.html")
+	if rec.Code != http.StatusNotFound || rec.Header().Get("Content-Security-Policy") != "sandbox" ||
+		rec.Header().Get("Content-Disposition") != "attachment" {
+		t.Errorf("GET missing = %d %v", rec.Code, rec.Header())
+	}
+}
+
+// A 304 carries no Content-Type. Its headers replace the cached ones, so it
+// must not turn a cached image into a download.
+func TestUploadSecurityHeadersNotModified(t *testing.T) {
+	srv := newUploadTestServer(t, map[string]string{"a.png": testPNG}, uploadSecurityHeaders)
+
+	first := uploadGet(srv, "/uploads/a.png")
+	lastMod := first.Header().Get("Last-Modified")
+	if first.Code != http.StatusOK || lastMod == "" {
+		t.Fatalf("GET = %d, Last-Modified %q", first.Code, lastMod)
+	}
+
+	rec := uploadGet(srv, "/uploads/a.png", "If-Modified-Since", lastMod)
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("conditional GET = %d, want 304", rec.Code)
+	}
+	if got, ok := rec.Header()["Content-Disposition"]; ok {
+		t.Errorf("304 Content-Disposition = %q, want none", got)
+	}
+	if rec.Header().Get("Content-Security-Policy") != "sandbox" {
+		t.Errorf("304 lost the sandbox header: %v", rec.Header())
+	}
+}
+
+// The middleware also covers media proxied from S3, where the handler sets
+// the Content-Type itself.
+func TestUploadSecurityHeadersStream(t *testing.T) {
+	srv := echo.New()
+	srv.GET("/media/:filepath", func(c echo.Context) error {
+		key := c.Param("filepath")
+		body := map[string]string{"a.svg": testSVG, "a.html": "<script>alert(1)</script>", "a.png": testPNG}[key]
+		return c.Stream(http.StatusOK, detectMediaContentType(key, []byte(body)), strings.NewReader(body))
+	}, uploadSecurityHeaders)
+
+	for target, want := range map[string][2]string{
+		"/media/a.svg":  {"image/svg+xml", "inline"},
+		"/media/a.png":  {"image/png", "inline"},
+		"/media/a.html": {"text/html; charset=utf-8", "attachment"},
+	} {
+		h := uploadGet(srv, target).Header()
+		if h.Get("Content-Type") != want[0] || h.Get("Content-Disposition") != want[1] ||
+			h.Get("Content-Security-Policy") != "sandbox" || h.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("GET %s headers = %v, want %v", target, h, want)
+		}
+	}
+}
+
+func TestDetectMediaContentType(t *testing.T) {
+	for _, tc := range []struct {
+		key, body, want string
+	}{
+		// Sniffed as text: the extension decides.
+		{"logo.svg", testSVG, "image/svg+xml"},
+		{"logo.svg", `<?xml version="1.0"?>` + testSVG, "image/svg+xml"},
+		{"data.csv", "a,b\n1,2\n", "text/csv; charset=utf-8"},
+		// No usable extension: the sniffed type stays.
+		{"notes", "hello", "text/plain; charset=utf-8"},
+		{"blob.zzzz", "\x00\x01\x02", "application/octet-stream"},
+		// A specific sniffed type wins over a misleading extension.
+		{"fake.svg", testPNG, "image/png"},
+		{"page.png", "<html><script>alert(1)</script></html>", "text/html; charset=utf-8"},
+	} {
+		if got := detectMediaContentType(tc.key, []byte(tc.body)); got != tc.want {
+			t.Errorf("detectMediaContentType(%q) = %q, want %q", tc.key, got, tc.want)
+		}
+	}
+}
+
+// Campaign and template previews may carry arbitrary script. Opened directly
+// (outside the admin's sandboxed iframe) the response itself has to sandbox it.
+func TestRenderSandboxedHTML(t *testing.T) {
+	srv := echo.New()
+	srv.GET("/preview", func(c echo.Context) error {
+		return renderSandboxedHTML(c, "<script>alert(1)</script>")
+	})
+
+	rec := uploadGet(srv, "/preview")
+	if rec.Code != http.StatusOK || rec.Body.String() != "<script>alert(1)</script>" {
+		t.Fatalf("GET = %d %q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=UTF-8" {
+		t.Errorf("Content-Type = %q", got)
+	}
+	want := "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox"
+	if got := rec.Header().Values("Content-Security-Policy"); len(got) != 1 || got[0] != want {
+		t.Errorf("Content-Security-Policy = %q, want %q", got, want)
 	}
 }
