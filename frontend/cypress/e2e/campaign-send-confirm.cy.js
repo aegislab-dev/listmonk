@@ -214,7 +214,7 @@ describe('Pre-send confirmation window', () => {
 
   it('says which campaign it is while it reads, and does not call a plain text mail tracked', () => {
     cy.visit('/admin/campaigns');
-    cy.intercept('GET', preflight, (req) => { req.on('response', (res) => { res.setDelay(1500); }); }).as('slow');
+    cy.intercept('GET', preflight, (req) => { req.on('response', (res) => { res.setDelay(1500); }); }).as('slowPf');
     row('plain').find('[data-cy=btn-start]').click();
     cy.get('[data-cy=send-loading] [data-cy=send-campaign]').should('contain', `Send plain ${stamp}`);
     cy.get('[data-cy=send-ok]').should('be.disabled');
