@@ -661,35 +661,110 @@ func TestFollowupListRestoredFromTrashIsStillChecked(t *testing.T) {
 // When the check leaves nobody to send to, the campaign ends instead of staying scheduled: a person
 // added to the list later must not get the mail without a new schedule.
 func TestFollowupWithNobodyLeftEnds(t *testing.T) {
-	e := newFollowupEnv(t)
-	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
-	// Both people open the original, and the schedule falls due.
-	for _, id := range []int{e.ids[2], e.ids[3]} {
-		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
+	status := func(e *followupEnv, id int) (st struct {
+		Status string
+		Sent   int
+		ToSend int `db:"to_send"`
+	}) {
+		e.get(&st, `SELECT status, sent, to_send FROM campaigns WHERE id = $1`, id)
+		return
 	}
-	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
-	for i := 0; i < 3; i++ {
+	t.Run("everyone left", func(t *testing.T) {
+		e := newFollowupEnv(t)
+		got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+		for _, id := range []int{e.ids[2], e.ids[3]} {
+			e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
+		for i := 0; i < 3; i++ {
+			if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if st := status(e, got.Followup.ID); st.Status != "finished" || st.Sent != 0 {
+			t.Fatalf("campaign: %+v", st)
+		}
+		// Someone added afterwards is not sent to: the campaign is over.
+		e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, e.ids[1], got.List.ID)
+		if camps, err := e.store.NextCampaigns([]int64{}); err != nil || len(camps) != 0 {
+			t.Fatalf("picked up %d after it ended: %v", len(camps), err)
+		}
+		if st := status(e, got.Followup.ID); st.Status != "finished" {
+			t.Fatalf("campaign: %+v", st)
+		}
+	})
+
+	// On a double opt-in list only the confirmed are sent to, so someone waiting for confirmation
+	// does not keep the campaign open.
+	t.Run("only people waiting for confirmation are left", func(t *testing.T) {
+		e := newFollowupEnv(t)
+		got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+		e.db.MustExec(`UPDATE lists SET optin = 'double' WHERE id = $1`, got.List.ID)
+		e.db.MustExec(`UPDATE subscriber_lists SET status = 'unconfirmed' WHERE list_id = $1 AND subscriber_id = $2`, got.List.ID, e.ids[3])
+		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[2])
+		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
+		for i := 0; i < 3; i++ {
+			if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if st := status(e, got.Followup.ID); st.Status != "finished" {
+			t.Fatalf("campaign: %+v", st)
+		}
+		e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, e.ids[1], got.List.ID)
+		if camps, err := e.store.NextCampaigns([]int64{}); err != nil || len(camps) != 0 {
+			t.Fatalf("picked up %d after it ended: %v", len(camps), err)
+		}
+	})
+
+	// The schedule is moved to later while the check waits for a lock: it must stay scheduled.
+	t.Run("schedule moved while the check ran", func(t *testing.T) {
+		e := newFollowupEnv(t)
+		got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+		for _, id := range []int{e.ids[2], e.ids[3]} {
+			e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
+		tx, err := e.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(`SELECT 1 FROM subscriber_lists WHERE subscriber_id = $1 AND list_id = $2 FOR UPDATE`, e.ids[2], got.List.ID); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { _, err := e.store.NextCampaigns([]int64{}); done <- err }()
+		time.Sleep(time.Second)
+		e.db.MustExec(`UPDATE campaigns SET send_at = NOW() + INTERVAL '1 hour' WHERE id = $1`, got.Followup.ID)
+		tx.Rollback()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		var st struct {
+			Status string
+			SendAt bool `db:"later"`
+		}
+		e.get(&st, `SELECT status, send_at > NOW() AS later FROM campaigns WHERE id = $1`, got.Followup.ID)
+		if st.Status != "scheduled" || !st.SendAt {
+			t.Fatalf("campaign: %+v", st)
+		}
+	})
+
+	// A campaign paused after a partial send keeps its counts when it resumes with nobody left.
+	t.Run("resumed with nobody left keeps its counts", func(t *testing.T) {
+		e := newFollowupEnv(t)
+		got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+		for _, id := range []int{e.ids[2], e.ids[3]} {
+			e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'running', sent = 1, to_send = 11 WHERE id = $1`, got.Followup.ID)
 		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
 			t.Fatal(err)
 		}
-	}
-	var st struct {
-		Status string
-		Sent   int
-	}
-	e.get(&st, `SELECT status, sent FROM campaigns WHERE id = $1`, got.Followup.ID)
-	if st.Status != "finished" || st.Sent != 0 {
-		t.Fatalf("campaign: %+v", st)
-	}
-	// Someone added afterwards is not sent to: the campaign is over.
-	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, e.ids[1], got.List.ID)
-	if camps, err := e.store.NextCampaigns([]int64{}); err != nil || len(camps) != 0 {
-		t.Fatalf("picked up %d after it ended: %v", len(camps), err)
-	}
-	e.get(&st, `SELECT status, sent FROM campaigns WHERE id = $1`, got.Followup.ID)
-	if st.Status != "finished" {
-		t.Fatalf("campaign: %+v", st)
-	}
+		if st := status(e, got.Followup.ID); st.Status != "finished" || st.Sent != 1 || st.ToSend != 11 {
+			t.Fatalf("campaign: %+v", st)
+		}
+	})
 }
 
 // What the editor copies includes the campaign's own attributes (a body may read them), but

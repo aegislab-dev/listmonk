@@ -53,15 +53,21 @@ WHERE f.campaign_id = ANY($1::INT[]);
 -- name: axm-followup-finish-empty
 -- A follow-up with nobody left to send to ends here. The sender does not finish a campaign
 -- that has no recipients at all (it stays scheduled), and someone added to the list later
--- would then get the mail without being scheduled again.
-UPDATE campaigns SET status = 'finished', to_send = 0, started_at = COALESCE(started_at, NOW()), updated_at = NOW()
-WHERE id = $1 AND status IN ('scheduled', 'running')
+-- would then get the mail without being scheduled again. Only a campaign that is still due is
+-- ended: a schedule moved to a later time while the check ran stays as it is. The counts are not
+-- touched (a resumed campaign keeps its to_send). Who is left is counted as next-campaigns counts
+-- it: confirmed only on a double opt-in list, anyone not unsubscribed on the others, and never a
+-- blocklisted subscriber.
+UPDATE campaigns SET status = 'finished', started_at = COALESCE(started_at, NOW()), updated_at = NOW()
+WHERE id = $1 AND (status = 'running' OR (status = 'scheduled' AND NOW() >= send_at))
     AND NOT EXISTS (SELECT 1 FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
         WHERE cl.campaign_id = $1 AND l.axm_filter IS NOT NULL)
     AND NOT EXISTS (SELECT 1 FROM campaign_lists cl
-        JOIN subscriber_lists sl ON sl.list_id = cl.list_id
+        JOIN lists l ON l.id = cl.list_id
+        JOIN subscriber_lists sl ON sl.list_id = l.id
         JOIN subscribers s ON s.id = sl.subscriber_id
-        WHERE cl.campaign_id = $1 AND sl.status != 'unsubscribed' AND s.status != 'blocklisted')
+        WHERE cl.campaign_id = $1 AND s.status != 'blocklisted'
+            AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END)
 RETURNING id;
 
 -- name: axm-followup-recheck
