@@ -186,7 +186,7 @@
           <!-- start / pause / resume / scheduled -->
           <template v-if="$can('campaigns:send')">
             <a v-if="canStart(props.row)" href="#"
-              @click.prevent="$utils.confirm(null, () => changeCampaignStatus(props.row, 'running'))"
+              @click.prevent="confirmSend(props.row, 'running')"
               data-cy="btn-start" :aria-label="$t('campaigns.start')">
               <b-tooltip :label="$t('campaigns.start')" type="is-dark">
                 <b-icon icon="rocket-launch-outline" size="is-small" />
@@ -202,7 +202,7 @@
             </a>
 
             <a v-if="canResume(props.row)" href="#"
-              @click.prevent="$utils.confirm(null, () => changeCampaignStatus(props.row, 'running'))"
+              @click.prevent="confirmSend(props.row, 'running')"
               data-cy="btn-resume" :aria-label="$t('campaigns.send')">
               <b-tooltip :label="$t('campaigns.send')" type="is-dark">
                 <b-icon icon="rocket-launch-outline" size="is-small" />
@@ -210,7 +210,7 @@
             </a>
 
             <a v-if="canSchedule(props.row)" href="#"
-              @click.prevent="$utils.confirm($t('campaigns.confirmSchedule'), () => changeCampaignStatus(props.row, 'scheduled'))"
+              @click.prevent="confirmSend(props.row, 'scheduled')"
               data-cy="btn-schedule" :aria-label="$t('campaigns.schedule')">
               <b-tooltip :label="$t('campaigns.schedule')" type="is-dark">
                 <b-icon icon="clock-start" size="is-small" />
@@ -289,6 +289,7 @@ import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import reactionStatuses from '../campaign-reaction-list';
+import { trackingConfirmLines, warningsCovered } from '../tracking-check';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
 import CopyText from '../components/CopyText.vue';
@@ -304,6 +305,9 @@ export default Vue.extend({
 
   data() {
     return {
+      checkingSend: false,
+      sendAsk: null,
+      isDestroyed: false,
       previewItem: null,
       reactionCampaign: null,
       queryParams: {
@@ -433,6 +437,56 @@ export default Vue.extend({
           clearInterval(this.pollID);
         });
       }, 1000);
+    },
+
+    // Starting, resuming or scheduling from the list sends the saved campaign as it is:
+    // the same tracking warning as on the campaign page comes first (LST-44). After the
+    // confirmation the campaign is checked once more, as it may have been saved elsewhere
+    // while the dialog was open; a warning that was not confirmed is asked again.
+    async confirmSend(c, status) {
+      if (this.checkingSend) return;
+      this.checkingSend = true;
+      // The status says what templates will read when it is sent (LST-44 review).
+      const check = () => this.$api.checkCampaignTracking(c.id, { status }).catch(() => null)
+        .then((r) => trackingConfirmLines(r));
+      try {
+        let lines = await check();
+        for (;;) {
+          if (this.isDestroyed) return;
+          // eslint-disable-next-line no-await-in-loop
+          if (!await this.askSend(status, lines) || this.isDestroyed) return;
+          // eslint-disable-next-line no-await-in-loop
+          const now = await check();
+          if (this.isDestroyed) return;
+          if (warningsCovered(lines, now)) break;
+          lines = now;
+        }
+        this.changeCampaignStatus(c, status);
+      } finally {
+        this.checkingSend = false;
+      }
+    },
+
+    // Resolves true on confirm, false on cancel or when the page goes away.
+    askSend(status, lines) {
+      return new Promise((resolve) => {
+        const done = (ok) => {
+          if (this.sendAsk && this.sendAsk.resolve === done) this.sendAsk = null;
+          resolve(ok);
+        };
+        const msg = status === 'scheduled' ? this.$t('campaigns.confirmSchedule') : null;
+        const warnings = lines.map(({ key, params }) => this.$t(key, params));
+        const dialog = warnings.length
+          ? this.$utils.confirmWithWarnings(
+            msg,
+            warnings,
+            this.$t(status === 'scheduled' ? 'campaigns.tracking.confirm.schedule' : 'campaigns.tracking.confirm.start'),
+            () => done(true),
+            () => done(false),
+          )
+          : this.$utils.confirm(msg, () => done(true), () => done(false));
+        this.sendAsk = { dialog, resolve: done };
+      });
     },
 
     changeCampaignStatus(c, status) {
@@ -573,6 +627,16 @@ export default Vue.extend({
   mounted() {
     this.getCampaigns();
     this.pollStats();
+  },
+
+  beforeDestroy() {
+    // A start that is still being checked or confirmed belongs to this page only (LST-44).
+    this.isDestroyed = true;
+    if (this.sendAsk) {
+      const { dialog, resolve } = this.sendAsk;
+      if (dialog) dialog.close();
+      resolve(false);
+    }
   },
 
   destroyed() {

@@ -142,6 +142,25 @@ func (c *Core) GetCampaignForPreview(id, tplID int) (models.Campaign, error) {
 	return out, nil
 }
 
+// GetCampaignForSendCheck reads a campaign the way the send reads it (AXM LST-44):
+// the template the send uses and the media IDs, but not the lists, which the send
+// does not load. tplID other than 0 replaces the stored template.
+func (c *Core) GetCampaignForSendCheck(id, tplID int) (models.Campaign, error) {
+	var out models.Campaign
+	if err := c.q.AxmCampaignForSendCheck.Get(&out, id, tplID); err != nil {
+		if err == sql.ErrNoRows {
+			return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest,
+				c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
+		}
+
+		c.log.Printf("error fetching campaign: %v", err)
+		return models.Campaign{}, echo.NewHTTPError(http.StatusInternalServerError,
+			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
+	}
+
+	return out, nil
+}
+
 // GetArchivedCampaigns retrieves campaigns with a template body.
 func (c *Core) GetArchivedCampaigns(offset, limit int) (models.Campaigns, int, error) {
 	var out models.Campaigns
