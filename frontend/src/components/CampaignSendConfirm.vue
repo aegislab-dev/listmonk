@@ -27,9 +27,9 @@
           <div class="send-k">{{ $t('campaigns.sendConfirm.row.campaign') }}</div>
           <div class="send-v">{{ campaignName }}</div>
         </div>
-        <div v-if="campaignSubject" class="send-row" data-cy="send-subject">
+        <div v-if="errorSubject" class="send-row" data-cy="send-subject">
           <div class="send-k">{{ $t('campaigns.sendConfirm.row.subject') }}</div>
-          <div class="send-v">{{ campaignSubject }}</div>
+          <div class="send-v">{{ errorSubject }}</div>
         </div>
         <div class="send-checks" data-cy="send-checks">
           <div class="send-checks-head">{{ $t('campaigns.sendConfirm.checks') }}</div>
@@ -174,17 +174,23 @@ import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 // What a reading of the checks shows, to tell whether a new reading differs from the one on
 // screen. Not the times of the reading itself, nor the passed send time that the window adds
 // on its own a few seconds early.
-// An envelope that varies between mails (a subject with the campaign's change time, Date) is
-// rendered anew at each reading: its values are not compared, only that it varies (LST-48
-// review: a subject with {{ .Campaign.UpdatedAt }} differed at every reading and never sent).
+// A part of the envelope that varies between mails (a subject with the campaign's change time,
+// Date) is rendered anew at each reading: its value is not compared, only that it varies (LST-48
+// review: such a subject never sent). Only those parts: a fixed Bcc beside a varying subject is
+// still compared (LST-48 review: a changed SMTP Bcc went out unseen).
 const fingerprint = (pf) => {
-  const varies = pf.subjectNote === 'varies';
+  const v = new Set(pf.varies || []);
+  const keep = (part, value) => (v.has(part) ? null : value);
   return JSON.stringify([
-    pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, pf.senderPerSubscriber,
-    varies ? null : [pf.subject, pf.fromEmail, pf.replyTo, pf.copies],
+    pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, [...v].sort(), pf.senderPerSubscriber,
+    keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo), keep('copies', pf.copies),
     pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.count, l.deleted]),
     (pf.checks || []).filter((c) => c.key !== 'schedule.past')
-      .map((c) => [c.key, c.level, varies && c.key === 'mail.copies' ? null : c.params]),
+      .map((c) => {
+        if (c.key === 'mail.copies') return [c.key, c.level, keep('copies', c.params)];
+        if (c.key === 'from.placeholder') return [c.key, c.level, keep('from', c.params)];
+        return [c.key, c.level, c.params];
+      }),
     pf.tracking ? [pf.tracking.state, pf.tracking.view, pf.tracking.links && pf.tracking.links.untracked] : null,
     pf.trackingError || '',
   ]);
@@ -207,6 +213,9 @@ export default Vue.extend({
     // What the window says while it has not read the campaign, or cannot: which campaign it is.
     campaignName: { type: String, default: '' },
     campaignSubject: { type: String, default: '' },
+    // The campaign's custom headers as the caller has them: a Subject header replaces the
+    // subject field, so the field alone does not say what the mail is called.
+    campaignHeaders: { type: Array, default: () => [] },
   },
 
   data() {
@@ -216,6 +225,8 @@ export default Vue.extend({
       error: '',
       busy: false,
       stale: false,
+      // The subject of the last reading, as the recipients get it.
+      lastSubject: '',
       staleWhy: '',
       // What the window showed before the campaign changed under it: the count and each list's.
       prev: null,
@@ -270,6 +281,17 @@ export default Vue.extend({
     countChange() {
       if (!this.prev || !this.model || this.prev.count === this.model.count) return null;
       return { before: this.prev.count, after: this.model.count };
+    },
+
+    // The subject shown when the checks cannot be read: the one the last reading gave (what the
+    // recipients get), else the subject field when nothing replaces or renders it (LST-48
+    // review: after a failed reading the field was shown, but a Subject header went out). With
+    // neither, no subject is shown rather than a wrong one.
+    errorSubject() {
+      if (this.lastSubject) return this.lastSubject;
+      const s = this.campaignSubject || '';
+      const header = (this.campaignHeaders || []).some((set) => Object.keys(set || {}).some((k) => k.trim().toLowerCase() === 'subject'));
+      return header || s.includes('{{') ? '' : s;
     },
 
     // What the rows other than the campaign and its recipients say now, to tell after a
@@ -403,6 +425,7 @@ export default Vue.extend({
         this.skew = pf.now ? new Date(pf.now).getTime() - Date.now() : 0;
         if (!Number.isFinite(this.skew)) this.skew = 0;
         this.pf = pf;
+        this.lastSubject = pf.subject || '';
         this.now = this.serverNow();
         this.state = 'ready';
       } catch (err) {
@@ -432,6 +455,7 @@ export default Vue.extend({
       this.skew = fresh.now ? new Date(fresh.now).getTime() - Date.now() : this.skew;
       if (!Number.isFinite(this.skew)) this.skew = 0;
       this.pf = fresh;
+      this.lastSubject = fresh.subject || '';
       this.now = this.serverNow();
       this.markPast();
     },

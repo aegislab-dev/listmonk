@@ -6,6 +6,7 @@ import (
 	"net/mail"
 	"net/textproto"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,6 +39,9 @@ type preflightResponse struct {
 	// (it could not be rendered and is shown as written), "varies" (it differs between the
 	// mails of the send: with the status or the campaign's times), or "".
 	SubjectNote string `json:"subject_note"`
+	// Varies: which parts of the envelope differ between the mails (subject, from, reply_to,
+	// copies). The window does not compare those between readings; everything else it does.
+	Varies []string `json:"varies"`
 	// Copies: the addresses that the Cc and Bcc headers add to every mail. Each of them gets
 	// one copy per recipient.
 	Copies []mailCopy `json:"copies"`
@@ -396,10 +400,14 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	perSubscriber := perSub["Cc"] || perSub["Bcc"]
 	senderPerSubscriber := perSub["From"] || perSub["Reply-To"]
 	subjectNote := ""
+	varies := map[string]bool{}
+	if !env.Unrendered {
+		varies = envelopeVaries(a, sendCamp, statuses, env, campFrom, server, policy)
+	}
 	switch {
 	case env.Unrendered:
 		subjectNote = "unrendered"
-	case envelopeVaries(a, sendCamp, statuses, env, campFrom, server, policy):
+	case len(varies) > 0:
 		subjectNote = "varies"
 	case subject != asWritten:
 		subjectNote = "rendered"
@@ -442,7 +450,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Copies: copies, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode,
+		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
@@ -622,15 +630,30 @@ func envelopeCopies(messenger string, server map[string]string, headers models.H
 // are written, started_at is set by the first pick-up), as a restart reads them. The shift
 // moves every field of a clock (days, hours in 12 and 24 h, minutes, seconds), so that any
 // layout shows it. A template that calls Date prints the time of each mail: it varies too.
-func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manager.Envelope, from string, server map[string]string, policy bool) bool {
-	if callsDate(camp.Subject, camp.Headers) {
-		return true
+func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manager.Envelope, from string, server map[string]string, policy bool) map[string]bool {
+	out := map[string]bool{}
+	// What each part of the envelope is made from, to find the ones that call Date.
+	hdr := func(name string) string {
+		v, _ := chosenHeader(name, nil, camp.Headers)
+		return v
 	}
-	key := func(e manager.Envelope) string {
+	if callsDate(camp.Subject, nil) || callsDate(hdr("Subject"), nil) {
+		out["subject"] = true
+	}
+	if callsDate(hdr("From"), nil) {
+		out["from"] = true
+	}
+	if callsDate(hdr("Reply-To"), nil) {
+		out["reply_to"] = true
+	}
+	if callsDate(hdr("Cc"), nil) || callsDate(hdr("Bcc"), nil) {
+		out["copies"] = true
+	}
+	parts := func(e manager.Envelope) map[string]string {
 		s, f, r := sendEnvelope(e.Subject, from, camp.ReplyTo, camp.Messenger, server, e.Headers, policy)
-		return fmt.Sprintf("%s\x00%s\x00%s\x00%v", s, f, r, envelopeCopies(camp.Messenger, server, e.Headers))
+		return map[string]string{"subject": s, "from": f, "reply_to": r, "copies": fmt.Sprint(envelopeCopies(camp.Messenger, server, e.Headers))}
 	}
-	want := key(first)
+	want := parts(first)
 	later := camp
 	moved := time.Now().Add(37*time.Hour + 13*time.Minute + 17*time.Second + 250*time.Millisecond)
 	later.UpdatedAt = null.TimeFrom(moved)
@@ -638,12 +661,20 @@ func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manag
 	for _, c := range []models.Campaign{camp, later} {
 		for _, st := range statuses {
 			e, err := a.manager.RenderedEnvelope(&c, dummySubscriber, st)
-			if err != nil || key(e) != want {
-				return true
+			if err != nil {
+				for k := range want {
+					out[k] = true
+				}
+				return out
+			}
+			for k, v := range parts(e) {
+				if v != want[k] {
+					out[k] = true
+				}
 			}
 		}
 	}
-	return false
+	return out
 }
 
 var reDateCall = regexp.MustCompile(`\{\{[^}]*\bDate\b[^}]*\}\}`)
@@ -698,5 +729,15 @@ func perSubscriberHeaders(a *App, camp models.Campaign, status string, first man
 			}
 		}
 	}
+	return out
+}
+
+// sortedKeys is the keys of a set, sorted, never nil.
+func sortedKeys(m map[string]bool) []string {
+	out := []string{}
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
 	return out
 }

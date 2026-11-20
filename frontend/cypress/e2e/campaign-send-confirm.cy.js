@@ -540,6 +540,53 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-cancel]').click();
   });
 
+  it('still compares a fixed Bcc beside a subject with the change time', () => {
+    cy.then(() => create('stampbcc', { lists: [listX], subject: 'Issue {{ .Campaign.UpdatedAt }}', headers: [{ Bcc: 'archive@crevasse.ai' }] }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('stampbcc').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy="send-check-mail.copies"]').should('contain', 'archive@crevasse.ai');
+    // Another Bcc while the window is open. The reading before sending must see it: no status
+    // request goes out (the old comparison skipped the Bcc and left it to a 409).
+    cy.then(() => cy.request(`/api/campaigns/${camp.stampbcc}`).then(({ body }) => {
+      const c = body.data;
+      cy.request('PUT', `/api/campaigns/${camp.stampbcc}`, {
+        name: c.name, subject: c.subject, type: 'regular', messenger: 'email', lists: [listX], content_type: c.content_type, body: c.body,
+        headers: [{ Bcc: 'partner@crevasse.ai' }],
+      });
+    }));
+    cy.get('[data-cy=send-ok]').click();
+    ready();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy="send-check-mail.copies"]').should('contain', 'partner@crevasse.ai');
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
+  it('shows the subject the mail goes out with when the checks cannot be read again', () => {
+    cy.then(() => create('hdrsubj', { lists: [listX], subject: 'Internal review only', headers: [{ Subject: 'Weekend issue for subscribers' }] }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('hdrsubj').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-subject-text]').should('have.text', 'Weekend issue for subscribers');
+    cy.intercept('GET', preflight, { statusCode: 503, body: { message: 'Service unavailable' } }).as('pfDown');
+    cy.get('[data-cy=send-ok]').click();
+    cy.wait('@pfDown');
+    cy.get(`${win}[data-state=error]`).should('exist');
+    cy.get('[data-cy=send-error] [data-cy=send-subject]').should('contain', 'Weekend issue for subscribers')
+      .and('not.contain', 'Internal review only');
+    cy.get('[data-cy=send-cancel]').click();
+    // Not read at all: the subject field is not shown as the subject, a header replaces it.
+    row('hdrsubj').find('[data-cy=btn-start]').click();
+    cy.wait('@pfDown');
+    cy.get(`${win}[data-state=error]`).should('exist');
+    cy.get('[data-cy=send-error] [data-cy=send-subject]').should('not.exist');
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
   it('keeps time by the server clock when the browser clock is behind', () => {
     // The server says it is 2 minutes later than this browser thinks: its send time 60 s
     // from the browser's now has passed already.

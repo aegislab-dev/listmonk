@@ -60,7 +60,8 @@
       :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
       @close="onSendClosed">
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
-        :campaign-name="sendAsk.name" :campaign-subject="sendAsk.subject || ''" @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" @failed="onSendFailed" />
+        :campaign-name="sendAsk.name" :campaign-subject="sendAsk.subject || ''" :campaign-headers="sendAsk.headers"
+        @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" @failed="onSendFailed" />
     </b-modal>
 
     <b-tabs type="is-boxed" :animated="false" v-model="activeTab" @input="onTab">
@@ -905,7 +906,7 @@ export default Vue.extend({
 
       // The window shows the campaign as saved and, when confirmed, only changes its status.
       this.sendAsk = {
-        id: saved.id, name: saved.name, subject: saved.subject, status, handled: false, busy: false,
+        id: saved.id, name: saved.name, subject: saved.subject, headers: saved.headers || [], status, handled: false, busy: false,
       };
       this.isSendVisible = true;
     },

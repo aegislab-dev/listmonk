@@ -535,6 +535,20 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 				t.Fatalf("%s: %s", subj, data)
 			}
 		}
+		// Only the parts that vary are said to (LST-48 review: a fixed Bcc beside a subject with
+		// the change time was left out of the comparison and a changed Bcc went out unseen).
+		e.db.MustExec(`UPDATE campaigns SET subject='At {{ .Campaign.UpdatedAt }}', headers='[{"Bcc":"archive@crevasse.ai"}]'::jsonb WHERE id=$1`, e.campID)
+		{
+			_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+			var ov struct {
+				Varies []string `json:"varies"`
+			}
+			if json.Unmarshal(data, &ov) != nil || len(ov.Varies) != 1 || ov.Varies[0] != "subject" {
+				t.Fatalf("varies: %s", data)
+			}
+		}
+		e.db.MustExec(`UPDATE campaigns SET headers='[]'::jsonb WHERE id=$1`, e.campID)
+
 		// A Subject header that reads the rendered subject field ({{ .Subject }}).
 		e.db.MustExec(`UPDATE campaigns SET subject='News {{ .Campaign.Name }}', headers='[{"Subject":"[Note] {{ .Subject }}"}]'::jsonb WHERE id=$1`, e.campID)
 		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
