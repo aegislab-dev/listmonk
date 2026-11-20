@@ -14,7 +14,8 @@
   "campaign-recent-exclude.cy.js",
   "campaign-tracking-check.cy.js",
   "analytics-proof.cy.js",
-  "address-check.cy.js"
+  "address-check.cy.js",
+  "campaign-test-send.cy.js"
  ],
  "smoke": [
   "audit.cy.js",
@@ -33,7 +34,8 @@
     "internal/core/axm_audit*.go"
    ],
    "specs": [
-    "audit.cy.js"
+    "audit.cy.js",
+    "campaign-test-send.cy.js"
    ]
   },
   {
@@ -68,10 +70,27 @@
     "frontend/src/components/SenderAddressInput.vue",
     "frontend/src/views/settings/general.vue",
     "cmd/axm_agent.go",
-    "cmd/settings.go"
+    "cmd/settings.go",
+    "cmd/senders.go"
    ],
    "specs": [
-    "sender-addresses.cy.js"
+    "sender-addresses.cy.js",
+    "campaign-test-send.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/components/CampaignTestSend.vue",
+    "frontend/src/components/CampaignPreview.vue",
+    "frontend/src/test-send.js",
+    "cmd/axm_test_send*.go",
+    "internal/core/axm_test_address*.go",
+    "static/public/templates/test-address-verify.html",
+    "cmd/admin.go",
+    "cmd/senders.go"
+   ],
+   "specs": [
+    "campaign-test-send.cy.js"
    ]
   },
   {
@@ -84,7 +103,8 @@
     "address-check.cy.js",
     "campaign-tracking-check.cy.js",
     "reaction-lists.cy.js",
-    "dynamic-lists.cy.js"
+    "dynamic-lists.cy.js",
+    "campaign-test-send.cy.js"
    ]
   },
   {
@@ -96,7 +116,8 @@
     "campaign-recent-exclude.cy.js",
     "address-check.cy.js",
     "campaign-tracking-check.cy.js",
-    "reaction-lists.cy.js"
+    "reaction-lists.cy.js",
+    "campaign-test-send.cy.js"
    ]
   },
   {
@@ -111,7 +132,8 @@
     "campaign-tracking-check.cy.js",
     "reaction-lists.cy.js",
     "analytics-proof.cy.js",
-    "list-trash.cy.js"
+    "list-trash.cy.js",
+    "campaign-test-send.cy.js"
    ]
   },
   {
@@ -200,7 +222,8 @@
     "address-check.cy.js",
     "audit.cy.js",
     "import-mapping.cy.js",
-    "list-trash.cy.js"
+    "list-trash.cy.js",
+    "campaign-test-send.cy.js"
    ]
   },
   {

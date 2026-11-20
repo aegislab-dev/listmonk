@@ -41,12 +41,13 @@ class GlobTest(unittest.TestCase):
 class SelectSpecTest(unittest.TestCase):
     def test_feature_file_selects_its_spec(self):
         r = pick('frontend/src/views/Audit.vue')
-        self.assertEqual(r['specs'], ['audit.cy.js'])
+        # campaign-test-send 도 감사 화면(/admin/settings/audit)과 감사 API 를 단언한다.
+        self.assertEqual(r['specs'], ['audit.cy.js', 'campaign-test-send.cy.js'])
         self.assertTrue(r['unit'])
 
     def test_backend_feature_file(self):
         r = pick('cmd/axm_audit.go')
-        self.assertEqual(r['specs'], ['audit.cy.js'])
+        self.assertEqual(r['specs'], ['audit.cy.js', 'campaign-test-send.cy.js'])
 
     def test_changed_spec_runs_itself(self):
         r = pick('frontend/cypress/e2e/list-draw.cy.js')
@@ -92,6 +93,7 @@ class SelectSpecTest(unittest.TestCase):
     def test_workflow_file_runs_nothing_locally(self):
         r = pick('.github/workflows/axm-image.yml')
         self.assertEqual((r['specs'], r['go'], r['full_build']), ([], {}, False))
+        self.assertTrue(r['python'])  # spec 목록이 바뀌면 맵 일치 시험을 돌린다
 
     def test_tool_files_run_python_tests(self):
         r = pick('scripts/axm/axm')
@@ -146,7 +148,7 @@ class MapIntegrityTest(unittest.TestCase):
         m = re.search(r"--spec '([^']+)'", wf)
         self.assertIsNotNone(m, '워크플로에서 --spec 줄을 못 찾았다')
         ci = [s.split('/')[-1] for s in m.group(1).split(',')]
-        self.assertEqual(ci, TMAP['ci_specs'], 'test-map.json 의 ci_specs 가 axm-image.yml 의 --spec 과 다르다')
+        self.assertEqual(ci, TMAP['map_ci_specs'], 'test-map.json 의 ci_specs 가 axm-image.yml 의 --spec 과 다르다')
 
     def test_all_spec_files_exist(self):
         for s in TMAP['ci_specs']:
@@ -565,6 +567,66 @@ class RouteCoverageTest(unittest.TestCase):
 
     def test_import_specs_are_not_pulled_in_by_subscriber_modals(self):
         self.assertNotIn('import-mapping.cy.js', pick('frontend/src/views/SubscriberBulkList.vue')['specs'])
+
+
+class Round7Test(unittest.TestCase):
+    """리뷰 7차 지적 회귀 시험."""
+
+    def test_stale_map_still_runs_a_changed_ci_spec_and_fails_the_check(self):
+        # 기준 브랜치 병합으로 CI 에 spec 이 늘었는데 맵이 그대로면: 그 spec 을 건너뛰지 않고, 맵 시험을 돌려 검사가 실패한다.
+        raw = json.loads((HERE / 'test-map.json').read_text())
+        raw['ci_specs'] = [x for x in raw['ci_specs'] if x != 'campaign-test-send.cy.js']
+        stale = axm.reconcile_ci(raw, axm.workflow_specs())
+        self.assertEqual(stale['stale_ci'], ['campaign-test-send.cy.js'])
+        r = axm.affected(['frontend/cypress/e2e/campaign-test-send.cy.js'], FILES, stale)
+        self.assertEqual(r['specs'], ['campaign-test-send.cy.js'])
+        self.assertTrue(r['python'])
+        self.assertTrue(any('ci_specs' in n for n in r['notes']))
+
+    def test_test_send_feature_files_select_its_spec(self):
+        for f in ('frontend/src/components/CampaignTestSend.vue', 'frontend/src/test-send.js', 'cmd/axm_test_send.go',
+                  'internal/core/axm_test_address.go', 'frontend/cypress/e2e/campaign-test-send.cy.js'):
+            self.assertIn('campaign-test-send.cy.js', pick(f)['specs'], f)
+
+    def test_narrowing_never_drops_changed_or_failed_specs(self):
+        ci, smoke = TMAP['ci_specs'], TMAP['smoke']
+        others = [s for s in ci if s not in smoke]
+        # 바뀐 spec + 지난 실패가 smoke 와 합쳐 CI 전부가 되어도 필수 spec 은 남는다.
+        specs, deferred = axm.local_specs(ci, others, TMAP)
+        self.assertLessEqual(set(others), set(specs))
+        # 필수 spec 만으로 CI 전부면 전부 돈다.
+        specs, deferred = axm.local_specs(ci, ci, TMAP)
+        self.assertEqual((specs, deferred), (ci, []))
+        # 필수가 없으면 smoke 만.
+        self.assertEqual(set(axm.local_specs(ci, [], TMAP)[0]), set(smoke))
+
+    def test_reviewer_case_failed_fixture_spec_is_retried(self):
+        # 리뷰 재현: reaction-lists 가 실패한 채 다른 비-smoke spec 9개에 주석만 단 재검사 → reaction-lists 가 다시 돈다.
+        ci, smoke = TMAP['ci_specs'], TMAP['smoke']
+        nine = [s for s in ci if s not in smoke and s != 'reaction-lists.cy.js']
+        changed = ['frontend/cypress/fixtures/reaction-lists.sql'] + ['frontend/cypress/e2e/' + s for s in nine]
+        class A:
+            since_last = True
+            base = None
+        orig = axm.resolve_changed
+        try:
+            axm.resolve_changed = lambda a, ctx, files, hashes: (
+                changed, {'files': {'x': 'h'}, 'failed_specs': ['reaction-lists.cy.js']})
+            _, res, _ = axm.select_tests(A(), None, FILES, {})
+        finally:
+            axm.resolve_changed = orig
+        self.assertIn('reaction-lists.cy.js', res['specs'])
+        self.assertEqual(res['retried_specs'], ['reaction-lists.cy.js'])
+        self.assertLessEqual(set(nine), set(res['specs']))
+        # 실패 기록은 다시 돌아 통과하기 전에는 지워지지 않는다.
+        specs, _ = axm.failure_record({'failed_specs': ['reaction-lists.cy.js']}, res['specs'], [], False, {}, {}, False, FILES)
+        self.assertEqual(specs, ['reaction-lists.cy.js'])
+
+    def test_deferred_specs_are_recorded_until_they_pass_locally(self):
+        st = {'deferred_specs': ['list-draw.cy.js', 'audit.cy.js']}
+        self.assertEqual(axm.deferred_record(st, ['audit.cy.js'], ['dynamic-lists.cy.js'], True),
+                         ['dynamic-lists.cy.js', 'list-draw.cy.js'])
+        self.assertEqual(axm.deferred_record(st, ['audit.cy.js'], [], False), ['list-draw.cy.js', 'audit.cy.js'])
 
 
 if __name__ == '__main__':

@@ -818,8 +818,28 @@ class Pg:
 
 # ---------------------------------------------------------------- 바뀐 파일 → 시험
 
+def workflow_specs():
+    """CI(axm-image.yml)가 실제로 돌리는 spec 목록(순서 그대로). 못 읽으면 None."""
+    try:
+        m = re.search(r"--spec '([^']+)'", (ROOT / CI_WORKFLOW).read_text())
+    except OSError:
+        return None
+    return [x.split('/')[-1] for x in m.group(1).split(',')] if m else None
+
+
 def load_map():
-    return json.loads((HERE / 'test-map.json').read_text())
+    """test-map.json. CI 가 돌리는 spec 은 워크플로에서 읽는다 — 맵이 뒤처져도(기준 브랜치 병합으로 새 spec 이 들어와도)
+    CI spec 을 '돌리지 않는 spec' 으로 건너뛰지 않는다. 어긋나면 stale_ci 에 적고 검사가 맵 시험을 돌려 실패한다."""
+    return reconcile_ci(json.loads((HERE / 'test-map.json').read_text()), workflow_specs())
+
+
+def reconcile_ci(tmap, wf):
+    tmap['map_ci_specs'] = list(tmap['ci_specs'])
+    tmap['stale_ci'] = []
+    if wf and wf != tmap['ci_specs']:
+        tmap['stale_ci'] = [x for x in wf if x not in tmap['ci_specs']] + [x for x in tmap['ci_specs'] if x not in wf] or ['(순서)']
+        tmap['ci_specs'] = list(wf)
+    return tmap
 
 
 def go_module():
@@ -1088,21 +1108,37 @@ def affected(changed, files, tmap=None):
     if deferred:
         notes.append(f'고른 spec 이 CI 의 spec 전부({len(tmap["ci_specs"])}개)라 로컬에서는 smoke 묶음과 바뀐 spec 만 돈다. '
                      f'나머지 {len(deferred)}개는 PR 의 CI(axm-image)가 판정한다: ' + ', '.join(deferred))
-    py = any(f.startswith('scripts/axm/') for f in changed)
+    py = any(f.startswith('scripts/axm/') or f == CI_WORKFLOW for f in changed)
+    if tmap.get('stale_ci'):
+        py = True  # 맵 시험(test_ci_specs_match_workflow)이 실패해 검사가 통과로 기록되지 않는다
+        notes.append('test-map.json 의 ci_specs 가 CI(axm-image.yml)와 다르다: ' + ', '.join(tmap['stale_ci'])
+                     + ' — 맵에 spec 과 그 기능 규칙을 추가하라(AGENTS.md 규칙 5).')
     return dict(changed=changed, specs=ordered, deferred_specs=deferred, own_specs=own_specs, go=go_pkgs, unit=unit, full_build=full_build,
                 python=py, docs_only=docs_only and not py, notes=notes, unmapped=unmapped)
 
 
-def local_specs(selected, own, tmap):
+def local_specs(selected, required, tmap):
     """로컬에서 CI 의 Cypress 전체를 돌리지 않는다(AGENTS.md 규칙 1·2).
-    고른 것이 CI spec 전부면 smoke 묶음 + 내용이 바뀐 spec 만 돌리고 나머지는 CI 몫으로 넘긴다."""
+    고른 것이 CI spec 전부면 smoke 묶음 + 반드시 돌 spec 만 돌리고 나머지는 CI 몫(deferred)으로 넘긴다.
+    반드시 돌 spec(required: 내용이 바뀐 spec, 지난번 실패한 spec)은 어떤 경우에도 빼지 않는다.
+    그것만으로 CI 전부면 전부 돈다(하나하나가 바뀌었거나 실패한 spec 이다)."""
     ci = tmap['ci_specs']
-    if not set(ci) <= set(selected):
-        return selected, []
-    keep = set(tmap['smoke']) | set(own)
-    if set(ci) <= keep:  # 바뀐 spec 이 이미 전부면 줄일 수 없다(전체를 직접 고친 경우)
-        keep = set(tmap['smoke'])
+    req = set(required) & set(ci)
+    sel = set(selected) | req
+    if not set(ci) <= sel:
+        return [s for s in ci if s in sel], []
+    keep = req | set(tmap['smoke'])
+    if set(ci) <= keep:
+        keep = req if not set(ci) <= req else set(ci)  # smoke 를 덜어도 필수는 남긴다
     return [s for s in ci if s in keep], [s for s in ci if s not in keep]
+
+
+def deferred_record(st, specs, deferred, e2e_passed):
+    """로컬에서 확인하지 않고 CI 에 맡긴 spec 의 기록: 지난번 것 중 이번에 돌아 통과하지 않은 것 + 이번에 넘긴 것."""
+    prev = set((st or {}).get('deferred_specs') or [])
+    if e2e_passed:
+        prev -= set(specs)
+    return [x for x in load_map()['ci_specs'] if x in prev | set(deferred)]
 
 
 # ---------------------------------------------------------------- 통과 기록
@@ -1469,6 +1505,7 @@ def select_tests(a, ctx, files, hashes):
         failed = set(st.get('failed_specs') or [])
         merged = [x for x in tmap['ci_specs'] if x in set(res['specs']) | set(res['deferred_specs']) | failed]
         res['specs'], res['deferred_specs'] = local_specs(merged, list(res['own_specs']) + sorted(failed), tmap)
+        res['retried_specs'] = [x for x in res['specs'] if x in failed]
         res['go'] = merge_go(res['go'], live_failed_go(st, files))
     return changed, res, st
 
@@ -1493,6 +1530,10 @@ def cmd_affected(a):
     for f in changed[:40]:
         say('  ' + f)
     say('돌릴 spec: ' + (', '.join(res['specs']) or '없음'))
+    if res.get('retried_specs'):
+        say('  그중 지난번 실패해 다시 도는 spec: ' + ', '.join(res['retried_specs']))
+    if res.get('deferred_specs'):
+        say('CI 에 맡기는 spec(로컬 미확인): ' + ', '.join(res['deferred_specs']))
     say('돌릴 Go 시험: ' + (', '.join(f'{d}' + ('' if r is None else f' (-run {len(r.split("|"))}개)') for d, r in res['go'].items()) or '없음'))
     say('프론트 단위시험: ' + ('예' if res['unit'] else '아니오'))
     say('운영 방식 전체 빌드(--full): ' + ('필요' if res['full_build'] else '불필요'))
@@ -1605,12 +1646,16 @@ def cmd_check(a):
         say('돌릴 시험이 없다(문서만 바뀜 등).')
     # 통과 기록
     if ok:
+        deferred = deferred_record(st, specs, res['deferred_specs'], True)
         save_stamp(ctx, dict(ts=int(time.time()), branch=branch_name(), files=hashes, failed_specs=[], failed_go={},
-                             ran_specs=specs, ran_go=sorted(go_pkgs)))
+                             ran_specs=specs, ran_go=sorted(go_pkgs), deferred_specs=deferred))
         say('통과 기록을 남겼다. 리뷰 재라운드·수정 뒤에는 `axm check --since-last`.')
+        if deferred:
+            say('단, 로컬에서 확인하지 않고 CI 판정에 맡긴 spec: ' + ', '.join(deferred))
     else:
         old = st or dict(ts=int(time.time()), branch=branch_name())
         old['failed_specs'], old['failed_go'] = failure_record(st, specs, failed_specs, e2e_ran, go_pkgs, failed_go, go_ran, files)
+        old['deferred_specs'] = deferred_record(st, specs, res['deferred_specs'], False)
         save_stamp(ctx, old)
         say('실패 — 통과 기록은 갱신하지 않았다. 지난번에 실패한 시험은 다음 --since-last 에서도 다시 돈다.')
     say('\nCI 에 맡기는 것: 나머지 CI spec 전체와 운영 방식(Dockerfile.axm) 이미지 빌드·smoke(PR 의 axm-image).')
