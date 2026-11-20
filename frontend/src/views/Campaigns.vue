@@ -290,7 +290,7 @@ import Vue from 'vue';
 import { mapState } from 'vuex';
 import reactionStatuses from '../campaign-reaction-list';
 import {
-  instantToWall, splitAttribs, TZ_ATTRIB, zoneAbbr,
+  splitAttribs, TZ_ATTRIB, zoneAbbr, zoneParts,
 } from '../schedule-time';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
@@ -352,7 +352,13 @@ export default Vue.extend({
     sendAtLabel(c) {
       const t = new Date(c.sendAt);
       const { tz } = splitAttribs(c.attribs);
-      return `${this.$utils.niceDate(instantToWall(t, tz), true)} ${zoneAbbr(t, tz)}`;
+      // Straight from the zone's own clock, not through a Date in this computer's zone: a time that
+      // does not exist on this computer (its clocks go forward) must still show as it is.
+      const p = zoneParts(t, tz);
+      const [y, m, d] = p.ymd.split('-');
+      const day = this.$t(`globals.days.${p.wd + 1}`);
+      const month = this.$t(`globals.months.${parseInt(m, 10)}`);
+      return `${day}, ${d} ${month} ${y}, ${p.hm} ${zoneAbbr(t, tz)}`;
     },
     isSheduled(c) {
       return c.status === 'scheduled' || c.sendAt !== null;

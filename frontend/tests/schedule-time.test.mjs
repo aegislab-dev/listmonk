@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  KST, TZ_ATTRIB, allZones, browserDiffers, browserZoneName, buildIndex, instantToWall, mergeAttribs, offsetLabel, otherZoneLines, searchIndex,
+  KST, TZ_ATTRIB, allZones, browserDiffers, customZone, browserZoneName, buildIndex, instantToWall, mergeAttribs, offsetLabel, otherZoneLines, searchIndex,
   splitAttribs, validZone, wallToInstant, zoneAbbr, zoneInfo, zoneParts,
 } from '../src/schedule-time.js';
 
@@ -38,13 +38,35 @@ test('instant -> picker -> instant is the same moment, across days, months and t
   }));
 });
 
-test('a clock time that does not exist moves one hour later; one that happens twice is the first', () => {
-  // New York 2026-03-08 02:30 does not exist (02:00 -> 03:00): 03:30 EDT = 07:30Z.
-  assert.equal(iso(wallToInstant(local(2026, 3, 8, 12, 30), 'America/New_York')), '2026-03-08T16:30:00.000Z');
-  // London 2026-03-29 01:30 does not exist (01:00 -> 02:00): 02:30 BST = 01:30Z.
-  assert.equal(iso(wallToInstant(local(2026, 3, 29, 1, 30), 'Europe/London')), '2026-03-29T01:30:00.000Z');
-  // New York 2026-11-01 01:30 happens twice: the first is EDT (05:30Z).
-  assert.equal(iso(wallToInstant(local(2026, 11, 1, 12, 30), 'America/New_York')), '2026-11-01T17:30:00.000Z');
+// A picker Date for a clock time, or null when this computer's own zone cannot show that time
+// (its clocks skip it), so the case is skipped there instead of testing something else.
+const exact = (y, m, d, h, mi) => {
+  const t = new Date(y, m - 1, d, h, mi);
+  return t.getHours() === h && t.getMinutes() === mi && t.getDate() === d ? t : null;
+};
+
+test('a clock time that happens twice (clocks go back) is the first of the two', () => {
+  // New York 2030-11-03: 01:30 happens as EDT (05:30Z) and again as EST (06:30Z).
+  const wall = exact(2030, 11, 3, 1, 30);
+  if (wall) assert.equal(iso(wallToInstant(wall, 'America/New_York')), '2030-11-03T05:30:00.000Z');
+  // London 2030-10-27: 01:30 is BST (00:30Z) and again GMT (01:30Z).
+  const lon = exact(2030, 10, 27, 1, 30);
+  if (lon) assert.equal(iso(wallToInstant(lon, 'Europe/London')), '2030-10-27T00:30:00.000Z');
+  // Auckland 2030-04-07: 02:30 is NZDT (13:30Z the day before) and again NZST (14:30Z).
+  const auk = exact(2030, 4, 7, 2, 30);
+  if (auk) assert.equal(iso(wallToInstant(auk, 'Pacific/Auckland')), '2030-04-06T13:30:00.000Z');
+});
+
+test('a clock time that does not exist (clocks go forward) moves one hour later', () => {
+  // New York 2030-03-10: 02:30 does not exist; 03:30 EDT is 07:30Z.
+  const wall = exact(2030, 3, 10, 2, 30);
+  if (wall) assert.equal(iso(wallToInstant(wall, 'America/New_York')), '2030-03-10T07:30:00.000Z');
+  // London 2030-03-31: 01:30 does not exist; 02:30 BST is 01:30Z.
+  const lon = exact(2030, 3, 31, 1, 30);
+  if (lon) assert.equal(iso(wallToInstant(lon, 'Europe/London')), '2030-03-31T01:30:00.000Z');
+  // The times around it are plain.
+  const before = exact(2030, 3, 10, 1, 30);
+  if (before) assert.equal(iso(wallToInstant(before, 'America/New_York')), '2030-03-10T06:30:00.000Z');
 });
 
 test('zone parts: 2026-11-22 09:00 KST in New York, Los Angeles, Tokyo; and in summer', () => {
@@ -141,4 +163,15 @@ test('the browser zone note shows only when this computer differs from the chose
   assert.equal(browserDiffers(t, own), false);
   const expected = { 'Asia/Seoul': false, 'America/New_York': true, UTC: true }[own];
   if (expected !== undefined) assert.equal(browserDiffers(t, KST), expected);
+});
+
+test('a zone typed by hand is found even without a list of zones', () => {
+  assert.equal(customZone('Europe/Paris'), 'Europe/Paris');
+  assert.equal(customZone('  europe/paris '), 'Europe/Paris');
+  assert.equal(customZone('UTC'), 'UTC');
+  assert.equal(customZone('america/new_york'), 'America/New_York');
+  assert.equal(customZone('Mars/Phobos'), '');
+  assert.equal(customZone('paris'), '');
+  assert.equal(customZone(''), '');
+  assert.equal(customZone('+09:00'), '');
 });

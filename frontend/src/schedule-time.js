@@ -237,6 +237,21 @@ export function allZones() {
   return [...set].filter(validZone);
 }
 
+// A zone typed by hand ("europe/paris"): its proper name when this browser knows it, else ''.
+// Lets a person pick a zone even where the browser cannot list zones.
+export function customZone(text) {
+  const t = String(text || '').trim();
+  if (!/^(UTC|[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)+)$/.test(t) || !validZone(t)) return '';
+  // The listed spelling when the browser lists it ("europe/paris" -> "Europe/Paris").
+  const listed = allZones().find((z) => z.toLowerCase() === t.toLowerCase());
+  if (listed) return listed;
+  try {
+    return new Intl.DateTimeFormat('en', { timeZone: t }).resolvedOptions().timeZone;
+  } catch (e) {
+    return '';
+  }
+}
+
 const norm = (s) => String(s || '')
   .toLowerCase()
   .replace(/[_/-]+/g, ' ')

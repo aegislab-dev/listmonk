@@ -31,6 +31,10 @@ describe('Scheduled send time zone', () => {
       // No zone stored: KST. 00:00 UTC is 09:00 in Korea.
       make('kst', { send_at: '2030-01-15T00:00:00.000Z' });
       make('empty', {});
+      make('sched', {});
+      make('attr', {});
+      // 2030-03-10 02:30 KST: a time that does not exist on a New York computer that day.
+      make('dst', { send_at: '2030-03-09T17:30:00.000Z' });
     });
   });
 
@@ -71,11 +75,45 @@ describe('Scheduled send time zone', () => {
     pickerValue().should('have.value', '2030-01-15 00:00');
     cy.get('[data-cy=send-at-zones] .zone').first().should('have.attr', 'data-tz', 'Asia/Seoul').and('contain', '09:00');
 
-    // The chosen zone is offered under "recent" next time.
+    // The chosen zone is offered under "recent" next time, even though London is also a frequent zone.
     zoneButton().click();
-    cy.get('[data-cy=send-tz-panel] [data-tz="Europe/London"]').should('exist');
+    cy.get('[data-cy=send-tz-recent] [data-tz="Europe/London"]').should('exist');
     cy.get('[data-cy=send-tz-search]').type('{esc}');
     cy.get('[data-cy=send-tz-panel]').should('not.exist');
+  });
+
+  it('lists the last chosen zones newest first under recent', () => {
+    open('kst');
+    ['paris', 'new york'].forEach((q) => {
+      zoneButton().click();
+      cy.get('[data-cy=send-tz-search]').type(q);
+      cy.get('[data-cy=send-tz-panel] [data-tz]').first().click();
+    });
+    zoneButton().click();
+    cy.get('[data-cy=send-tz-recent] [data-tz]').then(($rows) => {
+      const tzs = [...$rows].map((r) => r.getAttribute('data-tz'));
+      expect(tzs.slice(0, 2)).to.deep.eq(['America/New_York', 'Europe/Paris']);
+    });
+  });
+
+  it('shows every match of a wide search, not only the first few', () => {
+    open('kst');
+    zoneButton().click();
+    cy.get('[data-cy=send-tz-search]').type('America');
+    cy.get('[data-cy=send-tz-panel] [data-tz]').should('have.length.greaterThan', 100);
+    cy.get('[data-cy=send-tz-panel] [data-tz]').last().scrollIntoView().should('be.visible').click();
+    cy.get('[data-cy=send-tz-panel]').should('not.exist');
+  });
+
+  it('accepts a zone typed in full when the browser cannot list zones', () => {
+    cy.visit(`/admin/campaigns/${ids.kst}`, {
+      onBeforeLoad(win) { win.Intl.supportedValuesOf = undefined; },
+    });
+    zoneButton().click();
+    cy.get('[data-cy=send-tz-search]').type('europe/paris');
+    cy.get('[data-cy=send-tz-panel] [data-tz="Europe/Paris"]').first().click();
+    zoneButton().should('contain', 'UTC+1');
+    pickerValue().should('have.value', '2030-01-15 01:00');
   });
 
   it('searches by Korean name', () => {
@@ -125,10 +163,43 @@ describe('Scheduled send time zone', () => {
     });
   });
 
+  it('starts the schedule straight from the screen without losing the zone', () => {
+    cy.intercept('PUT', '/api/campaigns/*').as('save');
+    open('sched');
+    cy.get('[data-cy=btn-send-later] .check').click();
+    zoneButton().click();
+    cy.get('[data-cy=send-tz-search]').type('new york');
+    cy.get('[data-cy=send-tz-panel] [data-tz="America/New_York"]').click();
+    cy.get('[data-cy=send_at] .datepicker input').first().clear().type('2030-02-01 09:00{enter}');
+    cy.get('body').click(1, 1);
+    cy.get('button[data-cy=btn-schedule]').click();
+    cy.get('.modal button.is-primary').first().click();
+    cy.wait('@save').its('request.body').should((b) => {
+      expect(new Date(b.send_at).toISOString()).to.eq('2030-02-01T14:00:00.000Z');
+      expect(b.attribs[KEY]).to.eq('America/New_York');
+    });
+    cy.request(`/api/campaigns/${ids.sched}`).its('body.data').should((d) => {
+      expect(d.status).to.eq('scheduled');
+      expect(d.attribs[KEY]).to.eq('America/New_York');
+    });
+  });
+
+  it('does not save an attributes tab that is not an object', () => {
+    cy.intercept('PUT', '/api/campaigns/*').as('save');
+    open('attr');
+    cy.contains('.b-tabs nav a', /attrib/i).click();
+    cy.get('.tab-content textarea').filter(':visible').first().clear().type('["tag"]', { parseSpecialCharSequences: false });
+    cy.get('button[data-cy=btn-save]').first().click();
+    cy.get('@save.all').should('have.length', 0);
+    cy.request(`/api/campaigns/${ids.attr}`).its('body.data.attribs').should('deep.eq', {});
+  });
+
   it('shows the campaign list time in the zone of each campaign, with its short name', () => {
     cy.visit('/admin/campaigns');
     cy.contains('tr', `Schedule zone ny ${stamp}`).find('.scheduled').should('contain', '09:00 EST');
     cy.contains('tr', `Schedule zone kst ${stamp}`).find('.scheduled').should('contain', '09:00 KST');
+    // 02:30 KST is shown as it is, also on a computer whose own clock skips that time.
+    cy.contains('tr', `Schedule zone dst ${stamp}`).find('.scheduled').should('contain', '02:30 KST');
   });
 
   it('turning the schedule off removes the zone', () => {

@@ -20,15 +20,16 @@
         <template v-if="query.trim()">
           <p class="tzp-head">{{ $t('campaigns.sendTz.results', { count: results.length }) }}</p>
           <p v-if="!results.length" class="tzp-empty">{{ $t('campaigns.sendTz.none') }}</p>
-          <zone-row v-for="e in shown" :key="e.tz" :entry="e" :selected="e.tz === value" @pick="pick" />
-          <p v-if="results.length > shown.length" class="tzp-empty">… {{ results.length - shown.length }}</p>
+          <zone-row v-for="e in results" :key="e.tz" :entry="e" :selected="e.tz === value" @pick="pick" />
         </template>
         <template v-else>
           <p class="tzp-head">{{ $t('campaigns.sendTz.frequent') }}</p>
           <zone-row v-for="e in frequent" :key="`f-${e.tz}`" :entry="e" :selected="e.tz === value" @pick="pick" />
           <template v-if="recent.length">
-            <p class="tzp-head">{{ $t('campaigns.sendTz.recent') }}</p>
-            <zone-row v-for="e in recent" :key="`r-${e.tz}`" :entry="e" :selected="e.tz === value" @pick="pick" />
+            <p class="tzp-head" data-cy="send-tz-recent-head">{{ $t('campaigns.sendTz.recent') }}</p>
+            <div data-cy="send-tz-recent">
+              <zone-row v-for="e in recent" :key="`r-${e.tz}`" :entry="e" :selected="e.tz === value" @pick="pick" />
+            </div>
           </template>
           <p class="tzp-head">{{ $t('campaigns.sendTz.all', { count: index.length }) }}</p>
           <zone-row v-for="e in index" :key="`a-${e.tz}`" :entry="e" :selected="e.tz === value" @pick="pick" />
@@ -41,11 +42,9 @@
 <script>
 import Vue from 'vue';
 import {
-  allZones, buildIndex, FREQUENT_ZONES, recentZones, rememberZone, searchIndex, zoneInfo,
+  allZones, buildIndex, customZone, FREQUENT_ZONES, recentZones, rememberZone, searchIndex, zoneInfo,
 } from '../schedule-time';
 import TimezoneRow from './TimezoneRow.vue';
-
-const MAX_RESULTS = 60;
 
 export default Vue.extend({
   name: 'TimezonePicker',
@@ -75,12 +74,12 @@ export default Vue.extend({
       return zoneInfo(this.value, this.instant || this.at);
     },
 
+    // The matches, plus a zone typed in full by hand even when the list does not have it.
     results() {
-      return searchIndex(this.query, this.index);
-    },
-
-    shown() {
-      return this.results.slice(0, MAX_RESULTS);
+      const found = searchIndex(this.query, this.index);
+      const typed = customZone(this.query);
+      if (typed && !found.some((e) => e.tz === typed)) return [zoneInfo(typed, this.at), ...found];
+      return found;
     },
   },
 
@@ -97,7 +96,7 @@ export default Vue.extend({
       this.index = buildIndex(allZones(), t);
       const byTz = new Map(this.index.map((e) => [e.tz, e]));
       this.frequent = FREQUENT_ZONES.map((tz) => byTz.get(tz)).filter(Boolean);
-      this.recent = recentZones().filter((tz) => !FREQUENT_ZONES.includes(tz)).map((tz) => byTz.get(tz)).filter(Boolean);
+      this.recent = recentZones().map((tz) => byTz.get(tz) || zoneInfo(tz, t));
       this.query = '';
       this.open = true;
       document.addEventListener('mousedown', this.onOutside);
@@ -130,10 +129,10 @@ export default Vue.extend({
 .tzp { position: relative; }
 .tzp-button { min-width: 12.5rem; justify-content: space-between; gap: .5rem; height: 100%; }
 .tzp-muted { color: #6b7280; }
+.tzp-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tzp-current > b { margin-right: .4rem; }
 @media (max-width: 520px) {
-  .tzp-button { min-width: 0; }
-  .tzp-current .tzp-muted { display: none; }
+  .tzp-button { min-width: 0; max-width: 11rem; }
 }
 .tzp-caret { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid #6b7280; flex: none; }
 .tzp-panel { position: absolute; right: 0; top: calc(100% + 4px); z-index: 40; width: 440px; max-width: 92vw; background: #fff; border: 1px solid #dfe3e8; border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .14); font-size: .8125rem; overflow: hidden; }

@@ -538,6 +538,27 @@ export default Vue.extend({
       this.form.archiveMetaStr = this.$utils.getPref('campaign.archiveMetaStr') || JSON.stringify(JSON.parse(archiveStr), null, 4);
     },
 
+    // The attribs to send: the JSON tab (an object) plus the chosen send time zone. Returns undefined,
+    // after a message, when the JSON tab is not an object. Used by every save, so starting or
+    // scheduling straight from the screen keeps the time zone too.
+    attribsToSave() {
+      let attribs = null;
+      if (this.form.attribsStr && this.form.attribsStr.trim()) {
+        try {
+          attribs = JSON.parse(this.form.attribsStr);
+        } catch (e) {
+          this.$utils.toast(`${this.$t('subscribers.invalidJSON')}: ${e.toString()}`, 'is-danger', 3000);
+          return undefined;
+        }
+        if (attribs !== null && (typeof attribs !== 'object' || Array.isArray(attribs))) {
+          this.$utils.toast(this.$t('subscribers.invalidJSON'), 'is-danger', 3000);
+          return undefined;
+        }
+      }
+      const scheduled = !!(this.form.sendLater && this.form.sendAtDate);
+      return attribs === null && !scheduled ? null : mergeAttribs(attribs, this.form.sendTz, scheduled);
+    },
+
     onSubmit(typ) {
       if (this.savingCampaign) return;
 
@@ -564,22 +585,9 @@ export default Vue.extend({
       }
 
       // Validate custom JSON attribs.
-      let attribs = null;
-      if (this.form.attribsStr && this.form.attribsStr.trim()) {
-        try {
-          attribs = JSON.parse(this.form.attribsStr);
-        } catch (e) {
-          this.$utils.toast(
-            `${this.$t('subscribers.invalidJSON')}: ${e.toString()}`,
-            'is-danger',
-
-            3000,
-          );
-          return;
-        }
-      }
-      const scheduled = !!(this.form.sendLater && this.form.sendAtDate);
-      this.form.attribs = attribs === null && !scheduled ? null : mergeAttribs(attribs, this.form.sendTz, scheduled);
+      const attribs = this.attribsToSave();
+      if (attribs === undefined) return;
+      this.form.attribs = attribs;
 
       switch (typ) {
         case 'create':
@@ -711,6 +719,9 @@ export default Vue.extend({
 
     async updateCampaign(typ) {
       if (this.savingCampaign) return undefined;
+      const attribs = this.attribsToSave();
+      if (attribs === undefined) throw new Error('invalid attribs');
+      this.form.attribs = attribs;
       const data = {
         archive_slug: this.form.archiveSlug,
         name: this.form.name,
