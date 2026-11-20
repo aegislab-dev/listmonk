@@ -257,7 +257,8 @@ describe('Recent-send exclusion settings', () => {
       cy.get('[data-cy=recent-list-create]').click();
       cy.get('body').trigger('keydown', { key: 's', ctrlKey: true });
       cy.wait('@makeList');
-      cy.get('input[name=name]').clear().type(`Discarded title ${stamp}`);
+      // The held save keeps the page's loading cover up; the title changes underneath it.
+      cy.get('input[name=name]').clear({ force: true }).type(`Discarded title ${stamp}`, { force: true });
       cy.get('[data-cy=recent-exclude]').then(($el) => {
         // eslint-disable-next-line no-underscore-dangle
         $el[0].__vue__.$router.push({ name: 'campaigns' }).catch(() => {});
