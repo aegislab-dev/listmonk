@@ -50,7 +50,15 @@ func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, st
 	if len(at) > 0 {
 		clock = &at[0]
 	}
-	msg, err := m.prepareCheck(c, sub, status, clock)
+	// The attachments are loaded only when the subject or a header can read them: the window
+	// renders the envelope several times, and loading the media every time is slow.
+	attach := strings.Contains(c.Subject, "Attachments")
+	for _, set := range c.Headers {
+		for _, v := range set {
+			attach = attach || strings.Contains(v, "Attachments")
+		}
+	}
+	msg, err := m.prepareCheck(c, sub, status, clock, attach)
 	if err != nil {
 		return Envelope{}, err
 	}
@@ -88,7 +96,7 @@ func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, st
 // checkRender compiles a copy of the campaign, with tracking functions that touch nothing,
 // and renders its mail to sub in the given status. It registers no links and writes nothing.
 func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status string) (*CampaignMessage, error) {
-	msg, err := m.prepareCheck(c, sub, status, nil)
+	msg, err := m.prepareCheck(c, sub, status, nil, true)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +110,8 @@ func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status 
 // touch nothing, and makes its (not yet rendered) message to sub in the given status.
 //
 // clock, when not nil, is the time the Date and now template functions give.
-func (m *Manager) prepareCheck(c *models.Campaign, sub models.Subscriber, status string, clock *time.Time) (*CampaignMessage, error) {
+// attach: load the inline images and the media, as a real send does before it renders.
+func (m *Manager) prepareCheck(c *models.Campaign, sub models.Subscriber, status string, clock *time.Time, attach bool) (*CampaignMessage, error) {
 	// Compile on a copy, with the tracking functions that do not touch the database.
 	// The campaign's own UUID: a subject, header or body can print it. The tracking functions
 	// below do not use it to register anything.
@@ -113,8 +122,10 @@ func (m *Manager) prepareCheck(c *models.Campaign, sub models.Subscriber, status
 	// The attachments as a real send fills them before rendering (newPipe: inline images,
 	// then the media), as LST-44's CheckTracking: templates can read them.
 	camp.Attachments = append([]models.Attachment(nil), c.Attachments...)
-	if err := m.LoadInlineImages(&camp); err != nil {
-		return nil, err
+	if attach {
+		if err := m.LoadInlineImages(&camp); err != nil {
+			return nil, err
+		}
 	}
 	funcs := m.TemplateFuncs(&camp)
 	funcs["TrackLink"] = func(u string, _ *CampaignMessage) string { return u }
@@ -134,8 +145,10 @@ func (m *Manager) prepareCheck(c *models.Campaign, sub models.Subscriber, status
 	if err := camp.CompileTemplate(funcs); err != nil {
 		return nil, err
 	}
-	if err := m.attachMedia(&camp); err != nil {
-		return nil, err
+	if attach {
+		if err := m.attachMedia(&camp); err != nil {
+			return nil, err
+		}
 	}
 
 	sub.Attribs = models.PlainNumbers(sub.Attribs)
