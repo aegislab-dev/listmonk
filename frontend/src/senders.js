@@ -10,9 +10,28 @@ export function senderMailbox(value) {
 // The address of a From value, with a quoted local part ("two words"@x) read
 // as the address without quotes, as the server does. Used to compare a From
 // with the From list.
+// Removes trailing (comments), which may nest: "a@x (Team (Korea))" -> "a@x".
+function stripTrailingComments(value) {
+  let s = value;
+  while (s.endsWith(')')) {
+    let depth = 0;
+    let start = -1;
+    for (let i = s.length - 1; i >= 0; i -= 1) {
+      if (s[i] === ')') depth += 1;
+      else if (s[i] === '(') {
+        depth -= 1;
+        if (depth === 0) { start = i; break; }
+      }
+    }
+    if (start < 0) break;
+    s = s.slice(0, start).trimEnd();
+  }
+  return s;
+}
+
 export function fromAddress(value) {
   // A trailing comment, as in "Team <a@x> (Newsletter)", is not part of the address.
-  const s = (value || '').trim().replace(/\s*\([^()]*\)$/, '');
+  const s = stripTrailingComments((value || '').trim());
   if (!s || /[\r\n]/.test(s)) return '';
   // The address is the last <...>; a quoted display name may hold angle brackets.
   const match = s.match(/<([^<>]+)>$/);

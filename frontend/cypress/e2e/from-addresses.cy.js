@@ -278,6 +278,21 @@ describe('Team From address list', () => {
     cy.then(() => cy.request(`/api/campaigns/${id}`)).then(({ body }) => expect(body.data.headers).to.deep.eq([{ 'X-Edition': '11' }]));
   });
 
+  it('keeps headers when the key is left out and clears them with null or []', () => {
+    setList([]);
+    let id;
+    const put = (extra) => cy.request({
+      method: 'PUT', url: `/api/campaigns/${id}`,
+      body: { name: 'Synthetic from list', subject: 'Synthetic from list', lists: [listId], ...extra },
+    });
+    cy.request({
+      method: 'POST', url: '/api/campaigns',
+      body: { ...fields('old4@crevasse.ai'), headers: [{ 'Reply-To': 'edition@crevasse.ai' }] },
+    }).then((r) => { id = r.body.data.id; campaigns.push(id); });
+    cy.then(() => put({})).then(() => cy.request(`/api/campaigns/${id}`)).then(({ body }) => expect(body.data.headers).to.have.length(1));
+    cy.then(() => put({ headers: null })).then(() => cy.request(`/api/campaigns/${id}`)).then(({ body }) => expect(body.data.headers).to.have.length(0));
+  });
+
   it('goes back to free input when the list is emptied', () => {
     setList([]);
     cy.visit('/admin/campaigns/new');

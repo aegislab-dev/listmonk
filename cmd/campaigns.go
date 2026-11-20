@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -363,12 +364,21 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	// that are not in the request retain the old values.
 	// Headers are decoded from nothing: JSON decoding into the stored maps
 	// would keep keys the request left out (a removed From header).
+	// An explicit "headers": null clears them, as before; leaving the key out
+	// keeps them.
+	var probe struct {
+		Headers json.RawMessage `json:"headers"`
+	}
+	if body, err := io.ReadAll(c.Request().Body); err == nil {
+		c.Request().Body = io.NopCloser(bytes.NewReader(body))
+		_ = json.Unmarshal(body, &probe)
+	}
 	o := campReq{Campaign: cm}
 	o.Headers = nil
 	if err := c.Bind(&o); err != nil {
 		return err
 	}
-	if o.Headers == nil {
+	if o.Headers == nil && len(probe.Headers) == 0 {
 		o.Headers = cm.Headers
 	}
 
