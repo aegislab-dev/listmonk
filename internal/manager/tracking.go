@@ -41,8 +41,7 @@ func (m *Manager) trackMessageView(msg *CampaignMessage) template.HTML {
 // Stored bodies/sources are untouched. Previews use a dummy campaign UUID and
 // must not register links or generate hits against a real campaign.
 func (m *Manager) trackVisualMessage(msg *CampaignMessage) {
-	if m.cfg.DisableTracking || msg.Campaign.ContentType != models.CampaignContentTypeVisual ||
-		(msg.Campaign.Messenger != "email" && !strings.HasPrefix(msg.Campaign.Messenger, "email-")) ||
+	if m.cfg.DisableTracking || !tracksVisualAutomatically(msg.Campaign) ||
 		msg.Campaign.UUID == "" || msg.Campaign.UUID == dummyUUID || msg.Subscriber.UUID == "" {
 		return
 	}
@@ -54,7 +53,7 @@ func (m *Manager) trackVisualMessage(msg *CampaignMessage) {
 			hasPixel = true
 		}
 		if (tag == "a" || tag == "area" || tag == "v:roundrect") && attr == "href" && m.canTrackVisualLink(value) {
-			return m.trackLink(value, msg.Campaign.UUID, m.trackingSubscriber(msg))
+			return m.trackLink(browserURL(value), msg.Campaign.UUID, m.trackingSubscriber(msg))
 		}
 		return value
 	})
@@ -63,25 +62,50 @@ func (m *Manager) trackVisualMessage(msg *CampaignMessage) {
 	}
 }
 
+// isEmailMessenger tells whether a messenger name is the e-mail messenger or one of
+// the named SMTP servers ("email-...").
+func isEmailMessenger(name string) bool {
+	return name == "email" || strings.HasPrefix(name, "email-")
+}
+
+// tracksVisualAutomatically is the content half of the automatic tracking rule. The
+// send path (trackVisualMessage) and the pre-send check (CheckTracking) both use it,
+// so that the check cannot promise tracking that the send does not add.
+func tracksVisualAutomatically(c *models.Campaign) bool {
+	return c.ContentType == models.CampaignContentTypeVisual && isEmailMessenger(c.Messenger)
+}
+
+// browserURL is an href as a browser follows it: the URL parser of browsers drops
+// leading and trailing spaces and control characters and every tab and newline.
+// href=" https://example.test/ " is a working link (LST-44 review).
+func browserURL(value string) string {
+	value = strings.TrimFunc(value, func(r rune) bool { return r <= 0x20 })
+	return strings.NewReplacer("\t", "", "\n", "", "\r", "").Replace(value)
+}
+
 func (m *Manager) canTrackVisualLink(value string) bool {
-	u, err := url.Parse(value)
+	u, err := url.Parse(browserURL(value))
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
 	}
+	return !m.isServiceURL(u)
+}
 
-	// Keep existing tracking links, unsubscribe/manage/opt-in and browser views
-	// direct. Exclude only this instance's service paths, not external sites
-	// with similarly named paths. RootURL may include an installation prefix.
+// isServiceURL tells whether an absolute URL is one of this instance's own service
+// paths: existing tracking links, unsubscribe/manage/opt-in and browser views. Those
+// stay direct. Only this instance's paths count, not external sites with similarly
+// named paths. RootURL may include an installation prefix.
+func (m *Manager) isServiceURL(u *url.URL) bool {
 	root, err := url.Parse(m.cfg.RootURL)
 	if err == nil && strings.EqualFold(u.Scheme, root.Scheme) && strings.EqualFold(u.Host, root.Host) {
 		base := strings.TrimRight(root.Path, "/")
 		for _, path := range []string{"/link/", "/subscription/", "/campaign/"} {
 			if strings.HasPrefix(u.Path, base+path) {
-				return false
+				return true
 			}
 		}
 	}
-	return true
+	return false
 }
 
 // Match whole attributes, including their quoted values, so a string such as

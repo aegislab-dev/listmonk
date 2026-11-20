@@ -633,6 +633,11 @@ func (a *App) TestCampaign(c echo.Context) error {
 
 	// Get the campaign from the DB for previewing.
 	tplID, _ := strconv.Atoi(c.FormValue("template_id"))
+	// AXM (LST-44): the admin UI posts JSON, where FormValue finds nothing and the
+	// stored template was used instead of the one selected in the editor.
+	if tplID < 1 {
+		tplID = req.TemplateID.Int
+	}
 	camp, err := a.core.GetCampaignForPreview(id, tplID)
 	if err != nil {
 		a.testLimiter.giveBack(auth.GetUser(c).ID, slot, len(recips))
@@ -747,6 +752,13 @@ func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign) erro
 			a.i18n.Ts("templates.errorCompiling", "error", err.Error()))
 	}
 
+	// AXM (LST-44): the media too, before rendering, as the real send does. Otherwise
+	// the first test message renders without them and the next ones with them.
+	if err := a.manager.AttachMedia(camp); err != nil {
+		a.log.Printf("error attaching media: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
 	// Create a sample campaign message.
 	msg, err := a.manager.NewCampaignMessage(camp, sub)
 	if err != nil {
@@ -763,36 +775,12 @@ func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign) erro
 
 // validateCampaignFields validates incoming campaign field values.
 func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error) {
-	if len(a.cfg.SenderDomains) > 0 {
-		if c.ReplyToInput != nil {
-			c.ReplyTo = strings.TrimSpace(*c.ReplyToInput)
-		}
-		if c.ReplyTo != "" {
-			if _, err := mail.ParseAddress(c.ReplyTo); err != nil || strings.ContainsAny(c.ReplyTo, "\r\n") {
-				return c, errors.New(a.i18n.T("senders.invalidEmail"))
-			}
-			addr, _ := mail.ParseAddress(c.ReplyTo)
-			if addr.Name == "" {
-				c.ReplyTo = addr.Address
-			} else {
-				c.ReplyTo = strconv.Quote(addr.Name) + " " + (&mail.Address{Address: addr.Address}).String()
-			}
-		}
-		if hasReservedHeader(c.Headers) {
-			return c, errors.New(a.i18n.T("senders.reservedHeader"))
-		}
-		if c.Status == "" || c.Status == models.CampaignStatusDraft || c.Status == models.CampaignStatusScheduled {
-			c.FromEmail = resolveFrom(user, a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
-		}
-	} else {
-		c.ReplyTo = ""
+	if len(a.cfg.SenderDomains) > 0 && hasReservedHeader(c.Headers) {
+		return c, errors.New(a.i18n.T("senders.reservedHeader"))
 	}
-	if c.FromEmail == "" {
-		c.FromEmail = a.cfg.FromEmail
-	} else if !reFromAddress.Match([]byte(c.FromEmail)) {
-		if _, err := a.importer.SanitizeEmail(c.FromEmail); err != nil {
-			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
-		}
+	c, err := a.campaignSender(c, user)
+	if err != nil {
+		return c, err
 	}
 
 	if !strHasLen(c.Name, 1, stdInputMaxLen) {
@@ -955,4 +943,39 @@ func (a *App) checkCampaignPerm(types auth.PermType, id int, c echo.Context) err
 // its properties is allowed.
 func canEditCampaign(status string) bool {
 	return models.CanEditCampaign(status)
+}
+
+// campaignSender sets the sender fields (from, reply-to) of a campaign request as saving
+// and test sends do. AXM: split out of validateCampaignFields so that the pre-send
+// tracking check (LST-44) reads the same sender as the send it checks.
+func (a *App) campaignSender(c campReq, user auth.User) (campReq, error) {
+	if len(a.cfg.SenderDomains) > 0 {
+		if c.ReplyToInput != nil {
+			c.ReplyTo = strings.TrimSpace(*c.ReplyToInput)
+		}
+		if c.ReplyTo != "" {
+			if _, err := mail.ParseAddress(c.ReplyTo); err != nil || strings.ContainsAny(c.ReplyTo, "\r\n") {
+				return c, errors.New(a.i18n.T("senders.invalidEmail"))
+			}
+			addr, _ := mail.ParseAddress(c.ReplyTo)
+			if addr.Name == "" {
+				c.ReplyTo = addr.Address
+			} else {
+				c.ReplyTo = strconv.Quote(addr.Name) + " " + (&mail.Address{Address: addr.Address}).String()
+			}
+		}
+		if c.Status == "" || c.Status == models.CampaignStatusDraft || c.Status == models.CampaignStatusScheduled {
+			c.FromEmail = resolveFrom(user, a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+		}
+	} else {
+		c.ReplyTo = ""
+	}
+	if c.FromEmail == "" {
+		c.FromEmail = a.cfg.FromEmail
+	} else if !reFromAddress.Match([]byte(c.FromEmail)) {
+		if _, err := a.importer.SanitizeEmail(c.FromEmail); err != nil {
+			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
+		}
+	}
+	return c, nil
 }

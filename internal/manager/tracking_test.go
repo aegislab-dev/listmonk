@@ -26,6 +26,21 @@ func (s *trackingStore) CreateLink(url string) (string, error) {
 	return fmt.Sprintf("link-%d", len(s.urls)), nil
 }
 
+// The media of the attachment tests: ID 1 is a file, "inline.png" an inline image.
+func (s *trackingStore) GetAttachment(mediaID int) (models.Attachment, error) {
+	if mediaID != 1 {
+		return models.Attachment{}, errors.New("no such media")
+	}
+	return models.Attachment{Name: "guide.pdf", Content: []byte("pdf")}, nil
+}
+
+func (s *trackingStore) GetInlineAttachmentByFilename(name string) (models.Attachment, string, error) {
+	if name != "inline.png" {
+		return models.Attachment{}, "", errors.New("no such media")
+	}
+	return models.Attachment{Name: name, Content: []byte("png"), IsInline: true}, "inline@email", nil
+}
+
 func trackingManager() (*Manager, *trackingStore) {
 	s := &trackingStore{}
 	return &Manager{
@@ -86,6 +101,22 @@ func TestVisualCampaignTracking(t *testing.T) {
 				t.Fatalf("Changed stored content, alternate body or layout: %s", out)
 			}
 		})
+	}
+}
+
+// An href with spaces around it is a working link in a browser: the send tracks it
+// like any other (LST-44 review).
+func TestVisualTrackingSpacedHref(t *testing.T) {
+	m, store := trackingManager()
+	c := models.Campaign{UUID: "campaign", ContentType: "visual", Messenger: "email",
+		Body: "<html><body><a href=\" https://example.test/offer \">Offer</a><a href=\"\nhttps://example.test/\tguide\">Guide</a></body></html>"}
+	msg := renderTrackingCampaign(t, m, &c, "subscriber")
+	out := string(msg.Body())
+	if len(store.urls) != 2 || store.urls[0] != "https://example.test/offer" || store.urls[1] != "https://example.test/guide" {
+		t.Fatalf("registered %v: %s", store.urls, out)
+	}
+	if strings.Count(out, "/link/link-") != 2 || strings.Contains(out, `href=" https`) {
+		t.Fatalf("not tracked: %s", out)
 	}
 }
 
