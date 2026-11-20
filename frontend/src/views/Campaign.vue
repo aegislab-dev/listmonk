@@ -477,8 +477,7 @@ export default Vue.extend({
 
     // The list entry the server matched to a campaign's From, or null.
     fromChoiceOf(d) {
-      return !this.senderPolicyEnabled && d.fromMatch !== null && d.fromMatch !== undefined
-        ? (this.fromList[d.fromMatch] || null) : null;
+      return !this.senderPolicyEnabled && d.fromEntry ? d.fromEntry : null;
     },
 
     onReplyAddresses() {

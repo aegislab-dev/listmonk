@@ -305,3 +305,14 @@ func TestFromStateOddNotations(t *testing.T) {
 		t.Fatal(i)
 	}
 }
+
+func TestFromListNameIsTrimmed(t *testing.T) {
+	got, err := normalizeFromAddresses([]string{`" Editorial " <Editorial@crevasse.ai>`, `"   " <blank@crevasse.ai>`})
+	if err != nil || len(got) != 2 || got[0] != "Editorial <editorial@crevasse.ai>" || got[1] != "blank@crevasse.ai" {
+		t.Fatalf("%q %v", got, err)
+	}
+	// A list saved before the trim still hands out entries without the space.
+	if got := defaultFromFor("x@y.z", []string{" Old <old@crevasse.ai>"}); got != "Old <old@crevasse.ai>" {
+		t.Fatal(got)
+	}
+}

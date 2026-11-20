@@ -511,10 +511,10 @@ export default Vue.extend({
       await this.$api.getCampaign(c.id).then((data) => {
         body = data.body;
         bodySource = data.bodySource;
-        // The copy gets the list entry the server matched, else the original
-        // From as is and the server decides.
-        fromEmail = !accountSenders && data.fromMatch !== null && data.fromMatch !== undefined
-          ? list[data.fromMatch] : data.fromEmail;
+        // The original From goes as it is: the server matches it to the
+        // current list itself (an index from here could point at another entry
+        // if the list changed meanwhile).
+        fromEmail = data.fromEmail;
       });
 
       const now = this.$utils.getDate();

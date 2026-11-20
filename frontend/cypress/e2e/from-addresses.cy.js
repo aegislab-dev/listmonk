@@ -220,6 +220,15 @@ describe('Team From address list', () => {
     // A new campaign starts with the server's default entry.
     cy.visit('/admin/campaigns/new');
     cy.get('select[name=from_email]').should('have.value', mine);
+
+    // ... which is the second entry when the app default reads as that one.
+    setKey('app.from_email', 'News < team@crevasse.ai>');
+    cy.waitForBackend();
+    cy.request('/api/config').then(({ body }) => expect(body.data.from_default).to.eq(1));
+    cy.visit('/admin/campaigns/new');
+    cy.get('select[name=from_email]').should('have.value', team);
+    setKey('app.from_email', savedSettings['app.from_email']);
+    cy.waitForBackend();
   });
 
   it('applies the same checks to the app default From when none is sent', () => {
@@ -232,6 +241,12 @@ describe('Team From address list', () => {
     create().then((r) => expect(r.body.data.from_email).to.eq('Team <team@crevasse.ai>'));
     setKey('app.from_email', savedSettings['app.from_email']);
     cy.waitForBackend();
+  });
+
+  it('does not let a display name start a From with a space', () => {
+    setList(['" Editorial" <editorial@crevasse.ai>']);
+    cy.request('/api/settings').then(({ body }) => expect(body.data['axm.from_addresses'][0]).to.eq('Editorial <editorial@crevasse.ai>'));
+    create().then((r) => expect(r.body.data.from_email).to.eq('Editorial <editorial@crevasse.ai>'));
   });
 
   it('keeps quotes in a local part and refuses a custom From header while a list is in use', () => {

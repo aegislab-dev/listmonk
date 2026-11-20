@@ -42,8 +42,9 @@ type Campaign struct {
 	// Set by the server from the From list (LST-49): the index of the list
 	// entry this campaign's From stands for (null if none or no list), and
 	// whether the From is a placeholder. The admin UI only uses these values.
-	FromMatch       *int `db:"-" json:"from_match"`
-	FromPlaceholder bool `db:"-" json:"from_placeholder"`
+	FromMatch       *int    `db:"-" json:"from_match"`
+	FromEntry       *string `db:"-" json:"from_entry"`
+	FromPlaceholder bool    `db:"-" json:"from_placeholder"`
 
 	// LastSubscriberID is the sending checkpoint (campaigns.last_subscriber_id): the
 	// campaign is done with every subscriber up to it. The campaign manager continues

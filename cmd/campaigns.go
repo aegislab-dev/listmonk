@@ -825,7 +825,7 @@ func (a *App) checkFromAllowed(from string, list []string) (string, error) {
 		return from, nil
 	}
 	if e, ok := matchFromAddress(from, list); ok {
-		return e, nil
+		return strings.TrimSpace(e), nil
 	}
 	if placeholderFrom(from) {
 		return from, errors.New(a.i18n.Ts("campaigns.fromPlaceholder", "email", from))
@@ -836,7 +836,7 @@ func (a *App) checkFromAllowed(from string, list []string) (string, error) {
 // validateFrom checks and normalises the From of a campaign when account
 // senders are off: trimmed, no line breaks, no placeholder, and (with a From
 // list) one of the list's entries in the list's spelling.
-func (a *App) validateFrom(c campReq) (campReq, error) {
+func (a *App) validateFrom(c campReq, strict bool) (campReq, error) {
 	fromList := a.cfg.FromAddresses
 	if strings.ContainsAny(c.FromEmail, "\r\n") {
 		return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
@@ -869,9 +869,16 @@ func (a *App) validateFrom(c campReq) (campReq, error) {
 		c.FromEmail == strings.TrimSpace(*c.storedFrom)
 	// A paused campaign may keep a From header it already had, but not gain or
 	// change one: the header would decide the From it resumes with.
-	if len(fromList) > 0 && hasFromHeader(c.Headers) &&
+	if strict && len(fromList) > 0 && hasFromHeader(c.Headers) &&
 		!(c.Status == models.CampaignStatusPaused && c.storedFrom != nil && reflect.DeepEqual(c.Headers, c.storedHeaders)) {
 		return c, errors.New(a.i18n.T("campaigns.fromHeaderNotAllowed"))
+	}
+	if !strict {
+		// Read-only: use the list's spelling when there is one, never refuse.
+		if e, ok := matchFromAddress(c.FromEmail, fromList); ok {
+			c.FromEmail = e
+		}
+		return c, nil
 	}
 	if !unchanged {
 		from, err := a.checkFromAllowed(c.FromEmail, fromList)
@@ -1059,6 +1066,18 @@ func canEditCampaign(status string) bool {
 // and test sends do. AXM: split out of validateCampaignFields so that the pre-send
 // tracking check (LST-44) reads the same sender as the send it checks.
 func (a *App) campaignSender(c campReq, user auth.User) (campReq, error) {
+	return a.campaignSenderMode(c, user, true)
+}
+
+// campaignSenderLoose is campaignSender for a read-only look (the tracking
+// check): the From still gets its format check and the list's spelling, but a
+// From that the From list or the placeholder rule would refuse on save (a saved
+// legacy draft, a paused campaign) is read as it is, not refused.
+func (a *App) campaignSenderLoose(c campReq, user auth.User) (campReq, error) {
+	return a.campaignSenderMode(c, user, false)
+}
+
+func (a *App) campaignSenderMode(c campReq, user auth.User, strict bool) (campReq, error) {
 	if len(a.cfg.SenderDomains) > 0 {
 		if c.ReplyToInput != nil {
 			c.ReplyTo = strings.TrimSpace(*c.ReplyToInput)
@@ -1083,7 +1102,7 @@ func (a *App) campaignSender(c campReq, user auth.User) (campReq, error) {
 	// With account senders on, the From was set above and neither the From
 	// list nor the placeholder rule applies (the original format check stays).
 	if len(a.cfg.SenderDomains) == 0 {
-		return a.validateFrom(c)
+		return a.validateFrom(c, strict)
 	}
 	if c.FromEmail == "" {
 		c.FromEmail = a.cfg.FromEmail

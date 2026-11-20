@@ -160,7 +160,7 @@ func defaultFromIndex(appFrom string, list []string) int {
 
 // defaultFromFor is the From a new campaign gets when none is sent.
 func defaultFromFor(appFrom string, list []string) string {
-	return list[defaultFromIndex(appFrom, list)]
+	return strings.TrimSpace(list[defaultFromIndex(appFrom, list)])
 }
 
 // normalizeFromAddresses cleans the team's From list. Entries are "Name <addr>"
@@ -184,8 +184,7 @@ func normalizeFromAddresses(in []string) ([]string, error) {
 		// Address.String quotes a local part that needs it ("two words"@x).
 		e := strings.ToLower(a.Address)
 		bare := strings.TrimSuffix(strings.TrimPrefix((&mail.Address{Address: e}).String(), "<"), ">")
-		if a.Name != "" {
-			name := a.Name
+		if name := strings.TrimSpace(a.Name); name != "" {
 			if reFromNameSpecial.MatchString(name) {
 				name = strconv.Quote(name)
 			}
@@ -266,6 +265,11 @@ func hasReservedHeader(headers []map[string]string) bool {
 func (a *App) campaignReplyVerified(camp *models.Campaign) error {
 	// Every campaign response passes here: tell the UI what the From means.
 	camp.FromMatch, camp.FromPlaceholder = fromState(camp.FromEmail, a.cfg.FromAddresses, len(a.cfg.SenderDomains) > 0)
+	camp.FromEntry = nil
+	if camp.FromMatch != nil {
+		e := strings.TrimSpace(a.cfg.FromAddresses[*camp.FromMatch])
+		camp.FromEntry = &e
+	}
 	if len(a.cfg.SenderDomains) == 0 {
 		camp.ReplyToVerified = true
 		return nil
