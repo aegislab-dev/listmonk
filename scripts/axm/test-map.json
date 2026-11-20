@@ -418,7 +418,8 @@
     "internal/manager/axm_preflight*.go",
     "queries/axm_preflight.sql",
     "models/axm_preflight.go",
-    "internal/messenger/email/axm_headers*.go"
+    "internal/messenger/email/axm_headers*.go",
+    "internal/manager/axm_unsub_reach*.go"
    ],
    "specs": [
     "campaign-send-confirm.cy.js",

@@ -295,35 +295,3 @@ func TestEnvelopeCopies(t *testing.T) {
 		t.Fatalf("copies line: %+v", line)
 	}
 }
-
-// Where the unsubscribe link is printed: under a condition on the subscriber, a few renderings
-// cannot vouch for every recipient (LST-48 review).
-func TestUnsubscribeUnconditional(t *testing.T) {
-	body := `{{ template "content" . }}`
-	for _, tc := range []struct {
-		name               string
-		base, src, alt     string
-		unconditional, any bool
-	}{
-		{"plain", body, `<a href="{{ UnsubscribeURL }}">x</a>`, "", true, true},
-		{"under a subscriber condition", body, `{{ if not .Subscriber.Attribs.compact }}<a href="{{ UnsubscribeURL }}">x</a>{{ end }}`, "", false, true},
-		{"in its else", body, `{{ if .Subscriber.Attribs.compact }}short{{ else }}<a href="{{ UnsubscribeURL }}">x</a>{{ end }}`, "", false, true},
-		{"under a campaign condition", body, `{{ if eq .Campaign.Status "running" }}<a href="{{ UnsubscribeURL }}">x</a>{{ end }}`, "", true, true},
-		{"after the block", body, `{{- if .Subscriber.Name }}Hi{{ end -}}<a href="{{ UnsubscribeURL }}">x</a>`, "", true, true},
-		{"in a range over a variable", body, `{{ range $i, $x := .Campaign.Tags }}{{ UnsubscribeURL }}{{ end }}`, "", false, true},
-		{"in the template, plain", `<p>{{ template "content" . }}</p><a href="{{ UnsubscribeURL }}">x</a>`, `<p>Hi</p>`, "", true, true},
-		// The template includes the body only for the full edition: the body's link is conditional.
-		{"body included under a condition", `{{ if not .Subscriber.Attribs.compact }}{{ template "content" . }}{{ else }}<p>Short</p>{{ end }}`,
-			`<a href="{{ UnsubscribeURL }}">x</a>`, "", false, true},
-		{"body included twice, once plainly", `{{ if .Subscriber.Name }}{{ template "content" . }}{{ end }}{{ template "content" . }}`,
-			`<a href="{{ UnsubscribeURL }}">x</a>`, "", true, true},
-		{"body not included", `<p>No body</p>`, `<a href="{{ UnsubscribeURL }}">x</a>`, "", false, false},
-		{"in the alternative body", body, `<p>Hi</p>`, `Leave: {{ UnsubscribeURL }}`, true, true},
-		{"none", body, `<p>Hi {{ .Subscriber.Name }}</p>`, "", false, false},
-	} {
-		u, f := unsubscribeUnconditional(tc.base, tc.src, tc.alt)
-		if u != tc.unconditional || f != tc.any {
-			t.Errorf("%s: got %v %v", tc.name, u, f)
-		}
-	}
-}

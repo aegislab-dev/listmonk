@@ -1226,6 +1226,11 @@ func TestCampaignPreflightUnsubscribeTemplateResume(t *testing.T) {
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("body with the link included only for the full edition: %q", got)
 	}
+	// The same through a named template that includes the body, called only for the full edition.
+	e.db.MustExec(`UPDATE templates SET body='<html><body>{{ define "fullEdition" }}{{ template "content" . }}{{ end }}{{ if not .Subscriber.Attribs.compact }}{{ template "fullEdition" . }}{{ else }}<p>Compact</p>{{ end }}</body></html>' WHERE id=$1`, tpl)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("body included from a named template called only for the full edition: %q", got)
+	}
 	// Paused after the ten: the compact one is the only one left, and is in the sample.
 	e.db.MustExec(`UPDATE campaigns SET status='paused', last_subscriber_id=$2, to_send=11, sent=10 WHERE id=$1`, e.campID, last)
 	if got := read(); got != "unsubscribe.missing=warn" {
