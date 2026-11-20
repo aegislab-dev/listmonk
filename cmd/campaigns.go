@@ -38,6 +38,9 @@ type campReq struct {
 
 	// This is only relevant to campaign test requests.
 	SubscriberEmails pq.StringArray `json:"subscribers"`
+
+	// AXM (LST-41): the stand-in subscriber of a test request (see axm_test_send.go).
+	Sample *testSample `json:"sample"`
 }
 
 // campContentReq wraps params coming from API requests for converting
@@ -189,8 +192,16 @@ func (a *App) PreviewCampaign(c echo.Context) error {
 			a.i18n.Ts("templates.errorCompiling", "error", err.Error()))
 	}
 
+	// AXM (LST-41): a preview may be asked for with the sample of the test box.
+	previewSub := dummySubscriber
+	if isPost {
+		if previewSub, err = a.previewSample(c); err != nil {
+			return err
+		}
+	}
+
 	// Render the message body.
-	msg, err := a.manager.NewCampaignMessage(&camp, dummySubscriber)
+	msg, err := a.manager.NewCampaignMessage(&camp, previewSub)
 	if err != nil {
 		a.log.Printf("error rendering message: %v", err)
 		return echo.NewHTTPError(http.StatusBadRequest,
@@ -612,24 +623,16 @@ func (a *App) TestCampaign(c echo.Context) error {
 		req.SubscriberEmails[i] = strings.ToLower(strings.TrimSpace(req.SubscriberEmails[i]))
 	}
 
-	// Get the subscribers from the DB by their e-mails.
-	subs, err := a.core.GetSubscribersByEmail(req.SubscriberEmails)
+	// AXM (LST-41): upstream sent only to subscribers the user may see and silently dropped
+	// every other address. The user's own address and the test domains may receive a test
+	// too, as a sample subscriber, and an address that may not receive one stops the request.
+	recips, sample, slot, err := a.testRecipients(c, &req, auth.GetUser(c))
 	if err != nil {
 		return err
 	}
 
-	// Exclude subscribers from lists that the user doesn't have access to.
-	user := auth.GetUser(c)
-	validSubs := subs[:0]
-	for _, s := range subs {
-		if err := a.hasSubPerm(user, []int{s.ID}); err == nil {
-			validSubs = append(validSubs, s)
-		}
-	}
-	subs = validSubs
-
 	// No subscribers.
-	if len(subs) == 0 {
+	if len(recips) == 0 {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.noKnownSubsToTest"))
 	}
 
@@ -642,10 +645,12 @@ func (a *App) TestCampaign(c echo.Context) error {
 	}
 	camp, err := a.core.GetCampaignForPreview(id, tplID)
 	if err != nil {
+		a.testLimiter.giveBack(auth.GetUser(c).ID, slot, len(recips))
 		return err
 	}
 
 	// Override certain values from the DB with incoming values.
+	savedName := camp.Name
 	camp.Name = req.Name
 	camp.Subject = req.Subject
 	camp.FromEmail = req.FromEmail
@@ -666,15 +671,27 @@ func (a *App) TestCampaign(c echo.Context) error {
 	}
 
 	// Send the test messages.
-	for _, s := range subs {
-		sub := s
+	for i, r := range recips {
+		sub := r.Sub
 
-		if err := a.sendTestMessage(sub, &camp); err != nil {
+		// AXM (LST-41): a sample subscriber's message carries the dummy campaign UUID.
+		msgCamp := &camp
+		if sub.UUID == dummyUUID {
+			msgCamp = sampleCampaign(camp)
+		}
+		if err := a.sendTestMessage(sub, msgCamp); err != nil {
 			a.log.Printf("error sending test message: %v", err)
+			// AXM (LST-41): the messages that did go out are on the audit log, and the
+			// ones that did not do not count towards the limit.
+			a.testLimiter.giveBack(auth.GetUser(c).ID, slot, len(recips)-i)
+			if i > 0 {
+				a.auditTestSend(c, id, savedName, recips[:i], sample)
+			}
 			return echo.NewHTTPError(http.StatusInternalServerError,
 				a.i18n.Ts("campaigns.errorSendTest", "error", err.Error()))
 		}
 	}
+	a.auditTestSend(c, id, savedName, recips, sample)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -752,6 +769,10 @@ func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign) erro
 	if err != nil {
 		a.log.Printf("error rendering message: %v", err)
 		return echo.NewHTTPError(http.StatusNotFound, a.i18n.Ts("templates.errorRendering", "error", err.Error()))
+	}
+	// AXM (LST-41): the "view in browser" link of a sample subscriber's message.
+	if sub.UUID == dummyUUID && camp.UUID == dummyUUID {
+		a.sampleBrowserLink(&msg, camp.ContentType == models.CampaignContentTypePlain)
 	}
 
 	return a.manager.PushCampaignMessage(msg)

@@ -208,22 +208,23 @@ func (a *App) SenderVerify(c echo.Context) error {
 	}{publicTpl{Title: a.i18n.T("senders.verifyTitle")}, out.Email, c.Request().URL.Path})
 }
 
-// normalizeSenderSettings is shared by full and keyed settings updates.
-func normalizeSenderSettings(set *models.Settings) error {
+// normalizeDomains lowercases and trims a list of exact domains, drops repeats and refuses
+// anything that is not a domain name. The sender domains and the test domains share it.
+func normalizeDomains(in []string) ([]string, error) {
 	domains := []string{}
 	seen := map[string]bool{}
-	for _, v := range set.AxmSenderDomains {
+	for _, v := range in {
 		v = strings.ToLower(strings.TrimSpace(v))
 		if v == "" || len(v) > 253 || strings.ContainsAny(v, " <>@\t\r\n:/") || !strings.Contains(v, ".") {
-			return errors.New("invalid domain")
+			return nil, errors.New("invalid domain")
 		}
 		for _, label := range strings.Split(v, ".") {
 			if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-				return errors.New("invalid domain")
+				return nil, errors.New("invalid domain")
 			}
 			for _, ch := range label {
 				if !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '-') {
-					return errors.New("invalid domain")
+					return nil, errors.New("invalid domain")
 				}
 			}
 		}
@@ -232,7 +233,20 @@ func normalizeSenderSettings(set *models.Settings) error {
 			seen[v] = true
 		}
 	}
+	return domains, nil
+}
+
+// normalizeSenderSettings is shared by full and keyed settings updates.
+func normalizeSenderSettings(set *models.Settings) error {
+	domains, err := normalizeDomains(set.AxmSenderDomains)
+	if err != nil {
+		return err
+	}
 	set.AxmSenderDomains = domains
+	// AXM (LST-41): the domains that may receive a test message follow the same rule.
+	if set.AxmTestDomains, err = normalizeDomains(set.AxmTestDomains); err != nil {
+		return err
+	}
 	for _, v := range []*string{&set.AxmDefaultFrom, &set.AxmDefaultReplyTo} {
 		*v = strings.TrimSpace(*v)
 		if *v != "" {

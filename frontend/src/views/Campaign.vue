@@ -190,22 +190,9 @@
             <div v-if="canManage || canCheckTracking" class="column is-4 is-offset-1">
               <br />
               <tracking-check v-if="canCheckTracking" ref="tracking" :campaign-id="data.id" :payload="trackingPayload" />
-              <div v-if="canManage" class="box">
-                <h3 class="title is-size-6">
-                  {{ $t('campaigns.sendTest') }}
-                </h3>
-                <b-field :message="$t('campaigns.sendTestHelp')">
-                  <b-taginput v-model="form.testEmails" :before-adding="$utils.validateEmail" :disabled="isNew" ellipsis
-                    icon="email-outline" :placeholder="$t('campaigns.testEmails')" />
-                </b-field>
-                <p class="help mb-4">{{ $t('campaigns.personalize.testHelp') }}</p>
-                <b-field>
-                  <b-button @click="() => onSubmit('test')" :loading="loading.campaigns" :disabled="isNew"
-                    type="is-primary" icon-left="email-outline">
-                    {{ $t('campaigns.send') }}
-                  </b-button>
-                </b-field>
-              </div>
+              <campaign-test-send v-if="canManage" v-model="form.testEmails" :sample.sync="testSample" :rejected.sync="testRejected"
+                :own-unverified="testOwnUnverified" :disabled="isNew" :loading="loading.campaigns" :preview="testPreview"
+                @send="() => onSubmit('test')" />
             </div>
           </div>
         </section>
@@ -213,7 +200,8 @@
 
       <b-tab-item :label="$t('campaigns.content')" icon="text" :disabled="isNew" value="content">
         <editor v-if="data.id" v-model="form.content" :id="data.id" :title="data.name" :disabled="!canEdit"
-          :templates="templates" :content-types="contentTypes" :list-ids="form.lists.map((l) => l.id)" />
+          :templates="templates" :content-types="contentTypes" :list-ids="form.lists.map((l) => l.id)"
+          :preview-sample="previewSample" :preview-sample-label="previewSampleLabel" />
 
         <div class="columns">
           <div class="column is-6">
@@ -360,6 +348,7 @@ import Vue from 'vue';
 import { mapState } from 'vuex';
 
 import CampaignPreview from '../components/CampaignPreview.vue';
+import CampaignTestSend from '../components/CampaignTestSend.vue';
 import CopyText from '../components/CopyText.vue';
 import Editor from '../components/Editor.vue';
 import ListSelector from '../components/ListSelector.vue';
@@ -371,6 +360,9 @@ import TrackingCheck from '../components/TrackingCheck.vue';
 import CampaignSendConfirm from '../components/CampaignSendConfirm.vue';
 import { isSenderDomain } from '../senders';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
+import {
+  newSample, rejectedOf, sampleLabel, samplePayload,
+} from '../test-send';
 import { trackingToastParts } from '../tracking-check';
 
 export default Vue.extend({
@@ -380,6 +372,7 @@ export default Vue.extend({
     Media,
     CopyText,
     CampaignPreview,
+    CampaignTestSend,
     SenderAddressInput,
     AddressCheck,
     RecentSendExclude,
@@ -415,6 +408,12 @@ export default Vue.extend({
       recentRuleError: '',
       createdDraftId: 0,
       savingCampaign: false,
+
+      // The test box (LST-41): the sample for addresses that are not subscribers, and the
+      // addresses the server refused last time.
+      testSample: newSample(),
+      testRejected: [],
+      testOwnUnverified: false,
 
       data: {},
 
@@ -652,6 +651,8 @@ export default Vue.extend({
 
     async sendTest() {
       if (!await this.checkReplyTo()) return false;
+      const sample = samplePayload(this.testSample);
+      if (sample.error) return false;
       const data = {
         id: this.data.id,
         name: this.form.name,
@@ -669,7 +670,9 @@ export default Vue.extend({
         subscribers: this.form.testEmails,
         media: this.form.media.map((m) => m.id),
       };
+      if (sample.payload) data.sample = sample.payload;
 
+      this.testRejected = [];
       // The tracking state of exactly what this test sends (LST-44): the test takes these
       // fields from the form and the rest (the attributes) from the saved campaign.
       const tracking = this.$api.checkCampaignTracking(this.data.id, {
@@ -695,7 +698,10 @@ export default Vue.extend({
           this.$utils.toast(this.$t('campaigns.testSent'));
         }
       }).catch((err) => {
-        if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
+        // Refused addresses are marked in the test box itself.
+        this.testRejected = rejectedOf(err);
+        this.testOwnUnverified = !!err.response?.data?.data?.own_unverified;
+        if (this.senderPolicyEnabled && this.testRejected.length === 0) this.replyError = err.response?.data?.message || '';
       });
       return false;
     },
@@ -925,6 +931,28 @@ export default Vue.extend({
     },
 
     senderPolicyEnabled() { return (this.serverConfig.sender_domains || []).length > 0; },
+
+    // The sample of the test box as the preview takes it, and its name for the preview header.
+    previewSample() {
+      const { payload } = samplePayload(this.testSample);
+      return payload ? JSON.stringify(payload) : '';
+    },
+    previewSampleLabel() {
+      const label = sampleLabel(this.testSample);
+      if (label.kind === 'default') return '';
+      return this.$t(`campaigns.testSend.previewLabel.${label.kind}`, { name: label.name || '—' });
+    },
+    testPreview() {
+      return {
+        id: this.data.id || 0,
+        title: this.data.name || '',
+        contentType: this.form.content.contentType,
+        templateId: this.form.content.templateId,
+        body: this.form.content.body,
+        sample: this.previewSample,
+        sampleLabel: this.previewSampleLabel,
+      };
+    },
     usesAccountFrom() { return isSenderDomain(this.profile.email, this.serverConfig.sender_domains); },
     resolvedFrom() {
       if (this.isEditing && !['draft', 'scheduled'].includes(this.data.status)) return this.data.fromEmail;

@@ -293,6 +293,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 
 		g.GET("/sender/verify/:token", noIndex(a.SenderVerify))
 		g.POST("/sender/verify/:token", noIndex(a.SenderVerify))
+		g.GET("/test-address/verify/:token", noIndex(a.TestAddressVerify))
+		g.POST("/test-address/verify/:token", noIndex(a.TestAddressVerify))
 		// Public APIs.
 		g.GET("/api/public/lists", a.GetPublicLists)
 		g.POST("/api/public/subscription", a.PublicSubscription)
@@ -313,6 +315,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/subscription/wipe/:subUUID", a.hasUUID(a.hasSub(a.WipeSubscriberData), "subUUID"))
 		g.GET("/link/:linkUUID/:campUUID/:subUUID", noIndex(a.hasUUID(a.LinkRedirect, "linkUUID", "campUUID", "subUUID")))
 		content.GET("/campaign/:campUUID/:subUUID", noIndex(a.hasUUID(a.ViewCampaignMessage, "campUUID", "subUUID")))
+		// AXM (LST-41): a sample test message, as it was mailed (see TestMessageView).
+		content.GET("/test-message/:token", noIndex(a.TestMessageView))
 		g.GET("/campaign/:campUUID/:subUUID/px.png", noIndex(a.hasUUID(a.RegisterCampaignView, "campUUID", "subUUID")))
 
 		if a.cfg.EnablePublicArchive {

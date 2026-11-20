@@ -117,6 +117,15 @@ func (m *CampaignMessage) Body() []byte {
 	return out
 }
 
+// RewriteBody passes the rendered body and alt body through fn (AXM, LST-41: the test
+// message of a sample subscriber gets its "view in browser" link pointed at the campaign).
+func (m *CampaignMessage) RewriteBody(fn func([]byte) []byte) {
+	m.body = fn(m.body)
+	if m.altBody != nil {
+		m.altBody = fn(m.altBody)
+	}
+}
+
 // AltBody returns a copy of the message's alt body.
 func (m *CampaignMessage) AltBody() []byte {
 	out := make([]byte, len(m.altBody))

@@ -78,6 +78,16 @@
       <p class="help mt-4">{{ $t('settings.general.senderSaveHelp') }}</p>
       <hr />
     </section>
+    <section class="test-send-settings">
+      <h3 class="is-size-5 has-text-weight-semibold">{{ $t('settings.general.testSendTitle') }}</h3>
+      <p class="help mb-5">{{ $t('settings.general.testSendHelp') }}</p>
+      <b-field :label="$t('settings.general.testDomains')" label-position="on-border"
+        :message="$t('settings.general.testDomainsHelp')">
+        <b-taginput v-model="data['axm.test_domains']" name="axm.test_domains"
+          :disabled="!$can('settings:manage')" :placeholder="$t('settings.general.senderDomainsPlaceholder')" />
+      </b-field>
+      <hr />
+    </section>
     <b-field :label="$t('settings.general.adminNotifEmails')" label-position="on-border"
       :message="$t('settings.general.adminNotifEmailsHelp')">
       <b-taginput v-model="data['app.notify_emails']" name="app.notify_emails"
