@@ -1,0 +1,1544 @@
+#!/usr/bin/env python3
+"""axm — 로컬 검사 명령 (LST-51).
+
+여러 태스크가 한 PC 에서 동시에 검사를 돌릴 때 CPU 가 몰리지 않게 한다.
+- Go 모듈·빌드 캐시, 프론트 빌드 산출물, 시험용 베이스 이미지를 태스크끼리 공유한다.
+- 바뀐 파일에 닿는 Cypress spec·Go 시험만 돌린다. 전체 e2e 는 PR 의 CI(axm-image)가 한다.
+- 단계마다 벽시계 시간·CPU초(cgroup)를 재서 표로 낸다.
+
+사용법은 `axm --help`, 규칙은 AGENTS.md 에 있다. 표준 라이브러리만 쓴다.
+"""
+import argparse
+import fnmatch
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+HERE = ROOT / 'scripts' / 'axm'
+UID, GID = os.getuid(), os.getgid()
+
+GO_IMAGE = 'golang:1.26.1-bookworm'
+PG_IMAGE = 'postgres:17.7-alpine'
+CYPRESS_IMAGE = 'cypress/included:15.8.1'
+LOCAL_VERSION = 'v6.2.0-axm.0-local'
+CI_WORKFLOW = '.github/workflows/axm-image.yml'
+DEFAULT_BASE_REF = 'origin/axm/v6.2'
+
+# 컨텍스트에 넣지 않는 것(이미지 내용에 영향이 없다).
+IMAGE_KEY_EXCLUDE = ['docs/**', 'frontend/cypress/**', 'scripts/**', '.github/**', 'AGENTS.md', 'CLAUDE.md']
+
+
+# ---------------------------------------------------------------- 환경
+
+def env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def cache_dir():
+    return Path(os.environ.get('AXM_CACHE') or Path.home() / '.cache' / 'listmonk-axm')
+
+
+def tmp_dir():
+    base = os.environ.get('TMPDIR') or '/tmp'
+    p = Path(base) / 'axm'
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def cpus():
+    return env_int('AXM_CPUS', 4)
+
+
+def slots():
+    return max(1, env_int('AXM_SLOTS', 2))
+
+
+def git(*args, check=True, cwd=None, input=None):
+    r = subprocess.run(['git', '-C', str(cwd or ROOT), *args], capture_output=True, text=True, input=input)
+    if check and r.returncode != 0:
+        raise SystemExit(f'git {" ".join(args)} 실패: {r.stderr.strip()}')
+    return r.stdout
+
+
+def branch_name():
+    return git('rev-parse', '--abbrev-ref', 'HEAD', check=False).strip()
+
+
+class Ctx:
+    """역할(agent|reviewer)별 이름·포트·표시 번호. 다른 태스크·리뷰어와 겹치지 않게 번호에서 만든다."""
+
+    def __init__(self, role=None):
+        self.role = role or os.environ.get('AXM_ROLE') or 'agent'
+        if self.role not in ('agent', 'reviewer'):
+            raise SystemExit('--role 은 agent 또는 reviewer')
+        m = re.match(r'work/(\d+)-', branch_name())
+        task = os.environ.get('AXM_TASK') or (m.group(1) if m else '')
+        if not task.isdigit():
+            raise SystemExit('태스크 번호를 못 찾았다: 브랜치가 work/<N>-… 이거나 AXM_TASK=<N> 을 준다.')
+        self.n = int(task)
+        rv = 1 if self.role == 'reviewer' else 0
+        self.prefix = f'axm{self.n}{"r" if rv else ""}'
+        base = 41000 + (self.n % 300) * 20 + rv * 10
+        self.pg_port = free_port(base)
+        self.app_port = free_port(base + 1)
+        self.display = 100 + (self.n % 150) * 2 + rv
+        self.run = tmp_dir() / f'{self.prefix}'
+        self.run.mkdir(parents=True, exist_ok=True)
+
+    def name(self, what):
+        return f'{self.prefix}-{what}'
+
+
+def free_port(p):
+    busy = set()
+    r = subprocess.run(['ss', '-ltnH'], capture_output=True, text=True)
+    for line in r.stdout.splitlines():
+        m = re.search(r':(\d+)\s', line)
+        if m:
+            busy.add(int(m.group(1)))
+    while p in busy:
+        p += 1
+    return p
+
+
+# ---------------------------------------------------------------- 표시·기록
+
+def say(msg=''):
+    print(msg, flush=True)
+
+
+def fmt_s(x):
+    if x is None:
+        return '-'
+    if x >= 60:
+        return f'{int(x // 60)}m{int(x % 60):02d}s'
+    return f'{x:.1f}s'
+
+
+class Steps:
+    """단계별 시간·CPU초 기록. 표로 낸다."""
+
+    def __init__(self, ctx=None, tag=''):
+        self.rows = []
+        self.ctx = ctx
+        self.tag = tag
+        self.load1 = os.getloadavg()[0]
+
+    def add(self, stage, wall, cpu, peak=None, note='', rc=0, waited=0.0):
+        row = dict(stage=stage, wall=wall, cpu=cpu, peak=peak, note=note, rc=rc, waited=waited)
+        self.rows.append(row)
+        rec = dict(ts=int(time.time()), task=self.ctx.n if self.ctx else None, role=self.ctx.role if self.ctx else None,
+                   tag=self.tag, load1=round(self.load1, 2), **row)
+        try:
+            c = cache_dir()
+            c.mkdir(parents=True, exist_ok=True)
+            with open(c / 'metrics.jsonl', 'a') as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+        except OSError:
+            pass
+
+    def table(self, title='단계별 시간·CPU'):
+        out = [f'\n== {title} (시작 때 load average {self.load1:.1f}) ==',
+               f'{"단계":<34}{"벽시계":>9}{"CPU초":>9}{"최대코어":>9}  비고']
+        tw = tc = 0.0
+        for r in self.rows:
+            if not r['stage'].startswith('  ') or r['stage'].startswith('  ('):  # 들여쓴 줄은 위 줄의 내역이라 합계에서 뺀다
+                tw += r['wall'] or 0
+                tc += r['cpu'] or 0
+            pk = '-' if r['peak'] is None else f'{r["peak"]:.1f}'
+            cp = '-' if r['cpu'] is None else f'{r["cpu"]:.1f}'
+            note = r['note'] + (f' (대기 {fmt_s(r["waited"])})' if r['waited'] > 1 else '') + ('' if r['rc'] == 0 else ' 실패')
+            out.append(f'{r["stage"]:<34}{fmt_s(r["wall"]):>9}{cp:>9}{pk:>9}  {note}')
+        out.append(f'{"합계":<34}{fmt_s(tw):>9}{tc:>9.1f}')
+        return '\n'.join(out)
+
+
+# ---------------------------------------------------------------- cgroup CPU
+
+def scope_dir(cid):
+    return Path(f'/sys/fs/cgroup/system.slice/docker-{cid}.scope')
+
+
+def read_usage(cid):
+    try:
+        for line in (scope_dir(cid) / 'cpu.stat').read_text().splitlines():
+            if line.startswith('usage_usec'):
+                return int(line.split()[1]) / 1e6
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def container_id(name):
+    r = subprocess.run(['docker', 'inspect', '-f', '{{.Id}}', name], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+class Poller(threading.Thread):
+    """컨테이너 이름을 기다렸다가 cgroup 의 CPU 사용량을 0.4초마다 읽는다."""
+
+    def __init__(self, name=None, cid=None, interval=0.4):
+        super().__init__(daemon=True)
+        self.name_, self.cid, self.interval = name, cid, interval
+        self.samples = []
+        self.stop = threading.Event()
+
+    def run(self):
+        while not self.stop.is_set() and self.cid is None:
+            self.cid = container_id(self.name_)
+            if self.cid is None:
+                self.stop.wait(0.2)
+        while not self.stop.is_set():
+            u = read_usage(self.cid)
+            if u is not None:
+                self.samples.append((time.time(), u))
+            self.stop.wait(self.interval)
+
+    def finish(self):
+        self.stop.set()
+        self.join(timeout=3)
+
+    def last(self):
+        return self.samples[-1][1] if self.samples else None
+
+    def peak(self, window=2.0):
+        s, best = self.samples, 0.0
+        j = 0
+        for i in range(len(s)):
+            while s[i][0] - s[j][0] > window:
+                j += 1
+            dt = s[i][0] - s[j][0]
+            if dt >= 0.5:
+                best = max(best, (s[i][1] - s[j][1]) / dt)
+        return best or None
+
+
+# ---------------------------------------------------------------- 잠금·칸
+
+class Slot:
+    """무거운 단계(빌드·Go 시험·Cypress)가 동시에 AXM_SLOTS 개만 돌게 하는 칸."""
+
+    def __enter__(self):
+        d = cache_dir() / 'locks'
+        d.mkdir(parents=True, exist_ok=True)
+        t0, told = time.time(), False
+        while True:
+            for i in range(1, slots() + 1):
+                f = open(d / f'slot-{i}', 'w')
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.f, self.waited = f, time.time() - t0
+                    return self
+                except BlockingIOError:
+                    f.close()
+            if not told:
+                say(f'무거운 단계 칸이 모두 사용 중이다(AXM_SLOTS={slots()}). 기다린다…')
+                told = True
+            time.sleep(3)
+
+    def __exit__(self, *a):
+        self.f.close()
+
+
+class FileLock:
+    def __init__(self, name):
+        d = cache_dir() / 'locks'
+        d.mkdir(parents=True, exist_ok=True)
+        self.path = d / name
+
+    def __enter__(self):
+        self.f = open(self.path, 'w')
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *a):
+        self.f.close()
+
+
+# ---------------------------------------------------------------- 파일·해시
+
+def tree_files():
+    out = git('ls-files', '-co', '--exclude-standard', '-z').split('\0')
+    return sorted(p for p in out if p and (ROOT / p).is_file())
+
+
+def hash_files(paths):
+    if not paths:
+        return {}
+    out = subprocess.run(['git', '-C', str(ROOT), 'hash-object', '--stdin-paths'], input='\n'.join(paths) + '\n',
+                         capture_output=True, text=True).stdout.split()
+    return dict(zip(paths, out))
+
+
+def glob_re(pat):
+    out, i = '', 0
+    while i < len(pat):
+        c = pat[i]
+        if pat.startswith('**/', i):
+            out += '(?:.*/)?'
+            i += 3
+            continue
+        if pat.startswith('**', i):
+            out += '.*'
+            i += 2
+            continue
+        out += '[^/]*' if c == '*' else ('[^/]' if c == '?' else re.escape(c))
+        i += 1
+    return re.compile('^' + out + '$')
+
+
+def match_any(path, pats):
+    return any(glob_re(p).match(path) for p in pats)
+
+
+def digest(*parts):
+    h = hashlib.sha256()
+    for p in parts:
+        h.update(p if isinstance(p, bytes) else str(p).encode())
+        h.update(b'\0')
+    return h.hexdigest()
+
+
+def key_of(paths, hashes):
+    return digest(*[f'{p}={hashes[p]}' for p in sorted(paths)])[:16]
+
+
+# ---------------------------------------------------------------- docker
+
+def docker(*args, check=True, quiet=False):
+    r = subprocess.run(['docker', *args], capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise SystemExit(f'docker {" ".join(args[:3])} 실패: {(r.stderr or r.stdout).strip()[-600:]}')
+    return r
+
+
+def image_exists(tag):
+    return docker('image', 'inspect', tag, check=False).returncode == 0
+
+
+WRAP = '''#!/bin/bash
+# 단계 컨테이너의 CPU 사용량(자기 cgroup)을 끝에 한 줄로 찍는다.
+"$@"
+rc=$?
+echo "AXM_CPU_USEC=$(awk '/^usage_usec/{print $2}' /sys/fs/cgroup/cpu.stat)"
+exit $rc
+'''
+
+MARK_FN = '''mark() { echo "AXM_MARK $1 $(date +%s.%N) $(awk '/^usage_usec/{print $2}' /sys/fs/cgroup/cpu.stat)"; }
+'''
+
+
+def write_wrap(dirpath):
+    p = Path(dirpath) / 'wrap.sh'
+    p.write_text(WRAP)
+    p.chmod(0o755)
+    return p
+
+
+def limit_args(n=None):
+    n = cpus() if n is None else n
+    return ['--cpus', str(n)] if n and n > 0 else []
+
+
+ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+
+
+def run_container(ctx, label, name, docker_args, cmd, log_name=None, quiet=False, tee_filter=None):
+    """docker run 을 돌려 벽시계·CPU초·최대코어를 잰다. 로그는 파일에, 끝의 요약만 화면에 낸다.
+
+    돌려주는 값: dict(rc, wall, cpu, peak, marks, log_path, text)"""
+    ctxdir = ctx.run / 'ctx'
+    ctxdir.mkdir(parents=True, exist_ok=True)
+    write_wrap(ctxdir)
+    log = ctx.run / f'{log_name or label}.log'
+    argv = ['docker', 'run', '--rm', '--name', name, '--entrypoint', '/axmctx/wrap.sh',
+            '-v', f'{ctxdir}:/axmctx', *docker_args, *cmd]
+    docker('rm', '-f', name, check=False)
+    poll = Poller(name=name)
+    poll.start()
+    t0 = time.time()
+    lines = []
+    with open(log, 'w') as lf:
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+        for line in p.stdout:
+            lf.write(line)
+            lf.flush()
+            line = ANSI.sub('', line.rstrip('\n'))
+            lines.append(line)
+            if not quiet and not line.startswith('AXM_') and (tee_filter is None or tee_filter(line)):
+                say('  | ' + line)
+        p.wait()
+    wall = time.time() - t0
+    poll.finish()
+    cpu = None
+    marks = []
+    for line in lines:
+        m = re.match(r'AXM_CPU_USEC=(\d+)', line)
+        if m:
+            cpu = int(m.group(1)) / 1e6
+        m = re.match(r'AXM_MARK (\S+) ([\d.]+) (\d+)', line)
+        if m:
+            marks.append((m.group(1), float(m.group(2)), int(m.group(3)) / 1e6))
+    if cpu is None:
+        cpu = poll.last()
+    return dict(rc=p.returncode, wall=wall, cpu=cpu, peak=poll.peak(), marks=marks, log=log, text='\n'.join(lines))
+
+
+def marks_to_rows(res, prefix=''):
+    """AXM_MARK 쌍(이름:start, 이름:end)에서 하위 단계 행을 만든다."""
+    rows, open_ = [], {}
+    for name, t, cpu in res['marks']:
+        base, _, kind = name.rpartition(':')
+        if kind == 'start':
+            open_[base] = (t, cpu)
+        elif kind == 'end' and base in open_:
+            t0, c0 = open_.pop(base)
+            rows.append((prefix + base, t - t0, cpu - c0))
+    return rows
+
+
+# ---------------------------------------------------------------- 레거시 docker build 측정
+
+class BuildTracker:
+    """legacy docker build 의 'Step N/M'·'Running in <id>' 줄을 읽어 단계별 CPU초를 잰다."""
+
+    def __init__(self):
+        self.step = 0
+        self.steps = {}  # n -> dict(cmd, t0, t1, ids)
+        self.ids = {}
+        self.cpu = {}  # id -> max usage
+        self.alive = True
+        self.th = threading.Thread(target=self._poll, daemon=True)
+        self.th.start()
+
+    def _poll(self):
+        while self.alive:
+            for cid in list(self.ids):
+                full = self.ids[cid]
+                if full is None:
+                    full = container_id(cid)
+                    self.ids[cid] = full
+                    if full is None:
+                        continue
+                u = read_usage(full)
+                if u is not None:
+                    self.cpu[cid] = max(self.cpu.get(cid, 0.0), u)
+            time.sleep(0.3)
+
+    def feed(self, line):
+        m = re.match(r'Step (\d+)/\d+ : (.*)', line)
+        if m:
+            n = int(m.group(1))
+            if self.step in self.steps:
+                self.steps[self.step]['t1'] = time.time()
+            self.step = n
+            self.steps[n] = dict(cmd=m.group(2)[:60], t0=time.time(), t1=None, ids=[])
+            return
+        m = re.match(r'\s*---> Running in ([0-9a-f]{12})', line)
+        if m and self.step in self.steps:
+            self.ids[m.group(1)] = None
+            self.steps[self.step]['ids'].append(m.group(1))
+
+    def done(self):
+        if self.step in self.steps and self.steps[self.step]['t1'] is None:
+            self.steps[self.step]['t1'] = time.time()
+        time.sleep(0.5)
+        self.alive = False
+        self.th.join(timeout=2)
+        rows = []
+        for n, s in sorted(self.steps.items()):
+            cpu = sum(self.cpu.get(i, 0.0) for i in s['ids'])
+            rows.append((n, s['cmd'], (s['t1'] or time.time()) - s['t0'], cpu))
+        return rows
+
+
+def docker_build(ctx, label, args, context, log_name=None):
+    """legacy builder 로 docker build 를 하고 Dockerfile 단계별 시간·CPU초를 돌려준다."""
+    log = ctx.run / f'{log_name or label}.log'
+    argv = ['docker', 'build', '--network', 'host', *args, str(context)]
+    tr = BuildTracker()
+    t0 = time.time()
+    with open(log, 'w') as lf:
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+        for line in p.stdout:
+            lf.write(line)
+            lf.flush()
+            tr.feed(ANSI.sub('', line.rstrip('\n')))
+        p.wait()
+    wall = time.time() - t0
+    rows = tr.done()
+    return dict(rc=p.returncode, wall=wall, cpu=sum(r[3] for r in rows), steps=rows, log=log)
+
+
+# ---------------------------------------------------------------- 공유 캐시: 베이스 이미지
+
+def stuffbin_version():
+    m = re.search(r'github.com/knadh/stuffbin (v[\w.\-]+)', (ROOT / 'go.mod').read_text())
+    if not m:
+        raise SystemExit('go.mod 에서 stuffbin 버전을 못 찾았다')
+    return m.group(1)
+
+
+DEPS_FILES = ['frontend/package.json', 'frontend/yarn.lock', 'frontend/email-builder/package.json',
+              'frontend/email-builder/yarn.lock']
+
+
+def base_tag():
+    parts = [(ROOT / f).read_bytes() for f in DEPS_FILES]
+    parts += [(HERE / 'base.Dockerfile').read_bytes(), stuffbin_version(), GO_IMAGE]
+    return 'listmonk-axm-base:' + digest(*parts)[:12]
+
+
+def ensure_base(ctx, steps=None):
+    tag = base_tag()
+    if image_exists(tag):
+        return tag
+    with FileLock('base-' + tag.split(':')[1] + '.lock'):
+        if image_exists(tag):  # 기다리는 동안 다른 태스크가 만들었다
+            say(f'베이스 이미지 {tag} 는 다른 태스크가 만들어 두었다.')
+            return tag
+        say(f'시험용 베이스 이미지 {tag} 를 만든다(처음 한 번만, 의존성 변경 때 다시).')
+        bctx = ctx.run / 'base-ctx'
+        shutil.rmtree(bctx, ignore_errors=True)
+        for f in DEPS_FILES:
+            (bctx / f).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(ROOT / f, bctx / f)
+        shutil.copy(HERE / 'base.Dockerfile', bctx / 'Dockerfile')
+        with Slot() as sl:
+            res = docker_build(ctx, 'base', ['-t', tag, '--build-arg', f'STUFFBIN_VERSION={stuffbin_version()}',
+                                             '--build-arg', f'GO_IMAGE={GO_IMAGE}'], bctx)
+        if res['rc'] != 0:
+            raise SystemExit(f'베이스 이미지 빌드 실패: {res["log"]}')
+        if steps is not None:
+            steps.add('베이스 이미지(캐시 없을 때만)', res['wall'], res['cpu'], waited=sl.waited)
+        return tag
+
+
+# ---------------------------------------------------------------- 공유 캐시: 빌드·시험 이미지
+
+def build_inputs():
+    files = tree_files()
+    hashes = hash_files(files)
+    return files, hashes
+
+
+def image_key(files, hashes):
+    return key_of([f for f in files if not match_any(f, IMAGE_KEY_EXCLUDE)], hashes)
+
+
+def art_keys(files, hashes):
+    eb = [f for f in files if f.startswith('frontend/email-builder/') and not f.endswith('yarn.lock')]
+    eb += [f for f in files if f == 'frontend/email-builder/yarn.lock']
+    fe = [f for f in files if f.startswith('frontend/') and not f.startswith('frontend/email-builder/')
+          and not f.startswith('frontend/cypress/') and not f.startswith('frontend/tests/')]
+    ut = [f for f in files if f.startswith('frontend/') and not f.startswith('frontend/email-builder/')
+          and not f.startswith('frontend/cypress/')]
+    ebk = key_of(eb, hashes)
+    fek = digest(key_of(fe, hashes), ebk, LOCAL_VERSION)[:16]
+    utk = digest(key_of(ut, hashes), ebk)[:16]
+    return ebk, fek, utk
+
+
+BUILD_SH = r'''
+set -euo pipefail
+%(mark_fn)s
+export HOME=/tmp GOCACHE=/gocache GOMODCACHE=/gomod GOFLAGS=-buildvcs=false CYPRESS_INSTALL_BINARY=0 \
+       STUFFBIN=/go/bin/stuffbin CGO_ENABLED=0 CI=1
+cd /src
+mark copy:start
+tar -C /work --null -T /axmctx/files.lst -cf - | tar -xf -
+mark copy:end
+EB=%(eb)s; FE=%(fe)s; UT=%(ut)s
+# 오래된 node_modules 로 make 가 yarn install 을 다시 하지 않게 한다.
+touch -c frontend/node_modules frontend/email-builder/node_modules
+if [ -f /art/ut-$UT.ok ]; then echo "단위시험: 같은 입력으로 통과한 기록이 있어 건너뜀"; else
+  mark unit:start
+  (cd frontend && yarn test:unit)
+  mark unit:end
+  touch /art/ut-$UT.ok
+fi
+if [ "%(unit_only)s" = "1" ]; then mark all:start; mark all:end; exit 0; fi
+if [ -f /art/eb-$EB.tar ]; then
+  tar -xf /art/eb-$EB.tar
+  mkdir -p frontend/public/static/email-builder
+  cp -r frontend/email-builder/dist/* frontend/public/static/email-builder
+  touch -c frontend/email-builder/node_modules; sleep 0.02
+  touch -c frontend/email-builder/dist; sleep 0.02
+  touch -c frontend/public/static/email-builder; sleep 0.02
+  touch -c frontend/node_modules; sleep 0.02
+  EB_HIT=1
+else EB_HIT=0; fi
+if [ -f /art/fe-$FE.tar ] && [ "$EB_HIT" = 1 ]; then
+  tar -xf /art/fe-$FE.tar
+  touch -c frontend/dist
+fi
+mark dist:start
+make dist VERSION="%(version)s" LAST_COMMIT="%(commit)s"
+mark dist:end
+./listmonk --version
+mkdir -p /out && cp listmonk /out/listmonk
+if [ ! -f /art/eb-$EB.tar ]; then tar -cf /art/.eb.$$ -C /src frontend/email-builder/dist && mv /art/.eb.$$ /art/eb-$EB.tar; fi
+if [ ! -f /art/fe-$FE.tar ]; then tar -cf /art/.fe.$$ -C /src frontend/dist && mv /art/.fe.$$ /art/fe-$FE.tar; fi
+'''
+
+
+def test_image_tag(key):
+    return f'listmonk-axm-test:{key}'
+
+
+def ensure_test_image(ctx, steps, files=None, hashes=None, unit_only=False):
+    """워크트리에서 시험 이미지를 만든다(공유 캐시 사용). 이미 있으면 건너뛴다."""
+    files, hashes = (files, hashes) if files else build_inputs()
+    key = image_key(files, hashes)
+    tag = test_image_tag(key)
+    ebk, fek, utk = art_keys(files, hashes)
+    art = cache_dir() / 'art'
+    art.mkdir(parents=True, exist_ok=True)
+    if not unit_only and image_exists(tag):
+        steps.add('시험 이미지', 0, 0, note=f'있음 {key[:8]} — 건너뜀')
+        return tag
+    # 같은 입력을 두 태스크가 동시에 만들지 않게 한다(뒤에 온 쪽은 앞쪽이 끝나길 기다렸다가 이미지를 쓴다).
+    with FileLock(f'img-{key}.lock'):
+        if not unit_only and image_exists(tag):
+            steps.add('시험 이미지', 0, 0, note=f'다른 태스크가 만들어 둠 {key[:8]}')
+            return tag
+        return _build_test_image(ctx, steps, files, hashes, unit_only, key, tag, ebk, fek, utk, art)
+
+
+def _build_test_image(ctx, steps, files, hashes, unit_only, key, tag, ebk, fek, utk, art):
+    base = ensure_base(ctx, steps)
+    ctxdir = ctx.run / 'ctx'
+    ctxdir.mkdir(parents=True, exist_ok=True)
+    ctx_files = [f for f in files if not f.startswith('docs/') and not f.startswith('.git/')]
+    (ctxdir / 'files.lst').write_bytes(b'\0'.join(f.encode() for f in ctx_files) + b'\0')
+    commit = git('rev-parse', '--short', 'HEAD', check=False).strip() or 'local'
+    script = BUILD_SH % dict(mark_fn=MARK_FN, eb=ebk, fe=fek, ut=utk, version=LOCAL_VERSION, commit=commit,
+                             unit_only='1' if unit_only else '0')
+    (ctxdir / 'build.sh').write_text(script)
+    out = ctx.run / 'out'
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    cache = cache_dir()
+    (cache / 'gomod').mkdir(parents=True, exist_ok=True)
+    (cache / 'gocache').mkdir(parents=True, exist_ok=True)
+    dargs = ['--network', 'host', *limit_args(), '--user', f'{UID}:{GID}',
+             '-v', f'{ROOT}:/work:ro', '-v', f'{art}:/art', '-v', f'{out}:/out',
+             '-v', f'{cache / "gomod"}:/gomod', '-v', f'{cache / "gocache"}:/gocache', '-w', '/src']
+    with Slot() as sl:
+        say(f'빌드: {"단위시험만" if unit_only else "시험 이미지"} (이메일 빌더 {"있음" if (art / ("eb-" + ebk + ".tar")).exists() else "새로"}, '
+            f'프론트 {"있음" if (art / ("fe-" + fek + ".tar")).exists() else "새로"})')
+        res = run_container(ctx, 'build', ctx.name('build'), dargs + [base], ['bash', '/axmctx/build.sh'], log_name='build',
+                            tee_filter=lambda l: not l.startswith(' ') and ('error' in l.lower() or 'fail' in l.lower() or l.startswith('v')))
+    if res['rc'] != 0:
+        say(res['text'][-3000:])
+        steps.add('빌드', res['wall'], res['cpu'], res['peak'], rc=res['rc'], waited=sl.waited)
+        raise StageFailed('빌드 실패')
+    rows = marks_to_rows(res)
+    named = {r[0]: r for r in rows}
+    steps.add('빌드(컨테이너 전체)', res['wall'], res['cpu'], res['peak'], waited=sl.waited)
+    for nm, label in (('copy', '  파일 복사'), ('unit', '  프론트 단위시험'), ('dist', '  make dist(프론트·go build·패킹)')):
+        if nm in named:
+            steps.add(label, named[nm][1], named[nm][2])
+    if unit_only:
+        return None
+    # 런타임 이미지: 밖에서 만든 바이너리를 넣는다.
+    rt = ctx.run / 'rt'
+    shutil.rmtree(rt, ignore_errors=True)
+    rt.mkdir(parents=True)
+    shutil.copy(out / 'listmonk', rt / 'listmonk')
+    for f in ('config.toml.sample', 'LICENSE', 'README.md', 'FORK.md', 'docker-entrypoint.sh'):
+        shutil.copy(ROOT / f, rt / f)
+    shutil.copy(HERE / 'runtime.Dockerfile', rt / 'Dockerfile')
+    t0 = time.time()
+    b = docker_build(ctx, 'runtime', ['-t', tag, '-q'], rt)
+    if b['rc'] != 0:
+        raise StageFailed(f'런타임 이미지 빌드 실패: {b["log"]}')
+    steps.add('런타임 이미지', time.time() - t0, b['cpu'])
+    return tag
+
+
+class StageFailed(Exception):
+    pass
+
+
+def build_full(ctx, steps):
+    """운영과 같은 방식: docker build -f Dockerfile.axm (legacy builder, 캐시 없는 단계 포함)."""
+    commit = git('rev-parse', '--short', 'HEAD', check=False).strip() or 'local'
+    tag = f'listmonk-axm-full:{ctx.n}'
+    with Slot() as sl:
+        res = docker_build(ctx, 'build-full', ['-f', 'Dockerfile.axm', '--build-arg', f'VERSION={LOCAL_VERSION}',
+                                               '--build-arg', f'COMMIT={commit}', '-t', tag], ROOT)
+    if res['rc'] != 0:
+        say(Path(res['log']).read_text()[-3000:])
+        raise StageFailed('Dockerfile.axm 빌드 실패')
+    steps.add('Dockerfile.axm 전체 빌드', res['wall'], res['cpu'], waited=sl.waited)
+    for n, cmd, wall, cpu in res['steps']:
+        if wall > 3 or cpu > 3:
+            steps.add(f'  step {n} {cmd[:26]}', wall, cpu)
+    return tag
+
+
+# ---------------------------------------------------------------- Postgres
+
+class Pg:
+    """일회용 Postgres(데이터는 tmpfs). 단계 사이에서 같이 쓰고 끝나면 내린다."""
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.name = ctx.name('pg')
+        self.up = False
+
+    def start(self):
+        c = self.ctx
+        docker('rm', '-f', self.name, check=False)
+        docker('run', '-d', '--name', self.name, '--network', 'host', '--cpus', '2', '--tmpfs', '/var/lib/postgresql/data',
+               '-e', 'POSTGRES_PASSWORD=pw', PG_IMAGE, 'postgres', '-p', str(c.pg_port), '-c', 'fsync=off',
+               '-c', 'synchronous_commit=off', '-c', 'full_page_writes=off', '-c', 'max_connections=200')
+        self.up = True
+        for _ in range(60):
+            if docker('exec', self.name, 'pg_isready', '-h', '127.0.0.1', '-p', str(c.pg_port), check=False).returncode == 0:
+                return
+            time.sleep(1)
+        raise StageFailed('Postgres 가 올라오지 않는다')
+
+    def fresh_db(self, db):
+        p = str(self.ctx.pg_port)
+        for sql in (f'DROP DATABASE IF EXISTS {db}', f'CREATE DATABASE {db}'):
+            docker('exec', self.name, 'psql', '-U', 'postgres', '-p', p, '-c', sql)
+        return f'postgres://postgres:pw@127.0.0.1:{p}/{db}?sslmode=disable'
+
+    def usage(self):
+        cid = container_id(self.name)
+        return read_usage(cid) if cid else None
+
+    def stop(self):
+        docker('rm', '-f', self.name, check=False)
+        self.up = False
+
+
+# ---------------------------------------------------------------- 바뀐 파일 → 시험
+
+def load_map():
+    return json.loads((HERE / 'test-map.json').read_text())
+
+
+def go_module():
+    m = re.search(r'^module (\S+)', (ROOT / 'go.mod').read_text(), re.M)
+    return m.group(1)
+
+
+def go_packages(files):
+    """모든 Go 패키지 디렉터리와 그 import(모듈 안쪽만). 정규식으로 읽는다."""
+    mod = go_module()
+    pk = {}
+    for f in files:
+        if f.endswith('.go'):
+            pk.setdefault(os.path.dirname(f) or '.', []).append(f)
+    graph = {}
+    imp = re.compile(r'"' + re.escape(mod) + r'(/[^"]*)?"')
+    for d, fs in pk.items():
+        deps = set()
+        for f in fs:
+            text = (ROOT / f).read_text(errors='replace')
+            m = re.search(r'^import\s*\((.*?)^\)', text, re.M | re.S)
+            blocks = [m.group(1)] if m else []
+            blocks += re.findall(r'^import\s+(?:\w+\s+)?"[^"]+"', text, re.M)
+            for b in blocks:
+                for x in imp.finditer(b):
+                    deps.add((x.group(1) or '').lstrip('/') or '.')
+        deps.discard(d)
+        graph[d] = deps
+    return pk, graph
+
+
+def defined_names(path):
+    text = (ROOT / path).read_text(errors='replace') if (ROOT / path).exists() else ''
+    names = set(re.findall(r'^func (?:\([^)]*\) )?(\w+)', text, re.M))
+    names |= set(re.findall(r'^(?:type|var|const) (\w+)', text, re.M))
+    return {n for n in names if len(n) >= 6 and not n.startswith('Test')}
+
+
+def test_funcs(path):
+    text = (ROOT / path).read_text(errors='replace') if (ROOT / path).exists() else ''
+    return re.findall(r'^func (Test\w+)\(', text, re.M)
+
+
+# 어느 변경이 이 패키지의 시험 전체를 돌리게 하는 파일
+GO_WIDE_PATHS = ['queries/**', 'schema.sql', 'static/email-templates/**', 'i18n/**', 'permissions.json', 'go.mod', 'go.sum']
+
+
+def select_go(changed, files):
+    """바뀐 파일에서 돌릴 Go 패키지와 -run 패턴을 낸다."""
+    pk, graph = go_packages(files)
+    rev = {}
+    for d, deps in graph.items():
+        for x in deps:
+            rev.setdefault(x, set()).add(d)
+    notes = []
+    direct, narrow = {}, {}
+    wide = False
+    for f in changed:
+        if f.endswith('.go'):
+            d = os.path.dirname(f) or '.'
+            if d not in pk:
+                continue
+            direct.setdefault(d, []).append(f)
+        elif match_any(f, GO_WIDE_PATHS):
+            wide = True
+    if wide:
+        for d in ('cmd', 'internal/core'):
+            if d in pk:
+                direct.setdefault(d, [])
+                notes.append(f'{d}: 쿼리·스키마·번역·템플릿 변경이라 패키지 전체')
+    pkgs = {}
+    for d, fs in direct.items():
+        pkgs[d] = None  # None = 패키지 전체
+    # 좁히기: cmd·internal/core 에서 바뀐 파일이 전부 axm_<기능>*.go 일 때만
+    for d, fs in direct.items():
+        if d not in ('cmd', 'internal/core') or not fs:
+            continue
+        if wide:
+            continue
+        stems = []
+        for f in fs:
+            b = os.path.basename(f)
+            m = re.match(r'(axm_[a-z0-9]+(?:_[a-z0-9]+)*?)(?:_db)?(?:_test)?\.go$', b)
+            if not m:
+                stems = None
+                break
+            stems.append((f, m.group(1)))
+        if not stems:
+            continue
+        tests = set()
+        names = set()
+        for f, _ in stems:
+            names |= defined_names(f)
+        for f, stem in stems:
+            for t in pk[d]:
+                if not t.endswith('_test.go'):
+                    continue
+                bt = os.path.basename(t)
+                if bt.startswith(stem) or any(re.search(r'\b' + re.escape(n) + r'\b', (ROOT / t).read_text(errors='replace')) for n in names):
+                    tests.add(t)
+        funcs = sorted({fn for t in tests for fn in test_funcs(t)})
+        if funcs:
+            pkgs[d] = '^(' + '|'.join(funcs) + ')$'
+            narrow[d] = len(funcs)
+        else:
+            pkgs[d] = '^$'
+            notes.append(f'{d}: 바뀐 파일에 닿는 시험이 없어 컴파일만 확인')
+    # 거꾸로 import 하는 패키지는 전체
+    seen = set(pkgs)
+    queue = list(direct)
+    while queue:
+        d = queue.pop()
+        for r in rev.get(d, ()):
+            if r not in seen:
+                seen.add(r)
+                pkgs[r] = None
+                queue.append(r)
+            elif pkgs.get(r) is not None and r not in direct:
+                pkgs[r] = None
+    # 시험 파일이 없는 패키지 제외
+    out = {}
+    for d, run in pkgs.items():
+        if any(t.endswith('_test.go') for t in pk.get(d, [])):
+            out[d] = run
+    return out, notes
+
+
+def base_ref(arg):
+    if arg:
+        return arg
+    for r in (DEFAULT_BASE_REF, 'axm/v6.2'):
+        if subprocess.run(['git', '-C', str(ROOT), 'rev-parse', '--verify', '-q', r], capture_output=True).returncode == 0:
+            return r
+    raise SystemExit('비교할 기준 브랜치를 못 찾았다: --base REF 를 준다.')
+
+
+def changed_since_base(ref):
+    mb = git('merge-base', 'HEAD', ref).strip()
+    names = set(git('diff', '--name-only', '-z', mb).split('\0')) | set(git('ls-files', '-o', '--exclude-standard', '-z').split('\0'))
+    return sorted(n for n in names if n)
+
+
+def affected(changed, files, tmap=None):
+    """바뀐 파일 묶음 → 돌릴 시험. 순수 함수(단위시험 대상)."""
+    tmap = tmap or load_map()
+    smoke = tmap['smoke']
+    specs, notes, unmapped = [], [], []
+    full_build = False
+    shared_hit = False
+    docs_only = True
+    unit = False
+    spec_dir = 'frontend/cypress/e2e/'
+    for f in changed:
+        if match_any(f, tmap['none']):
+            continue
+        docs_only = False
+        if match_any(f, tmap['full_build']):
+            full_build = True
+            continue
+        if f.startswith(spec_dir) and f.endswith('.cy.js'):
+            if (ROOT / f).exists() and os.path.basename(f) in tmap['ci_specs']:
+                specs.append(os.path.basename(f))
+            elif (ROOT / f).exists():
+                notes.append(f'{f}: CI 가 돌리지 않는 spec 이라 로컬에서도 건너뜀')
+            continue
+        if f.startswith('frontend/tests/') or f.startswith('frontend/src/'):
+            unit = True
+        hit = False
+        for rule in tmap['rules']:
+            if match_any(f, rule['paths']):
+                specs += rule['specs']
+                hit = True
+        if match_any(f, tmap['shared']):
+            shared_hit = True
+            hit = True
+        if f.startswith('frontend/cypress/'):
+            shared_hit = True  # support·fixtures
+            hit = True
+        if not hit and (f.startswith('frontend/') or f.endswith('.go') or f.startswith(('cmd/', 'internal/', 'models/', 'static/', 'queries/', 'i18n/'))):
+            if not f.endswith('_test.go') and not f.startswith('frontend/tests/'):
+                unmapped.append(f)
+    if shared_hit:
+        specs += smoke
+        notes.append('공용 파일이 바뀌어 smoke 묶음을 더한다. 전체 e2e 는 PR 의 CI(axm-image)가 돈다.')
+    if unmapped:
+        specs += smoke
+        notes.append('매핑 없음 — scripts/axm/test-map.json 에 줄을 추가하라: ' + ', '.join(unmapped[:8]))
+    if full_build:
+        specs += smoke
+        notes.append('Dockerfile.axm·Makefile·lockfile·entrypoint 변경: `axm build --full` 로 운영 방식 빌드도 1회 돌려라.')
+    go_pkgs, go_notes = select_go(changed, files)
+    notes += go_notes
+    ordered = [s for s in tmap['ci_specs'] if s in set(specs)]
+    py = any(f.startswith('scripts/axm/') for f in changed)
+    return dict(changed=changed, specs=ordered, go=go_pkgs, unit=unit, full_build=full_build, python=py,
+                docs_only=docs_only and not py, notes=notes, unmapped=unmapped)
+
+
+# ---------------------------------------------------------------- 통과 기록
+
+def stamp_path(ctx):
+    b = re.sub(r'[^A-Za-z0-9_.-]', '_', branch_name())
+    return cache_dir() / 'stamps' / f'{ctx.n}-{b}' / f'{ctx.role}.json'
+
+
+def load_stamp(ctx):
+    try:
+        return json.loads(stamp_path(ctx).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def save_stamp(ctx, data):
+    p = stamp_path(ctx)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix('.tmp')
+    tmp.write_text(json.dumps(data, ensure_ascii=False))
+    tmp.replace(p)
+
+
+def failed_go_map(st):
+    fg = st.get('failed_go') or {}
+    return fg if isinstance(fg, dict) else {d: None for d in fg}
+
+
+def changed_since_stamp(stamp, files, hashes):
+    old = stamp['files']
+    ch = [f for f in files if old.get(f) != hashes[f]]
+    ch += [f for f in old if f not in hashes]
+    return sorted(set(ch))
+
+
+# ---------------------------------------------------------------- Go 시험
+
+def go_test(ctx, steps, pkgs, pg, tag=''):
+    """pkgs: {패키지 디렉터리: -run 패턴 또는 None}. 같은 -run 이 아니면 패키지별로 나눠 한 번의 컨테이너에서 순서대로 돈다."""
+    if not pkgs:
+        return True
+    cache = Path(os.environ.get('AXM_GO_CACHE') or cache_dir())
+    (cache / 'gomod').mkdir(parents=True, exist_ok=True)
+    (cache / 'gocache').mkdir(parents=True, exist_ok=True)
+    dsn = pg.fresh_db(f'gotest{ctx.n}')
+    n = cpus() or os.cpu_count()
+    lines = ['set -uo pipefail', 'fail=0', MARK_FN]
+    whole = sorted(d for d, r in pkgs.items() if r is None)
+    if whole:
+        lines.append(f'mark whole:start; go test -count=1 -timeout 180s -p {n} {" ".join("./" + d if d != "." else "." for d in whole)} || fail=1; mark whole:end')
+    for d, r in sorted(pkgs.items()):
+        if r is not None:
+            lines.append(f"mark {d.replace('/', '_')}:start; go test -count=1 -timeout 180s -p {n} -run '{r}' ./{d} || fail=1; mark {d.replace('/', '_')}:end")
+    lines.append('exit $fail')
+    (ctx.run / 'ctx').mkdir(parents=True, exist_ok=True)
+    (ctx.run / 'ctx' / 'gotest.sh').write_text('\n'.join(lines) + '\n')
+    dargs = ['--network', 'host', *limit_args(), '--user', f'{UID}:{GID}', '-v', f'{ROOT}:/src:ro', '-w', '/src',
+             '-v', f'{cache / "gomod"}:/gomod', '-v', f'{cache / "gocache"}:/gocache',
+             '-e', 'HOME=/tmp', '-e', 'GOCACHE=/gocache', '-e', 'GOMODCACHE=/gomod', '-e', 'GOFLAGS=-buildvcs=false',
+             '-e', f'GOMAXPROCS={n}', '-e', f'AXM_TEST_DB_URL={dsn}']
+    desc = ', '.join(f'{d}' + ('' if r is None else f'[{len(r.split("|"))}개]') for d, r in sorted(pkgs.items()))
+    say(f'Go 시험: {desc}')
+    with Slot() as sl:
+        res = run_container(ctx, 'gotest', ctx.name('go'), dargs + [GO_IMAGE], ['bash', '/axmctx/gotest.sh'],
+                            tee_filter=lambda l: l.startswith(('FAIL', '--- FAIL', 'panic')))
+    steps.add('Go 시험' + (f' {tag}' if tag else ''), res['wall'], res['cpu'], res['peak'], note=desc[:40], rc=res['rc'], waited=sl.waited)
+    pgcpu = pg.usage()
+    if pgcpu is not None:
+        steps.add('  (Postgres 컨테이너, 지금까지 누적)', 0, pgcpu)
+    if res['rc'] != 0:
+        say('Go 시험 실패. 로그: ' + str(res['log']))
+        return False
+    for line in res['text'].splitlines():
+        if line.startswith('ok '):
+            say('  ' + line)
+    return True
+
+
+# ---------------------------------------------------------------- 브라우저 CPU 분류(스레드 이름)
+
+class Profiler(threading.Thread):
+    """컨테이너 cgroup 안의 스레드별 CPU 를 0.5초마다 표본해 묶음별로 합한다."""
+
+    def __init__(self, name=None, interval=0.5, pids_fn=None):
+        super().__init__(daemon=True)
+        self.name_, self.interval, self.pids_fn = name, interval, pids_fn
+        self.cid = None
+        self.stop = threading.Event()
+        self.prev = {}
+        self.acc = {}
+        self.by_comm = {}
+        self.ptype = {}
+        self.hz = os.sysconf('SC_CLK_TCK')
+
+    def classify(self, pid, comm):
+        if pid not in self.ptype:
+            try:
+                cmd = Path(f'/proc/{pid}/cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
+            except OSError:
+                cmd = ''
+            c = Path(f'/proc/{pid}/comm').read_text().strip() if Path(f'/proc/{pid}/comm').exists() else ''
+            self.ptype[pid] = (c, cmd)
+        pcomm, cmd = self.ptype[pid]
+        if pcomm == 'Xvfb':
+            return '렌더링 하한: Xvfb'
+        if comm == 'CrRendererMain' or (comm == pcomm[:15] and '--type=renderer' in cmd):
+            return 'JS·레이아웃(렌더러 메인 스레드)'
+        if comm in ('Compositor', 'VizCompositorTh') or comm.startswith('CompositorTileW'):
+            return '렌더링 하한: 컴포지터·타일(래스터)'
+        if '--type=gpu-process' in cmd or comm in ('CrGpuMain', 'GpuWatchdog', 'GpuMemoryThread'):
+            return '렌더링 하한: GPU 프로세스'
+        if comm.startswith('ThreadPoolForeg'):
+            if '--type=renderer' in cmd or '--type=zygote' in cmd or 'renderer' in cmd:
+                return '렌더링 상한 추가분: 렌더러 ThreadPoolForeground'
+            return '기타 스레드풀'
+        if '--type=utility' in cmd and 'network' in cmd:
+            return '네트워크 서비스'
+        if pcomm in ('cypress', 'Cypress', 'node') or 'cypress' in cmd.lower() or pcomm.lower().startswith('chrom') or pcomm == 'electron':
+            return 'Cypress/브라우저 기타(메인·노드·스레드)'
+        return '기타'
+
+    def run(self):
+        procs = None
+        if self.pids_fn is None:
+            while not self.stop.is_set() and self.cid is None:
+                self.cid = container_id(self.name_)
+                self.stop.wait(0.3)
+            procs = scope_dir(self.cid) / 'cgroup.procs'
+        while not self.stop.is_set():
+            try:
+                pids = self.pids_fn() if self.pids_fn else [int(x) for x in procs.read_text().split()]
+            except (OSError, ValueError, AttributeError):
+                pids = []
+            for pid in pids:
+                try:
+                    tids = os.listdir(f'/proc/{pid}/task')
+                except OSError:
+                    continue
+                for tid in tids:
+                    try:
+                        st = Path(f'/proc/{pid}/task/{tid}/stat').read_text()
+                    except OSError:
+                        continue
+                    comm = st[st.index('(') + 1:st.rindex(')')]
+                    rest = st[st.rindex(')') + 2:].split()
+                    ticks = int(rest[11]) + int(rest[12])
+                    key = (pid, tid)
+                    d = ticks - self.prev.get(key, 0)
+                    self.prev[key] = ticks
+                    if d > 0:
+                        g = self.classify(pid, comm)
+                        self.acc[g] = self.acc.get(g, 0) + d
+                        tm = re.search(r'--type=([\w-]+)', self.ptype[pid][1])
+                        ck = re.sub(r'\d+$', '', comm) + ' [' + (tm.group(1) if tm else self.ptype[pid][0][:12]) + ']'
+                        self.by_comm[ck] = self.by_comm.get(ck, 0) + d
+            self.stop.wait(self.interval)
+
+    def finish(self):
+        self.stop.set()
+        self.join(timeout=3)
+
+    def report(self):
+        tot = sum(self.acc.values()) or 1
+        return {k: (v / self.hz, v / tot) for k, v in sorted(self.acc.items(), key=lambda kv: -kv[1])}
+
+
+# ---------------------------------------------------------------- e2e
+
+CY_ROW = re.compile(r'^[\s│]*([✔✖])\s+(\S+\.cy\.js)\s+(\S+)\s+(\d+|-)\s+(\d+|-)\s+(\d+|-)\s+(\d+|-)\s+(\d+|-)')
+
+
+def ensure_cy_modules(ctx, steps=None):
+    """Cypress spec 의 support 가 쓰는 node_modules 를 베이스 이미지에서 한 번 꺼내 공유 캐시에 둔다."""
+    tag = base_tag()
+    dest = cache_dir() / 'art' / ('nm-' + tag.split(':')[1])
+    if (dest / 'cypress-file-upload').exists():
+        return dest
+    ensure_base(ctx, steps)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock('nm-' + tag.split(':')[1] + '.lock'):
+        if (dest / 'cypress-file-upload').exists():
+            return dest
+        tmp = dest.with_name(dest.name + f'.tmp{os.getpid()}')
+        shutil.rmtree(tmp, ignore_errors=True)
+        name = ctx.name('nm')
+        docker('rm', '-f', name, check=False)
+        docker('create', '--name', name, tag)
+        try:
+            docker('cp', f'{name}:/src/frontend/node_modules', str(tmp))
+        finally:
+            docker('rm', '-f', name, check=False)
+        tmp.rename(dest)
+    return dest
+
+
+def start_app(ctx, steps, image, pg):
+    """새 DB 설치 → 시험 데이터 적재 → 앱 기동. 앱 컨테이너 이름을 돌려준다."""
+    app, port = ctx.name('app'), ctx.app_port
+    dsn_db = f'e2e{ctx.n}'
+    pg.fresh_db(dsn_db)
+    env = {'LISTMONK_db__host': '127.0.0.1', 'LISTMONK_db__port': str(ctx.pg_port), 'LISTMONK_db__user': 'postgres',
+           'LISTMONK_db__password': 'pw', 'LISTMONK_db__database': dsn_db, 'LISTMONK_db__ssl_mode': 'disable',
+           'LISTMONK_app__address': f'0.0.0.0:{port}', 'LISTMONK_ADMIN_USER': 'ci-admin',
+           'LISTMONK_ADMIN_PASSWORD': 'ci-only-password'}
+    eargs = [x for k, v in env.items() for x in ('-e', f'{k}={v}')]
+    t0 = time.time()
+    r = docker('run', '--rm', '--network', 'host', *eargs, image, './listmonk', '--install', '--yes', check=False)
+    if r.returncode != 0:
+        say((r.stdout + r.stderr)[-1500:])
+        raise StageFailed('앱 설치(--install) 실패')
+    fx = (ROOT / 'frontend/cypress/fixtures/reaction-lists.sql').read_text()
+    pr = subprocess.run(['docker', 'exec', '-i', pg.name, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-p', str(ctx.pg_port), '-d', dsn_db],
+                        input=fx, capture_output=True, text=True)
+    if pr.returncode != 0:
+        raise StageFailed('reaction-lists.sql 적재 실패: ' + pr.stderr[-300:])
+    docker('rm', '-f', app, check=False)
+    docker('run', '-d', '--name', app, '--network', 'host', *limit_args(2), *eargs, image)
+    ok = False
+    for _ in range(60):
+        if subprocess.run(['curl', '-sf', f'http://127.0.0.1:{port}/health'], capture_output=True).returncode == 0:
+            ok = True
+            break
+        time.sleep(1)
+    if not ok:
+        say(docker('logs', app, check=False).stdout[-1500:] + docker('logs', app, check=False).stderr[-500:])
+        docker('rm', '-f', app, check=False)
+        raise StageFailed('앱이 /health 에 답하지 않는다')
+    steps.add('e2e 준비(DB 설치·앱 기동)', time.time() - t0, None)
+    return app
+
+
+def e2e(ctx, steps, specs, image, pg, profile=False, browser='electron', extra_env=None, extra_dargs=None):
+    """시험 이미지로 새 DB 설치 → 앱 기동 → Cypress. 끝나면 성공·실패와 무관하게 앱을 내린다."""
+    if not specs:
+        return True, [], []
+    app = start_app(ctx, steps, image, pg)
+    try:
+        return _e2e_run(ctx, steps, specs, app, profile, browser, extra_env, extra_dargs)
+    finally:
+        docker('rm', '-f', app, check=False)
+
+
+def _e2e_run(ctx, steps, specs, app, profile, browser, extra_env, extra_dargs):
+    port = ctx.app_port
+    cyhome = ctx.run / 'cyhome'
+    cyhome.mkdir(parents=True, exist_ok=True)
+    nm = ensure_cy_modules(ctx, steps)
+    proj = ctx.run / 'cy-proj'
+    shutil.rmtree(proj, ignore_errors=True)
+    proj.mkdir(parents=True)
+    shutil.copytree(ROOT / 'frontend/cypress', proj / 'cypress')
+    for f in ('cypress.config.js', 'package.json'):
+        shutil.copy(ROOT / 'frontend' / f, proj / f)
+    spec_arg = ','.join('cypress/e2e/' + s for s in specs)
+    sh = (f'Xvfb :{ctx.display} -screen 0 1600x1200x24 -nolisten tcp & sleep 2; '
+          f'{MARK_FN} mark cy:start; DISPLAY=:{ctx.display} cypress run --browser {browser} '
+          f'--config baseUrl=http://127.0.0.1:{port},video=false '
+          f"--spec '{spec_arg}'; rc=$?; mark cy:end; exit $rc")
+    (ctx.run / 'ctx' / 'cy.sh').write_text(sh + '\n')
+    dargs = ['--network', 'host', *limit_args(), '--shm-size', '1g', '--user', f'{UID}:{GID}', '-e', 'HOME=/tmp/cyhome', '-e', 'NO_COLOR=1',
+             '-v', f'{cyhome}:/tmp/cyhome', '-v', f'{proj}:/e2e', '-v', f'{nm}:/e2e/node_modules:ro', '-w', '/e2e',
+             '-e', 'CYPRESS_LISTMONK_ADMIN_USER=ci-admin', '-e', 'CYPRESS_LISTMONK_ADMIN_PASSWORD=ci-only-password',
+             '-e', f'CYPRESS_apiUrl=http://127.0.0.1:{port}']
+    for k, v in (extra_env or {}).items():
+        dargs += ['-e', f'{k}={v}']
+    dargs += extra_dargs or []
+    prof = Profiler(ctx.name('cy')) if profile else None
+    if prof:
+        prof.start()
+    say(f'Cypress: {len(specs)}개 spec — ' + ', '.join(s.replace('.cy.js', '') for s in specs))
+    try:
+        with Slot() as sl:
+            res = run_container(ctx, 'cypress', ctx.name('cy'), dargs + [CYPRESS_IMAGE], ['bash', '/axmctx/cy.sh'],
+                                tee_filter=lambda l: bool(CY_ROW.match(l)) or 'failing' in l or 'Error' in l[:40] or l.strip().startswith(('1)', '2)', '3)')))
+    finally:
+        if prof:
+            prof.finish()
+        appcpu = read_usage(container_id(app) or '')
+    passed, failed = [], []
+    for line in res['text'].splitlines():
+        m = CY_ROW.match(line)
+        if m:
+            (passed if m.group(1) == '✔' else failed).append(m.group(2))
+    steps.add('Cypress', res['wall'], res['cpu'], res['peak'], note=f'{len(passed)}통과 {len(failed)}실패', rc=res['rc'], waited=sl.waited)
+    if appcpu is not None:
+        steps.add('  (listmonk 앱 컨테이너)', 0, appcpu)
+    if prof:
+        say('\n-- 브라우저 컨테이너 CPU 를 스레드 이름으로 나눈 표(Cypress 컨테이너 안) --')
+        for k, (s, share) in prof.report().items():
+            say(f'  {k:<44}{s:>8.1f}s {share * 100:>5.1f}%')
+        say('  스레드 이름별 상위(분류 확인용):')
+        for k, v in sorted(prof.by_comm.items(), key=lambda kv: -kv[1])[:14]:
+            say(f'    {k:<40}{v / prof.hz:>8.1f}s')
+    if res['rc'] != 0 and not failed:
+        say(res['text'][-2500:])
+    if res['rc'] != 0:
+        say('Cypress 실패. 로그: ' + str(res['log']))
+    ok = res['rc'] == 0
+    return ok, passed, failed
+
+
+# ---------------------------------------------------------------- 명령
+
+def cmd_base(a):
+    ctx = Ctx(a.role)
+    steps = Steps(ctx, 'base')
+    tag = ensure_base(ctx, steps)
+    say(tag)
+    if steps.rows:
+        say(steps.table())
+
+
+def cmd_build(a):
+    ctx = Ctx(a.role)
+    steps = Steps(ctx, 'build')
+    try:
+        tag = build_full(ctx, steps) if a.full else ensure_test_image(ctx, steps)
+    except StageFailed as e:
+        say(str(e))
+        return 1
+    say(f'이미지: {tag}')
+    say(steps.table())
+    return 0
+
+
+def resolve_changed(a, ctx, files, hashes):
+    if getattr(a, 'since_last', False):
+        st = load_stamp(ctx)
+        if st:
+            ch = changed_since_stamp(st, files, hashes)
+            say(f'지난 통과 기록 이후 내용이 바뀐 파일 {len(ch)}개 (기준 {time.strftime("%m-%d %H:%M", time.localtime(st["ts"]))})')
+            return ch, st
+        say('통과 기록이 없어 기준 브랜치와 비교한다(첫 라운드).')
+    return changed_since_base(base_ref(getattr(a, 'base', None))), None
+
+
+def cmd_affected(a):
+    ctx = Ctx(a.role)
+    files = tree_files()
+    hashes = hash_files(files)
+    changed, st = resolve_changed(a, ctx, files, hashes)
+    res = affected(changed, files)
+    if st:
+        res['specs'] = [s for s in load_map()['ci_specs'] if s in set(res['specs']) | set(st.get('failed_specs', []))]
+        for d, run in failed_go_map(st).items():
+            res['go'].setdefault(d, run)
+    if a.json:
+        say(json.dumps(res, ensure_ascii=False, indent=1))
+        return 0
+    say(f'바뀐 파일 {len(changed)}개')
+    for f in changed[:40]:
+        say('  ' + f)
+    say('돌릴 spec: ' + (', '.join(res['specs']) or '없음'))
+    say('돌릴 Go 시험: ' + (', '.join(f'{d}' + ('' if r is None else f' (-run {len(r.split("|"))}개)') for d, r in res['go'].items()) or '없음'))
+    say('프론트 단위시험: ' + ('예' if res['unit'] else '아니오'))
+    say('운영 방식 전체 빌드(--full): ' + ('필요' if res['full_build'] else '불필요'))
+    for n in res['notes']:
+        say('주의: ' + n)
+    return 0
+
+
+def cmd_go_test(a):
+    ctx = Ctx(a.role)
+    steps = Steps(ctx, 'go-test')
+    files = tree_files()
+    if a.affected:
+        hashes = hash_files(files)
+        changed, _ = resolve_changed(a, ctx, files, hashes)
+        pkgs = affected(changed, files)['go']
+    elif a.packages:
+        pkgs = {p.lstrip('./').rstrip('/') or '.': None for p in a.packages}
+    else:
+        pkgs = {d: None for d in go_packages(files)[0] if any(f.endswith('_test.go') for f in go_packages(files)[0][d])}
+    pg = Pg(ctx)
+    try:
+        pg.start()
+        ok = go_test(ctx, steps, pkgs, pg)
+    finally:
+        pg.stop()
+    say(steps.table())
+    return 0 if ok else 1
+
+
+def cmd_e2e(a):
+    ctx = Ctx(a.role)
+    steps = Steps(ctx, 'e2e')
+    tmap = load_map()
+    if a.affected:
+        files = tree_files()
+        hashes = hash_files(files)
+        changed, _ = resolve_changed(a, ctx, files, hashes)
+        specs = affected(changed, files)['specs']
+    else:
+        specs = [os.path.basename(x) if x.endswith('.cy.js') else os.path.basename(x) + '.cy.js' for x in a.specs]
+        if a.all_ci:
+            specs = list(tmap['ci_specs'])
+    pg = Pg(ctx)
+    ok = False
+    try:
+        tag = ensure_test_image(ctx, steps) if not a.image else a.image
+        pg.start()
+        ok, passed, failed = e2e(ctx, steps, specs, tag, pg, profile=a.profile, browser=a.browser)
+    except StageFailed as e:
+        say(str(e))
+    finally:
+        pg.stop()
+    say(steps.table())
+    return 0 if ok else 1
+
+
+def cmd_check(a):
+    ctx = Ctx(a.role)
+    steps = Steps(ctx, 'check')
+    files = tree_files()
+    hashes = hash_files(files)
+    changed, st = resolve_changed(a, ctx, files, hashes)
+    res = affected(changed, files)
+    if st:
+        res['specs'] = [s for s in load_map()['ci_specs'] if s in set(res['specs']) | set(st.get('failed_specs', []))]
+        for d, run in failed_go_map(st).items():
+            res['go'].setdefault(d, run)
+    specs, go_pkgs = res['specs'], res['go']
+    say(f'바뀐 파일 {len(changed)}개 → spec {len(specs)}개, Go 패키지 {len(go_pkgs)}개'
+        + (', 프론트 단위시험' if res['unit'] else '') + (', 파이썬 시험' if res['python'] else ''))
+    for n in res['notes']:
+        say('주의: ' + n)
+    failed_specs, failed_go = [], {}
+    ok = True
+    pg = Pg(ctx)
+    t_all = time.time()
+    try:
+        if res['python']:
+            t0 = time.time()
+            r = subprocess.run([sys.executable, '-m', 'unittest', 'scripts/axm/test_axm.py'], cwd=ROOT, capture_output=True, text=True)
+            steps.add('파이썬 시험(scripts/axm)', time.time() - t0, None, rc=r.returncode)
+            if r.returncode != 0:
+                say(r.stderr[-1500:])
+                ok = False
+        if go_pkgs:
+            pg.start()
+            if not go_test(ctx, steps, go_pkgs, pg):
+                ok = False
+                failed_go = dict(go_pkgs)
+        tag = None
+        if specs:
+            tag = ensure_test_image(ctx, steps, files, hashes)
+            if not pg.up:
+                pg.start()
+            good, passed, failed_specs = e2e(ctx, steps, specs, tag, pg, profile=a.profile)
+            if not good:
+                ok = False
+                if not failed_specs:
+                    failed_specs = list(specs)
+        elif res['unit']:
+            ensure_test_image(ctx, steps, files, hashes, unit_only=True)
+        if res['full_build'] and a.full_build:
+            build_full(ctx, steps)
+    except StageFailed as e:
+        say(str(e))
+        ok = False
+    finally:
+        pg.stop()
+        for n in ('app', 'cy', 'go', 'build'):
+            docker('rm', '-f', ctx.name(n), check=False)
+    say(steps.table('이번 검사'))
+    if not specs and not go_pkgs and not res['unit'] and not res['python']:
+        say('돌릴 시험이 없다(문서만 바뀜 등).')
+    # 통과 기록
+    if ok:
+        save_stamp(ctx, dict(ts=int(time.time()), branch=branch_name(), files=hashes, failed_specs=[], failed_go={},
+                             ran_specs=specs, ran_go=sorted(go_pkgs)))
+        say('통과 기록을 남겼다. 리뷰 재라운드·수정 뒤에는 `axm check --since-last`.')
+    else:
+        old = st or dict(ts=int(time.time()), branch=branch_name(), files={})
+        old['failed_specs'] = failed_specs
+        old['failed_go'] = failed_go
+        save_stamp(ctx, old)
+        say('실패 — 통과 기록은 갱신하지 않았다. 지난번에 실패한 시험은 다음 --since-last 에서도 다시 돈다.')
+    say('\nCI 에 맡기는 것: 나머지 CI spec 전체와 운영 방식(Dockerfile.axm) 이미지 빌드·smoke(PR 의 axm-image).')
+    return 0 if ok else 1
+
+
+def cmd_measure(a):
+    """기준선 측정: 지금 방식(캐시 없는 Dockerfile.axm 빌드, 전체 Go 시험, CI 의 13개 spec)을 단계별로 잰다."""
+    ctx = Ctx(a.role)
+    steps = Steps(ctx, 'measure-baseline')
+    os.environ['AXM_CPUS'] = '0'  # 지금 방식은 CPU 한도가 없다
+    tmap = load_map()
+    pg = Pg(ctx)
+    try:
+        say('1) 지금 방식: docker build -f Dockerfile.axm (legacy builder)')
+        tag = build_full(ctx, steps)
+        if a.build_only:
+            say(steps.table())
+            return 0
+        pg.start()
+        say('2) 전체 Go 시험(DB 포함, 캐시 없는 Go 캐시)')
+        cold = ctx.run / 'cold-go'
+        shutil.rmtree(cold, ignore_errors=True)
+        cold.mkdir(parents=True)
+        os.environ['AXM_GO_CACHE'] = str(cold)
+        pkgs = {d: None for d, fs in go_packages(tree_files())[0].items() if any(f.endswith('_test.go') for f in fs)}
+        go_test(ctx, steps, pkgs, pg, tag='전체')
+        say('3) CI 의 13개 spec')
+        e2e(ctx, steps, tmap['ci_specs'], tag, pg, profile=True)
+    except StageFailed as e:
+        say(str(e))
+    finally:
+        pg.stop()
+    say(steps.table('기준선(지금 방식)'))
+    return 0
+
+
+def cmd_serve(a):
+    """시험 이미지로 앱을 띄워 둔다(화면 캡처용). 끝나면 `axm down`."""
+    ctx = Ctx(a.role)
+    steps = Steps(ctx, 'serve')
+    pg = Pg(ctx)
+    try:
+        tag = a.image or ensure_test_image(ctx, steps)
+        pg.start()
+        start_app(ctx, steps, tag, pg)
+    except StageFailed as e:
+        say(str(e))
+        pg.stop()
+        return 1
+    say(f'앱: http://127.0.0.1:{ctx.app_port}  (로그인 ci-admin / ci-only-password) — 끝나면 `axm down`')
+    return 0
+
+
+def own_containers(ctx):
+    r = docker('ps', '-a', '--format', '{{.Names}}', '--filter', f'name=^{ctx.prefix}-', check=False)
+    return [n for n in r.stdout.split() if n.startswith(ctx.prefix + '-')]
+
+
+def cmd_down(a):
+    ctx = Ctx(a.role)
+    names = own_containers(ctx)
+    for n in names:
+        docker('rm', '-f', n, check=False)
+    say('내린 컨테이너: ' + (', '.join(names) or '없음'))
+    return 0
+
+
+def cmd_prune(a):
+    c = cache_dir()
+    limit = time.time() - 14 * 86400
+    removed = 0
+    art = c / 'art'
+    if art.exists():
+        for p in art.iterdir():
+            if p.stat().st_mtime < limit:
+                p.unlink()
+                removed += 1
+    say(f'14일 넘은 빌드 산출물 {removed}개 삭제')
+    cur = base_tag() if (ROOT / 'frontend/package.json').exists() else ''
+    r = docker('image', 'ls', '--format', '{{.Repository}}:{{.Tag}} {{.CreatedAt}}', check=False)
+    gone = 0
+    for line in r.stdout.splitlines():
+        ref = line.split(' ')[0]
+        if ref.startswith('listmonk-axm-test:') or (ref.startswith('listmonk-axm-base:') and ref != cur):
+            age = docker('image', 'inspect', '-f', '{{.Created}}', ref, check=False).stdout.strip()
+            try:
+                t = time.mktime(time.strptime(age[:19], '%Y-%m-%dT%H:%M:%S'))
+            except ValueError:
+                continue
+            if t < limit or (ref.startswith('listmonk-axm-base:') and ref != cur and t < time.time() - 86400):
+                if docker('rmi', ref, check=False).returncode == 0:
+                    gone += 1
+    say(f'옛 이미지 {gone}개 삭제')
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog='axm', description=__doc__.split('\n')[0])
+    sub = ap.add_subparsers(dest='cmd', required=True)
+
+    def add(name, fn, help_):
+        p = sub.add_parser(name, help=help_)
+        p.add_argument('--role', choices=['agent', 'reviewer'], help='리뷰어는 reviewer (이름·포트·통과 기록이 따로다)')
+        p.set_defaults(fn=fn)
+        return p
+
+    add('base', cmd_base, '시험용 베이스 이미지가 없으면 만든다')
+    p = add('build', cmd_build, '시험 이미지를 만든다(캐시 사용). --full 은 운영 방식 docker build')
+    p.add_argument('--full', action='store_true')
+    p = add('affected', cmd_affected, '바뀐 파일에서 돌릴 시험을 보인다')
+    p.add_argument('--base'), p.add_argument('--since-last', action='store_true'), p.add_argument('--json', action='store_true')
+    p = add('go-test', cmd_go_test, 'Go 시험(일회용 Postgres 포함)')
+    p.add_argument('--affected', action='store_true'), p.add_argument('--base'), p.add_argument('--since-last', action='store_true')
+    p.add_argument('packages', nargs='*')
+    p = add('e2e', cmd_e2e, 'Cypress 시험')
+    p.add_argument('--affected', action='store_true'), p.add_argument('--base'), p.add_argument('--since-last', action='store_true')
+    p.add_argument('--all-ci', action='store_true', help='CI 의 13개 spec 전부(평소에는 쓰지 않는다)')
+    p.add_argument('--image'), p.add_argument('--profile', action='store_true', help='브라우저 CPU 를 스레드 이름으로 나눈 표를 낸다')
+    p.add_argument('--browser', default='electron', choices=['electron', 'chrome'])
+    p.add_argument('specs', nargs='*')
+    p = add('check', cmd_check, '바뀐 부분만 빌드·Go 시험·Cypress 를 돌리고 표를 낸다')
+    p.add_argument('--base'), p.add_argument('--since-last', action='store_true'), p.add_argument('--profile', action='store_true')
+    p.add_argument('--full-build', action='store_true', help='affected 가 요구하면 운영 방식 빌드도 돈다')
+    p = add('measure', cmd_measure, '기준선 측정(지금 방식)')
+    p.add_argument('--build-only', action='store_true')
+    p = add('serve', cmd_serve, '시험 이미지로 앱을 띄워 둔다(화면 캡처용)')
+    p.add_argument('--image')
+    add('down', cmd_down, '내 컨테이너를 내린다')
+    add('prune', cmd_prune, '오래된 캐시·이미지를 지운다')
+    a = ap.parse_args()
+    rc = a.fn(a)
+    sys.exit(rc or 0)
+
+
+if __name__ == '__main__':
+    main()
