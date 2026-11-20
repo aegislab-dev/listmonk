@@ -168,7 +168,8 @@ describe('Scheduled send time zone', () => {
   it('Enter in the zone search picks the first match and does not submit a new campaign', () => {
     cy.intercept('POST', '/api/campaigns').as('create');
     cy.visit(`/admin/campaigns/new?list_id=${listId}`);
-    cy.get('.list-selector .tag').should('have.length', 1);
+    // The chosen lists only (the dropdown has tags too, for dynamic lists).
+    cy.get('.list-selector .list-tags .tag.list').should('have.length', 1).and('have.attr', 'data-id', String(listId));
     cy.get('input[name=name]').type(`Schedule zone enter ${stamp}`);
     cy.get('input[name=subject]').type('Enter');
     cy.get('[data-cy=btn-send-later] .check').click();
