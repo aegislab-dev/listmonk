@@ -121,7 +121,7 @@ describe('follow-up campaign draft', () => {
     cy.get(toggle).should('not.exist');
     cy.get('[data-cy=followup-open-existing]').should('contain', `#${followupId}`);
     // The box tells what the follow-up was made with.
-    cy.get('[data-cy=followup-box]').should('contain', 'Draft').and('contain', 'Did not open').and('contain', '1 people');
+    cy.get('[data-cy=followup-box]').should('contain', 'Draft').and('contain', 'Did not click').and('contain', '1 people');
     cy.get(teamSelect).select('__none__');
     cy.get('[data-cy=reaction-create]').click();
     cy.wait('@make').then(({ request, response }) => {
