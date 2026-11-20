@@ -147,8 +147,10 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
 
   let title;
   if (blocked) {
-    const noList = checks.some((c) => c.name === 'lists.none');
-    title = { key: `${K}.title.${noList ? 'noList' : 'zero'}`, params: {} };
+    let why = 'zero';
+    if (checks.some((c) => c.name === 'lists.none')) why = 'noList';
+    else if (checks.some((c) => c.name === 'from.refused')) why = 'fromRefused';
+    title = { key: `${K}.title.${why}`, params: {} };
   } else if (resume && when && until) {
     title = {
       key: `${K}.title.resumeAt`,

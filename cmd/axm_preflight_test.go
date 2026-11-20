@@ -13,7 +13,7 @@ import (
 	"gopkg.in/volatiletech/null.v6"
 )
 
-func TestPlaceholderFrom(t *testing.T) {
+func TestStockFrom(t *testing.T) {
 	for from, want := range map[string]bool{
 		"에이지스랩 <aegislab_us@crevasse.ai>":          false,
 		"team@crevasse.ai":                         false,
@@ -30,7 +30,7 @@ func TestPlaceholderFrom(t *testing.T) {
 		"yourname@crevasse.ai":                     true,
 		"youngmin@crevasse.ai":                     false,
 	} {
-		if got := placeholderFrom(from); got != want {
+		if got := stockFrom(from); got != want {
 			t.Errorf("%q: got %v, want %v", from, got, want)
 		}
 	}

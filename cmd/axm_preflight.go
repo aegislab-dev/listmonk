@@ -102,6 +102,9 @@ type preflightFacts struct {
 	// the header takes them from each subscriber, so they cannot be listed.
 	Copies              []string
 	CopiesPerSubscriber bool
+	// FromRefused: the status change will refuse the draft's From (LST-45: a placeholder, or
+	// not on the team's From list, or a From header while there is a list), with the reason.
+	FromRefused string
 
 	RecentEnabled  bool
 	RecentDays     int
@@ -117,9 +120,9 @@ var placeholderHosts = map[string]bool{
 
 var rePlaceholderLocal = regexp.MustCompile(`(?i)^(change-?me|your-?(name|email|address)|you|name|email)(@|$)`)
 
-// placeholderFrom reports whether the From of a campaign is a stock or unfilled value, or
-// has blanks around it.
-func placeholderFrom(from string) bool {
+// stockFrom reports whether the From of a campaign is the stock or an unfilled value, or
+// has blanks around it. The pre-send check also counts LST-45's placeholderFrom.
+func stockFrom(from string) bool {
 	if from != strings.TrimSpace(from) {
 		return true
 	}
@@ -176,7 +179,12 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		add("schedule.past", models.PreflightWarn, nil)
 	}
 
-	if placeholderFrom(f.From) {
+	// The status change refuses such a draft (LST-45): the window does not offer to send it.
+	if f.FromRefused != "" {
+		add("from.refused", models.PreflightBlock, map[string]any{"message": f.FromRefused})
+	}
+
+	if stockFrom(f.From) || placeholderFrom(f.From) {
 		add("from.placeholder", models.PreflightWarn, map[string]any{"from": f.From})
 	} else {
 		add("from.placeholder", models.PreflightOK, nil)
@@ -391,6 +399,15 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		facts.Copies = append(facts.Copies, c.Address)
 	}
 	facts.CopiesPerSubscriber = perSubscriber
+	// As UpdateCampaignStatus (LST-45): without account senders, a draft starts only with a
+	// From that the From list (or, with no list, the placeholder rule) allows.
+	if len(a.cfg.SenderDomains) == 0 && camp.Status == models.CampaignStatusDraft {
+		if len(a.cfg.FromAddresses) > 0 && hasFromHeader(camp.Headers) {
+			facts.FromRefused = a.i18n.T("campaigns.fromHeaderNotAllowed")
+		} else if _, err := a.checkFromAllowed(strings.TrimSpace(camp.FromEmail), a.cfg.FromAddresses); err != nil {
+			facts.FromRefused = err.Error()
+		}
+	}
 	// Whether the e-mail that is rendered has the link to leave, as every recipient gets it.
 	facts.Unsubscribe, facts.UnsubscribeKnown = unsubscribeInAll(statuses, func(status string) (bool, error) {
 		return a.manager.HasUnsubscribeLink(&sendCamp, dummySubscriber, status)

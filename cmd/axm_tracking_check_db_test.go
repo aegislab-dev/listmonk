@@ -124,13 +124,13 @@ func TestCampaignTrackingCheck(t *testing.T) {
 		t.Fatalf("unsaved subject, name, tags and attributes: %+v", rep)
 	}
 
-	// Custom headers: saving keeps a stored header that the request no longer has, in
-	// the set it was in; a test send replaces them. The check follows each.
+	// Custom headers: saving and a test send both replace the stored headers with the
+	// request's (LST-49: a removed header must really go). The check follows both.
 	e.db.MustExec(`UPDATE campaigns SET headers='[{"X-No-Track":"1"}]' WHERE id=$1`, e.campID)
 	hdr := map[string]any{"content_type": "html", "template_id": bare, "headers": []map[string]string{{"X-Other": "1"}},
 		"body": `{{ $no := false }}{{ range .Campaign.Headers }}{{ if index . "X-No-Track" }}{{ $no = true }}{{ end }}{{ end }}{{ if not $no }}{{ TrackView }}{{ end }}`}
-	if rep = check(js(hdr)); rep.View != "missing" {
-		t.Fatalf("headers as saving keeps them: %+v", rep)
+	if rep = check(js(hdr)); rep.View != "manual" {
+		t.Fatalf("headers as saving replaces them: %+v", rep)
 	}
 	hdr["mode"] = "test"
 	if rep = check(js(hdr)); rep.View != "manual" {

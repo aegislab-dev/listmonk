@@ -323,7 +323,8 @@ func newPreflightApp(t *testing.T) *teamsEnv {
 	e.a.log = log.New(io.Discard, "", 0)
 	e.a.cfg = &Config{}
 	e.a.manager = e.startManager(e.store, &bodyMessenger{}, io.Discard)
-	e.db.MustExec(`UPDATE campaigns SET status='draft', content_type='richtext', body='<p>Hi <a href="{{ UnsubscribeURL }}">x</a></p>' WHERE id=$1`, e.campID)
+	// A real From: the status change refuses a placeholder (LST-45).
+	e.db.MustExec(`UPDATE campaigns SET status='draft', from_email='Team <team@crevasse.ai>', content_type='richtext', body='<p>Hi <a href="{{ UnsubscribeURL }}">x</a></p>' WHERE id=$1`, e.campID)
 	e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, e.aList)
 	return e
 }
@@ -361,10 +362,25 @@ func TestCampaignPreflightHandler(t *testing.T) {
 	for _, c := range out.Checks {
 		level[c.Key] = c.Level
 	}
-	// The campaign's from is the fixture's example address; the body has the unsubscribe link.
-	if level["unsubscribe.missing"] != "ok" || level["from.placeholder"] != "warn" || level["recipients.zero"] != "" {
+	// A real From; the body has the unsubscribe link.
+	if level["unsubscribe.missing"] != "ok" || level["from.placeholder"] != "ok" || level["recipients.zero"] != "" || level["from.refused"] != "" {
 		t.Fatalf("checks: %v", level)
 	}
+	// An example address: the status change refuses the draft (LST-45), so the window blocks.
+	e.db.MustExec(`UPDATE campaigns SET from_email='sender@example.invalid' WHERE id=$1`, e.campID)
+	_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, target, id, "")
+	out.Checks = nil
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	level = map[string]string{}
+	for _, c := range out.Checks {
+		level[c.Key] = c.Level
+	}
+	if level["from.placeholder"] != "warn" || level["from.refused"] != "block" {
+		t.Fatalf("placeholder from: %v", level)
+	}
+	e.db.MustExec(`UPDATE campaigns SET from_email='Team <team@crevasse.ai>' WHERE id=$1`, e.campID)
 
 	// A user without access to the campaign gets nothing.
 	if code, _ := e.call(e.a.GetCampaignPreflight, other, http.MethodGet, target, id, ""); code != http.StatusForbidden {

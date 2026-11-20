@@ -487,12 +487,23 @@ export default Vue.extend({
     },
 
     async cloneCampaign(name, c) {
+      // The From list may have changed in another session: refresh it first,
+      // then read the campaign, whose from_match the server computes from it.
+      await this.$api.getServerConfig();
+
       // Fetch the template body from the server.
       let body = '';
       let bodySource = null;
+      let { fromEmail } = c;
+      const list = this.serverConfig.from_addresses || [];
+      const accountSenders = (this.serverConfig.sender_domains || []).length > 0;
       await this.$api.getCampaign(c.id).then((data) => {
         body = data.body;
         bodySource = data.bodySource;
+        // The original From goes as it is: the server matches it to the
+        // current list itself (an index from here could point at another entry
+        // if the list changed meanwhile).
+        fromEmail = data.fromEmail;
       });
 
       const now = this.$utils.getDate();
@@ -502,13 +513,17 @@ export default Vue.extend({
         sendAt = dayjs(c.sendAt).isAfter(now) ? c.sendAt : now.add(7, 'day');
       }
 
+      // With a From list a custom From header is refused, so a copy goes without one.
+      const fromHeaderFree = !accountSenders && list.length > 0;
+      const dropFromHeader = (set) => Object.fromEntries(Object.entries(set).filter(([k]) => k.trim().toLowerCase() !== 'from'));
+
       const zone = splitAttribs(c.attribs);
       const data = {
         name,
         subject: c.subject,
         lists: c.lists.map((l) => l.id),
         type: c.type,
-        from_email: c.fromEmail,
+        from_email: fromEmail,
         reply_to: c.replyTo,
         content_type: c.contentType,
         messenger: c.messenger,
@@ -517,7 +532,7 @@ export default Vue.extend({
         body,
         body_source: bodySource,
         altbody: c.altbody,
-        headers: c.headers,
+        headers: fromHeaderFree ? (c.headers || []).map(dropFromHeader).filter((h) => Object.keys(h).length) : c.headers,
         send_later: sendLater,
         send_at: sendAt,
         // The copy keeps the time zone the scheduled time was chosen in.
@@ -590,7 +605,7 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['campaigns', 'loading']),
+    ...mapState(['campaigns', 'loading', 'serverConfig']),
 
     numSelectedCampaigns() {
       return this.bulk.all ? this.campaigns.total : this.bulk.checked.length;
