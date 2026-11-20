@@ -215,6 +215,8 @@ describe('Scheduled send time zone', () => {
         // Beside the input or under it, never over it, and on the screen.
         expect(r.left >= input.right - 2 || r.top >= input.bottom - 1, `button placement at ${w}px`).to.eq(true);
         expect(r.right, `button on screen at ${w}px`).to.be.lte(pageWidth);
+        // Where there is room (a wide screen), beside the input as in the approved design.
+        if (w >= 1440) expect(r.left, 'beside the input').to.be.gte(input.right - 2);
       });
     });
   });

@@ -1220,7 +1220,8 @@ export default Vue.extend({
 .send-at { container-type: inline-size; }
 .send-at-row ::v-deep .has-addons { flex-wrap: wrap; row-gap: .5rem; }
 .send-at-row ::v-deep .datepicker { flex: 1 1 12rem; min-width: min(12rem, 100%); }
-@container (max-width: 30rem) {
+/* 25rem: the input's 12rem and the button's 12.5rem side by side. */
+@container (max-width: 25rem) {
   .send-at-row ::v-deep .datepicker { flex-basis: 100%; }
   .send-at-row ::v-deep .field.has-addons .control.tzp { flex: 0 1 auto; max-width: 100%; }
   .send-at-row ::v-deep .field.has-addons .control.tzp .tzp-button { width: auto; max-width: 100%; min-width: 0; border-radius: 4px; }
