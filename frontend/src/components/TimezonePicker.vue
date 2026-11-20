@@ -126,15 +126,14 @@ export default Vue.extend({
     // (Windows, macOS), or a composing keydown, compositionend and then a plain Enter keydown (13) for
     // the same key press (Linux IBus). So after a composition ends, the next Enter keydown is that same
     // press until a key is released or the box is focused or clicked again: it picks nothing and does
-    // not submit the form. The Enter after that picks.
+    // not submit the form, however long the key is held. The Enter after that picks.
     onEnter(e) {
       if (e.isComposing || e.keyCode === 229) return;
       e.preventDefault();
       e.stopPropagation();
-      if (this.afterComposition) {
-        this.afterComposition = false;
-        return;
-      }
+      // Held down, the key repeats before it is released: the flag stays until keyup, and a repeat
+      // never picks.
+      if (this.afterComposition || e.repeat) return;
       this.query = e.target.value;
       if (this.query.trim() && this.results.length) this.pick(this.results[0].tz);
     },

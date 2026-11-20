@@ -209,6 +209,9 @@ describe('Scheduled send time zone', () => {
     const enterDown = () => cdp('Input.dispatchKeyEvent', {
       type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r',
     });
+    const enterRepeat = () => cdp('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r', autoRepeat: true,
+    });
     const enterUp = () => cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
     cy.intercept('PUT', '/api/campaigns/*').as('save');
     open('ime');
@@ -235,6 +238,12 @@ describe('Scheduled send time zone', () => {
     }));
     cy.then(() => cdp('Input.insertText', { text: '파' }));
     cy.then(enterDown);
+    // The key is held until it repeats, before it is released.
+    cy.wait(700);
+    cy.then(enterRepeat);
+    cy.then(enterRepeat);
+    cy.get('[data-cy=send-tz-panel]').should('exist');
+    zoneButton().should('contain', 'KST');
     cy.then(enterUp);
     // Nothing is picked and the form is not submitted.
     cy.get('[data-cy=send-tz-search]').should('have.value', '파');
@@ -251,6 +260,7 @@ describe('Scheduled send time zone', () => {
       type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
     }));
     cy.then(() => cdp('Input.insertText', { text: '리' }));
+    cy.then(enterRepeat);
     cy.then(enterUp);
     cy.get('[data-cy=send-tz-panel]').should('exist');
     zoneButton().should('contain', 'KST');
