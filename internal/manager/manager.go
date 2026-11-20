@@ -880,6 +880,13 @@ func (m *Manager) makeGnericFuncMap() template.FuncMap {
 	return funcs
 }
 
+// AttachMedia loads the campaign's media before its messages are rendered, as a send
+// does (AXM LST-44: a test send rendered its first message without them and the rest
+// with them, since pushing the first one attached them to the shared campaign).
+func (m *Manager) AttachMedia(c *models.Campaign) error {
+	return m.attachMedia(c)
+}
+
 // attachMedia loads any media/attachments from the media store and attaches
 // the byte blobs to the campaign. Inline attachments are skipped as they're
 // loaded earlier by LoadInlineImages().
@@ -913,9 +920,15 @@ func (m *Manager) LoadInlineImages(c *models.Campaign) error {
 	body, atts := m.applyInlineImages(c.Body, cidCache)
 	c.Body = body
 
-	tplBody, tplAtts := m.applyInlineImages(c.TemplateBody, cidCache)
-	c.TemplateBody = tplBody
-	atts = append(atts, tplAtts...)
+	// AXM (LST-44): a visual campaign does not use the template (CompileTemplate), so its
+	// images are not embedded. The send reads the default template for a visual
+	// campaign without one and attached its unseen images, unlike a test send; the
+	// attachments are visible to templates (.Campaign.Attachments).
+	if c.ContentType != models.CampaignContentTypeVisual {
+		tplBody, tplAtts := m.applyInlineImages(c.TemplateBody, cidCache)
+		c.TemplateBody = tplBody
+		atts = append(atts, tplAtts...)
+	}
 
 	c.Attachments = append(c.Attachments, atts...)
 	return nil
