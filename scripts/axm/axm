@@ -746,10 +746,12 @@ class Pg:
                '-c', 'synchronous_commit=off', '-c', 'full_page_writes=off', '-c', 'max_connections=200',
                '-c', 'listen_addresses=127.0.0.1')
         self.up = True
-        for _ in range(60):
+        for _ in range(90):
             if docker('exec', self.name, 'pg_isready', '-h', '127.0.0.1', '-p', str(c.pg_port), check=False).returncode == 0:
                 return
             time.sleep(1)
+        lg = docker('logs', '--tail', '15', self.name, check=False)
+        say((lg.stdout + lg.stderr)[-800:])
         raise StageFailed('Postgres 가 올라오지 않는다')
 
     def fresh_db(self, db):
