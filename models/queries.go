@@ -27,6 +27,8 @@ type Queries struct {
 	AxmRecentSourceCamps   *sqlx.Stmt `query:"axm-recent-source-campaigns"`
 	AxmLockRecentCampaign  *sqlx.Stmt `query:"axm-lock-recent-campaign"`
 	AxmRecentCampaignLists *sqlx.Stmt `query:"axm-recent-campaign-lists"`
+	AxmRecentSourceLists   *sqlx.Stmt `query:"axm-recent-source-lists"`
+	AxmRecentAddMembers    *sqlx.Stmt `query:"axm-recent-add-members"`
 
 	AxmAddressCheckCount         *sqlx.Stmt `query:"axm-address-check-count"`
 	AxmAddressCheckAudience      *sqlx.Stmt `query:"axm-address-check-audience"`

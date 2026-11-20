@@ -7,7 +7,11 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
+	"time"
 
+	"github.com/gofrs/uuid/v5"
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
@@ -177,5 +181,138 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if err := tx.Commit(); err != nil {
 		return out, c.recentError(err)
 	}
+	return out, nil
+}
+
+// RecentListOptions carries what the handler decides about the new list.
+type RecentListOptions struct {
+	Name         string
+	ResolveTeams func(source []string) ([]string, error)
+}
+
+func (c *Core) recentBadRequest(key string) error {
+	return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recent."+key))
+}
+
+func (c *Core) recentListName(sources []models.RecentSourceList, days int, at time.Time) string {
+	base := sources[0].Name
+	if len(sources) > 1 {
+		base = c.i18n.Ts("lists.recentExclude.moreLists", "name", base, "count", strconv.Itoa(len(sources)-1))
+	}
+	return listNameWithSuffix(base, c.i18n.Ts("lists.recentExclude.nameSuffix", "days", strconv.Itoa(days), "date", at.Format("2006-01-02")))
+}
+
+func (c *Core) describeRecentList(out models.RecentListResult, rule models.RecentRule) string {
+	names := make([]string, len(out.SourceLists))
+	for i, source := range out.SourceLists {
+		names[i] = source.Name + " (#" + strconv.Itoa(source.ID) + ")"
+	}
+	scope := c.i18n.T("campaigns.recent.scope." + rule.Scope)
+	if rule.Scope == models.RecentScopeCampaigns {
+		ids := make([]string, len(rule.CampaignIDs))
+		for i, id := range rule.CampaignIDs {
+			ids[i] = "#" + strconv.FormatInt(id, 10)
+		}
+		scope += " " + strings.Join(ids, ", ")
+	}
+	return c.i18n.Ts("lists.recentExclude.description", "lists", strings.Join(names, ", "),
+		"days", strconv.Itoa(rule.Days), "scope", scope, "time", out.AsOf.Format("2006-01-02 15:04 MST"),
+		"target", groupThousands(out.Counts.Target), "excluded", groupThousands(out.Counts.Excluded),
+		"added", groupThousands(out.Counts.Added))
+}
+
+// MakeRecentExcludeList counts the audience again and, in the same repeatable-read
+// transaction, creates a private list holding everybody the rule does not exclude. The
+// caller has validated the rule and checked access to every list. It does not touch any
+// campaign: the campaign's target is changed by the normal campaign update.
+func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule models.RecentRule, selfID int, o RecentListOptions) (models.RecentListResult, error) {
+	var out models.RecentListResult
+	ids := make(pq.Int64Array, 0, len(lists))
+	for _, id := range lists {
+		if !slices.Contains(ids, int64(id)) {
+			ids = append(ids, int64(id))
+		}
+	}
+	if len(ids) == 0 {
+		return out, c.recentBadRequest("selectLists")
+	}
+	tx, err := c.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	defer tx.Rollback()
+
+	if err := tx.Stmtx(c.q.AxmRecentSourceLists).SelectContext(ctx, &out.SourceLists, ids); err != nil {
+		return out, c.recentError(err)
+	}
+	if len(out.SourceLists) != len(ids) {
+		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("globals.messages.invalidID"))
+	}
+	tags := []string{}
+	for _, source := range out.SourceLists {
+		for _, tag := range models.TeamTags(source.Tags) {
+			if !slices.Contains(tags, tag) {
+				tags = append(tags, tag)
+			}
+		}
+	}
+	if rule.Scope == models.RecentScopeTeam && len(tags) == 0 {
+		return out, c.recentBadRequest("noTeam")
+	}
+	teams, err := o.ResolveTeams(tags)
+	if err != nil {
+		return out, err
+	}
+
+	var counts models.RecentCounts
+	if err := tx.Stmtx(c.q.AxmRecentExcludeCounts).GetContext(ctx, &counts, ids, rule.Days, rule.Scope, rule.CampaignIDs, selfID); err != nil {
+		return out, c.recentError(err)
+	}
+	out.AsOf = counts.AsOf
+	out.Counts = models.RecentListCounts{Target: counts.Target, Excluded: counts.Excluded, Added: counts.Target - counts.Excluded}
+	if out.Counts.Added <= 0 {
+		return out, c.recentBadRequest("listEmpty")
+	}
+
+	name := strings.TrimSpace(o.Name)
+	if name == "" {
+		name = c.recentListName(out.SourceLists, rule.Days, out.AsOf)
+	}
+	if name, err = c.uniqueDerivedListName(ctx, tx, name); err != nil {
+		return out, c.recentError(err)
+	}
+	uu, err := uuid.NewV4()
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	preset := out.SourceLists[0].Preset
+	if preset == "" {
+		preset = DefaultColumnPreset
+	}
+	out.List = models.List{
+		Name: name, UUID: uu.String(), Type: models.ListTypePrivate, Optin: models.ListOptinSingle,
+		Status: models.ListStatusActive, AxmPreset: preset, Tags: append(pq.StringArray{models.RecentListTag}, teams...),
+		Description: c.describeRecentList(out, rule),
+	}
+	if err := tx.Stmtx(c.q.AxmDrawCreateList).GetContext(ctx, &out.List.Base, out.List.UUID, name, out.List.Tags, out.List.Description, preset); err != nil {
+		return out, c.recentError(err)
+	}
+	result, err := tx.Stmtx(c.q.AxmRecentAddMembers).ExecContext(ctx, ids, rule.Days, rule.Scope, rule.CampaignIDs, selfID, out.List.ID)
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	if inserted != int64(out.Counts.Added) {
+		return out, c.recentError(errors.New("recent-exclude list membership differs from the transaction count"))
+	}
+	out.List.SubscriberCount = int(inserted)
+	out.List.SubscriberCounts = models.StringIntMap{"confirmed": int(inserted)}
+	if err := tx.Commit(); err != nil {
+		return out, c.recentError(err)
+	}
+	_ = c.refreshCache(matListSubStats, false)
 	return out, nil
 }

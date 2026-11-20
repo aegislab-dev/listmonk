@@ -45,3 +45,15 @@ SELECT status, type FROM campaigns WHERE id = $1 FOR UPDATE;
 
 -- name: axm-recent-campaign-lists
 SELECT list_id FROM campaign_lists WHERE campaign_id = $1 AND list_id IS NOT NULL;
+
+-- name: axm-recent-source-lists
+SELECT l.id, l.name, l.tags, l.axm_preset
+FROM unnest($1::INT[]) WITH ORDINALITY AS wanted(id, position)
+JOIN lists l ON l.id = wanted.id
+ORDER BY wanted.position;
+
+-- name: axm-recent-add-members
+INSERT INTO subscriber_lists (subscriber_id, list_id, status)
+SELECT kept.subscriber_id, $6::INT, 'confirmed'
+FROM (SELECT subscriber_id, excluded FROM axm_recent_exclusion($1, $2, $3, $4, $5) OFFSET 0) kept
+WHERE NOT kept.excluded;
