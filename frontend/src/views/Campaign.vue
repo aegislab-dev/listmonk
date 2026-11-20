@@ -161,7 +161,7 @@
                       </p>
                       <p v-if="form.sendAtDate" class="send-at-zones" data-cy="send-at-zones">
                         <template v-for="(z, i) in sendAtZones">
-                          <span v-if="i > 0" :key="`s-${z.tz}`" class="sep">|</span>
+                          <span v-if="i > 0" :key="`s-${z.tz}`" class="sep">&#8203;|&#8203;</span>
                           <span :key="z.tz" class="zone" :data-tz="z.tz">
                             <b v-if="z.kst" class="kst">{{ $t('campaigns.sendTz.kst') }}</b><span v-else class="city">{{ z.city }}</span>
                             <b>{{ z.parts.md }} ({{ $t(`globals.days.${z.parts.wd + 1}`) }}) {{ z.parts.hm }}</b>
