@@ -132,7 +132,9 @@ export default Vue.extend({
 .tzp-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tzp-current > b { margin-right: .4rem; }
 @media (max-width: 520px) {
-  .tzp-button { min-width: 0; max-width: 11rem; }
+  .tzp { flex: 1 1 100%; margin-top: .5rem; }
+  .tzp-button { width: 100%; max-width: none; min-width: 0; }
+  .tzp-panel { left: 0; right: auto; }
 }
 .tzp-caret { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid #6b7280; flex: none; }
 .tzp-panel { position: absolute; right: 0; top: calc(100% + 4px); z-index: 40; width: 440px; max-width: 92vw; background: #fff; border: 1px solid #dfe3e8; border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .14); font-size: .8125rem; overflow: hidden; }

@@ -241,7 +241,8 @@ export function allZones() {
 // Lets a person pick a zone even where the browser cannot list zones.
 export function customZone(text) {
   const t = String(text || '').trim();
-  if (!/^(UTC|[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)+)$/.test(t) || !validZone(t)) return '';
+  // Names with or without a slash ("Europe/Paris", "Cuba", "EST5EDT"); no offsets like "+09:00".
+  if (!/^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/.test(t) || !validZone(t)) return '';
   // The listed spelling when the browser lists it ("europe/paris" -> "Europe/Paris").
   const listed = allZones().find((z) => z.toLowerCase() === t.toLowerCase());
   if (listed) return listed;

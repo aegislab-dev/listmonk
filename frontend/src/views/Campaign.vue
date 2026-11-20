@@ -1028,6 +1028,11 @@ export default Vue.extend({
 
 <style scoped>
 .send-at-row { margin-bottom: 0; }
+@media (max-width: 520px) {
+  /* The zone button goes under the input instead of past the edge of the screen. */
+  .send-at-row { flex-wrap: wrap; }
+  .send-at-row ::v-deep .datepicker { flex: 1 1 100%; min-width: 0; }
+}
 .send-at-duration { margin-top: .5rem; }
 .send-at-zones { font-size: .8125rem; color: #6b7280; margin-top: .25rem; line-height: 1.7; }
 .send-at-zones .zone { white-space: nowrap; }

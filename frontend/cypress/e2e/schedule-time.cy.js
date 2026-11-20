@@ -114,6 +114,23 @@ describe('Scheduled send time zone', () => {
     cy.get('[data-cy=send-tz-panel] [data-tz="Europe/Paris"]').first().click();
     zoneButton().should('contain', 'UTC+1');
     pickerValue().should('have.value', '2030-01-15 01:00');
+
+    // Names without a slash work too.
+    zoneButton().click();
+    cy.get('[data-cy=send-tz-search]').type('EST5EDT');
+    cy.get('[data-cy=send-tz-panel] [data-tz="EST5EDT"]').first().click();
+    pickerValue().should('have.value', '2030-01-14 19:00');
+  });
+
+  it('keeps the time zone button inside a narrow screen', () => {
+    cy.viewport(320, 700);
+    open('ny');
+    zoneButton().should('be.visible').then(($b) => {
+      const r = $b[0].getBoundingClientRect();
+      expect(r.left).to.be.gte(0);
+      expect(r.right).to.be.lte(320);
+    });
+    cy.window().its('document.documentElement.scrollWidth').should('be.lte', 320);
   });
 
   it('searches by Korean name', () => {

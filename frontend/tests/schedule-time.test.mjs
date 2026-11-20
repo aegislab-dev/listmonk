@@ -172,6 +172,9 @@ test('a zone typed by hand is found even without a list of zones', () => {
   assert.equal(customZone('america/new_york'), 'America/New_York');
   assert.equal(customZone('Mars/Phobos'), '');
   assert.equal(customZone('paris'), '');
+  assert.ok(['Cuba', 'America/Havana'].includes(customZone('cuba')));
+  assert.equal(customZone('EST5EDT'), 'EST5EDT');
+  assert.ok(['GMT', 'UTC'].includes(customZone('GMT')));
   assert.equal(customZone(''), '');
   assert.equal(customZone('+09:00'), '');
 });
