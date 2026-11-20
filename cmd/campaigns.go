@@ -841,6 +841,11 @@ func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error)
 		}
 	}
 
+	// The time zone the send time was chosen in (LST-50) must be a real IANA name.
+	if !validSendTZ(c.Attribs) {
+		return c, errors.New(a.i18n.T("campaigns.sendTz.invalid"))
+	}
+
 	if len(c.ArchiveMeta) == 0 {
 		c.ArchiveMeta = json.RawMessage("{}")
 	}
