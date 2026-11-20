@@ -53,7 +53,7 @@ func addrOf(v string) string {
 }
 
 // placeholderFrom reports whether a From value is a placeholder that was never
-// replaced (change-me@..., or example.com/.org/.net).
+// replaced (change-me@..., or a domain reserved for examples).
 // It is a pure function so other checks can reuse it.
 func placeholderFrom(v string) bool { return placeholderAddress(addrOf(v)) }
 
@@ -73,6 +73,16 @@ func placeholderAddress(addr string) bool {
 			return true
 		}
 	}
+	for _, tld := range []string{"example", "invalid", "test"} {
+		if strings.HasSuffix(domain, "."+tld) {
+			return true
+		}
+	}
+	for _, tld := range []string{"example", "invalid", "test"} {
+		if strings.HasSuffix(domain, "."+tld) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -89,13 +99,6 @@ func placeholderListAddress(addr string) bool {
 		return false
 	}
 	d := addr[at+1:]
-	// The reserved example TLDs are refused in the list only: synthetic data and
-	// tests send from them, so a campaign From on them is not called a placeholder.
-	for _, tld := range []string{"example", "invalid", "test"} {
-		if strings.HasSuffix(d, "."+tld) {
-			return true
-		}
-	}
 	return d == "yoursite.com" || strings.HasSuffix(d, ".yoursite.com")
 }
 

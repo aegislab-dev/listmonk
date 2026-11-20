@@ -74,7 +74,7 @@ describe('Team From address list', () => {
       oldDraft = r.body.data;
     });
     create('change-me@crevasse.ai').then((r) => refused(r, 'change-me@crevasse.ai'));
-    create('Team <a@example.com>').then((r) => refused(r));
+    ['Team <a@example.com>', 'sender@example.invalid', 'news@company.example', 'news@company.test'].forEach((v) => create(v).then((r) => refused(r)));
     create('x@crevasse.ai\r\nBcc: y@crevasse.ai').then((r) => refused(r));
     create('clone@crevasse.ai', `Synthetic clone source ${stamp}`).then((r) => { cloneDraft = r.body.data; });
     cy.then(() => cy.request({ method: 'PUT', url: `/api/campaigns/${oldDraft.id}`, body: fields('change-me@crevasse.ai'), failOnStatusCode: false }))
