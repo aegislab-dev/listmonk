@@ -216,6 +216,7 @@ func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber) (Trac
 // is the destination. Links that are never tracked by design (service links of this
 // instance, mailto:, tel:, anchors, relative URLs) give an empty kind and are not counted.
 func (m *Manager) trackingLinkKind(value string, auto bool) (string, string) {
+	value = browserURL(value)
 	if rest, ok := strings.CutPrefix(value, trackingProbeLink); ok {
 		if dest, err := url.QueryUnescape(rest); err == nil {
 			return TrackingViewManual, dest

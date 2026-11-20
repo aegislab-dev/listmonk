@@ -676,6 +676,7 @@ export default Vue.extend({
         subject: data.subject,
         headers: data.headers,
         mode: 'test',
+        media: data.media,
         ...(data.altbody === null ? {} : { altbody: data.altbody }),
         // The sender fields as the test sends them: with sender domains the server sets
         // the sender from the account of the person sending the test (LST-44 review).
@@ -929,6 +930,9 @@ export default Vue.extend({
       // Empty or null attributes are saved as none: say so, or the saved ones would count.
       const attribs = this.form.attribsStr && this.form.attribsStr.trim() ? (json(this.form.attribsStr) ?? {}) : {};
       const altbody = this.form.content.contentType !== 'plain' ? this.form.altbody : null;
+      // As saving reads it: the archive metadata on the page when it parses.
+      let archiveMeta = this.form.archive && this.form.archiveMetaStr ? json(this.form.archiveMetaStr) : undefined;
+      if (archiveMeta === undefined) archiveMeta = this.form.archiveMeta || undefined;
       return {
         content_type: this.form.content.contentType,
         body: this.form.content.body || '',
@@ -944,6 +948,13 @@ export default Vue.extend({
         // What the send will be: templates can read the status (LST-44 review).
         status: this.form.sendLater && this.form.sendAtDate ? 'scheduled' : 'running',
         send_at: this.form.sendLater ? this.form.sendAtDate : null,
+        // The rest of what saving sends that a template can read (LST-44 review).
+        archive: this.form.archive,
+        archive_slug: this.form.archiveSlug || null,
+        archive_template_id: this.form.archiveTemplateId || null,
+        ...(archiveMeta === undefined ? {} : { archive_meta: archiveMeta }),
+        body_source: this.form.content.bodySource || null,
+        media: this.form.media.map((m) => m.id),
       };
     },
 

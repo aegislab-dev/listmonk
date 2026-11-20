@@ -89,6 +89,22 @@ func TestVisualCampaignTracking(t *testing.T) {
 	}
 }
 
+// An href with spaces around it is a working link in a browser: the send tracks it
+// like any other (LST-44 review).
+func TestVisualTrackingSpacedHref(t *testing.T) {
+	m, store := trackingManager()
+	c := models.Campaign{UUID: "campaign", ContentType: "visual", Messenger: "email",
+		Body: "<html><body><a href=\" https://example.test/offer \">Offer</a><a href=\"\nhttps://example.test/\tguide\">Guide</a></body></html>"}
+	msg := renderTrackingCampaign(t, m, &c, "subscriber")
+	out := string(msg.Body())
+	if len(store.urls) != 2 || store.urls[0] != "https://example.test/offer" || store.urls[1] != "https://example.test/guide" {
+		t.Fatalf("registered %v: %s", store.urls, out)
+	}
+	if strings.Count(out, "/link/link-") != 2 || strings.Contains(out, `href=" https`) {
+		t.Fatalf("not tracked: %s", out)
+	}
+}
+
 func TestVisualTrackingPerRecipient(t *testing.T) {
 	m, store := trackingManager()
 	c := models.Campaign{UUID: "campaign", ContentType: "visual", Messenger: "email",

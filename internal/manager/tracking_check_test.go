@@ -2,7 +2,9 @@ package manager
 
 import (
 	"errors"
+	"html"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -139,7 +141,16 @@ func TestCheckTracking(t *testing.T) {
 // The check must agree with what a real send produces: a link it calls tracked goes
 // through /link/, an untracked one stays direct, and the pixel is where it says.
 func TestCheckTrackingMatchesSend(t *testing.T) {
-	body := `<a href="https://a.test/x@TrackLink">A</a><a href="https://b.test/y">B</a>`
+	for _, body := range []string{
+		`<a href="https://a.test/x@TrackLink">A</a><a href="https://b.test/y">B</a>`,
+		// Browsers follow these too: spaces around, a newline inside (LST-44 review).
+		"<a href=\" https://a.test/x@TrackLink \">A</a><a href=\" https://b.test/y \">B</a><a href=\"\n https://c.test/\nz\t\">C</a>",
+	} {
+		checkTrackingMatchesSend(t, body)
+	}
+}
+
+func checkTrackingMatchesSend(t *testing.T, body string) {
 	for _, tc := range []struct {
 		contentType, messenger, tpl string
 	}{
@@ -160,8 +171,16 @@ func TestCheckTrackingMatchesSend(t *testing.T) {
 			if tracked := strings.Count(out, "/link/link-"); tracked != rep.Links.Manual+rep.Links.Auto {
 				t.Errorf("report %+v, but %d tracked links were sent: %s", rep.Links, tracked, out)
 			}
+			if rep.Links.Total < 2 {
+				t.Errorf("links not counted: %+v", rep.Links)
+			}
+			sentHrefs := regexp.MustCompile(`href="([^"]*)"`).FindAllStringSubmatch(out, -1)
 			for _, u := range rep.Links.UntrackedURLs {
-				if !strings.Contains(out, `href="`+u+`"`) {
+				direct := false
+				for _, h := range sentHrefs {
+					direct = direct || browserURL(html.UnescapeString(h[1])) == u
+				}
+				if !direct {
 					t.Errorf("%s is reported untracked but was not sent direct: %s", u, out)
 				}
 			}
