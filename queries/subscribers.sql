@@ -253,8 +253,15 @@ UPDATE subscriber_lists SET status='unsubscribed', updated_at=NOW()
 -- If $3 is TRUE, then all subscriptions of the subscriber is blocklisted
 -- and all existing subscriptions, irrespective of lists, unsubscribed.
 WITH campLists AS (
-    SELECT l.* FROM lists l JOIN campaign_lists cl ON cl.list_id = l.id
-    JOIN campaigns ca ON ca.id = cl.campaign_id WHERE ca.uuid = $1
+    -- AXM (LST-47): a follow-up campaign also covers the lists of the campaign it follows.
+    SELECT l.* FROM lists l WHERE l.id IN (
+        SELECT cl.list_id FROM campaign_lists cl
+        JOIN campaigns ca ON ca.id = cl.campaign_id WHERE ca.uuid = $1
+        UNION
+        SELECT pl.list_id FROM campaigns ca
+        JOIN axm_campaign_followups f ON f.campaign_id = ca.id
+        JOIN campaign_lists pl ON pl.campaign_id = f.parent_campaign_id WHERE ca.uuid = $1
+    )
 ),
 affectedLists AS (
     SELECT id AS list_id FROM campLists WHERE axm_filter IS NULL

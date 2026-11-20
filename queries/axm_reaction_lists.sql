@@ -2,7 +2,8 @@
 SELECT c.id, c.name, c.status, c.started_at,
     (SELECT COUNT(*) FROM axm_campaign_sends cs WHERE cs.campaign_id = c.id) AS sends,
     (SELECT COUNT(DISTINCT v.subscriber_id) FROM campaign_views v WHERE v.campaign_id = c.id) AS viewers,
-    (SELECT COUNT(DISTINCT k.subscriber_id) FROM link_clicks k WHERE k.campaign_id = c.id) AS clickers
+    (SELECT COUNT(DISTINCT k.subscriber_id) FROM link_clicks k WHERE k.campaign_id = c.id) AS clickers,
+    (SELECT MAX(cs.sent_at) FROM axm_campaign_sends cs WHERE cs.campaign_id = c.id) AS last_sent_at
 FROM campaigns c WHERE c.id = $1;
 
 -- name: axm-reaction-campaign-lists

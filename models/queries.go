@@ -50,6 +50,14 @@ type Queries struct {
 	AxmReactionCounts              *sqlx.Stmt `query:"axm-reaction-counts"`
 	AxmReactionSample              *sqlx.Stmt `query:"axm-reaction-sample"`
 	AxmReactionAddMembers          *sqlx.Stmt `query:"axm-reaction-add-members"`
+	AxmFollowupExisting            *sqlx.Stmt `query:"axm-followup-existing"`
+	AxmFollowupIsFollowup          *sqlx.Stmt `query:"axm-followup-is-followup"`
+	AxmFollowupInsert              *sqlx.Stmt `query:"axm-followup-insert"`
+	AxmFollowupGet                 *sqlx.Stmt `query:"axm-followup-get"`
+	AxmFollowupDue                 *sqlx.Stmt `query:"axm-followup-due"`
+	AxmFollowupRecheck             *sqlx.Stmt `query:"axm-followup-recheck"`
+	AxmFollowupPending             *sqlx.Stmt `query:"axm-followup-pending"`
+	AxmFollowupRecord              *sqlx.Stmt `query:"axm-followup-record"`
 	AxmGetColumnPresets            *sqlx.Stmt `query:"axm-get-column-presets"`
 	AxmGetColumnPreset             *sqlx.Stmt `query:"axm-get-column-preset"`
 	AxmColumnPresetExists          *sqlx.Stmt `query:"axm-column-preset-exists"`

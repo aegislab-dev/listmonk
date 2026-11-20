@@ -64,6 +64,12 @@ func newManagerStore(q *models.Queries, c *core.Core, m media.Store, db *sqlx.DB
 // campaigns that are also being processed. Progress saves own sent counts;
 // discovery must not update them, as Select can fail after the SQL commits.
 func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
+	// AXM (LST-47): a follow-up campaign that is about to start is checked against its
+	// original first. If the check fails nothing is picked up in this round: it is tried again
+	// in the next one, and a follow-up never starts unchecked.
+	if err := s.core.RecheckFollowups(context.Background(), currentIDs); err != nil {
+		return nil, err
+	}
 	var out []*models.Campaign
 	err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs))
 	return out, err

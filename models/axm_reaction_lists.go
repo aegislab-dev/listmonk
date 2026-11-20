@@ -37,10 +37,12 @@ func (s *ReactionSettings) Validate() error {
 }
 
 type ReactionTracking struct {
-	Sends              int  `db:"sends" json:"sends"`
-	Viewers            int  `db:"viewers" json:"viewers"`
-	Clickers           int  `db:"clickers" json:"clickers"`
-	IndividualTracking bool `db:"-" json:"individual_tracking"`
+	Sends    int `db:"sends" json:"sends"`
+	Viewers  int `db:"viewers" json:"viewers"`
+	Clickers int `db:"clickers" json:"clickers"`
+	// LastSentAt is when the last message of the campaign was accepted (LST-47).
+	LastSentAt         *time.Time `db:"last_sent_at" json:"last_sent_at"`
+	IndividualTracking bool       `db:"-" json:"individual_tracking"`
 }
 
 type ReactionCampaign struct {
@@ -72,6 +74,8 @@ type ReactionPreview struct {
 	Sample      []ReactionSample `json:"sample"`
 	DefaultName string           `json:"default_name,omitempty"`
 	CheckedAt   time.Time        `json:"checked_at"`
+	// Followup says whether the follow-up draft can be offered with this list (LST-47).
+	Followup *ReactionFollowup `json:"followup,omitempty"`
 }
 
 type ReactionResult struct {
@@ -80,13 +84,16 @@ type ReactionResult struct {
 	Tracking  ReactionTracking `json:"tracking"`
 	Counts    ReactionCounts   `json:"counts"`
 	CheckedAt time.Time        `json:"checked_at"`
+	// Followup is the draft campaign made together with the list, when it was asked for.
+	Followup *FollowupRef `json:"followup,omitempty"`
 }
 
 // WithReactionCandidates composes the shared eligibility CTE with the three statements
 // that consume it. Both fragments come from the named SQL files.
 func WithReactionCandidates(name, query, candidates string) string {
 	switch name {
-	case "axm-reaction-counts", "axm-reaction-sample", "axm-reaction-add-members":
+	case "axm-reaction-counts", "axm-reaction-sample", "axm-reaction-add-members",
+		"axm-followup-recheck", "axm-followup-pending":
 		return candidates + "\n" + query
 	default:
 		return query
