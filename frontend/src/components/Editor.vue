@@ -76,7 +76,8 @@
 
     <!-- campaign preview //-->
     <campaign-preview v-if="isPreviewing" is-post @close="onTogglePreview" type="campaign" :id="id" :title="title"
-      :content-type="self.contentType" :template-id="templateId" :body="self.body" />
+      :content-type="self.contentType" :template-id="templateId" :body="self.body" :sample="previewSample"
+      :sample-label="previewSampleLabel" />
   </section>
 </template>
 
@@ -103,6 +104,9 @@ export default {
 
   props: {
     listIds: { type: Array, default: () => [] },
+    // AXM (LST-41): the sample of the campaign test box, for the preview.
+    previewSample: { type: String, default: '' },
+    previewSampleLabel: { type: String, default: '' },
     contentTypes: { type: Object, default: () => ({}) },
     id: { type: Number, default: 0 },
     title: { type: String, default: '' },
