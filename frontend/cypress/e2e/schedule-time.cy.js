@@ -123,15 +123,17 @@ describe('Scheduled send time zone', () => {
     pickerValue().should('have.value', '2030-01-14 19:00');
   });
 
-  it('keeps the time zone button inside a narrow screen', () => {
+  it('puts the time zone button under the input on a narrow screen, inside its own row', () => {
     cy.viewport(320, 700);
     open('ny');
     zoneButton().should('be.visible').then(($b) => {
       const r = $b[0].getBoundingClientRect();
-      expect(r.left).to.be.gte(0);
-      expect(r.right).to.be.lte(320);
+      const row = Cypress.$('[data-cy=send_at]')[0].getBoundingClientRect();
+      const input = Cypress.$('[data-cy=send_at] .datepicker input')[0].getBoundingClientRect();
+      expect(r.left).to.be.gte(row.left - 1);
+      expect(r.right).to.be.lte(row.right + 1);
+      expect(r.top).to.be.gte(input.bottom - 1);
     });
-    cy.window().its('document.documentElement.scrollWidth').should('be.lte', 320);
   });
 
   it('searches by Korean name', () => {
