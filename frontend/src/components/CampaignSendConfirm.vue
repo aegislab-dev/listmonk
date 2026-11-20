@@ -168,6 +168,7 @@
 import Vue from 'vue';
 import dayjs from 'dayjs';
 import { richParts, sendConfirmModel, untilKey } from '../send-confirm';
+import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 
 // Seconds before the send time that the window already says it has passed.
 const PAST_MARGIN = 3000;
@@ -212,10 +213,9 @@ export default Vue.extend({
   computed: {
     isResume() { return this.pf && this.pf.mode === 'resume'; },
 
-    // The time zone the scheduled time is shown in. The time picker of the campaign page
-    // reads the time in the zone of this browser, so this is it too (undefined = the
-    // browser's). When the picker is fixed to Korean time, set this to 'Asia/Seoul'.
-    zone() { return undefined; },
+    // The time zone the scheduled time is shown in: the one it was chosen in on the campaign
+    // page (LST-50, attribs.axm_send_tz), Korean time when none is stored, as the picker does.
+    zone() { return splitAttribs({ [TZ_ATTRIB]: this.pf ? this.pf.sendTz : '' }).tz; },
 
     lang() { return (this.$store.state.serverConfig || {}).lang || 'ko'; },
 

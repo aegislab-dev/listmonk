@@ -44,6 +44,9 @@ type preflightResponse struct {
 	FromEmail string     `json:"from_email"`
 	ReplyTo   string     `json:"reply_to"`
 	SendAt    null.Time  `json:"send_at"`
+	// SendTZ is the time zone the send time was chosen in (LST-50, attribs.axm_send_tz),
+	// empty when none is stored (the screen then uses Korean time, as the picker does).
+	SendTZ string `json:"send_tz"`
 	// PausedAt is when a paused campaign was paused (the last pause in the audit log, else
 	// the campaign's last change).
 	PausedAt null.Time `json:"paused_at"`
@@ -420,6 +423,9 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
 		Checks: preflightChecks(facts),
+	}
+	if tz, ok := camp.Attribs["axm_send_tz"].(string); ok {
+		out.SendTZ = tz
 	}
 	if out.Lists == nil {
 		out.Lists = []models.PreflightList{}

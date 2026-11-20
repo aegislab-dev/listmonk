@@ -159,9 +159,25 @@ describe('Pre-send confirmation window', () => {
     cy.get(`${win}[data-mode=schedule]`).should('exist');
     cy.get('[data-cy=send-title]').should('contain', 'Send to 3 people on');
     cy.get('[data-cy=send-schedule-time]').invoke('text').should('match', /^\d{4}-\d{2}-\d{2} \(.+\) \d{2}:\d{2}$/);
-    cy.get('[data-cy=send-schedule-zone]').invoke('text').should('match', /\S+ · UTC([+-]\d+(:\d+)?)? ·/);
+    // No zone stored: Korean time, as the picker (LST-50), whatever this browser's zone is.
+    cy.get('[data-cy=send-schedule-zone]').should('contain', 'Asia/Seoul · UTC+9 · the time zone chosen for the schedule');
+    cy.get('[data-cy=send-schedule-other]').should('not.exist');
     cy.get('[data-cy=send-schedule-until]').should('contain', 'in about');
     cy.get('[data-cy=send-ok]').should('contain', 'Schedule for 3 people');
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
+  it('shows the schedule in the time zone it was chosen in, with Korean time beside it', () => {
+    // 2027-01-15 14:30 in New York is 2027-01-16 04:30 in Korea.
+    cy.then(() => create('nytime', {
+      lists: [listX], send_at: '2027-01-15T19:30:00Z', attribs: { axm_send_tz: 'America/New_York' },
+    }));
+    cy.visit('/admin/campaigns');
+    row('nytime').find('[data-cy=btn-schedule]').click();
+    ready();
+    cy.get('[data-cy=send-schedule-time]').should('contain', '2027-01-15').and('contain', '14:30');
+    cy.get('[data-cy=send-schedule-zone]').should('contain', 'America/New_York · UTC-5');
+    cy.get('[data-cy=send-schedule-other]').should('contain', '2027-01-16').and('contain', '04:30');
     cy.get('[data-cy=send-cancel]').click();
   });
 
