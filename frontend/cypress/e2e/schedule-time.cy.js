@@ -133,6 +133,9 @@ describe('Scheduled send time zone', () => {
       expect(r.left).to.be.gte(row.left - 1);
       expect(r.right).to.be.lte(row.right + 1);
       expect(r.top).to.be.gte(input.bottom - 1);
+      // The arrow at the end of the button is on the screen, with no sideways scrolling.
+      const arrow = Cypress.$('[data-cy=send-tz-button] .tzp-caret')[0].getBoundingClientRect();
+      expect(arrow.right).to.be.lte(Cypress.config('viewportWidth'));
     });
   });
 

@@ -132,8 +132,9 @@ export default Vue.extend({
 .tzp-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tzp-current > b { margin-right: .4rem; }
 @media (max-width: 520px) {
-  .tzp { flex: 1 1 100%; margin-top: .5rem; }
-  .tzp-button { width: 100%; max-width: none; min-width: 0; }
+  /* Under the input, as wide as its content, and never past the screen: the page itself is wider than a phone. */
+  .tzp { flex: 0 1 auto; margin-top: .5rem; max-width: calc(100vw - 4.5rem); }
+  .tzp-button { width: auto; max-width: 100%; min-width: 0; }
   .tzp-panel { left: 0; right: auto; }
 }
 .tzp-caret { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid #6b7280; flex: none; }
