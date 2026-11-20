@@ -418,6 +418,7 @@
     "campaigns.recent.listNote": "This puts the {added} people the rule leaves in ({excluded} excluded) on a new list as of now, and changes this campaign's target to that list and saves it. People added to the list later will also get the campaign.",
     "campaigns.recent.listNoteNew": "This puts the {added} people the rule leaves in ({excluded} excluded) on a new list as of now, and changes this campaign's target to that list. It takes effect when you create the campaign. People added to the list later will also get the campaign.",
     "campaigns.recent.listCreate": "Make list and change target",
+    "campaigns.recent.sameTeams": "Same as the source lists ({name})",
     "campaigns.recent.listMade": "The campaign's target is now the new list, and it is saved.",
     "campaigns.recent.listMadeNew": "The campaign's target is now the new list. It takes effect when you create the campaign.",
     "campaigns.recent.listSaveError": "The list was made. Save the changes to switch the campaign's target to it.",

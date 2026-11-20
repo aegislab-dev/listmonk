@@ -63,14 +63,14 @@
     </template>
 
     <div v-if="showMadeLine" class="recent-made" role="status" data-cy="recent-list-made">
-      {{ $t(madeList.saved ? 'campaigns.recent.listMade' : 'campaigns.recent.listMadeNew') }}
+      ✓ {{ $t(madeList.saved ? 'campaigns.recent.listMade' : 'campaigns.recent.listMadeNew') }}
       <router-link :to="{ name: 'list', params: { id: madeList.id } }">{{ $t('lists.draw.viewList') }}</router-link>
     </div>
     <p v-else-if="madeList && madeList.error && madeListInUse" class="recent-error" role="alert" data-cy="recent-list-save-error">
       {{ madeList.error }}
     </p>
     <div v-else-if="canMakeList" class="recent-make">
-      <b-button type="is-primary is-light" :expanded="mobile" data-cy="recent-make-list" @click="openList">
+      <b-button type="is-primary is-light" class="recent-make-button" data-cy="recent-make-list" @click="openList">
         {{ $t('campaigns.recent.makeList') }}
       </b-button>
     </div>
@@ -87,9 +87,11 @@
             <b-field v-if="isAdmin" :label="$t('teams.drawTeam')">
               <b-select v-model="team" expanded :placeholder="$t('teams.choose')" data-cy="recent-list-team"
                 :loading="loadingTeams" :disabled="creating">
-                <option v-if="sourceTeams.length" value="">{{ sourceTeamNames }}</option>
-                <option v-for="item in teams" :key="item.tag" :value="item.tag">{{ item.name }}</option>
-                <option :value="NO_TEAM">{{ $t('teams.noTeamChoice') }}</option>
+                <option v-if="sourceTeams.length" :value="SAME_TEAMS">
+                  {{ $t('campaigns.recent.sameTeams', { name: sourceTeamNames }) }}
+                </option>
+                <option v-for="item in teamChoices" :key="item.tag" :value="item.tag">{{ item.name }}</option>
+                <option v-if="value.scope !== 'team'" :value="NO_TEAM">{{ $t('teams.noTeamChoice') }}</option>
               </b-select>
             </b-field>
             <div v-else class="field">
@@ -97,8 +99,7 @@
               <b-tag type="is-info is-light" data-cy="recent-list-team-fixed">{{ teamName($teamTag()) }}</b-tag>
             </div>
             <b-field :label="$t('campaigns.recent.listName')">
-              <b-input v-model="listName" :maxlength="200" required :disabled="creating" data-cy="recent-list-name"
-                @input="nameTouched = true" />
+              <b-input v-model="listName" :maxlength="200" required :disabled="creating" data-cy="recent-list-name" />
             </b-field>
             <p class="recent-note" data-cy="recent-list-note">
               {{ $t(savedCampaign ? 'campaigns.recent.listNote' : 'campaigns.recent.listNoteNew',
@@ -125,6 +126,9 @@ import {
   RECENT_DAYS, RECENT_MAX_CAMPAIGNS, RECENT_SCOPES, recentRulePayload,
 } from '../recent-send-exclude';
 import { NO_TEAM, teamName } from '../teams';
+
+// The team choice that follows the source lists' teams (sent as no team field).
+const SAME_TEAMS = '__same__';
 
 export default {
   props: {
@@ -157,15 +161,14 @@ export default {
       searchController: null,
       campaignNames: {},
       NO_TEAM,
+      SAME_TEAMS,
       listOpen: false,
       listName: '',
-      nameTouched: false,
       team: null,
       teams: [],
       loadingTeams: false,
       creating: false,
       listError: '',
-      mobile: window.matchMedia('(max-width: 440px)').matches,
     };
   },
 
@@ -204,8 +207,11 @@ export default {
       return !!this.madeList && this.listIds.length === 1 && this.listIds[0] === this.madeList.id;
     },
 
+    // The result line stays while the preview shows no new overlap; once somebody would be
+    // excluded again the button comes back (a new result can be made).
     showMadeLine() {
-      return this.madeListInUse && !this.madeList.error;
+      return this.madeListInUse && !this.madeList.error && (!this.savedCampaign || this.madeList.saved)
+        && (!this.counts || this.counts.excluded === 0);
     },
 
     sourceTeams() {
@@ -215,6 +221,11 @@ export default {
     },
 
     sourceTeamNames() { return this.sourceTeams.map(teamName).join(', '); },
+
+    // A single source team is already the default choice: do not list it twice.
+    teamChoices() {
+      return this.sourceTeams.length === 1 ? this.teams.filter((item) => item.tag !== this.sourceTeams[0]) : this.teams;
+    },
 
     defaultListName() {
       const names = this.listIds.map((id) => (this.$store.state.lists.results || []).find((l) => l.id === id)?.name)
@@ -253,7 +264,6 @@ export default {
     async openList() {
       this.listOpen = true;
       this.listError = '';
-      this.nameTouched = false;
       this.listName = this.defaultListName;
       this.team = null;
       if (!this.isAdmin) return;
@@ -266,7 +276,7 @@ export default {
       } finally {
         this.loadingTeams = false;
         // Follow the source lists' teams unless that is impossible.
-        this.team = this.sourceTeams.length ? '' : null;
+        this.team = this.sourceTeams.length ? SAME_TEAMS : null;
       }
     },
 
@@ -278,9 +288,9 @@ export default {
       if (!this.canCreate || !this.previewKey) return;
       this.creating = true;
       this.listError = '';
-      const body = { ...JSON.parse(this.previewKey), name: this.nameTouched ? this.listName.trim() : '' };
+      const body = { ...JSON.parse(this.previewKey), name: this.listName.trim() };
       if (this.isAdmin && this.team === NO_TEAM) body.no_team = true;
-      else if (this.isAdmin && this.team) body.team = this.team;
+      else if (this.isAdmin && this.team && this.team !== SAME_TEAMS) body.team = this.team;
       try {
         const result = await this.$api.makeRecentExcludeList(body);
         this.listOpen = false;
@@ -384,6 +394,9 @@ export default {
 .recent-notice, .recent-warning, .recent-error { border-radius: 4px; padding: 8px 10px; margin-top: 9px; font-size: .8125rem; }
 .recent-notice { background: #eef2fc; color: #263675; }
 .recent-make { margin-top: 12px; }
+@media (max-width: 440px) {
+  .recent-make-button { width: 100%; }
+}
 .recent-made { border: 1px solid #bfe0cd; border-radius: 4px; padding: 9px 12px; margin-top: 12px; font-size: .8125rem; background: #e8f5ed; color: #1f4d36; }
 .recent-made a { margin-left: 6px; font-weight: 600; }
 .recent-note { border-radius: 4px; padding: 8px 10px; margin-top: 10px; font-size: .8125rem; background: #eef2fc; color: #263675; }

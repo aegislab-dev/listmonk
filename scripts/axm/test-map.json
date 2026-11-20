@@ -291,7 +291,9 @@
    "paths": [
     "frontend/src/components/RecentSendExclude.vue",
     "frontend/src/recent-send-exclude.js",
-    "cmd/axm_recent_exclude*.go"
+    "cmd/axm_recent_exclude*.go",
+    "internal/core/axm_recent_exclude*.go",
+    "models/axm_recent_exclude.go"
    ],
    "specs": [
     "campaign-recent-exclude.cy.js",

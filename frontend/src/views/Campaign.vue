@@ -427,6 +427,8 @@ export default Vue.extend({
       recentRuleError: '',
       createdDraftId: 0,
       savingCampaign: false,
+      // The list made from the recent-send exclusion result: { id, saved, error }.
+      madeList: null,
 
       // The test box (LST-41): the sample for addresses that are not subscribers, and the
       // addresses the server refused last time.
@@ -801,13 +803,15 @@ export default Vue.extend({
     // exists on the server is saved right away; the list stays even if saving fails.
     async onRecentListMade(result) {
       const { id, name } = result.list;
-      await this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' }).catch(() => {});
+      // The target changes before anything is awaited, so a save pressed meanwhile carries it.
       this.form.lists = [{ id, name }];
       this.madeList = { id, saved: false, error: '' };
+      this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' }).catch(() => {});
       if (!this.data.id) return;
       try {
         if (!this.parseFormJSON()) throw new Error('invalid form');
-        await this.updateCampaign();
+        // The result line says it is saved; no second notice.
+        if (!await this.updateCampaign(undefined, { quiet: true })) throw new Error('not saved');
       } catch (err) {
         this.madeList = { id, saved: false, error: this.$t('campaigns.recent.listSaveError') };
       }

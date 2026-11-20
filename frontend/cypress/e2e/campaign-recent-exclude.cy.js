@@ -137,12 +137,15 @@ describe('Recent-send exclusion settings', () => {
     cy.get('[data-cy=recent-list-create]').click();
 
     cy.wait('@makeList').then(({ request, response }) => {
-      expect(request.body).to.include({ days: 14, scope: 'all', name: '', no_team: true, campaign_id: campaignId });
+      // The name the person saw is the name that is sent.
+      expect(request.body).to.include({ days: 14, scope: 'all', no_team: true, campaign_id: campaignId });
+      expect(request.body.name).to.contain(listName).and.to.contain('last 14 days');
       expect(response.body.data.counts).to.deep.equal({ target: 1, excluded: 0, added: 1 });
       cy.wrap(response.body.data.list).as('made');
     });
     cy.wait('@updateCampaign').its('request.body.lists').should('have.length', 1);
-    cy.get('[data-cy=recent-list-made]').should('contain', 'saved').find('a').should('exist');
+    cy.get('[data-cy=recent-list-made]').should('contain', '✓').and('contain', 'saved').find('a').should('exist');
+    cy.get('.toast').should('not.exist');
     cy.get('.list-selector .tags .tag').should('have.length', 1);
     cy.get('[data-cy=recent-make-list]').should('not.exist');
 
@@ -158,5 +161,43 @@ describe('Recent-send exclusion settings', () => {
       });
       cy.request(`/api/subscribers?list_id=${made.id}`).its('body.data.total').should('eq', 1);
     });
+  });
+
+  it('brings the button back when the preview shows somebody newly excluded', () => {
+    cy.intercept('POST', preview).as('recentPreview');
+    cy.intercept('POST', '/api/campaigns/recent-exclude/list').as('makeList');
+    openCampaign(campaignId);
+    cy.get(switchInput).should('be.checked');
+    cy.wait('@recentPreview');
+    cy.get('[data-cy=recent-make-list]').click();
+    cy.get('select[data-cy=recent-list-team]').select('__none__');
+    cy.get('[data-cy=recent-list-create]').click();
+    cy.wait('@makeList');
+    cy.get('[data-cy=recent-list-made]').should('be.visible');
+    cy.get('[data-cy=recent-make-list]').should('not.exist');
+
+    // A later change of the rule shows somebody newly excluded: the result line gives way to the button.
+    cy.intercept('POST', preview, {
+      body: { data: { target: 2, excluded: 1, will_send: 1, as_of: new Date().toISOString(), records_from: null, team_tags: [] } },
+    }).as('stubbed');
+    cy.get('select[data-cy=recent-days]').select('30');
+    cy.wait('@stubbed');
+    cy.get('[data-cy=recent-make-list]').should('be.visible');
+    cy.get('[data-cy=recent-list-made]').should('not.exist');
+  });
+
+  it('shows an error, not a saved line, when the campaign cannot be saved', () => {
+    cy.intercept('POST', preview).as('recentPreview');
+    cy.intercept('PUT', `/api/campaigns/${campaignId}`, { statusCode: 400, body: { message: 'refused' } }).as('refused');
+    openCampaign(campaignId);
+    cy.get(switchInput).should('be.checked');
+    cy.wait('@recentPreview');
+    cy.get('[data-cy=recent-make-list]').click();
+    cy.get('select[data-cy=recent-list-team]').select('__none__');
+    cy.get('[data-cy=recent-list-create]').click();
+    cy.wait('@refused');
+    cy.get('[data-cy=recent-list-save-error]').should('contain', 'The list was made');
+    cy.get('[data-cy=recent-list-made]').should('not.exist');
+    cy.get('[data-cy=recent-make-list]').should('not.exist');
   });
 });

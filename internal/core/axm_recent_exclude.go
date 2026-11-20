@@ -184,6 +184,9 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	return out, nil
 }
 
+// recentListLockKey serializes the making of recent-exclusion lists (see MakeRecentExcludeList).
+const recentListLockKey int64 = 746046
+
 // RecentListOptions carries what the handler decides about the new list.
 type RecentListOptions struct {
 	Name         string
@@ -236,6 +239,20 @@ func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule mode
 	if len(ids) == 0 {
 		return out, c.recentBadRequest("selectLists")
 	}
+
+	// Names are made unique by looking at the committed lists, so two makers must not run at
+	// once: the second one starts its snapshot only after the first one committed. The lock is
+	// held on a connection of its own, before the transaction takes its snapshot.
+	lock, err := c.db.Conn(ctx)
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	defer lock.Close()
+	if _, err := lock.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, recentListLockKey); err != nil {
+		return out, c.recentError(err)
+	}
+	defer lock.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, recentListLockKey)
+
 	tx, err := c.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return out, c.recentError(err)
@@ -262,6 +279,11 @@ func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule mode
 	teams, err := o.ResolveTeams(tags)
 	if err != nil {
 		return out, err
+	}
+	// A same-team rule counts the teams of the campaign's lists: a list without a team would
+	// leave the rule with nothing to count.
+	if rule.Scope == models.RecentScopeTeam && len(teams) == 0 {
+		return out, c.recentBadRequest("noTeam")
 	}
 
 	var counts models.RecentCounts

@@ -137,7 +137,7 @@ func TestRecentListMembersAndScopes(t *testing.T) {
 			if code != 200 || json.Unmarshal(data, &preview) != nil {
 				t.Fatalf("preview %d %s", code, data)
 			}
-			out := e.make(e.admin, body(tc.rule, tc.lists...)[:len(body(tc.rule, tc.lists...))-1]+`,"no_team":true}`)
+			out := e.make(e.admin, body(tc.rule, tc.lists...)[:len(body(tc.rule, tc.lists...))-1]+`,"team":"팀:가"}`)
 			got := e.members(out.List.ID)
 			if !sameInts(got, tc.want) {
 				t.Fatalf("members %v, want %v (counts %+v, preview %+v)", got, tc.want, out.Counts, preview)
@@ -147,7 +147,7 @@ func TestRecentListMembersAndScopes(t *testing.T) {
 				t.Fatalf("counts %+v against preview %+v and %d rows", out.Counts, preview, len(got))
 			}
 			if out.List.Type != "private" || out.List.Optin != "single" || out.List.Status != "active" ||
-				!slices.Equal(out.List.Tags, []string{models.RecentListTag}) {
+				!sameSet(out.List.Tags, []string{models.RecentListTag, "팀:가"}) {
 				t.Fatalf("list %+v", out.List)
 			}
 			var stored struct {
@@ -352,14 +352,70 @@ func TestRecentListAuditAndAudience(t *testing.T) {
 	}
 
 	// Swapping the campaign's target to the made list gives exactly that audience.
-	e.db.MustExec(`DELETE FROM campaign_lists WHERE campaign_id=$1`, e.draft)
-	e.db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES ($1,$2,$3)`, e.draft, out.List.ID, out.List.Name)
-	wantSame(t, "campaign audience", e.ids(`SELECT subscriber_id FROM axm_campaign_audience(ARRAY[$1]::INT[]) ORDER BY 1`, out.List.ID), e.members(out.List.ID))
+	// The screen does this with the normal campaign update; the audience is then read from what the
+	// campaign stores, the way the sender does.
+	camp, err := e.core.GetCampaign(e.draft, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.core.UpdateCampaign(e.draft, camp, []int{out.List.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "campaign lists", e.ids(`SELECT list_id FROM campaign_lists WHERE campaign_id=$1 ORDER BY 1`, e.draft), []int{out.List.ID})
+	audience := func() []int {
+		return e.ids(`SELECT subscriber_id FROM axm_campaign_audience(ARRAY(SELECT list_id FROM campaign_lists WHERE campaign_id=$1)) ORDER BY 1`, e.draft)
+	}
+	wantSame(t, "campaign audience", audience(), e.members(out.List.ID))
 	// Blocking a member after the list was made removes only that person from the audience.
 	victim := e.members(out.List.ID)[0]
 	e.db.MustExec(`UPDATE subscribers SET status='blocklisted' WHERE id=$1`, victim)
-	got := e.ids(`SELECT subscriber_id FROM axm_campaign_audience(ARRAY[$1]::INT[]) ORDER BY 1`, out.List.ID)
+	got := audience()
 	if len(got) != out.Counts.Added-1 || slices.Contains(got, victim) {
 		t.Fatalf("audience after block: %v (victim %d)", got, victim)
+	}
+}
+
+func TestRecentListSameTeamNeedsATeamAndNamesStayUnique(t *testing.T) {
+	e := newRecentListEnv(t)
+	before := e.lists()
+	// A same-team rule cannot be paired with a list that has no team.
+	body := fmt.Sprintf(`{"list_ids":[%d],"days":14,"scope":"team","no_team":true}`, e.aList)
+	if code, _ := e.request(e.admin, body); code != http.StatusBadRequest {
+		t.Fatalf("same-team rule with no team: %d", code)
+	}
+	if e.lists() != before {
+		t.Fatal("a refused request left a list")
+	}
+	// Other scopes may make a list without a team.
+	if code, data := e.request(e.admin, fmt.Sprintf(`{"list_ids":[%d],"days":14,"scope":"all","no_team":true}`, e.aList)); code != 200 {
+		t.Fatalf("all-teams rule with no team: %d %s", code, data)
+	}
+
+	// Several makers at once, same name: every list gets its own name.
+	const n = 4
+	names := make(chan string, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			code, data := e.request(e.admin, fmt.Sprintf(`{"list_ids":[%d],"days":14,"scope":"all","no_team":true,"name":"동시 생성"}`, e.aList))
+			var out models.RecentListResult
+			if code != 200 || json.Unmarshal(data, &out) != nil {
+				names <- fmt.Sprintf("ERROR %d %s", code, data)
+				return
+			}
+			names <- out.List.Name
+		}()
+	}
+	seen := map[string]bool{}
+	for i := 0; i < n; i++ {
+		name := <-names
+		if strings.HasPrefix(name, "ERROR") || seen[name] {
+			t.Fatalf("name %q (seen %v)", name, seen)
+		}
+		seen[name] = true
+	}
+	for _, want := range []string{"동시 생성", "동시 생성 (2)", "동시 생성 (3)", "동시 생성 (4)"} {
+		if !seen[want] {
+			t.Fatalf("missing %q in %v", want, seen)
+		}
 	}
 }
