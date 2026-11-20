@@ -417,7 +417,8 @@
     "internal/core/axm_preflight*.go",
     "internal/manager/axm_preflight*.go",
     "queries/axm_preflight.sql",
-    "models/axm_preflight.go"
+    "models/axm_preflight.go",
+    "internal/messenger/email/axm_headers*.go"
    ],
    "specs": [
     "campaign-send-confirm.cy.js",
