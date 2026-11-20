@@ -1273,9 +1273,7 @@ export default Vue.extend({
 
     // Fetch campaign.
     if (this.isEditing) {
-      // The server matches the From to the list; read the list first so the
-      // index it returns points into the current list.
-      cfgReady.catch(() => {}).then(() => this.getCampaign(id)).then(() => {
+      this.getCampaign(id).then(() => {
         if (this.$route.hash !== '') {
           this.activeTab = this.$route.hash.replace('#', '');
         }
