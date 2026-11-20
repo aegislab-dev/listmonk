@@ -379,7 +379,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	rep, err := trackingInAll(statuses, func(status string) (manager.TrackingReport, error) {
 		c := sendCamp
 		c.Status = status
-		return a.manager.CheckTracking(&c, dummySubscriber, true)
+		return a.manager.CheckTracking(&c, dummySubscriber)
 	})
 	if err != nil {
 		out.TrackingError = err.Error()

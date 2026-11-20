@@ -740,6 +740,13 @@ func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign) erro
 			a.i18n.Ts("templates.errorCompiling", "error", err.Error()))
 	}
 
+	// AXM (LST-44): the media too, before rendering, as the real send does. Otherwise
+	// the first test message renders without them and the next ones with them.
+	if err := a.manager.AttachMedia(camp); err != nil {
+		a.log.Printf("error attaching media: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
 	// Create a sample campaign message.
 	msg, err := a.manager.NewCampaignMessage(camp, sub)
 	if err != nil {
