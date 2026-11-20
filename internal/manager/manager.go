@@ -880,6 +880,13 @@ func (m *Manager) makeGnericFuncMap() template.FuncMap {
 	return funcs
 }
 
+// AttachMedia loads the campaign's media before its messages are rendered, as a send
+// does (AXM LST-44: a test send rendered its first message without them and the rest
+// with them, since pushing the first one attached them to the shared campaign).
+func (m *Manager) AttachMedia(c *models.Campaign) error {
+	return m.attachMedia(c)
+}
+
 // attachMedia loads any media/attachments from the media store and attaches
 // the byte blobs to the campaign. Inline attachments are skipped as they're
 // loaded earlier by LoadInlineImages().

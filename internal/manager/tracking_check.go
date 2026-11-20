@@ -101,11 +101,10 @@ func trimPlainURL(u string) string {
 // CheckTracking renders the campaign for one subscriber and reports whether views and
 // clicks would be recorded. The campaign that is passed in is not changed.
 //
-// Templates can read .Campaign.Attachments, which the sends fill at different points:
-// a real send (newPipe) loads the inline images and the media before any message is
-// rendered; a test send (sendTestMessage) renders before PushCampaignMessage loads the
-// media, so it sees the inline images only. asSend picks which one is checked.
-func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber, asSend bool) (TrackingReport, error) {
+// Templates can read .Campaign.Attachments: a real send (newPipe) and a test send
+// (sendTestMessage) both load the inline images and the media before any message is
+// rendered, and so does the check.
+func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber) (TrackingReport, error) {
 	rep := TrackingReport{
 		State:       TrackingStateOK,
 		Disabled:    m.cfg.DisableTracking,
@@ -142,10 +141,8 @@ func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber, asSen
 	if err := camp.CompileTemplate(funcs); err != nil {
 		return rep, &TrackingCheckError{Compile: true, Err: err}
 	}
-	if asSend {
-		if err := m.attachMedia(&camp); err != nil {
-			return rep, &TrackingCheckError{Err: err}
-		}
+	if err := m.attachMedia(&camp); err != nil {
+		return rep, &TrackingCheckError{Err: err}
 	}
 
 	sub.Attribs = models.PlainNumbers(sub.Attribs)
