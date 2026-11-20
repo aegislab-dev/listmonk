@@ -82,3 +82,37 @@ SELECT cl.list_id AS id, cl.name, cl.optin, cl.is_dynamic AS dynamic, NOT cl.liv
 FROM campLists cl
 LEFT JOIN per ON per.list_id = cl.list_id
 ORDER BY cl.name, cl.list_id;
+
+-- name: axm-preflight-sample
+-- Up to $2 of the people campaign $1 would reach, the lowest IDs first, by the same rule as
+-- axm-preflight-audience (keep the two the same). The pre-send check renders the mail for them.
+WITH c AS (
+    SELECT id, type FROM campaigns WHERE id = $1
+),
+campLists AS (
+    SELECT cl.list_id, COALESCE(l.optin::TEXT, '') AS optin,
+        COALESCE(l.axm_filter IS NOT NULL, false) AS is_dynamic, l.id IS NOT NULL AS live
+    FROM c JOIN campaign_lists cl ON cl.campaign_id = c.id
+    LEFT JOIN lists l ON l.id = cl.list_id
+),
+memb AS (
+    SELECT s.id, s.status = 'blocklisted' AS blocked, sl.status AS sub_status, cl.optin
+    FROM campLists cl
+    JOIN subscriber_lists sl ON sl.list_id = cl.list_id
+    JOIN subscribers s ON s.id = sl.subscriber_id
+    WHERE cl.live AND NOT cl.is_dynamic
+),
+eligible AS (
+    SELECT m.id FROM c, memb m
+    WHERE NOT m.blocked
+        AND CASE
+            WHEN c.type = 'optin' THEN m.sub_status = 'unconfirmed' AND m.optin = 'double'
+            WHEN m.optin = 'double' THEN m.sub_status = 'confirmed'
+            ELSE m.sub_status != 'unsubscribed'
+        END
+    UNION
+    SELECT m.subscriber_id FROM c, campLists cl
+    CROSS JOIN LATERAL axm_dynamic_list_members(cl.list_id) m
+    WHERE cl.live AND cl.is_dynamic AND c.type != 'optin'
+)
+SELECT s.* FROM subscribers s WHERE s.id IN (SELECT id FROM eligible) ORDER BY s.id LIMIT $2;

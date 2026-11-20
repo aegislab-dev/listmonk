@@ -1139,3 +1139,52 @@ func TestCampaignPreflightRealRecipients(t *testing.T) {
 		t.Fatalf("link always, subject header of the body: %+v", o)
 	}
 }
+
+// The sample follows the sender's rule (a double opt-in list sends only to the confirmed), and a
+// link under a condition on the subscriber is never a pass on the sample (LST-48 review).
+func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
+	e := newPreflightApp(t)
+	member := e.as(e.ua)
+	id := strconv.Itoa(e.campID)
+	read := func() string {
+		t.Helper()
+		code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		var o struct {
+			Checks []models.PreflightCheck `json:"checks"`
+		}
+		if code != http.StatusOK || json.Unmarshal(data, &o) != nil {
+			t.Fatalf("%d %s", code, data)
+		}
+		out := []string{}
+		for _, c := range o.Checks {
+			if strings.HasPrefix(c.Key, "unsubscribe.") {
+				out = append(out, c.Key+"="+c.Level)
+			}
+		}
+		return strings.Join(out, ",")
+	}
+	// Ten unconfirmed first, then two confirmed with the compact edition, on a double opt-in list.
+	e.db.MustExec(`UPDATE lists SET optin='double' WHERE id=$1`, e.aList)
+	for i := 0; i < 10; i++ {
+		e.pfSub("enabled", "", map[int]string{e.aList: "unconfirmed"})
+	}
+	for i := 0; i < 2; i++ {
+		sid := e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+		e.db.MustExec(`UPDATE subscribers SET attribs='{"compact":true}'::jsonb WHERE id=$1`, sid)
+	}
+	e.db.MustExec(`UPDATE campaigns SET content_type='html', body='<p>News</p>{{ if not .Subscriber.Attribs.compact }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.missing=warn" {
+		t.Fatalf("the two who get mail have no link: %q", got)
+	}
+	// Only someone beyond the sample lacks it: the window cannot vouch for all, it warns.
+	e.db.MustExec(`UPDATE lists SET optin='single' WHERE id=$1`, e.aList)
+	e.db.MustExec(`UPDATE subscribers SET attribs='{}'::jsonb WHERE id IN (SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1)`, e.aList)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("link under a subscriber condition, present for the sample: %q", got)
+	}
+	// Printed always: a pass.
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.missing=ok" {
+		t.Fatalf("link always: %q", got)
+	}
+}

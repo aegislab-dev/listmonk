@@ -671,6 +671,7 @@
     "campaigns.sendConfirm.check.from.placeholder.warn": "**Check the From address.** `{from}` looks like a stock value or an unfilled one.",
     "campaigns.sendConfirm.check.from.placeholder.ok": "The From address is not a stock value",
     "campaigns.sendConfirm.check.unsubscribe.missing.warn": "**The body has no unsubscribe link.** Check that the body or the template has `{tag}`.",
+    "campaigns.sendConfirm.check.unsubscribe.perSubscriber.warn": "**The unsubscribe link may be missing for some recipients.** It is printed only under a condition on the subscriber's data, so this window cannot check every recipient's mail (the {n} it rendered have it).",
     "campaigns.sendConfirm.check.unsubscribe.missing.ok": "The body has an unsubscribe link",
     "campaigns.sendConfirm.check.recent.notApplied.warn": "A rule to exclude people who got mail in the last {days} days is saved but **does not apply to sending yet.** By the rule, **{excluded}** of them got mail in the last {days} days.",
     "campaigns.sendConfirm.check.recent.notApplied.noCount": "A rule to exclude people who got mail in the last {days} days is saved but **does not apply to sending yet.**",

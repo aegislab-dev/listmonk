@@ -675,6 +675,7 @@
     "campaigns.sendConfirm.check.from.placeholder.warn": "**보내는 주소를 확인하세요.** `{from}` 은 설치 예시값이거나 채워지지 않은 값처럼 보입니다.",
     "campaigns.sendConfirm.check.from.placeholder.ok": "보내는 주소가 예시값이 아님",
     "campaigns.sendConfirm.check.unsubscribe.missing.warn": "**본문에 수신거부 링크가 없습니다.** 본문이나 템플릿에 `{tag}` 이 있는지 확인하세요.",
+    "campaigns.sendConfirm.check.unsubscribe.perSubscriber.warn": "**수신거부 링크가 일부 받는 사람에게 빠질 수 있습니다.** 링크가 구독자 정보를 보는 조건 안에 있어 이 창은 모든 받는 사람의 메일을 확인할 수 없습니다(렌더링해 본 {n}명에는 있음).",
     "campaigns.sendConfirm.check.unsubscribe.missing.ok": "수신거부 링크가 본문에 있음",
     "campaigns.sendConfirm.check.recent.notApplied.warn": "최근 {days}일 발송자 제외 규칙이 저장돼 있지만 **아직 발송에 적용되지 않습니다.** 규칙대로라면 이 중 **{excluded}명**은 최근 {days}일 안에 메일을 받았습니다.",
     "campaigns.sendConfirm.check.recent.notApplied.noCount": "최근 {days}일 발송자 제외 규칙이 저장돼 있지만 **아직 발송에 적용되지 않습니다.**",

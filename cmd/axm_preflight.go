@@ -100,8 +100,12 @@ type preflightFacts struct {
 	From string
 
 	// Unsubscribe: whether the rendered e-mail has the link to leave. UnsubscribeKnown false:
-	// it could not be rendered, so nothing is said.
+	// it could not be rendered, so nothing is said. UnsubscribeSampled: how many subscribers it
+	// was rendered for. UnsubscribePerSubscriber: the link is printed only under a condition on
+	// the subscriber, so the renderings cannot show that every recipient gets it.
 	Unsubscribe, UnsubscribeKnown bool
+	UnsubscribeSampled            int
+	UnsubscribePerSubscriber      bool
 
 	// A saved rule that excludes recent recipients (LST-34) is only recorded, not applied.
 	// RecentExcluded is how many it would exclude; -1: could not be counted.
@@ -202,9 +206,13 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 
 	if (f.Messenger == "email" || strings.HasPrefix(f.Messenger, "email-")) && f.CampType != models.CampaignTypeOptin {
 		if f.UnsubscribeKnown {
-			if f.Unsubscribe {
+			switch {
+			case f.Unsubscribe && f.UnsubscribePerSubscriber:
+				// Never a pass on a sample: it says what it saw and that it cannot vouch for all.
+				add("unsubscribe.perSubscriber", models.PreflightWarn, map[string]any{"n": f.UnsubscribeSampled})
+			case f.Unsubscribe:
 				add("unsubscribe.missing", models.PreflightOK, nil)
-			} else {
+			default:
 				add("unsubscribe.missing", models.PreflightWarn, nil)
 			}
 		}
@@ -441,6 +449,12 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		i, _ := strconv.Atoi(n)
 		return a.manager.HasUnsubscribeLink(&sendCamp, subs[i], st)
 	})
+	// The renderings cover a few people. Where the link is printed only under a condition on
+	// the subscriber, they cannot vouch for the others (LST-48 review).
+	facts.UnsubscribeSampled = len(subs)
+	if unconditional, found := unsubscribeUnconditional(sendCamp.TemplateBody, sendCamp.Body, sendCamp.AltBody.String); found && !unconditional {
+		facts.UnsubscribePerSubscriber = true
+	}
 	var listIDs []int
 	for _, l := range lists {
 		if !l.Deleted {
@@ -761,4 +775,53 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+var reTplAction = regexp.MustCompile(`(?s)\{\{-?\s*(.*?)\s*-?\}\}`)
+
+// unsubscribeUnconditional reads the template sources of a mail (the template, the body, the
+// alternative body) and tells whether one place that prints UnsubscribeURL is not inside an
+// if, with or range that reads the subscriber (.Subscriber, or a $variable, which may hold it).
+// found is false when no source prints it. Rendering for a few subscribers cannot show that
+// every recipient gets the link (LST-48 review: the link was only in the "full" edition, and the
+// people sent the "compact" one were not in the sample); this reads where the link is.
+func unsubscribeUnconditional(sources ...string) (unconditional, found bool) {
+	for _, src := range sources {
+		var stack []string
+		for _, m := range reTplAction.FindAllStringSubmatch(src, -1) {
+			a := strings.TrimSpace(m[1])
+			word := a
+			if i := strings.IndexAny(a, " \t\n("); i >= 0 {
+				word = a[:i]
+			}
+			switch {
+			case strings.HasPrefix(a, "/*"):
+			case word == "if" || word == "with" || word == "range":
+				stack = append(stack, a)
+			case word == "define" || word == "block":
+				stack = append(stack, "")
+			case word == "else":
+				// An else branch depends on the condition above it and on its own.
+				if len(stack) > 0 {
+					stack[len(stack)-1] += " " + a
+				}
+			case word == "end":
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+			case strings.Contains(a, "UnsubscribeURL"):
+				found = true
+				dep := false
+				for _, cond := range stack {
+					if strings.Contains(cond, "Subscriber") || strings.Contains(cond, "$") {
+						dep = true
+					}
+				}
+				if !dep {
+					unconditional = true
+				}
+			}
+		}
+	}
+	return unconditional, found
 }

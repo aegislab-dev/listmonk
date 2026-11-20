@@ -295,3 +295,27 @@ func TestEnvelopeCopies(t *testing.T) {
 		t.Fatalf("copies line: %+v", line)
 	}
 }
+
+// Where the unsubscribe link is printed: under a condition on the subscriber, a few renderings
+// cannot vouch for every recipient (LST-48 review).
+func TestUnsubscribeUnconditional(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		srcs               []string
+		unconditional, any bool
+	}{
+		{"plain", []string{`<a href="{{ UnsubscribeURL }}">x</a>`}, true, true},
+		{"under a subscriber condition", []string{`{{ if not .Subscriber.Attribs.compact }}<a href="{{ UnsubscribeURL }}">x</a>{{ end }}`}, false, true},
+		{"in its else", []string{`{{ if .Subscriber.Attribs.compact }}short{{ else }}<a href="{{ UnsubscribeURL }}">x</a>{{ end }}`}, false, true},
+		{"under a campaign condition", []string{`{{ if eq .Campaign.Status "running" }}<a href="{{ UnsubscribeURL }}">x</a>{{ end }}`}, true, true},
+		{"after the block", []string{`{{- if .Subscriber.Name }}Hi{{ end -}}<a href="{{ UnsubscribeURL }}">x</a>`}, true, true},
+		{"in a range over a variable", []string{`{{ range $i, $x := .Campaign.Tags }}{{ UnsubscribeURL }}{{ end }}`}, false, true},
+		{"template conditional, body plain", []string{`{{ if .Subscriber.Name }}{{ UnsubscribeURL }}{{ end }}`, `<a href="{{ UnsubscribeURL }}">x</a>`}, true, true},
+		{"none", []string{`<p>Hi {{ .Subscriber.Name }}</p>`}, false, false},
+	} {
+		u, f := unsubscribeUnconditional(tc.srcs...)
+		if u != tc.unconditional || f != tc.any {
+			t.Errorf("%s: got %v %v", tc.name, u, f)
+		}
+	}
+}
