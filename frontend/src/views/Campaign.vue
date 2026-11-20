@@ -26,19 +26,19 @@
         <div v-if="canManage || canSend" class="buttons">
           <b-field grouped v-if="isEditing && canEdit">
             <b-field v-if="canManage" expanded>
-              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns || savingCampaign" type="is-primary"
+              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
                 icon-left="content-save-outline" data-cy="btn-save" aria-keyshortcuts="ctrl+s">
                 <span class="has-kbd">{{ $t('globals.buttons.saveChanges') }} <span class="kbd">Ctrl+S</span></span>
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canStart">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
                 icon-left="rocket-launch-outline" data-cy="btn-start">
                 {{ $t('campaigns.start') }}
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canSchedule">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
                 icon-left="clock-start" data-cy="btn-schedule">
                 {{ $t('campaigns.schedule') }}
               </b-button>
@@ -195,9 +195,10 @@
                 </b-field>
               </form>
             </div>
-            <div v-if="canManage" class="column is-4 is-offset-1">
+            <div v-if="canManage || canCheckTracking" class="column is-4 is-offset-1">
               <br />
-              <div class="box">
+              <tracking-check v-if="canCheckTracking" ref="tracking" :campaign-id="data.id" :payload="trackingPayload" />
+              <div v-if="canManage" class="box">
                 <h3 class="title is-size-6">
                   {{ $t('campaigns.sendTest') }}
                 </h3>
@@ -375,11 +376,13 @@ import RecentSendExclude from '../components/RecentSendExclude.vue';
 import TimezonePicker from '../components/TimezonePicker.vue';
 import Media from './Media.vue';
 import SenderAddressInput from '../components/SenderAddressInput.vue';
+import TrackingCheck from '../components/TrackingCheck.vue';
 import { isSenderDomain } from '../senders';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
 import {
   browserDiffers, browserZoneName, instantToWall, KST, mergeAttribs, otherZoneLines, splitAttribs, wallToInstant,
 } from '../schedule-time';
+import { trackingConfirmLines, trackingToastParts, warningsCovered } from '../tracking-check';
 
 export default Vue.extend({
   components: {
@@ -392,6 +395,7 @@ export default Vue.extend({
     AddressCheck,
     RecentSendExclude,
     TimezonePicker,
+    TrackingCheck,
   },
 
   data() {
@@ -418,6 +422,13 @@ export default Vue.extend({
       recentRuleError: '',
       createdDraftId: 0,
       savingCampaign: false,
+
+      // A start/schedule in progress (LST-44): its number, and its open confirmation.
+      startingCampaign: false,
+      startBusy: false,
+      startSeq: 0,
+      startAsk: null,
+      isDestroyed: false,
 
       data: {},
 
@@ -560,34 +571,9 @@ export default Vue.extend({
     },
 
     onSubmit(typ) {
-      if (this.savingCampaign) return;
-
-      // Validate custom JSON headers.
-      if (this.form.headersStr && this.form.headersStr !== '[]') {
-        try {
-          this.form.headers = JSON.parse(this.form.headersStr);
-        } catch (e) {
-          this.$utils.toast(e.toString(), 'is-danger');
-          return;
-        }
-      } else {
-        this.form.headers = [];
-      }
-
-      // Validate archive JSON body.
-      if (this.form.archive && this.form.archiveMetaStr) {
-        try {
-          this.form.archiveMeta = JSON.parse(this.form.archiveMetaStr);
-        } catch (e) {
-          this.$utils.toast(e.toString(), 'is-danger');
-          return;
-        }
-      }
-
-      // Validate custom JSON attribs.
-      const attribs = this.attribsToSave();
-      if (attribs === undefined) return;
-      this.form.attribs = attribs;
+      // While a start is being checked and confirmed, a save would change what was checked.
+      if (this.savingCampaign || this.startingCampaign) return;
+      if (!this.parseFormJSON()) return;
 
       switch (typ) {
         case 'create':
@@ -600,6 +586,39 @@ export default Vue.extend({
           this.updateCampaign().catch(() => {});
           break;
       }
+    },
+
+    // Reads the JSON text fields (headers, archive meta, attributes) into the form values
+    // that are saved. Every path that saves calls this first: saving without it writes the
+    // values of the last save, not what is on the page. False: one of them does not parse.
+    parseFormJSON() {
+      // Validate custom JSON headers.
+      if (this.form.headersStr && this.form.headersStr !== '[]') {
+        try {
+          this.form.headers = JSON.parse(this.form.headersStr);
+        } catch (e) {
+          this.$utils.toast(e.toString(), 'is-danger');
+          return false;
+        }
+      } else {
+        this.form.headers = [];
+      }
+
+      // Validate archive JSON body.
+      if (this.form.archive && this.form.archiveMetaStr) {
+        try {
+          this.form.archiveMeta = JSON.parse(this.form.archiveMetaStr);
+        } catch (e) {
+          this.$utils.toast(e.toString(), 'is-danger');
+          return false;
+        }
+      }
+
+      // Validate custom JSON attribs.
+      const attribs = this.attribsToSave();
+      if (attribs === undefined) return false;
+      this.form.attribs = attribs;
+      return true;
     },
 
     getCampaign(id) {
@@ -679,8 +698,30 @@ export default Vue.extend({
         media: this.form.media.map((m) => m.id),
       };
 
-      this.$api.testCampaign(data).then(() => {
-        this.$utils.toast(this.$t('campaigns.testSent'));
+      // The tracking state of exactly what this test sends (LST-44): the test takes these
+      // fields from the form and the rest (the attributes) from the saved campaign.
+      const tracking = this.$api.checkCampaignTracking(this.data.id, {
+        content_type: data.content_type,
+        body: data.body || '',
+        template_id: data.template_id || 0,
+        messenger: data.messenger,
+        name: data.name,
+        subject: data.subject,
+        headers: data.headers,
+        mode: 'test',
+        media: data.media,
+        ...(data.altbody === null ? {} : { altbody: data.altbody }),
+        // The sender fields as the test sends them: with sender domains the server sets
+        // the sender from the account of the person sending the test (LST-44 review).
+        ...this.senderFields(),
+      }).catch(() => null);
+      this.$api.testCampaign(data).then(async () => {
+        const parts = trackingToastParts(await tracking).map(({ key, params }) => this.$t(key, params));
+        if (parts.length) {
+          this.$utils.toast([this.$t('campaigns.testSent'), ...parts].join(' · '), 'is-warning', 6000);
+        } else {
+          this.$utils.toast(this.$t('campaigns.testSent'));
+        }
       }).catch((err) => {
         if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
       });
@@ -717,7 +758,8 @@ export default Vue.extend({
       }
     },
 
-    async updateCampaign(typ) {
+    // quiet: no notice (the start shows it after its questions).
+    async updateCampaign(typ, { quiet = false } = {}) {
       if (this.savingCampaign) return undefined;
       const attribs = this.attribsToSave();
       if (attribs === undefined) throw new Error('invalid attribs');
@@ -767,7 +809,10 @@ export default Vue.extend({
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
         await this.saveRecentRule(d.id);
-        this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        if (!quiet) this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        // Saving can change what the check reads beyond the page (the sender of the
+        // person who saves, merged headers): check again (LST-44).
+        if (this.$refs.tracking) this.$refs.tracking.run();
         return d;
       } finally {
         this.savingCampaign = false;
@@ -792,37 +837,114 @@ export default Vue.extend({
     },
 
     // Starts or schedule a campaign.
+    //
+    // The tracking warning (LST-44) is about what will really be sent, and cancelling does
+    // nothing. So: check what is on the page, ask; only after the confirmation save, check
+    // the saved campaign again and start. If the saved campaign warns about something that
+    // was not confirmed (an edit made while the first check was on its way, headers that
+    // the server merges on save, a save from another tab), ask again with what was found.
+    // Every step first makes sure that this page still shows this campaign and that this
+    // start is the current one: a page that was left or a newer start drops it.
     async startCampaign() {
-      if (this.savingCampaign || (!this.canStart && !this.canSchedule)) {
+      if (this.savingCampaign || this.startingCampaign || (!this.canStart && !this.canSchedule)) {
         return;
       }
 
-      if (!await this.checkReplyTo()) return;
-      this.$utils.confirm(
-        this.recentRule.enabled
-          ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null,
-        () => {
-          if (this.savingCampaign) return;
-          // First save the campaign.
-          this.updateCampaign().then(() => {
-            // Then start/schedule it.
-            let status = '';
-            if (this.canStart) {
-              status = 'running';
-            } else if (this.canSchedule) {
-              status = 'scheduled';
-            } else {
-              return undefined;
-            }
+      const { id } = this.data;
+      this.startSeq += 1;
+      const seq = this.startSeq;
+      const current = () => !this.isDestroyed && this.startSeq === seq && this.data.id === id;
+      // Start or schedule: decided by the page as it is when asking, and again by what
+      // was saved (the send time may be switched off while the check is on its way).
+      const action = () => {
+        if (this.canStart) return 'running';
+        return this.canSchedule ? 'scheduled' : null;
+      };
+      // Only the requests show as loading on the buttons; an open question does not.
+      const busy = async (p) => {
+        this.startBusy = true;
+        try {
+          return await p;
+        } finally {
+          if (this.startSeq === seq) this.startBusy = false;
+        }
+      };
+      const check = (payload) => busy(this.$api.checkCampaignTracking(id, payload).catch(() => null)
+        .then((r) => trackingConfirmLines(r)));
 
-            return this.$api.changeCampaignStatus(this.data.id, status).then(() => {
-              this.$router.push({ name: 'campaigns' });
-            }).catch((err) => {
-              if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
-            });
-          }).catch(() => {});
-        },
-      );
+      this.startingCampaign = true;
+      let saved = null;
+      try {
+        if (!await busy(this.checkReplyTo()) || !current()) return;
+        if (!this.parseFormJSON()) return;
+
+        // The box checks the same values, so it shows what the question says.
+        if (this.$refs.tracking) this.$refs.tracking.run();
+        let lines = await check(this.trackingPayload);
+        let status = action();
+        for (;;) {
+          if (!current() || !status) return;
+          // eslint-disable-next-line no-await-in-loop
+          if (!await this.askStart(lines, status) || !current()) return;
+
+          if (!saved) {
+            // Saves the page as it is now (it may have been edited while the check was
+            // on its way); the check of the saved campaign below covers the difference.
+            if (!this.parseFormJSON()) return;
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              saved = await this.updateCampaign(undefined, { quiet: true });
+            } catch (e) {
+              return;
+            }
+            if (!saved || !current()) return;
+          }
+
+          const after = action();
+          if (!after) return;
+          // eslint-disable-next-line no-await-in-loop
+          const now = await check({ status: after });
+          if (!current()) return;
+          if (after === status && warningsCovered(lines, now)) break;
+          lines = now;
+          status = after;
+        }
+
+        await busy(this.$api.changeCampaignStatus(id, status).then(() => {
+          if (current()) this.$router.push({ name: 'campaigns' });
+        }).catch((err) => {
+          if (this.senderPolicyEnabled && current()) this.replyError = err.response?.data?.message || '';
+        }));
+      } finally {
+        if (this.startSeq === seq) this.startingCampaign = false;
+        // The save notice waits until the questions are answered: it does not belong
+        // over the confirmation (approved design v1).
+        if (saved) this.$utils.toast(this.$t('globals.messages.updated', { name: saved.name }));
+      }
+    },
+
+    // The start/schedule confirmation, with the tracking warnings when there are any.
+    // Resolves true on confirm, false on cancel or when the page goes away.
+    askStart(lines, status) {
+      return new Promise((resolve) => {
+        const done = (ok) => {
+          if (this.startAsk && this.startAsk.resolve === done) this.startAsk = null;
+          resolve(ok);
+        };
+        const warnings = lines.map(({ key, params }) => this.$t(key, params));
+        const msg = this.recentRule.enabled
+          ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null;
+        const dialog = warnings.length
+          ? this.$utils.confirmWithWarnings(
+            msg,
+            warnings,
+            this.$t(`campaigns.tracking.confirm.${status === 'running' ? 'start' : 'schedule'}`),
+            () => done(true),
+            () => done(false),
+          )
+          : this.$utils.confirm(msg, () => done(true), () => done(false));
+        this.startAsk = { dialog, resolve: done };
+      });
     },
 
     unscheduleCampaign() {
@@ -854,6 +976,52 @@ export default Vue.extend({
       const t = this.form.sendAtDate;
       if (!t || !browserDiffers(t, this.form.sendTz)) return '';
       return this.$t('campaigns.sendTz.browserNote', { zone: browserZoneName(), time: dayjs(t).format('MM/DD HH:mm') });
+    },
+
+    // What the tracking check renders: everything a template can read from the campaign,
+    // as the form has it now. Starting saves exactly these first. JSON that is still being
+    // typed (headers, attributes) is left out until it parses, and the saved value counts.
+    trackingPayload() {
+      const json = (str) => { try { return JSON.parse(str); } catch (e) { return undefined; } };
+      const headers = this.form.headersStr && this.form.headersStr !== '[]' ? json(this.form.headersStr) : [];
+      // Empty or null attributes are saved as none: say so, or the saved ones would count.
+      let attribs = this.form.attribsStr && this.form.attribsStr.trim() ? (json(this.form.attribsStr) ?? {}) : {};
+      // Saving adds the send time zone (LST-50), which the attributes tab does not show.
+      if (attribs && typeof attribs === 'object' && !Array.isArray(attribs)) {
+        attribs = mergeAttribs(attribs, this.form.sendTz, !!(this.form.sendLater && this.form.sendAtDate));
+      }
+      const altbody = this.form.content.contentType !== 'plain' ? this.form.altbody : null;
+      // As saving reads it: the archive metadata on the page when it parses.
+      let archiveMeta = this.form.archive && this.form.archiveMetaStr ? json(this.form.archiveMetaStr) : undefined;
+      if (archiveMeta === undefined) archiveMeta = this.form.archiveMeta || undefined;
+      return {
+        content_type: this.form.content.contentType,
+        body: this.form.content.body || '',
+        template_id: this.form.content.templateId || 0,
+        messenger: this.form.messenger,
+        name: this.form.name,
+        subject: this.form.subject,
+        tags: this.form.tags,
+        ...(Array.isArray(headers) ? { headers } : {}),
+        ...(attribs && typeof attribs === 'object' && !Array.isArray(attribs) ? { attribs } : {}),
+        ...(altbody === null || altbody === undefined ? {} : { altbody }),
+        ...this.senderFields(),
+        // What the send will be: templates can read the status (LST-44 review).
+        status: this.form.sendLater && this.form.sendAtDate ? 'scheduled' : 'running',
+        send_at: this.form.sendLater ? this.form.sendAtDate : null,
+        // The rest of what saving sends that a template can read (LST-44 review).
+        archive: this.form.archive,
+        archive_slug: this.form.archiveSlug || null,
+        archive_template_id: this.form.archiveTemplateId || null,
+        ...(archiveMeta === undefined ? {} : { archive_meta: archiveMeta }),
+        body_source: this.form.content.bodySource || null,
+        media: this.form.media.map((m) => m.id),
+      };
+    },
+
+    // The pre-send tracking check is for a saved campaign that can still be edited.
+    canCheckTracking() {
+      return this.isEditing && !!this.data.id && this.canEdit;
     },
 
     canShowRecentRule() {
@@ -941,6 +1109,16 @@ export default Vue.extend({
       this.form.lists = this.selectedLists;
     },
 
+    // The stored status decides what the check reads besides the page: a draft is sent
+    // with the sender of the person who starts it, a scheduled campaign with the stored
+    // one. When it changes on this page (unschedule), check again (LST-44).
+    'data.status': function onStatus(now, before) {
+      if (!before || now === before) return;
+      this.$nextTick(() => {
+        if (this.$refs.tracking) this.$refs.tracking.run();
+      });
+    },
+
     // eslint-disable-next-line func-names
     'data.sendAt': function () {
       if (this.data.sendAt !== null) {
@@ -1022,6 +1200,15 @@ export default Vue.extend({
 
   beforeDestroy() {
     this.$events.$off('campaign.update');
+
+    // A start that is still being checked or confirmed belongs to this page only.
+    this.isDestroyed = true;
+    this.startSeq += 1;
+    if (this.startAsk) {
+      const { dialog, resolve } = this.startAsk;
+      if (dialog) dialog.close();
+      resolve(false);
+    }
   },
 });
 </script>
