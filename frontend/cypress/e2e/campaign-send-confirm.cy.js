@@ -347,8 +347,9 @@ describe('Pre-send confirmation window', () => {
       row(key).find('[data-cy=btn-start]').click();
       ready();
       cy.get('[data-cy=send-subject-rendered]').should('be.visible');
-      cy.get('[data-cy=send-subject]').invoke('text').then((text) => {
-        const shown = text.split('\n').map((l) => l.trim()).find((l) => l.startsWith('Send '));
+      cy.get('[data-cy=send-subject-text]').invoke('text').then((text) => {
+        const shown = text.trim();
+        expect(shown).to.match(/^Send (uuid|head) /);
         expect(shown).to.not.contain('{{').and.not.contain('00000000-0000');
         cy.get('[data-cy=send-ok]').click();
         cy.get(win).should('not.exist');

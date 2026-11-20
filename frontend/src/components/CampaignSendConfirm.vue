@@ -58,7 +58,7 @@
           <div v-if="shows('subject')" class="send-row" data-cy="send-subject">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.subject') }}</div>
             <div class="send-v">
-              {{ pf.subject }}
+              <span data-cy="send-subject-text">{{ pf.subject }}</span>
               <div v-if="pf.subjectRendered" class="help" data-cy="send-subject-rendered">{{ $t('campaigns.sendConfirm.subjectRendered') }}</div>
               <div v-if="stale" class="send-was" data-cy="send-subject-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.subject }) }}</div>
             </div>
