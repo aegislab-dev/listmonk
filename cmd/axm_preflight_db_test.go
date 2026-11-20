@@ -1188,3 +1188,47 @@ func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
 		t.Fatalf("link always: %q", got)
 	}
 }
+
+// A template that includes the body (and its link) only for the full edition; ten full, then
+// one compact. Never a pass; and on resume after the ten, the one left is in the sample, and
+// its mail has no link (LST-48 review).
+func TestCampaignPreflightUnsubscribeTemplateResume(t *testing.T) {
+	e := newPreflightApp(t)
+	member := e.as(e.ua)
+	id := strconv.Itoa(e.campID)
+	read := func() string {
+		t.Helper()
+		code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		var o struct {
+			Checks []models.PreflightCheck `json:"checks"`
+		}
+		if code != http.StatusOK || json.Unmarshal(data, &o) != nil {
+			t.Fatalf("%d %s", code, data)
+		}
+		out := []string{}
+		for _, c := range o.Checks {
+			if strings.HasPrefix(c.Key, "unsubscribe.") {
+				out = append(out, c.Key+"="+c.Level)
+			}
+		}
+		return strings.Join(out, ",")
+	}
+	var last int
+	for i := 0; i < 10; i++ {
+		last = e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	}
+	compact := e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	e.db.MustExec(`UPDATE subscribers SET attribs='{"compact":true}'::jsonb WHERE id=$1`, compact)
+	var tpl int
+	e.get(&tpl, `INSERT INTO templates(name,type,subject,body) VALUES('editions','campaign','',
+		'<html><body>{{ if not .Subscriber.Attribs.compact }}{{ template "content" . }}{{ else }}<p>Compact</p>{{ end }}</body></html>') RETURNING id`)
+	e.db.MustExec(`UPDATE campaigns SET content_type='html', template_id=$2, body='<p>Full</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID, tpl)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("body with the link included only for the full edition: %q", got)
+	}
+	// Paused after the ten: the compact one is the only one left, and is in the sample.
+	e.db.MustExec(`UPDATE campaigns SET status='paused', last_subscriber_id=$2, to_send=11, sent=10 WHERE id=$1`, e.campID, last)
+	if got := read(); got != "unsubscribe.missing=warn" {
+		t.Fatalf("resume, the one left gets no link: %q", got)
+	}
+}

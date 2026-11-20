@@ -108,9 +108,12 @@ func (c *Core) checkSendTimeShown(cm models.Campaign, due bool, status, seenAt s
 // GetPreflightSample is up to n of the people a campaign would reach, the lowest IDs first,
 // by the sender's rule (axm-preflight-sample, as axm-preflight-audience). The pre-send check
 // renders the mail for them too, not only for an example subscriber (LST-48 review).
-func (c *Core) GetPreflightSample(ctx context.Context, campID, n int) []models.Subscriber {
+//
+// resume: only the people still to be sent after checkpoint afterID (LST-48 review: on resume
+// the sample was the people already sent).
+func (c *Core) GetPreflightSample(ctx context.Context, campID, n, afterID int, resume bool) []models.Subscriber {
 	var out []models.Subscriber
-	if err := c.q.AxmPreflightSample.SelectContext(ctx, &out, campID, n); err != nil {
+	if err := c.q.AxmPreflightSample.SelectContext(ctx, &out, campID, n, afterID, resume); err != nil {
 		c.log.Printf("error reading the pre-send sample of campaign %d: %v", campID, err)
 		return nil
 	}
