@@ -6,6 +6,7 @@ import (
 	"net/textproto"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -425,9 +426,20 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	}
 	facts.CopiesPerSubscriber = perSubscriber
 	facts.FromRefused = fromRefused
-	// Whether the e-mail that is rendered has the link to leave, as every recipient gets it.
-	facts.Unsubscribe, facts.UnsubscribeKnown = unsubscribeInAll(statuses, func(status string) (bool, error) {
-		return a.manager.HasUnsubscribeLink(&sendCamp, dummySubscriber, status)
+	// Whether the e-mail that is rendered has the link to leave, as every recipient gets it:
+	// in every status, for the example subscriber, for one with no attributes at all, and for
+	// a few of the real recipients (a link that depends on the subscriber's fields).
+	subs := append([]models.Subscriber{dummySubscriber, bareSubscriber}, a.core.GetPreflightSample(ctx, id, 10)...)
+	var renders []string
+	for _, st := range statuses {
+		for i := range subs {
+			renders = append(renders, st+"#"+strconv.Itoa(i))
+		}
+	}
+	facts.Unsubscribe, facts.UnsubscribeKnown = unsubscribeInAll(renders, func(key string) (bool, error) {
+		st, n, _ := strings.Cut(key, "#")
+		i, _ := strconv.Atoi(n)
+		return a.manager.HasUnsubscribeLink(&sendCamp, subs[i], st)
 	})
 	var listIDs []int
 	for _, l := range lists {
@@ -486,9 +498,9 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
-// unsubscribeInAll tells whether the mail has the link to leave in every status the sender
-// may render it in. known is false when nothing can be said: no status rendered without the
-// link, and one could not be rendered at all.
+// unsubscribeInAll tells whether the mail has the link to leave in every rendering given
+// (statuses × subscribers). A rendering that fails is left out (the sender does not send that
+// mail either). known is false when nothing can be said: nothing rendered.
 func unsubscribeInAll(statuses []string, has func(status string) (bool, error)) (ok, known bool) {
 	rendered, missing := 0, false
 	for _, st := range statuses {
@@ -501,7 +513,7 @@ func unsubscribeInAll(statuses []string, has func(status string) (bool, error)) 
 			missing = true
 		}
 	}
-	return !missing, missing || (rendered == len(statuses) && rendered > 0)
+	return !missing, missing || rendered > 0
 }
 
 // trackingInAll checks the tracking in each status and puts the reports together: what is
@@ -696,6 +708,12 @@ func kindAddresses(messenger string, server map[string]string, headers models.He
 		}
 	}
 	return strings.Join(out, ",")
+}
+
+// bareSubscriber is an example subscriber with nothing but an address: a mail whose parts
+// depend on attributes the example subscriber has is rendered without them too.
+var bareSubscriber = models.Subscriber{
+	Email: "bare@example.invalid", UUID: "22222222-2222-2222-2222-222222222222", Attribs: models.JSON{},
 }
 
 // otherSubscriber is a second example subscriber, unlike dummySubscriber in every field, to

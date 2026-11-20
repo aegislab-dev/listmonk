@@ -50,18 +50,20 @@ func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, st
 	if len(at) > 0 {
 		clock = &at[0]
 	}
-	// The attachments are loaded only when the subject or a header can read them: the window
-	// renders the envelope several times, and loading the media every time is slow.
-	attach := strings.Contains(c.Subject, "Attachments")
-	for _, set := range c.Headers {
-		for _, v := range set {
-			attach = attach || strings.Contains(v, "Attachments")
-		}
-	}
-	msg, err := m.prepareCheck(c, sub, status, clock, attach)
+	// The images and attachments are loaded as the send loads them: loading the inline images
+	// rewrites the body, which a subject can read (LST-48 review).
+	msg, err := m.prepareCheck(c, sub, status, clock, true)
 	if err != nil {
 		return Envelope{}, err
 	}
+	// The whole message as the sender renders it: subject, body, then the headers, which can
+	// read the rendered subject and body ({{ .Subject }}, {{ .Body }}; LST-48 review).
+	if err := msg.render(); err == nil {
+		return Envelope{Subject: msg.subject, Headers: msg.headers}, nil
+	}
+	// The body cannot be rendered for this subscriber: the subject and each header apart, so
+	// that one that does not need the body is still shown.
+	msg.subject = msg.Campaign.Subject
 	out := Envelope{Subject: msg.Campaign.Subject, Headers: msg.Campaign.Headers}
 	var b bytes.Buffer
 	if msg.Campaign.SubjectTpl != nil {

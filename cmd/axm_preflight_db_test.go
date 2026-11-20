@@ -1093,3 +1093,49 @@ func TestPreflightEnvelopeVaries(t *testing.T) {
 		t.Fatalf("varying cc beside a fixed bcc with a common address: %v", got)
 	}
 }
+
+// The unsubscribe link is checked for real recipients too, not only for the example subscriber
+// (LST-48 review: a link shown only with a city attribute passed for the example, which has a
+// city, and was missing for every real recipient). A Subject header that reads the rendered
+// body ({{ .Body }}) is rendered after the body, as the send does.
+func TestCampaignPreflightRealRecipients(t *testing.T) {
+	e := newPreflightApp(t)
+	member := e.as(e.ua)
+	id := strconv.Itoa(e.campID)
+	e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	read := func() (o struct {
+		Subject string                  `json:"subject"`
+		Checks  []models.PreflightCheck `json:"checks"`
+	}) {
+		t.Helper()
+		code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if code != http.StatusOK || json.Unmarshal(data, &o) != nil {
+			t.Fatalf("%d %s", code, data)
+		}
+		return o
+	}
+	level := func(checks []models.PreflightCheck, key string) string {
+		for _, c := range checks {
+			if c.Key == key {
+				return c.Level
+			}
+		}
+		return ""
+	}
+	e.db.MustExec(`UPDATE subscribers SET attribs='{}'::jsonb WHERE id IN (SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1)`, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET content_type='html', body='<p>Hi</p>{{ if .Subscriber.Attribs.city }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
+	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
+		t.Fatalf("link only with a city, recipients without: %q", got)
+	}
+	e.db.MustExec(`UPDATE subscribers SET attribs='{"city":"Seoul"}'::jsonb WHERE id IN (SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1)`, e.aList)
+	// The bare example has no city either: still a warning, as some recipient may not.
+	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
+		t.Fatalf("link only with a city: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET body='<p>Hi</p><a href="{{ UnsubscribeURL }}">leave</a>', headers='[{"Subject":"Review {{ if .Body }}newsletter{{ else }}empty draft{{ end }}"}]'::jsonb WHERE id=$1`, e.campID)
+	o := read()
+	if level(o.Checks, "unsubscribe.missing") != "ok" || o.Subject != "Review newsletter" {
+		t.Fatalf("link always, subject header of the body: %+v", o)
+	}
+}

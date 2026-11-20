@@ -1408,7 +1408,17 @@ def ensure_cy_modules(ctx, steps=None):
 
 
 def start_app(ctx, steps, image, pg):
-    """새 DB 설치 → 시험 데이터 적재 → 앱 기동. 앱 컨테이너 이름을 돌려준다."""
+    """새 DB 설치 → 시험 데이터 적재 → 시험 수신함·앱 기동. 앱 컨테이너 이름을 돌려준다.
+    도중에 실패하면 띄운 앱과 시험 수신함을 내리고 실패를 그대로 올린다(남는 컨테이너가 없게)."""
+    try:
+        return _start_app(ctx, steps, image, pg)
+    except BaseException:
+        docker('rm', '-f', ctx.name('app'), check=False)
+        docker('rm', '-f', ctx.name('mail'), check=False)
+        raise
+
+
+def _start_app(ctx, steps, image, pg):
     app, port = ctx.name('app'), ctx.app_port
     dsn_db = f'e2e{ctx.n}'
     pg.fresh_db(dsn_db)

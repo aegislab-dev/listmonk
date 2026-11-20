@@ -105,6 +105,25 @@ func (c *Core) checkSendTimeShown(cm models.Campaign, due bool, status, seenAt s
 	return nil
 }
 
+// GetPreflightSample is up to n of the people a campaign's (static) lists would reach, the
+// lowest IDs first: subscribers who are not blocked, on a list of the campaign they have not
+// left. The pre-send check renders the mail for them too, not only for an example subscriber
+// whose attributes real people may not have (LST-48 review: an unsubscribe link shown only
+// with a city attribute passed for the example and was missing for every real recipient).
+func (c *Core) GetPreflightSample(ctx context.Context, campID, n int) []models.Subscriber {
+	var out []models.Subscriber
+	err := c.db.SelectContext(ctx, &out, `SELECT DISTINCT ON (s.id) s.* FROM subscribers s
+		JOIN subscriber_lists sl ON sl.subscriber_id = s.id
+		JOIN campaign_lists cl ON cl.list_id = sl.list_id
+		WHERE cl.campaign_id = $1 AND s.status != 'blocklisted' AND sl.status != 'unsubscribed'
+		ORDER BY s.id LIMIT $2`, campID, n)
+	if err != nil {
+		c.log.Printf("error reading the pre-send sample of campaign %d: %v", campID, err)
+		return nil
+	}
+	return out
+}
+
 // GetCampaignPausedAt is when campaign id was last paused by a person (the audit log), else
 // fallback, the campaign's last change. The audit row only counts while nothing started the
 // campaign again after it: a campaign that was resumed and then stopped by the sender (too many

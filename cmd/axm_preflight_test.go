@@ -187,7 +187,7 @@ func TestPreflightEveryStatus(t *testing.T) {
 		{"scheduled only", map[string]bool{"scheduled": true, "running": false}, false, true},
 		{"running only", map[string]bool{"scheduled": false, "running": true}, false, true},
 		{"missing in one, the other not rendered", map[string]bool{"running": false}, false, true},
-		{"in one, the other not rendered", map[string]bool{"running": true}, true, false},
+		{"in one, the other not rendered", map[string]bool{"running": true}, true, true},
 		{"none rendered", map[string]bool{}, true, false},
 	} {
 		ok, known := unsubscribeInAll(both, func(s string) (bool, error) {

@@ -329,8 +329,9 @@ describe('Pre-send confirmation window', () => {
     cy.get(`${win}[data-state=error]`).should('exist');
     // Which campaign it would go on for is still said.
     cy.get('[data-cy=send-error] [data-cy=send-campaign]').should('contain', `Send resume ${stamp}`);
-    // No subject without a reading: a Subject header (the campaign's or the SMTP server's) may replace it.
-    cy.get('[data-cy=send-error] [data-cy=send-subject]').should('not.exist');
+    // No subject without a reading: a Subject header (the campaign's or the SMTP server's) may
+    // replace it. The row says so (approved design A6 has the row).
+    cy.get('[data-cy=send-error] [data-cy=send-subject-unknown]').should('contain', 'Cannot be confirmed');
     // The box keeps its heading (approved design A6), with the reason and a retry button.
     cy.get('[data-cy=send-error] [data-cy=send-checks] .send-checks-head').should('have.text', 'Checks before sending');
     cy.get('[data-cy=send-error] [data-cy=send-checks]').should('contain', 'Could not get the number of recipients');
@@ -583,7 +584,7 @@ describe('Pre-send confirmation window', () => {
     row('hdrsubj').find('[data-cy=btn-start]').click();
     cy.wait('@pfDown');
     cy.get(`${win}[data-state=error]`).should('exist');
-    cy.get('[data-cy=send-error] [data-cy=send-subject]').should('not.exist');
+    cy.get('[data-cy=send-error] [data-cy=send-subject-unknown]').should('be.visible');
     cy.get('@status.all').should('have.length', 0);
     cy.get('[data-cy=send-cancel]').click();
   });
@@ -648,6 +649,28 @@ describe('Pre-send confirmation window', () => {
     ready();
     cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
     cy.get('[data-cy="send-check-mail.copies"]').should('contain', 'partner@crevasse.ai');
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
+  it('shows a list renamed while the window is open before sending', () => {
+    let listR;
+    cy.request('POST', '/api/lists', {
+      name: `Send R ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { listR = body.data.id; });
+    cy.then(() => {
+      person('r1', [listR]);
+      create('renamed', { lists: [listR] });
+    });
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('renamed').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-lists]').should('contain', `Send R ${stamp}`);
+    cy.then(() => cy.request('PUT', `/api/lists/${listR}`, { name: `Event guests ${stamp}`, type: 'private', optin: 'single' }));
+    cy.get('[data-cy=send-ok]').click();
+    ready();
+    cy.get('[data-cy=send-lists]').should('contain', `Event guests ${stamp}`);
     cy.get('@status.all').should('have.length', 0);
     cy.get('[data-cy=send-cancel]').click();
   });

@@ -697,6 +697,7 @@
     "campaigns.sendConfirm.was": "before: {n}",
     "campaigns.sendConfirm.wasText": "before: {text}",
     "campaigns.sendConfirm.subjectRendered": "The subject is a template: this is how it comes out for an example subscriber.",
+    "campaigns.sendConfirm.subjectUnknown": "Cannot be confirmed (a Subject header may replace the subject field)",
     "campaigns.sendConfirm.subjectUnrendered": "The subject has a template that could not be filled for an example subscriber: shown as written.",
     "campaigns.sendConfirm.subjectVaries": "The subject comes from a template that uses the campaign's status or times: mails of this send may get a different one (shown: the first mail's).",
     "campaigns.sendConfirm.senderPerSubscriber": "From or Reply-To is taken from each subscriber: shown is the example subscriber's, every mail gets its own.",

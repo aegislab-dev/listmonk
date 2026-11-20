@@ -27,9 +27,12 @@
           <div class="send-k">{{ $t('campaigns.sendConfirm.row.campaign') }}</div>
           <div class="send-v">{{ campaignName }}</div>
         </div>
-        <div v-if="errorSubject" class="send-row" data-cy="send-subject">
+        <!-- Approved design A6 has the subject row. Without a reading it says that the subject
+             cannot be confirmed: a Subject header may replace the field. -->
+        <div class="send-row" data-cy="send-subject">
           <div class="send-k">{{ $t('campaigns.sendConfirm.row.subject') }}</div>
-          <div class="send-v">{{ errorSubject }}</div>
+          <div v-if="errorSubject" class="send-v">{{ errorSubject }}</div>
+          <div v-else class="send-v has-text-grey" data-cy="send-subject-unknown">{{ $t('campaigns.sendConfirm.subjectUnknown') }}</div>
         </div>
         <div class="send-checks" data-cy="send-checks">
           <div class="send-checks-head">{{ $t('campaigns.sendConfirm.checks') }}</div>
@@ -186,7 +189,7 @@ const fingerprint = (pf) => {
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
     // Each header's own list: the merged list drops an address of the Bcc that the Cc also has.
     keep('cc', (pf.copyLists || {}).cc), keep('bcc', (pf.copyLists || {}).bcc),
-    pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.count, l.deleted]),
+    pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.name, l.count, l.deleted]),
     (pf.checks || []).filter((c) => c.key !== 'schedule.past')
       .map((c) => {
         // The addresses are compared above, kind by kind; the line itself by its count.
