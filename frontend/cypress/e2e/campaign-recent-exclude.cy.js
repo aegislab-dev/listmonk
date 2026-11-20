@@ -94,6 +94,7 @@ describe('Recent-send exclusion settings', () => {
     cy.get('button[type=submit]').click();
     cy.get(switchInput).should('be.checked').and('be.disabled');
     cy.get('select[data-cy=recent-days]').should('be.disabled');
+    cy.get('[data-cy=recent-make-list]').should('not.exist');
     cy.clearCookies();
     cy.loginAndVisit(`/admin/campaigns/${campaignId}`);
   });
@@ -112,5 +113,50 @@ describe('Recent-send exclusion settings', () => {
     openCampaign(optinId);
     cy.wait('@loadOptin').its('response.body.data.type').should('eq', 'optin');
     cy.get('[data-cy=recent-exclude]').should('not.exist');
+  });
+
+  it('makes a list from the result, changes the target to it and saves the campaign', () => {
+    cy.intercept('POST', preview).as('recentPreview');
+    cy.intercept('POST', '/api/campaigns/recent-exclude/list').as('makeList');
+    cy.intercept('PUT', `/api/campaigns/${campaignId}`).as('updateCampaign');
+    openCampaign(campaignId);
+    cy.get(switchInput).should('not.be.checked');
+    cy.get('[data-cy=recent-make-list]').should('not.exist');
+    cy.get(switchControl).click();
+    cy.wait('@recentPreview');
+    cy.get('[data-cy=recent-make-list]').click();
+
+    // The modal says each thing once: team, name and one note with the numbers.
+    cy.get('[data-cy=recent-list-modal]').should('be.visible');
+    cy.get('[data-cy=recent-list-create]').should('be.disabled');
+    cy.get('select[data-cy=recent-list-team]').select('__none__');
+    cy.get('input[data-cy=recent-list-name]').should(($input) => {
+      expect($input.val()).to.contain(listName).and.to.contain('last 14 days');
+    });
+    cy.get('[data-cy=recent-list-note]').should('contain', '1 people').and('contain', '0 excluded');
+    cy.get('[data-cy=recent-list-create]').click();
+
+    cy.wait('@makeList').then(({ request, response }) => {
+      expect(request.body).to.include({ days: 14, scope: 'all', name: '', no_team: true, campaign_id: campaignId });
+      expect(response.body.data.counts).to.deep.equal({ target: 1, excluded: 0, added: 1 });
+      cy.wrap(response.body.data.list).as('made');
+    });
+    cy.wait('@updateCampaign').its('request.body.lists').should('have.length', 1);
+    cy.get('[data-cy=recent-list-made]').should('contain', 'saved').find('a').should('exist');
+    cy.get('.list-selector .tags .tag').should('have.length', 1);
+    cy.get('[data-cy=recent-make-list]').should('not.exist');
+
+    cy.get('@made').then((made) => {
+      cy.get('.list-selector .tags .tag').should('contain', made.name);
+      cy.request(`/api/campaigns/${campaignId}`).its('body.data.lists').then((lists) => {
+        expect(lists.map(({ id }) => id)).to.deep.equal([made.id]);
+      });
+      cy.request(`/api/lists/${made.id}`).its('body.data').should((list) => {
+        expect(list.type).to.eq('private');
+        expect(list.optin).to.eq('single');
+        expect(list.tags).to.deep.equal(['제외-적용-리스트']);
+        expect(list.subscriber_count).to.eq(1);
+      });
+    });
   });
 });

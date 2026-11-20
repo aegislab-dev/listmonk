@@ -496,7 +496,7 @@ export default Vue.extend({
     },
 
     isUnsaved() {
-      return this.recentRuleDirty || this.data.body !== this.form.content.body
+      return this.recentRuleDirty || (!!this.madeList && !this.madeList.saved) || this.data.body !== this.form.content.body
         || this.data.contentType !== this.form.content.contentType;
     },
 
@@ -516,16 +516,15 @@ export default Vue.extend({
       this.form.archiveMetaStr = this.$utils.getPref('campaign.archiveMetaStr') || JSON.stringify(JSON.parse(archiveStr), null, 4);
     },
 
-    onSubmit(typ) {
-      if (this.savingCampaign) return;
-
+    // Checks the JSON fields and keeps their parsed values for saving.
+    validateForm() {
       // Validate custom JSON headers.
       if (this.form.headersStr && this.form.headersStr !== '[]') {
         try {
           this.form.headers = JSON.parse(this.form.headersStr);
         } catch (e) {
           this.$utils.toast(e.toString(), 'is-danger');
-          return;
+          return false;
         }
       } else {
         this.form.headers = [];
@@ -537,7 +536,7 @@ export default Vue.extend({
           this.form.archiveMeta = JSON.parse(this.form.archiveMetaStr);
         } catch (e) {
           this.$utils.toast(e.toString(), 'is-danger');
-          return;
+          return false;
         }
       }
 
@@ -553,10 +552,15 @@ export default Vue.extend({
 
             3000,
           );
-          return;
+          return false;
         }
       }
       this.form.attribs = attribs;
+      return true;
+    },
+
+    onSubmit(typ) {
+      if (this.savingCampaign || !this.validateForm()) return;
 
       switch (typ) {
         case 'create':
@@ -678,9 +682,26 @@ export default Vue.extend({
           : await this.$api.createCampaign(data);
         this.createdDraftId = d.id;
         await this.saveRecentRule(d.id);
+        if (this.madeList) this.madeList = { ...this.madeList, saved: true };
         this.$router.push({ name: 'campaign', hash: '#content', params: { id: d.id } });
       } finally {
         this.savingCampaign = false;
+      }
+    },
+
+    // The list made from the exclusion result becomes the campaign's only target. A campaign that
+    // exists on the server is saved right away; the list stays even if saving fails.
+    async onRecentListMade(result) {
+      const { id, name } = result.list;
+      await this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' }).catch(() => {});
+      this.form.lists = [{ id, name }];
+      this.madeList = { id, saved: false, error: '' };
+      if (!this.data.id) return;
+      try {
+        if (!this.validateForm()) throw new Error('invalid form');
+        await this.updateCampaign();
+      } catch (err) {
+        this.madeList = { id, saved: false, error: this.$t('campaigns.recent.listSaveError') };
       }
     },
 
@@ -731,6 +752,7 @@ export default Vue.extend({
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
         await this.saveRecentRule(d.id);
+        if (this.madeList) this.madeList = { ...this.madeList, saved: true, error: '' };
         this.$utils.toast(this.$t(typMsg, { name: d.name }));
         return d;
       } finally {
@@ -830,6 +852,11 @@ export default Vue.extend({
 
     canSend() {
       return this.$can('campaigns:send');
+    },
+
+    // The target can change only while the campaign has not started (not while paused).
+    canChangeLists() {
+      return this.isNew || this.data.status === 'draft' || this.data.status === 'scheduled';
     },
 
     canEdit() {
