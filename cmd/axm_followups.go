@@ -96,7 +96,32 @@ func (a *App) GetCampaignFollowup(c echo.Context) error {
 		a.log.Printf("error reading the follow-up of campaign %d: %v", id, err)
 		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("campaigns.followup.error"))
 	}
+	// The other campaign of the link may belong to a team this user cannot read: say nothing
+	// about its name or state then. A follow-up whose original is hidden still shows its own
+	// condition and counts; an original whose follow-up is hidden shows no link at all.
+	switch out.Role {
+	case "parent":
+		if a.checkCampaignPerm(auth.PermTypeGet, out.Followup.ID, c) != nil {
+			return c.JSON(http.StatusOK, okResp{models.FollowupInfo{Role: "none"}})
+		}
+	case "followup":
+		if a.checkCampaignPerm(auth.PermTypeGet, out.Parent.ID, c) != nil {
+			out.Parent = &models.FollowupRef{ID: out.Parent.ID}
+		}
+	}
 	return c.JSON(http.StatusOK, okResp{out})
+}
+
+// hideUnreadableFollowup takes an existing follow-up out of a preview when the user could
+// not open that campaign, so the dialog does not offer a link that leads nowhere.
+func (a *App) hideUnreadableFollowup(c echo.Context, out *models.ReactionPreview) {
+	f := out.Followup
+	if f == nil || f.Existing == nil {
+		return
+	}
+	if a.checkCampaignPerm(auth.PermTypeGet, f.Existing.ID, c) != nil {
+		f.Existing, f.Reason = nil, "exists_hidden"
+	}
 }
 
 func (a *App) auditFollowup(c echo.Context, out models.ReactionResult, s models.ReactionSettings) {

@@ -56,6 +56,8 @@
 
     <b-loading :active="loading.campaigns || savingCampaign" />
 
+    <campaign-followup-banner v-if="isEditing && data.id" :campaign-id="data.id" :status="data.status" />
+
     <b-tabs type="is-boxed" :animated="false" v-model="activeTab" @input="onTab">
       <b-tab-item :label="$tc('globals.terms.campaign')" label-position="on-border" value="campaign"
         icon="rocket-launch-outline">
@@ -361,6 +363,7 @@ import CopyText from '../components/CopyText.vue';
 import Editor from '../components/Editor.vue';
 import ListSelector from '../components/ListSelector.vue';
 import AddressCheck from '../components/AddressCheck.vue';
+import CampaignFollowupBanner from '../components/CampaignFollowupBanner.vue';
 import RecentSendExclude from '../components/RecentSendExclude.vue';
 import TimezonePicker from '../components/TimezonePicker.vue';
 import Media from './Media.vue';
@@ -386,6 +389,7 @@ export default Vue.extend({
     CampaignTestSend,
     SenderAddressInput,
     AddressCheck,
+    CampaignFollowupBanner,
     RecentSendExclude,
     TimezonePicker,
     TrackingCheck,

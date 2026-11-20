@@ -520,3 +520,31 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 		t.Fatal(last)
 	}
 }
+
+// A reader who cannot open the other campaign of a link learns nothing about it.
+func TestFollowupHidesWhatTheReaderCannotOpen(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	// The reader reaches the follow-up and its list only: the original is out of reach.
+	e.db.MustExec(`DELETE FROM campaign_lists WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id) VALUES ($1, $2)`, e.campID, e.bList)
+	e.db.MustExec(`UPDATE lists SET tags = '{팀:가}' WHERE id = $1`, got.List.ID)
+	reader := e.as(e.ua)
+	if c, info := e.callGet(reader, got.Followup.ID); c != http.StatusOK || info.Role != "followup" || info.Parent.ID != e.campID || info.Parent.Name != "" {
+		t.Fatalf("follow-up side: %d %+v", c, info.Parent)
+	}
+	// And the other way round: a reader of the original that cannot open the follow-up sees no link.
+	e.db.MustExec(`UPDATE lists SET tags = '{}' WHERE id = $1`, got.List.ID)
+	e.db.MustExec(`DELETE FROM campaign_lists WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id) VALUES ($1, $2)`, e.campID, e.aList)
+	reader = e.as(e.ua)
+	if c, info := e.callGet(reader, e.campID); c != http.StatusOK || info.Role != "none" || info.Followup != nil {
+		t.Fatalf("original side: %d %+v", c, info)
+	}
+	if o := e.preview(reader, `{"tracking_only":true}`).Followup; o == nil || o.Existing != nil || o.Available || o.Reason != "exists_hidden" {
+		t.Fatalf("preview: %+v", o)
+	}
+	if _, info := e.callGet(e.admin, e.campID); info.Role != "parent" {
+		t.Fatalf("admin: %+v", info)
+	}
+}

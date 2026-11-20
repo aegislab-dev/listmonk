@@ -89,6 +89,7 @@ func (a *App) PreviewReactionList(c echo.Context) error {
 	if !user.HasPerm(auth.PermListManageAll) {
 		out.SourceTeams = []string{}
 	}
+	a.hideUnreadableFollowup(c, &out)
 	return c.JSON(http.StatusOK, okResp{out})
 }
 

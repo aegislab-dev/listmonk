@@ -30,4 +30,40 @@ BEGIN
     INSERT INTO link_clicks(campaign_id, link_id, subscriber_id) VALUES (campaign, offer, clicked);
 END $$;
 
+-- A second finished campaign for followup.cy.js, so that the follow-up it makes does not change
+-- the rows reaction-lists.cy.js looks for. Dana opened and did not click, Eli never opened, Fay did both.
+DO $$
+DECLARE
+    source_id INT;
+    campaign INT;
+    offer INT;
+    dana INT;
+    eli INT;
+    fay INT;
+BEGIN
+    INSERT INTO lists(uuid, name, type)
+    VALUES (gen_random_uuid(), 'Cypress followup audience', 'private') RETURNING id INTO source_id;
+
+    INSERT INTO campaigns(uuid, name, subject, from_email, body, status, messenger, to_send, sent, started_at)
+    VALUES (gen_random_uuid(), 'Cypress followup recipients', 'Synthetic follow-up fixture', 'sender@example.invalid',
+        '<p>Follow-up fixture</p>', 'finished', 'email', 3, 3, NOW()) RETURNING id INTO campaign;
+    INSERT INTO campaign_lists(campaign_id, list_id, list_name)
+    VALUES (campaign, source_id, 'Cypress followup audience');
+
+    INSERT INTO subscribers(uuid, name, email)
+    VALUES (gen_random_uuid(), 'Dana Example', 'dana-followup@example.invalid') RETURNING id INTO dana;
+    INSERT INTO subscribers(uuid, name, email)
+    VALUES (gen_random_uuid(), 'Eli Example', 'eli-followup@example.invalid') RETURNING id INTO eli;
+    INSERT INTO subscribers(uuid, name, email)
+    VALUES (gen_random_uuid(), 'Fay Example', 'fay-followup@example.invalid') RETURNING id INTO fay;
+    INSERT INTO subscriber_lists(subscriber_id, list_id, status)
+    VALUES (dana, source_id, 'confirmed'), (eli, source_id, 'confirmed'), (fay, source_id, 'confirmed');
+    INSERT INTO axm_campaign_sends(campaign_id, subscriber_id)
+    VALUES (campaign, dana), (campaign, eli), (campaign, fay);
+    INSERT INTO campaign_views(campaign_id, subscriber_id)
+    VALUES (campaign, dana), (campaign, fay);
+    INSERT INTO links(uuid, url) VALUES (gen_random_uuid(), 'https://example.invalid/cypress-followup') RETURNING id INTO offer;
+    INSERT INTO link_clicks(campaign_id, link_id, subscriber_id) VALUES (campaign, offer, fay);
+END $$;
+
 UPDATE settings SET value = 'true'::JSONB WHERE key = 'privacy.individual_tracking';

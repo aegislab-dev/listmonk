@@ -530,7 +530,7 @@
     "campaigns.followup.madeAt": "As of {time} when made · {matched} of {received} recipients: {condition}",
     "campaigns.followup.listsChanged": "The lists of this campaign were changed. The check before sending covers only the follow-up list.",
     "campaigns.followup.hasFollowup": "Follow-up of this campaign:",
-    "campaigns.followup.excludeNote": "The original campaign was sent first, so it counts as excluded in this preview.",
+    "campaigns.followup.excludeNote": "The original campaign was sent first, so the recent-send exclusion preview counts those people as excluded.",
     "lists.reaction.nameSuffix": " · {conditions} · {date} · {count} people",
     "lists.reaction.description": "Campaign #{id} {name}\nConditions: {conditions}\nCalculated at {time}\nReceived {sends}, matched {matched}. Excluded {blocked} blocklisted, {campaignOptOut} unsubscribed from campaign lists, {allOptOut} unsubscribed from all lists, and {outOfScope} outside your access. Added {eligible}.",
     "campaigns.status.cancelled": "Cancelled",
