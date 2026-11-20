@@ -267,9 +267,30 @@ export function zoneKoName(date, tz) {
   }
 }
 
+// The browser may list a zone of the tables under another name (Chrome: Asia/Calcutta for
+// Asia/Kolkata, Asia/Katmandu, Asia/Saigon, Europe/Kiev, America/Buenos_Aires). The table key for
+// `tz`: itself when the tables have it, else the key that the browser gives the same name.
+let aliasKeys = null;
+export function tableKey(tz) {
+  if (KO_CITIES[tz]) return tz;
+  if (!aliasKeys) {
+    aliasKeys = new Map();
+    Object.keys(KO_CITIES).forEach((k) => {
+      try {
+        const c = new Intl.DateTimeFormat('en', { timeZone: k }).resolvedOptions().timeZone;
+        if (c && c !== k && !KO_CITIES[c]) aliasKeys.set(c, k);
+      } catch (e) {
+        // A zone this browser does not know: nothing to map.
+      }
+    });
+  }
+  return aliasKeys.get(tz) || tz;
+}
+
 // The city to show: the Korean name from the table, else the last part of the IANA name.
 export function zoneCity(tz) {
-  if (KO_CITIES[tz]) return KO_CITIES[tz];
+  const key = tableKey(tz);
+  if (KO_CITIES[key]) return KO_CITIES[key];
   const last = tz.split('/').pop();
   return last.replace(/_/g, ' ');
 }
@@ -319,7 +340,7 @@ export function customZone(text) {
 const regionNames = new Map();
 // The country names of a zone ("France", "프랑스"), or [] when it is not in the table or Intl cannot name it.
 export function zoneCountryNames(tz) {
-  const code = ZONE_COUNTRY[tz];
+  const code = ZONE_COUNTRY[tableKey(tz)];
   if (!code) return [];
   return ['en', 'ko'].map((locale) => {
     try {
@@ -341,7 +362,10 @@ const norm = (s) => String(s || '')
 export function buildIndex(zones, date) {
   return zones.map((tz) => {
     const info = zoneInfo(tz, date);
-    const fields = [norm(tz), norm(info.city), norm(info.name), norm(info.abbr), norm(KO_CITIES[tz])];
+    const key = tableKey(tz);
+    // The table key too, so "Kolkata" finds the zone a browser lists as Asia/Calcutta.
+    const fields = [norm(tz), norm(info.city), norm(info.name), norm(info.abbr), norm(KO_CITIES[key])];
+    if (key !== tz) fields.push(norm(key));
     return { ...info, fields: [...fields, ...zoneCountryNames(tz).map(norm)] };
   });
 }

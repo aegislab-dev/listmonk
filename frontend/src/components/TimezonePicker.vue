@@ -13,7 +13,8 @@
       <div class="tzp-search">
         <b-icon icon="magnify" size="is-small" />
         <input ref="search" v-model="query" type="text" class="tzp-input" autocomplete="off" spellcheck="false"
-          :aria-label="$t('campaigns.sendTz.search')" :placeholder="$t('campaigns.sendTz.search')" data-cy="send-tz-search">
+          :aria-label="$t('campaigns.sendTz.search')" :placeholder="$t('campaigns.sendTz.search')" data-cy="send-tz-search"
+          @keydown.enter.prevent.stop="pickFirst">
       </div>
 
       <div class="tzp-list">
@@ -112,6 +113,12 @@ export default Vue.extend({
       if (this.$refs.root && !this.$refs.root.contains(e.target)) this.close();
     },
 
+    // Enter in the search box picks the first match. The picker sits inside the campaign form, and
+    // Enter must never submit that form (it would save a new campaign).
+    pickFirst() {
+      if (this.query.trim() && this.results.length) this.pick(this.results[0].tz);
+    },
+
     pick(tz) {
       rememberZone(tz);
       this.close();
@@ -133,7 +140,7 @@ export default Vue.extend({
 .tzp-current > b { margin-right: .4rem; }
 @media (max-width: 520px) {
   /* Under the input, as wide as its content, and never past the screen: the page itself is wider than a phone. */
-  .tzp { flex: 0 1 auto; margin-top: .5rem; max-width: calc(100vw - 4.5rem); }
+  .tzp { flex: 0 1 auto; max-width: calc(100vw - 4.5rem); }
   .tzp-button { width: auto; max-width: 100%; min-width: 0; }
   .tzp-panel { left: 0; right: auto; }
 }

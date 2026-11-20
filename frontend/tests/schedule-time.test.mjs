@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   KST, KO_CITIES, TZ_ATTRIB, ZONE_COUNTRY, allZones, browserDiffers, customZone, browserZoneName, buildIndex, instantToWall, mergeAttribs, offsetLabel, otherZoneLines, searchIndex,
-  splitAttribs, validZone, wallToInstant, zoneAbbr, zoneInfo, zoneParts,
+  splitAttribs, tableKey, validZone, wallToInstant, zoneAbbr, zoneCity, zoneInfo, zoneParts,
 } from '../src/schedule-time.js';
 
 const local = (y, m, d, h, mi) => new Date(y, m - 1, d, h, mi);
@@ -126,6 +126,27 @@ test('search finds Korean names, cities, IANA names and abbreviations', () => {
   assert.ok(searchZones('뉴').includes('America/St_Johns'));
   assert.deepEqual(searchZones(''), []);
   assert.deepEqual(searchZones('zzzzqq'), []);
+});
+
+test('cities the browser lists under an older name are found by their names', () => {
+  const t = new Date('2026-11-22T00:00:00Z');
+  // As Chrome lists them: the old names only.
+  const zones = ['Asia/Calcutta', 'Asia/Katmandu', 'Asia/Saigon', 'Europe/Kiev', 'America/Buenos_Aires', 'Asia/Seoul'];
+  const index = buildIndex(zones, t);
+  const searchZones = (q) => searchIndex(q, index).map((e) => e.tz);
+  [['Kolkata', 'Asia/Calcutta'], ['콜카타', 'Asia/Calcutta'], ['Kathmandu', 'Asia/Katmandu'], ['카트만두', 'Asia/Katmandu'],
+    ['호찌민', 'Asia/Saigon'], ['Ho Chi Minh', 'Asia/Saigon'], ['키이우', 'Europe/Kiev'], ['Kyiv', 'Europe/Kiev'],
+    ['부에노스아이레스', 'America/Buenos_Aires'], ['India', 'Asia/Calcutta'], ['네팔', 'Asia/Katmandu']].forEach(([q, z]) => {
+    assert.ok(searchZones(q).includes(z), `${q} -> ${z}`);
+  });
+  // The row shows the Korean city name too.
+  assert.equal(zoneCity('Asia/Calcutta'), '콜카타');
+  assert.equal(tableKey('Asia/Calcutta'), 'Asia/Kolkata');
+  assert.equal(tableKey('Asia/Seoul'), 'Asia/Seoul');
+  assert.equal(tableKey('Europe/Oslo'), 'Europe/Oslo');
+  // And the zones the browser does list today (whatever their names) all find their city.
+  const all = buildIndex(allZones(), t);
+  ['Kolkata', 'Kathmandu', '호찌민', '키이우', '부에노스아이레스'].forEach((q) => assert.ok(searchIndex(q, all).length > 0, q));
 });
 
 test('search finds a city by its country name, in English or Korean', () => {

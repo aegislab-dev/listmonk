@@ -148,7 +148,7 @@
                   </div>
                   <div class="column">
                     <br />
-                    <div v-if="form.sendLater" data-cy="send_at">
+                    <div v-if="form.sendLater" class="send-at" data-cy="send_at">
                       <b-field class="send-at-row">
                         <b-datetimepicker v-model="sendAtPicker" :disabled="!canEdit" required editable mobile-native expanded
                           position="is-top-right" :placeholder="$t('campaigns.dateAndTime')" icon="calendar-clock"
@@ -263,7 +263,7 @@
         <section class="wrap">
           <b-field :label="$t('globals.terms.attribs')" :message="$t('campaigns.attribsHelp')"
             label-position="on-border">
-            <b-input v-model="form.attribsStr" type="textarea" :disabled="!canEdit" rows="15" />
+            <b-input v-model="form.attribsStr" type="textarea" :disabled="!canEdit" rows="15" data-cy="campaign-attribs" />
           </b-field>
         </section>
       </b-tab-item><!-- attribs -->
@@ -1215,10 +1215,21 @@ export default Vue.extend({
 
 <style scoped>
 .send-at-row { margin-bottom: 0; }
+/* The column can be narrow on a wide screen too (tablets, small windows): the input keeps room
+   for the date and time, and the zone button goes under it rather than squeezing it. */
+.send-at { container-type: inline-size; }
+.send-at-row ::v-deep .has-addons { flex-wrap: wrap; row-gap: .5rem; }
+.send-at-row ::v-deep .datepicker { flex: 1 1 12rem; min-width: min(12rem, 100%); }
+@container (max-width: 30rem) {
+  .send-at-row ::v-deep .datepicker { flex-basis: 100%; }
+  .send-at-row ::v-deep .field.has-addons .control.tzp { flex: 0 1 auto; max-width: 100%; }
+  .send-at-row ::v-deep .field.has-addons .control.tzp .tzp-button { width: auto; max-width: 100%; min-width: 0; border-radius: 4px; }
+  .send-at-row ::v-deep .tzp-panel { left: 0; right: auto; }
+}
 @media (max-width: 520px) {
   /* The zone button goes under the input instead of past the edge of the screen. */
-  .send-at-row ::v-deep .has-addons { flex-wrap: wrap; }
   .send-at-row ::v-deep .datepicker { flex: 1 1 100%; min-width: 0; }
+  .send-at-row ::v-deep .field.has-addons .control.tzp .tzp-button { border-radius: 4px; }
 }
 .send-at-duration { margin-top: .5rem; }
 .send-at-zones { font-size: .8125rem; color: #6b7280; margin-top: .25rem; line-height: 1.7; }

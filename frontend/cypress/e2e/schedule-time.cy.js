@@ -18,6 +18,15 @@ const make = (key, extra) => cy.request('POST', '/api/campaigns', {
 const open = (key) => cy.visit(`/admin/campaigns/${ids[key]}`);
 const pickerValue = () => cy.get('[data-cy=send_at] .datepicker input').first();
 const zoneButton = () => cy.get('[data-cy=send-tz-button]');
+// The attributes tab's JSON: the zone key must not be there in either spelling (the frontend
+// camelCases attribs keys from the API: axm_send_tz -> axmSendTz).
+const attribsTab = (expected) => {
+  cy.contains('.b-tabs nav a', /attrib/i).click();
+  cy.get('textarea[data-cy=campaign-attribs]').should('be.visible').invoke('val').should((v) => {
+    expect(v).not.to.match(/axm_?send_?tz/i);
+    expect(JSON.parse(v)).to.deep.eq(expected);
+  });
+};
 
 describe('Scheduled send time zone', () => {
   before(() => {
@@ -28,6 +37,7 @@ describe('Scheduled send time zone', () => {
       listId = body.data.id;
       // 2030-01-15 is a Tuesday. 14:00 UTC is 09:00 in New York (EST) and 23:00 in Korea.
       make('ny', { send_at: '2030-01-15T14:00:00.000Z', attribs: { [KEY]: 'America/New_York' } });
+      make('nyattr', { send_at: '2030-01-15T14:00:00.000Z', attribs: { [KEY]: 'America/New_York', note: 'hi' } });
       // No zone stored: KST. 00:00 UTC is 09:00 in Korea.
       make('kst', { send_at: '2030-01-15T00:00:00.000Z' });
       make('empty', {});
@@ -144,6 +154,69 @@ describe('Scheduled send time zone', () => {
     });
   });
 
+  it('hides the stored zone from the attributes tab and keeps the other attributes', () => {
+    cy.intercept('PUT', '/api/campaigns/*').as('save');
+    open('nyattr');
+    zoneButton().should('contain', 'EST');
+    attribsTab({ note: 'hi' });
+    cy.get('button[data-cy=btn-save]').first().click();
+    cy.wait('@save').its('request.body.attribs').should('deep.eq', { note: 'hi', [KEY]: 'America/New_York' });
+    cy.reload();
+    attribsTab({ note: 'hi' });
+  });
+
+  it('Enter in the zone search picks the first match and does not submit a new campaign', () => {
+    cy.intercept('POST', '/api/campaigns').as('create');
+    cy.visit(`/admin/campaigns/new?list_id=${listId}`);
+    cy.get('.list-selector .tag').should('have.length', 1);
+    cy.get('input[name=name]').type(`Schedule zone enter ${stamp}`);
+    cy.get('input[name=subject]').type('Enter');
+    cy.get('[data-cy=btn-send-later] .check').click();
+    // No {enter} here: in the new campaign form that would submit it.
+    pickerValue().clear().type('2030-02-01 09:00');
+    cy.get('body').click(1, 1);
+    pickerValue().should('have.value', '2030-02-01 09:00');
+    zoneButton().click();
+    cy.get('[data-cy=send-tz-search]').type('new york');
+    cy.get('[data-cy=send-tz-panel] [data-tz="America/New_York"]').should('exist');
+    cy.get('[data-cy=send-tz-search]').type('{enter}');
+    cy.get('[data-cy=send-tz-panel]').should('not.exist');
+    zoneButton().should('contain', 'EST');
+    // Still on the new campaign form: nothing was created.
+    cy.wait(500);
+    cy.get('@create.all').should('have.length', 0);
+    cy.location('pathname').should('eq', '/admin/campaigns/new');
+    cy.get('[data-cy=btn-continue]').should('be.visible');
+
+    // The form was complete: Continue creates it, with the zone picked by Enter.
+    cy.get('[data-cy=btn-continue]').click();
+    cy.wait('@create').its('request.body').should((b) => {
+      expect(b.attribs[KEY]).to.eq('America/New_York');
+      expect(new Date(b.send_at).toISOString()).to.eq('2030-02-01T14:00:00.000Z');
+    });
+  });
+
+  it('keeps the date and time readable next to the zone on tablet and small desktop widths', () => {
+    [[820, 1000], [1024, 768], [1280, 800], [1440, 900], [390, 800]].forEach(([w, h]) => {
+      cy.viewport(w, h);
+      open('kst');
+      pickerValue().should('have.value', '2030-01-15 09:00').should(($i) => {
+        const input = $i[0];
+        // The whole value fits in the box (no clipped text) and the box is not squeezed.
+        expect(input.scrollWidth, `text fits at ${w}px`).to.be.lte(input.clientWidth + 1);
+        expect(input.getBoundingClientRect().width, `input width at ${w}px`).to.be.gte(150);
+      });
+      zoneButton().should('be.visible').then(($b) => {
+        const r = $b[0].getBoundingClientRect();
+        const input = Cypress.$('[data-cy=send_at] .datepicker input')[0].getBoundingClientRect();
+        const pageWidth = $b[0].ownerDocument.documentElement.clientWidth;
+        // Beside the input or under it, never over it, and on the screen.
+        expect(r.left >= input.right - 2 || r.top >= input.bottom - 1, `button placement at ${w}px`).to.eq(true);
+        expect(r.right, `button on screen at ${w}px`).to.be.lte(pageWidth);
+      });
+    });
+  });
+
   it('searches by Korean name', () => {
     open('kst');
     zoneButton().click();
@@ -185,8 +258,7 @@ describe('Scheduled send time zone', () => {
     cy.reload();
     pickerValue().should('have.value', '2030-02-01 09:00');
     zoneButton().should('contain', 'EST');
-    cy.contains('.b-tabs nav a', /attrib/i).click();
-    cy.get('.tab-content textarea').filter(':visible').first().invoke('val').should('not.contain', KEY);
+    attribsTab({});
   });
 
   it('saving an opened campaign without touching the time keeps the moment', () => {
