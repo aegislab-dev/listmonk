@@ -204,30 +204,65 @@ describe('Scheduled send time zone', () => {
 
   it('the Enter that ends a Korean (IME) composition picks nothing; the search follows the composed text', () => {
     const cdp = (command, params) => Cypress.automation('remote:debugger:protocol', { command, params });
+    // A trusted Enter key press as the browser gets it (keyDown with text makes the keypress that
+    // submits a form).
+    const enterDown = () => cdp('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r',
+    });
+    const enterUp = () => cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    cy.intercept('PUT', '/api/campaigns/*').as('save');
     open('ime');
     zoneButton().should('contain', 'KST');
     zoneButton().click();
     cy.get('[data-cy=send-tz-search]').focus();
-    // "파" typed, then "리" still being composed: the box shows 파리.
+
+    // "파" typed, then "리" still being composed: the box shows 파리 and the results are for 파리
+    // already, not for 파 (whose first match is Paraguay).
     cy.then(() => cdp('Input.insertText', { text: '파' }));
     cy.then(() => cdp('Input.imeSetComposition', { text: '리', selectionStart: 1, selectionEnd: 1 }));
     cy.get('[data-cy=send-tz-search]').should('have.value', '파리');
-    // The results are for 파리 already, not for 파 (whose first match is Paraguay).
     cy.get('[data-cy=send-tz-panel] [data-tz]').first().should('have.attr', 'data-tz', 'Europe/Paris');
-    // Enter while composing: nothing is picked.
+    cy.then(() => cdp('Input.insertText', { text: '리' }));
+    cy.get('[data-cy=send-tz-search]').clear();
+
+    // Linux IBus: one Enter press while "파" is composed fires a composing keydown, compositionend
+    // (the syllable is committed) and then a plain Enter keydown, before the key is released.
+    cy.then(() => cdp('Input.imeSetComposition', { text: '파', selectionStart: 1, selectionEnd: 1 }));
+    cy.get('[data-cy=send-tz-search]').should('have.value', '파');
+    cy.get('[data-cy=send-tz-panel] [data-tz]').first().should('have.attr', 'data-tz', 'America/Asuncion');
     cy.then(() => cdp('Input.dispatchKeyEvent', {
       type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
     }));
-    cy.then(() => cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }));
+    cy.then(() => cdp('Input.insertText', { text: '파' }));
+    cy.then(enterDown);
+    cy.then(enterUp);
+    // Nothing is picked and the form is not submitted.
+    cy.get('[data-cy=send-tz-search]').should('have.value', '파');
     cy.get('[data-cy=send-tz-panel]').should('exist');
     zoneButton().should('contain', 'KST');
-    // The composition ends with the same text; the next Enter picks Paris.
+    cy.wait(300);
+    cy.get('@save.all').should('have.length', 0);
+
+    // Windows / macOS: the composing keydown only, then the key is released.
+    cy.get('[data-cy=send-tz-search]').clear();
+    cy.then(() => cdp('Input.insertText', { text: '파' }));
+    cy.then(() => cdp('Input.imeSetComposition', { text: '리', selectionStart: 1, selectionEnd: 1 }));
+    cy.then(() => cdp('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+    }));
     cy.then(() => cdp('Input.insertText', { text: '리' }));
-    cy.get('[data-cy=send-tz-search]').should('have.value', '파리').type('{enter}');
+    cy.then(enterUp);
+    cy.get('[data-cy=send-tz-panel]').should('exist');
+    zoneButton().should('contain', 'KST');
+
+    // The next Enter press picks the first match: Paris. The moment does not move.
+    cy.get('[data-cy=send-tz-search]').should('have.value', '파리');
+    cy.then(enterDown);
+    cy.then(enterUp);
     cy.get('[data-cy=send-tz-panel]').should('not.exist');
     zoneButton().should('contain', 'UTC+1');
-    // 09:00 KST is 01:00 in Paris; the moment did not move.
     pickerValue().should('have.value', '2030-01-15 01:00');
+    cy.get('@save.all').should('have.length', 0);
   });
 
   it('a stored alias (US/Eastern) is the listed zone: marked in the picker, left out of the line', () => {

@@ -14,7 +14,8 @@
         <b-icon icon="magnify" size="is-small" />
         <input ref="search" :value="query" type="text" class="tzp-input" autocomplete="off" spellcheck="false"
           :aria-label="$t('campaigns.sendTz.search')" :placeholder="$t('campaigns.sendTz.search')" data-cy="send-tz-search"
-          @input="query = $event.target.value" @keydown.enter="onEnter">
+          @input="query = $event.target.value" @keydown.enter="onEnter" @compositionend="afterComposition = true"
+          @keyup="afterComposition = false" @focus="afterComposition = false" @mousedown="afterComposition = false">
       </div>
 
       <div class="tzp-list">
@@ -63,6 +64,8 @@ export default Vue.extend({
     return {
       open: false,
       query: '',
+      // A composition just ended and its key is not released yet (see onEnter).
+      afterComposition: false,
       index: [],
       recent: [],
       frequent: [],
@@ -118,10 +121,20 @@ export default Vue.extend({
     // (IME) composition only finishes the word: it picks nothing, and the browser does not submit on it.
     // The search follows the text while it is being composed (`@input`, not v-model, which waits for
     // the composition to end), so the results always match what the box shows.
+    //
+    // Ending a composition with Enter fires, depending on the system: a composing keydown (229) only
+    // (Windows, macOS), or a composing keydown, compositionend and then a plain Enter keydown (13) for
+    // the same key press (Linux IBus). So after a composition ends, the next Enter keydown is that same
+    // press until a key is released or the box is focused or clicked again: it picks nothing and does
+    // not submit the form. The Enter after that picks.
     onEnter(e) {
       if (e.isComposing || e.keyCode === 229) return;
       e.preventDefault();
       e.stopPropagation();
+      if (this.afterComposition) {
+        this.afterComposition = false;
+        return;
+      }
       this.query = e.target.value;
       if (this.query.trim() && this.results.length) this.pick(this.results[0].tz);
     },
