@@ -182,6 +182,8 @@ describe('Scheduled send time zone', () => {
     cy.get('[data-cy=send-tz-search]').type('{enter}');
     cy.get('[data-cy=send-tz-panel]').should('not.exist');
     zoneButton().should('contain', 'EST');
+    // Changing the zone keeps the moment: 09:00 KST is 19:00 the day before in New York.
+    pickerValue().should('have.value', '2030-01-31 19:00');
     // Still on the new campaign form: nothing was created.
     cy.wait(500);
     cy.get('@create.all').should('have.length', 0);
@@ -192,7 +194,7 @@ describe('Scheduled send time zone', () => {
     cy.get('[data-cy=btn-continue]').click();
     cy.wait('@create').its('request.body').should((b) => {
       expect(b.attribs[KEY]).to.eq('America/New_York');
-      expect(new Date(b.send_at).toISOString()).to.eq('2030-02-01T14:00:00.000Z');
+      expect(new Date(b.send_at).toISOString()).to.eq('2030-02-01T00:00:00.000Z');
     });
   });
 
