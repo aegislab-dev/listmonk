@@ -513,3 +513,44 @@ func TestRecentListTeamChangedWhileMaking(t *testing.T) {
 		t.Fatalf("team swapped: list %+v counts %+v, preview %+v, %d members", out.List.Tags, out.Counts, want, len(e.members(out.List.ID)))
 	}
 }
+
+// Review: a source list moved to another team while the list was being made took the member's
+// read access with it, but the retry read its people with the access checked at the start.
+func TestRecentListSourceMovedAwayFromMember(t *testing.T) {
+	e := newRecentListEnv(t)
+	rule := models.RecentRule{Days: 14, Scope: models.RecentScopeAll, CampaignIDs: []int64{}}
+	if got := e.member.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, []int{e.aList}); len(got) != 1 {
+		t.Fatalf("the member reads list A1 at the start: %v", got)
+	}
+	before := e.lists()
+	moved := false
+	_, err := e.a.core.MakeRecentExcludeList(context.Background(), []int{e.aList}, rule, e.draft, core.RecentListOptions{
+		UserID:       e.member.ID,
+		ResolveTeams: func([]string) ([]string, error) { return []string{"팀:가"}, nil },
+		AfterTeams: func() {
+			if !moved {
+				moved = true
+				e.db.MustExec(`UPDATE lists SET tags = array_replace(tags, '팀:가', '팀:나') WHERE id=$1`, e.aList)
+			}
+		},
+	})
+	var he *echo.HTTPError
+	if !errors.As(err, &he) || he.Code != http.StatusForbidden || e.lists() != before {
+		t.Fatalf("moved list: err %v, lists %d -> %d", err, before, e.lists())
+	}
+	var readable int
+	e.get(&readable, `SELECT COUNT(*) FROM roles r JOIN users u ON r.parent_id = u.list_role_id WHERE u.id=$1 AND r.list_id=$2`, e.member.ID, e.aList)
+	if readable != 0 {
+		t.Fatalf("moving the list should take the member's access (%d roles left): the test does not test the move", readable)
+	}
+
+	// Without a move the same member makes the list.
+	e.db.MustExec(`UPDATE lists SET tags = array_replace(tags, '팀:나', '팀:가') WHERE id=$1`, e.aList)
+	out, err := e.a.core.MakeRecentExcludeList(context.Background(), []int{e.aList}, rule, e.draft, core.RecentListOptions{
+		UserID:       e.member.ID,
+		ResolveTeams: func([]string) ([]string, error) { return []string{"팀:가"}, nil },
+	})
+	if err != nil || !sameInts(e.members(out.List.ID), []int{e.a2}) {
+		t.Fatalf("member: err %v, members %v", err, e.members(out.List.ID))
+	}
+}

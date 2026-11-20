@@ -191,6 +191,9 @@ const recentListLockKey int64 = 746046
 type RecentListOptions struct {
 	Name         string
 	ResolveTeams func(source []string) ([]string, error)
+	// UserID, when set, must be able to read every source list in the transaction's snapshot
+	// (the caller checked the session's permissions, which can be older than the snapshot).
+	UserID int
 	// AfterTeams, when set, runs after the teams are decided and before the transaction (tests
 	// change the source lists there).
 	AfterTeams func()
@@ -272,7 +275,7 @@ func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule mode
 			o.AfterTeams()
 		}
 
-		out, err = c.makeRecentExcludeList(ctx, ids, rule, selfID, o.Name, tags, teams, out)
+		out, err = c.makeRecentExcludeList(ctx, ids, rule, selfID, o, tags, teams, out)
 		if errors.Is(err, errRecentTeamsChanged) {
 			if attempt < 3 {
 				continue
@@ -309,7 +312,7 @@ func recentSourceTeams(sources []models.RecentSourceList) []string {
 // makeRecentExcludeList does the work of MakeRecentExcludeList on one connection: the lock and
 // the transaction share it, so the request never holds one connection while waiting for another.
 func (c *Core) makeRecentExcludeList(ctx context.Context, ids pq.Int64Array, rule models.RecentRule, selfID int,
-	reqName string, sourceTeams, teams []string, out models.RecentListResult) (models.RecentListResult, error) {
+	o RecentListOptions, sourceTeams, teams []string, out models.RecentListResult) (models.RecentListResult, error) {
 	// Names are made unique by looking at the committed lists, so two makers must not run at
 	// once: the second one starts its snapshot only after the first one committed. The session
 	// lock is taken before the transaction takes its snapshot.
@@ -343,6 +346,17 @@ func (c *Core) makeRecentExcludeList(ctx context.Context, ids pq.Int64Array, rul
 		slices.ContainsFunc(now, func(t string) bool { return !slices.Contains(sourceTeams, t) }) {
 		return out, errRecentTeamsChanged
 	}
+	// A list moved to another team meanwhile can take the user's access with it: read access is
+	// checked in the same snapshot the people are read from.
+	if o.UserID != 0 {
+		var readable []int
+		if err := tx.Stmtx(c.q.AxmRecentReadableLists).SelectContext(ctx, &readable, o.UserID, ids); err != nil {
+			return out, c.recentError(err)
+		}
+		if len(readable) != len(ids) {
+			return out, echo.NewHTTPError(http.StatusForbidden, c.i18n.T("campaigns.recent.listForbidden"))
+		}
+	}
 
 	var counts models.RecentCounts
 	if err := tx.Stmtx(c.q.AxmRecentExcludeCounts).GetContext(ctx, &counts, ids, rule.Days, rule.Scope, rule.CampaignIDs, selfID); err != nil {
@@ -354,7 +368,7 @@ func (c *Core) makeRecentExcludeList(ctx context.Context, ids pq.Int64Array, rul
 		return out, c.recentBadRequest("listEmpty")
 	}
 
-	name := strings.TrimSpace(reqName)
+	name := strings.TrimSpace(o.Name)
 	if name == "" {
 		name = c.recentListName(out.SourceLists, rule.Days, out.AsOf)
 	}

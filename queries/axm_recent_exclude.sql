@@ -57,3 +57,21 @@ INSERT INTO subscriber_lists (subscriber_id, list_id, status)
 SELECT kept.subscriber_id, $6::INT, 'confirmed'
 FROM (SELECT subscriber_id, excluded FROM axm_recent_exclusion($1, $2, $3, $4, $5) OFFSET 0) kept
 WHERE NOT kept.excluded;
+
+-- name: axm-recent-readable-lists
+-- The lists of $2 that user $1 may read now, by the role tables (the same rule as the session's
+-- permission map): the super admin role, lists:get_all or lists:manage_all on the user role, or
+-- list:get or list:manage for that list on the user's list role.
+SELECT l.id
+FROM users u
+JOIN lists l ON l.id = ANY($2::INT[])
+LEFT JOIN roles ur ON ur.id = u.user_role_id
+WHERE u.id = $1 AND (
+    u.user_role_id = 1
+    OR ur.permissions && ARRAY['lists:get_all', 'lists:manage_all']
+    OR EXISTS (
+        SELECT 1 FROM roles r
+        WHERE r.parent_id = u.list_role_id AND r.type = 'list' AND r.list_id = l.id
+            AND r.permissions && ARRAY['list:get', 'list:manage']
+    )
+);

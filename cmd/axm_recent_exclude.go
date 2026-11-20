@@ -132,6 +132,7 @@ func (a *App) MakeRecentExcludeList(c echo.Context) error {
 	}
 	out, err := a.core.MakeRecentExcludeList(c.Request().Context(), req.ListIDs, req.RecentRule, req.CampaignID, core.RecentListOptions{
 		Name:         req.Name,
+		UserID:       user.ID,
 		ResolveTeams: func(source []string) ([]string, error) { return a.reactionTeams(user, req.Team, req.NoTeam, source) },
 	})
 	if err != nil {
