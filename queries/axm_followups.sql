@@ -81,7 +81,7 @@ RETURNING id;
     FROM subscriber_lists sl
     JOIN axm_campaign_sends cs ON cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id
     LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
-    WHERE sl.list_id = ANY($6::INT[])
+    WHERE sl.list_id = ANY($6::INT[]) AND sl.status != 'unsubscribed'
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $7 AND sent.subscriber_id = sl.subscriber_id)
 ),
 gone AS (
@@ -102,13 +102,20 @@ FROM gone;
     FROM subscriber_lists sl
     JOIN axm_campaign_sends cs ON cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id
     LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
-    WHERE sl.list_id = ANY($6::INT[])
+    WHERE sl.list_id = ANY($6::INT[]) AND sl.status != 'unsubscribed'
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $7 AND sent.subscriber_id = sl.subscriber_id)
 )
 SELECT COUNT(*) FILTER (WHERE reason = -1) AS reacted,
     COUNT(*) FILTER (WHERE reason IN (2, 3)) AS opted_out,
     COUNT(*) FILTER (WHERE reason = 1) AS blocked
 FROM verdict;
+
+-- name: axm-followup-lock-due
+-- Locks the follow-up campaign while it is still due, so that a schedule moved to a later time
+-- cannot be overtaken by a check made for the earlier one: no row means do not check.
+SELECT id FROM campaigns
+WHERE id = $1 AND (status = 'running' OR (status = 'scheduled' AND NOW() >= send_at))
+FOR UPDATE;
 
 -- name: axm-followup-record
 UPDATE axm_campaign_followups SET rechecked_at = NOW(), recheck = jsonb_build_object(

@@ -165,10 +165,10 @@ type followupDue struct {
 // start, a due schedule, a resume, a restart); it does nothing when there are none. It returns
 // the campaigns it checked. An error means the check did not happen, and the caller must not
 // start those campaigns.
-func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) ([]int, error) {
+func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) (done, finished []int, err error) {
 	var due []followupDue
 	if err := c.q.AxmFollowupDue.SelectContext(ctx, &due, pq.Array(currentIDs)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return c.recheck(ctx, due)
 }
@@ -176,45 +176,56 @@ func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) ([]int,
 // RecheckFollowupsByID checks the follow-ups among the given campaigns, whatever their state.
 // The sender uses it for a campaign it found after the first check (a schedule that fell due
 // while another check ran). It returns the campaigns that were follow-ups.
-func (c *Core) RecheckFollowupsByID(ctx context.Context, ids []int) ([]int, error) {
+func (c *Core) RecheckFollowupsByID(ctx context.Context, ids []int) (done, finished []int, err error) {
 	var rows []followupDue
 	if err := c.q.AxmFollowupByIDs.SelectContext(ctx, &rows, pq.Array(ids)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return c.recheck(ctx, rows)
 }
 
-func (c *Core) recheck(ctx context.Context, rows []followupDue) ([]int, error) {
-	done := []int{}
+func (c *Core) recheck(ctx context.Context, rows []followupDue) (done, finished []int, err error) {
+	done = []int{}
 	for _, f := range rows {
 		var s models.ReactionSettings
 		if err := json.Unmarshal(f.Condition, &s); err != nil || s.Validate() != nil {
-			return done, errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
+			return done, finished, errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
 		}
 		tx, err := c.db.BeginTxx(ctx, nil)
 		if err != nil {
-			return done, err
+			return done, finished, err
+		}
+		// The campaign is locked while it is still due: a schedule moved to a later time while
+		// this check waited must not have its list cut by a check made for the earlier time.
+		var locked int
+		if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &locked, f.CampaignID); err != nil {
+			tx.Rollback()
+			if errors.Is(err, sql.ErrNoRows) {
+				done = append(done, f.CampaignID)
+				continue
+			}
+			return done, finished, err
 		}
 		var gone models.FollowupPending
 		if len(f.ListIDs) > 0 {
 			args := []any{f.ParentID, s.Open, s.Click, pq.Array([]int(nil)), true, f.ListIDs, f.CampaignID}
 			if err := tx.Stmtx(c.q.AxmFollowupRecheck).GetContext(ctx, &gone, args...); err != nil {
 				tx.Rollback()
-				return done, err
+				return done, finished, err
 			}
 			if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID, gone.Reacted, gone.OptedOut, gone.Blocked); err != nil {
 				tx.Rollback()
-				return done, err
+				return done, finished, err
 			}
 		}
 		// Nobody left: the campaign ends here instead of waiting for someone to be added.
 		var ended int
 		if err := tx.Stmtx(c.q.AxmFollowupFinishEmpty).GetContext(ctx, &ended, f.CampaignID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			tx.Rollback()
-			return done, err
+			return done, finished, err
 		}
 		if err := tx.Commit(); err != nil {
-			return done, err
+			return done, finished, err
 		}
 		if len(f.ListIDs) > 0 {
 			c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, removed %d who reacted, %d who opted out, %d blocked",
@@ -222,11 +233,12 @@ func (c *Core) recheck(ctx context.Context, rows []followupDue) ([]int, error) {
 			_ = c.refreshCache(matListSubStats, false)
 		}
 		if ended != 0 {
+			finished = append(finished, f.CampaignID)
 			c.log.Printf("follow-up campaign %d: nobody is left to send to after the check, finished without sending", f.CampaignID)
 		}
 		done = append(done, f.CampaignID)
 	}
-	return done, nil
+	return done, finished, nil
 }
 
 // GetFollowupInfo describes the follow-up link of a campaign, if it has one. withPending adds

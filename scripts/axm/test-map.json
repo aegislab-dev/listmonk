@@ -415,11 +415,22 @@
   },
   {
    "paths": [
-    "queries/axm_followups.sql",
-    "cmd/manager_store.go"
+    "queries/axm_followups.sql"
    ],
    "specs": [
     "followup.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "cmd/manager_store.go"
+   ],
+   "specs": [
+    "followup.cy.js",
+    "audit.cy.js",
+    "sender-addresses.cy.js",
+    "column-presets.cy.js",
+    "list-teams.cy.js"
    ]
   }
  ],

@@ -56,6 +56,7 @@ type Queries struct {
 	AxmFollowupGet                 *sqlx.Stmt `query:"axm-followup-get"`
 	AxmFollowupDue                 *sqlx.Stmt `query:"axm-followup-due"`
 	AxmFollowupByIDs               *sqlx.Stmt `query:"axm-followup-by-ids"`
+	AxmFollowupLockDue             *sqlx.Stmt `query:"axm-followup-lock-due"`
 	AxmFollowupFinishEmpty         *sqlx.Stmt `query:"axm-followup-finish-empty"`
 	AxmFollowupRecheck             *sqlx.Stmt `query:"axm-followup-recheck"`
 	AxmFollowupPending             *sqlx.Stmt `query:"axm-followup-pending"`
