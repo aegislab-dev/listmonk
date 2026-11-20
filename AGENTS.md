@@ -22,7 +22,7 @@ scripts/axm/axm down              # 내 컨테이너 정리(check 는 끝날 때
 3. **리뷰 재라운드와 수정 뒤 재검사는 `axm check --since-last`.** 비교는 파일 내용(blob 해시)이라 rebase·squash 뒤에도 맞는다.
 4. **캐시를 따로 만들지 않는다.** Go 모듈·빌드 캐시, 프론트 dist, 시험용 베이스 이미지는 `~/.cache/listmonk-axm`(`AXM_CACHE` 로 바꿈)에서 태스크끼리 같이 쓴다. `$TMPDIR` 에 Go 캐시나 `node_modules` 를 새로 만들지 않는다. 검사가 끝나면 컨테이너를 내린다(`axm down`).
 5. **새 화면·API·spec 을 만들면 `scripts/axm/test-map.json` 에 줄을 추가한다.** `python3 -m unittest scripts/axm/test_axm.py` 가 CI 의 spec 목록과 어긋나거나 규칙이 존재하지 않는 파일을 가리키면 실패한다.
-6. **CPU 한도.** 무거운 단계(빌드·Go 시험·Cypress)는 컨테이너당 `AXM_CPUS`(기본 4)코어, 동시에 `AXM_SLOTS`(기본 2)개만 돈다. 칸이 다 차 있으면 기다리라는 메시지가 나온다. 화면 캡처용 헤드리스 브라우저를 따로 띄울 때도 같은 한도(`docker run --cpus 4`, 호스트라면 `taskset`/`nice`)를 지킨다.
+6. **CPU 한도.** 무거운 단계(이미지 빌드의 RUN 단계 포함 `--cpu-quota`, Go 시험, Cypress)는 컨테이너당 `AXM_CPUS`(기본 4)코어, 동시에 `AXM_SLOTS`(기본 2)개만 돈다. 칸이 다 차 있으면 기다리라는 메시지가 나온다. 화면 캡처용 헤드리스 브라우저를 따로 띄울 때도 같은 한도(`docker run --cpus 4`, 호스트라면 `taskset`/`nice`)를 지킨다.
 7. Cypress 는 로컬에서 Electron, CI 에서는 Chrome 이다. 둘 다 CPU 렌더링(SwiftShader)이다. 통과 판정은 CPU 렌더링 기준이다. GPU 렌더링은 도입하지 않았다: 렌더링 몫이 검사 CPU 의 약 2%(측정은 LST-51 보고서)라 얻을 것이 적고, CI 러너에는 GPU 가 없다. Before/After 화면 캡처 한 쌍은 같은 방식(같은 브라우저·같은 인자)으로 찍는다.
 
 ## 선택 규칙 요약
