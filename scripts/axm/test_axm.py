@@ -231,5 +231,102 @@ class KeyTest(unittest.TestCase):
         self.assertTrue(eb == eb3 and fe == fe3 and ut != ut3)
 
 
+class ReviewFixesTest(unittest.TestCase):
+    """LST-51 리뷰에서 나온 결함이 다시 생기지 않게 한다."""
+
+    def test_tracking_check_spec_is_mapped(self):
+        self.assertIn('campaign-tracking-check.cy.js', TMAP['ci_specs'])
+        self.assertEqual(pick('frontend/cypress/e2e/campaign-tracking-check.cy.js')['specs'], ['campaign-tracking-check.cy.js'])
+        self.assertIn('campaign-tracking-check.cy.js', pick('frontend/src/components/TrackingCheck.vue')['specs'])
+        self.assertIn('campaign-tracking-check.cy.js', pick('cmd/axm_tracking_check.go')['specs'])
+
+    def test_list_form_runs_draw_history_and_preset_specs(self):
+        specs = pick('frontend/src/views/ListForm.vue')['specs']
+        for s in ('list-draw.cy.js', 'subscriber-columns.cy.js', 'column-presets.cy.js', 'list-trash.cy.js'):
+            self.assertIn(s, specs)
+
+    def test_embedded_json_runs_core_tests_import_specs_and_unit(self):
+        r = pick('internal/core/axm_standard_attribs.json')
+        self.assertIn('internal/core', r['go'])
+        self.assertIsNone(r['go']['internal/core'])
+        self.assertIn('import-mapping.cy.js', r['specs'])
+        self.assertTrue(r['unit'])
+
+    def test_server_files_read_by_frontend_unit_tests_trigger_unit(self):
+        self.assertTrue(pick('models/axm_draws.go')['unit'])
+        self.assertTrue(pick('i18n/ko.json')['unit'])
+        self.assertFalse(pick('cmd/axm_audit.go')['unit'])
+
+    def test_unit_cache_key_includes_server_files(self):
+        files = ['frontend/src/a.js', 'frontend/tests/t.mjs', 'models/axm_draws.go', 'i18n/en.json', 'cmd/x.go']
+        h = {f: '1' for f in files}
+        base = axm.art_keys(files, h)[2]
+        self.assertNotEqual(base, axm.art_keys(files, dict(h, **{'models/axm_draws.go': '2'}))[2])
+        self.assertNotEqual(base, axm.art_keys(files, dict(h, **{'i18n/en.json': '2'}))[2])
+
+    def test_dependency_change_widens_cmd_even_with_a_feature_change(self):
+        r = pick('internal/addrcheck/' + sorted(p.name for p in (ROOT / 'internal/addrcheck').glob('*.go') if not p.name.endswith('_test.go'))[0],
+                 'cmd/axm_audit.go')
+        self.assertIsNone(r['go']['cmd'])
+
+    def test_failed_tests_are_not_hidden_by_a_narrower_selection(self):
+        self.assertIsNone(axm.merge_go({'cmd': '^(TestA)$'}, {'cmd': None})['cmd'])
+        self.assertIsNone(axm.merge_go({'cmd': None}, {'cmd': '^(TestA)$'})['cmd'])
+        self.assertEqual(axm.merge_go({'cmd': '^(TestA)$'}, {'cmd': '^(TestB|TestC)$'})['cmd'], '^(TestA|TestB|TestC)$')
+        self.assertEqual(axm.merge_go({'cmd': '^$'}, {'cmd': '^(TestB)$'})['cmd'], '^(TestB)$')
+        self.assertEqual(axm.merge_go({'a': None}, {'b': '^$'}), {'a': None, 'b': '^$'})
+
+    def test_free_port_never_returns_the_avoided_port(self):
+        import socket
+        sk = socket.socket()
+        sk.bind(('127.0.0.1', 0))
+        sk.listen()
+        busy = sk.getsockname()[1]
+        try:
+            a = axm.free_port(busy)
+            b = axm.free_port(busy + 1, avoid={a})
+            self.assertNotEqual(a, b)
+            self.assertNotEqual(a, busy)
+        finally:
+            sk.close()
+
+    def test_image_key_follows_the_recipe(self):
+        files = ['cmd/a.go']
+        h = {'cmd/a.go': '1'}
+        k = axm.image_key(files, h)
+        orig = axm.recipe_digest
+        try:
+            axm.recipe_digest = lambda: 'changed'
+            self.assertNotEqual(k, axm.image_key(files, h))
+        finally:
+            axm.recipe_digest = orig
+        # 레시피 digest 는 두 Dockerfile 의 내용을 담는다.
+        self.assertIn('base.Dockerfile', (HERE / 'axm').read_text().split('def recipe_digest')[1].split('def image_key')[0])
+
+    def test_loopback_only_listeners(self):
+        text = (HERE / 'axm').read_text()
+        self.assertNotIn('0.0.0.0', text.replace("'0.0.0.0'", '', 0).split('def start_app')[1].split('def e2e')[0])
+        self.assertIn('listen_addresses=127.0.0.1', text)
+
+    def test_docker_build_gets_cpu_quota(self):
+        self.assertIn('--cpu-quota', (HERE / 'axm').read_text().split('def docker_build')[1].split('def stuffbin_version')[0])
+
+
+class StampFlowTest(unittest.TestCase):
+    def test_first_round_failure_without_snapshot_falls_back_to_base(self):
+        class A:
+            since_last = True
+            base = None
+        orig_load, orig_base = axm.load_stamp, axm.changed_since_base
+        try:
+            axm.load_stamp = lambda ctx: {'ts': 1, 'failed_specs': ['audit.cy.js']}  # 첫 라운드 실패: files 없음
+            axm.changed_since_base = lambda ref: ['frontend/src/views/Audit.vue']
+            changed, st = axm.resolve_changed(A(), None, ['x'], {'x': 'h'})
+            self.assertEqual(changed, ['frontend/src/views/Audit.vue'])
+            self.assertEqual(st['failed_specs'], ['audit.cy.js'])
+        finally:
+            axm.load_stamp, axm.changed_since_base = orig_load, orig_base
+
+
 if __name__ == '__main__':
     unittest.main()

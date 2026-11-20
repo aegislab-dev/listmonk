@@ -1,50 +1,275 @@
 {
-  "_doc": "바뀐 파일 → Cypress spec 매핑. CI(axm-image.yml)의 13개 spec 만 다룬다. 새 화면·API·spec 을 만들면 rules 에 줄을 추가한다.",
-  "ci_specs": [
-    "import-mapping.cy.js", "sender-addresses.cy.js", "dynamic-lists.cy.js", "list-draw.cy.js", "list-teams.cy.js",
-    "reaction-lists.cy.js", "subscriber-columns.cy.js", "column-presets.cy.js", "audit.cy.js", "list-trash.cy.js",
-    "campaign-recent-exclude.cy.js", "analytics-proof.cy.js", "address-check.cy.js"
-  ],
-  "smoke": ["audit.cy.js", "sender-addresses.cy.js", "column-presets.cy.js", "list-teams.cy.js"],
-  "rules": [
-    {"paths": ["frontend/src/views/Audit.vue", "frontend/src/audit.js", "cmd/axm_audit.go", "cmd/axm_*_audit.go", "cmd/axm_audit_*.go", "internal/core/axm_audit*.go"],
-     "specs": ["audit.cy.js"]},
-    {"paths": ["frontend/src/views/Import.vue", "frontend/src/components/ImportColumnMapper.vue", "frontend/src/lib/csv-import*.js", "frontend/src/lib/standard-attribs.js", "frontend/src/lib/countries.js", "cmd/import.go", "internal/subimporter/**"],
-     "specs": ["import-mapping.cy.js", "address-check.cy.js"]},
-    {"paths": ["frontend/src/components/AddressCheck.vue", "cmd/axm_address_check.go", "internal/addrcheck/**"],
-     "specs": ["address-check.cy.js"]},
-    {"paths": ["frontend/src/senders.js", "frontend/src/components/SenderAddressInput.vue", "frontend/src/views/settings/general.vue", "cmd/axm_agent.go", "cmd/settings.go"],
-     "specs": ["sender-addresses.cy.js"]},
-    {"paths": ["frontend/src/views/Campaign.vue", "frontend/src/views/Campaigns.vue", "cmd/campaigns.go", "internal/core/campaigns.go"],
-     "specs": ["sender-addresses.cy.js", "campaign-recent-exclude.cy.js", "address-check.cy.js"]},
-    {"paths": ["frontend/src/components/DynamicListFilter.vue", "frontend/src/dynamic-list.js", "cmd/axm_dynamic_lists.go", "internal/core/axm_dynamic_lists*.go"],
-     "specs": ["dynamic-lists.cy.js", "list-draw.cy.js"]},
-    {"paths": ["frontend/src/components/ListDraw.vue", "frontend/src/list-draw.js", "cmd/axm_draws*.go", "internal/core/axm_draws*.go"],
-     "specs": ["list-draw.cy.js"]},
-    {"paths": ["frontend/src/components/TeamForm.vue", "frontend/src/components/TeamMembers.vue", "frontend/src/views/Teams.vue", "frontend/src/teams.js", "cmd/axm_teams*.go", "cmd/axm_sub_boundary*.go", "internal/core/axm_teams*.go"],
-     "specs": ["list-teams.cy.js"]},
-    {"paths": ["frontend/src/components/CampaignReactionList.vue", "frontend/src/campaign-reaction-list.js", "cmd/axm_reaction_lists*.go", "internal/core/axm_reaction*.go"],
-     "specs": ["reaction-lists.cy.js"]},
-    {"paths": ["frontend/src/views/CampaignAnalytics.vue", "frontend/src/proof-summary.js"],
-     "specs": ["analytics-proof.cy.js", "reaction-lists.cy.js"]},
-    {"paths": ["frontend/src/subscriber-columns.js", "frontend/src/views/Subscribers.vue", "frontend/src/views/SubscriberBulkList.vue", "frontend/src/views/SubscriberForm.vue", "cmd/subscribers.go", "internal/core/subscribers.go"],
-     "specs": ["subscriber-columns.cy.js", "list-teams.cy.js"]},
-    {"paths": ["frontend/src/views/ColumnPresets.vue", "frontend/src/components/ColumnPresetForm.vue", "cmd/axm_column_presets*.go"],
-     "specs": ["column-presets.cy.js"]},
-    {"paths": ["frontend/src/views/ListTrash.vue", "frontend/src/components/ListDeleteConfirm.vue", "cmd/axm_trash*.go", "internal/core/axm_trash*.go"],
-     "specs": ["list-trash.cy.js"]},
-    {"paths": ["frontend/src/views/Lists.vue", "frontend/src/views/ListForm.vue", "frontend/src/components/ListSelector.vue", "cmd/lists.go", "internal/core/lists.go"],
-     "specs": ["list-trash.cy.js", "list-teams.cy.js", "dynamic-lists.cy.js", "column-presets.cy.js"]},
-    {"paths": ["frontend/src/components/RecentSendExclude.vue", "frontend/src/recent-send-exclude.js", "cmd/axm_recent_exclude*.go"],
-     "specs": ["campaign-recent-exclude.cy.js"]}
-  ],
-  "shared": [
-    "frontend/src/main.js", "frontend/src/App.vue", "frontend/src/router/**", "frontend/src/store/**", "frontend/src/api/**",
-    "frontend/src/utils.js", "frontend/src/constants.js", "frontend/src/components/Navigation.vue", "frontend/src/assets/**",
-    "frontend/cypress/support/**", "frontend/cypress/plugins/**", "frontend/cypress.config.js", "frontend/index.html", "frontend/vite.config.js",
-    "cmd/handlers.go", "cmd/init.go", "cmd/auth.go", "cmd/main.go", "cmd/install.go", "cmd/upgrade.go", "internal/auth/**", "models/**", "queries/**", "schema.sql",
-    "internal/migrations/**", "i18n/**", "permissions.json", "go.mod", "go.sum"
-  ],
-  "full_build": ["Dockerfile.axm", "Makefile", "frontend/yarn.lock", "frontend/package.json", "frontend/email-builder/yarn.lock", "frontend/email-builder/package.json", "docker-entrypoint.sh"],
-  "none": ["*.md", "**/*.md", "docs/**", ".github/**", "LICENSE", ".gitignore", ".dockerignore", "scripts/axm/test_axm.py"]
+ "_doc": "바뀐 파일 → Cypress spec 매핑. CI(axm-image.yml)의 13개 spec 만 다룬다. 새 화면·API·spec 을 만들면 rules 에 줄을 추가한다.",
+ "ci_specs": [
+  "import-mapping.cy.js",
+  "sender-addresses.cy.js",
+  "dynamic-lists.cy.js",
+  "list-draw.cy.js",
+  "list-teams.cy.js",
+  "reaction-lists.cy.js",
+  "subscriber-columns.cy.js",
+  "column-presets.cy.js",
+  "audit.cy.js",
+  "list-trash.cy.js",
+  "campaign-recent-exclude.cy.js",
+  "campaign-tracking-check.cy.js",
+  "analytics-proof.cy.js",
+  "address-check.cy.js"
+ ],
+ "smoke": [
+  "audit.cy.js",
+  "sender-addresses.cy.js",
+  "column-presets.cy.js",
+  "list-teams.cy.js"
+ ],
+ "rules": [
+  {
+   "paths": [
+    "frontend/src/views/Audit.vue",
+    "frontend/src/audit.js",
+    "cmd/axm_audit.go",
+    "cmd/axm_*_audit.go",
+    "cmd/axm_audit_*.go",
+    "internal/core/axm_audit*.go"
+   ],
+   "specs": [
+    "audit.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/Import.vue",
+    "frontend/src/components/ImportColumnMapper.vue",
+    "frontend/src/lib/csv-import*.js",
+    "frontend/src/lib/standard-attribs.js",
+    "frontend/src/lib/countries.js",
+    "cmd/import.go",
+    "internal/subimporter/**",
+    "internal/core/axm_standard_attribs.json"
+   ],
+   "specs": [
+    "import-mapping.cy.js",
+    "address-check.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/components/AddressCheck.vue",
+    "cmd/axm_address_check.go",
+    "internal/addrcheck/**"
+   ],
+   "specs": [
+    "address-check.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/senders.js",
+    "frontend/src/components/SenderAddressInput.vue",
+    "frontend/src/views/settings/general.vue",
+    "cmd/axm_agent.go",
+    "cmd/settings.go"
+   ],
+   "specs": [
+    "sender-addresses.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/Campaign.vue",
+    "frontend/src/views/Campaigns.vue",
+    "cmd/campaigns.go",
+    "internal/core/campaigns.go",
+    "internal/core/campaigns.go"
+   ],
+   "specs": [
+    "sender-addresses.cy.js",
+    "campaign-recent-exclude.cy.js",
+    "address-check.cy.js",
+    "campaign-tracking-check.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/components/DynamicListFilter.vue",
+    "frontend/src/dynamic-list.js",
+    "cmd/axm_dynamic_lists.go",
+    "internal/core/axm_dynamic_lists*.go"
+   ],
+   "specs": [
+    "dynamic-lists.cy.js",
+    "list-draw.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/components/ListDraw.vue",
+    "frontend/src/list-draw.js",
+    "cmd/axm_draws*.go",
+    "internal/core/axm_draws*.go"
+   ],
+   "specs": [
+    "list-draw.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/components/TeamForm.vue",
+    "frontend/src/components/TeamMembers.vue",
+    "frontend/src/views/Teams.vue",
+    "frontend/src/teams.js",
+    "cmd/axm_teams*.go",
+    "cmd/axm_sub_boundary*.go",
+    "internal/core/axm_teams*.go"
+   ],
+   "specs": [
+    "list-teams.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/components/CampaignReactionList.vue",
+    "frontend/src/campaign-reaction-list.js",
+    "cmd/axm_reaction_lists*.go",
+    "internal/core/axm_reaction*.go"
+   ],
+   "specs": [
+    "reaction-lists.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/CampaignAnalytics.vue",
+    "frontend/src/proof-summary.js"
+   ],
+   "specs": [
+    "analytics-proof.cy.js",
+    "reaction-lists.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/subscriber-columns.js",
+    "frontend/src/views/Subscribers.vue",
+    "frontend/src/views/SubscriberBulkList.vue",
+    "frontend/src/views/SubscriberForm.vue",
+    "cmd/subscribers.go",
+    "internal/core/subscribers.go"
+   ],
+   "specs": [
+    "subscriber-columns.cy.js",
+    "list-teams.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/ColumnPresets.vue",
+    "frontend/src/components/ColumnPresetForm.vue",
+    "cmd/axm_column_presets*.go"
+   ],
+   "specs": [
+    "column-presets.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/ListTrash.vue",
+    "frontend/src/components/ListDeleteConfirm.vue",
+    "cmd/axm_trash*.go",
+    "internal/core/axm_trash*.go"
+   ],
+   "specs": [
+    "list-trash.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/Lists.vue",
+    "frontend/src/views/ListForm.vue",
+    "frontend/src/components/ListSelector.vue",
+    "cmd/lists.go",
+    "internal/core/lists.go"
+   ],
+   "specs": [
+    "list-trash.cy.js",
+    "list-teams.cy.js",
+    "dynamic-lists.cy.js",
+    "column-presets.cy.js",
+    "list-draw.cy.js",
+    "subscriber-columns.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/components/RecentSendExclude.vue",
+    "frontend/src/recent-send-exclude.js",
+    "cmd/axm_recent_exclude*.go"
+   ],
+   "specs": [
+    "campaign-recent-exclude.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/components/TrackingCheck.vue",
+    "frontend/src/tracking-check.js",
+    "cmd/axm_tracking_check*.go",
+    "internal/manager/tracking*.go",
+    "queries/axm_tracking_check.sql"
+   ],
+   "specs": [
+    "campaign-tracking-check.cy.js"
+   ]
+  }
+ ],
+ "shared": [
+  "frontend/src/main.js",
+  "frontend/src/App.vue",
+  "frontend/src/router/**",
+  "frontend/src/store/**",
+  "frontend/src/api/**",
+  "frontend/src/utils.js",
+  "frontend/src/constants.js",
+  "frontend/src/components/Navigation.vue",
+  "frontend/src/assets/**",
+  "frontend/cypress/support/**",
+  "frontend/cypress/plugins/**",
+  "frontend/cypress.config.js",
+  "frontend/index.html",
+  "frontend/vite.config.js",
+  "cmd/handlers.go",
+  "cmd/init.go",
+  "cmd/auth.go",
+  "cmd/main.go",
+  "cmd/install.go",
+  "cmd/upgrade.go",
+  "internal/auth/**",
+  "models/**",
+  "queries/**",
+  "schema.sql",
+  "internal/migrations/**",
+  "i18n/**",
+  "permissions.json",
+  "go.mod",
+  "go.sum"
+ ],
+ "full_build": [
+  "Dockerfile.axm",
+  "Makefile",
+  "frontend/yarn.lock",
+  "frontend/package.json",
+  "frontend/email-builder/yarn.lock",
+  "frontend/email-builder/package.json",
+  "docker-entrypoint.sh"
+ ],
+ "none": [
+  "*.md",
+  "**/*.md",
+  "docs/**",
+  ".github/**",
+  "LICENSE",
+  ".gitignore",
+  ".dockerignore",
+  "scripts/axm/test_axm.py"
+ ]
 }
