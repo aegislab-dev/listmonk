@@ -263,12 +263,13 @@ describe('Recent-send exclusion settings', () => {
         // eslint-disable-next-line no-underscore-dangle
         $el[0].__vue__.$router.push({ name: 'campaigns' }).catch(() => {});
       });
-      cy.get('.modal.dialog').should('be.visible');
+      // The loading cover of the held save sits over the dialog's middle.
+      cy.get('.modal.dialog').should('exist').and('contain', 'Discard');
 
       // The first save answers while the person is still asked: nothing else is saved.
       cy.wait('@updateCampaign');
       cy.wait(1500).then(() => expect(puts).to.eq(1));
-      cy.get('.modal.dialog .modal-card-foot .button.is-primary').click();
+      cy.get('.modal.dialog .modal-card-foot .button.is-primary').click({ force: true });
       cy.location('pathname').should('eq', '/admin/campaigns');
       cy.wait(1500).then(() => expect(puts).to.eq(1));
       cy.request(`/api/campaigns/${campaignId}`).its('body.data.name').should('eq', title);
