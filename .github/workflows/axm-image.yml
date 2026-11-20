@@ -12,9 +12,11 @@ permissions:
   packages: write
 
 # Serialize reruns of a release so the second run sees the published tag.
+# Only superseded PR runs are cancelled (a new push makes the older run moot);
+# tag (release) and manual runs are never cancelled.
 concurrency:
   group: axm-image-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   image:
@@ -34,7 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          # Full history is only needed to check a release tag belongs to
+          # origin/axm/*; PR runs only build the merge commit.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
 
       - name: Resolve and validate version
         id: version
