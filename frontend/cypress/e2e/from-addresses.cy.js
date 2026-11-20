@@ -273,7 +273,7 @@ describe('Team From address list', () => {
       body: { ...fields('old3@crevasse.ai'), headers: [{ From: 'old3@crevasse.ai', 'X-Edition': '11' }] },
     }).then((r) => { id = r.body.data.id; campaigns.push(id); });
     setList([mine]);
-    cy.then(() => cy.request({ method: 'PUT', url: `/api/campaigns/${id}`, body: { ...fields(mine), headers: [{ 'X-Edition': '11' }] }, failOnStatusCode: false }))
+    cy.then(() => cy.request({ method: 'PUT', url: `/api/campaigns/${id}`, body: { name: 'Synthetic from list', subject: 'Synthetic from list', lists: [listId], from_email: mine, headers: [{ 'X-Edition': '11' }] }, failOnStatusCode: false }))
       .then((r) => expect(r.status).to.eq(200));
     cy.then(() => cy.request(`/api/campaigns/${id}`)).then(({ body }) => expect(body.data.headers).to.deep.eq([{ 'X-Edition': '11' }]));
   });
