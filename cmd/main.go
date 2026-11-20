@@ -57,6 +57,8 @@ type App struct {
 
 	// Counts each user's campaign test messages (see axm_test_send.go).
 	testLimiter testSendLimiter
+	// The sample test messages sent lately, for their "view in browser" link.
+	testViews testViewStore
 
 	// Who started the import that runs now (see axm_import_audit.go).
 	importMu sync.Mutex

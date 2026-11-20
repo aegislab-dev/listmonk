@@ -845,52 +845,109 @@ func TestTestSendConfirmationMailsUseTheLimit(t *testing.T) {
 	}
 }
 
-// The "view in browser" link of a sample message opens the campaign, shown as a preview
-// shows it, and counts nothing. The pixel, whose address starts the same, stays as it is.
+var reTestViewLink = regexp.MustCompile(`https://lists\.example\.invalid/test-message/([0-9A-Za-z]{32})`)
+
+// The "view in browser" link of a sample message shows exactly the message that was mailed,
+// with the chosen sample's values, also when the body only renders with those values and
+// was never saved. It counts nothing. The pixel, whose address starts like the link, stays.
 func TestSampleMessageBrowserLink(t *testing.T) {
 	e := newTestSendEnv(t)
 	e.a.urlCfg.MessageURL = "https://lists.example.invalid/campaign/%s/%s"
-	e.body = `<p>{{ .Subscriber.Name }}</p><a href="{{ MessageURL }}">view</a>{{ TrackView }}<a href="{{ MessageURL }}">again</a>`
+	e.a.testViews.now = func() time.Time { return e.now }
+	// The body needs the sample's first topic: the demo subscriber could not render it.
+	e.body = `<p>{{ .Subscriber.Name }} / {{ index .Subscriber.Attribs.topics 0 }}</p><a href="{{ MessageURL }}">view</a>{{ TrackView }}<a href="{{ MessageURL }}">again</a>`
+	e.db.MustExec(`UPDATE subscribers SET attribs='{"topics":["구독자 주제"]}' WHERE id=$1`, e.mine)
 	internal := "design@" + testSendDomain
-	if code, _ := e.send(e.as(e.ua), []string{internal, e.mineEmail}, ""); code != 200 {
+	if code, _ := e.send(e.as(e.ua), []string{internal, e.mineEmail}, `{"name":"서하늘","attribs":{"topics":["신제품"]}}`); code != 200 {
 		t.Fatal(code)
 	}
 	e.waitSent(2)
-	body := string(e.msgr.to(internal)[0].Body)
-	view := "https://lists.example.invalid/campaign/" + e.campUUID + "/" + dummyUUID
-	if strings.Count(body, `href="`+view+`"`) != 2 || !strings.Contains(body, "/campaign/"+dummyUUID+"/"+dummyUUID+"/px.png") ||
-		strings.Count(body, e.campUUID) != 2 {
-		t.Fatalf("sample message: %s", body)
-	}
-	// A subscriber's own message keeps its own link.
-	if b := string(e.msgr.to(e.mineEmail)[0].Body); strings.Count(b, "/campaign/"+e.campUUID+"/"+e.subUUID(e.mine)) != 3 {
-		t.Errorf("subscriber's message: %s", b)
-	}
-	show := func(camp, sub string) (int, string) {
+	show := func(token string) (int, string) {
 		req := httptest.NewRequest("GET", "/x", nil)
 		rec := httptest.NewRecorder()
 		c := echo.New().NewContext(req, rec)
 		c.Echo().Renderer = nopRenderer{}
-		c.SetParamNames("campUUID", "subUUID")
-		c.SetParamValues(camp, sub)
-		if err := e.a.ViewCampaignMessage(c); err != nil {
+		c.SetParamNames("token")
+		c.SetParamValues(token)
+		if err := e.a.TestMessageView(c); err != nil {
 			t.Fatal(err)
 		}
 		return rec.Code, rec.Body.String()
 	}
-	e.db.MustExec(`UPDATE campaigns SET body='<p>Hello {{ .Subscriber.Name }}</p>{{ TrackView }}' WHERE id=$1`, e.camp)
-	code, page := show(e.campUUID, dummyUUID)
-	if code != 200 || !strings.HasPrefix(page, "<p>Hello Demo Subscriber</p>") || strings.Contains(page, e.campUUID) {
-		t.Errorf("the sample's browser link: %d %q", code, page)
+	tokens := []string{}
+	for _, to := range []string{internal, e.mineEmail} {
+		body := string(e.msgr.to(to)[0].Body)
+		links := reTestViewLink.FindAllStringSubmatch(body, -1)
+		if len(links) != 2 || links[0][1] != links[1][1] || !strings.Contains(body, "/campaign/"+dummyUUID+"/"+dummyUUID+"/px.png") ||
+			strings.Contains(body, e.campUUID) || !strings.HasPrefix(body, "<p>서하늘 / 신제품</p>") {
+			t.Fatalf("sample message to %s: %s", to, body)
+		}
+		// The page is the mailed message, byte for byte.
+		if code, page := show(links[0][1]); code != 200 || page != body {
+			t.Errorf("browser view of the message to %s: %d %q", to, code, page)
+		}
+		tokens = append(tokens, links[0][1])
 	}
-	if code, page := show(e.campUUID, e.subUUID(e.mine)); code != 200 || !strings.HasPrefix(page, "<p>Hello 김하늘</p>") || !strings.Contains(page, e.campUUID) {
-		t.Errorf("a subscriber's browser link: %d %q", code, page)
+	if tokens[0] == tokens[1] {
+		t.Error("two recipients share a token")
 	}
-	if code, _ := show(dummyUUID, dummyUUID); code != 404 {
-		t.Errorf("no campaign at all: %d", code)
+	// A subscriber's own message (default sample) keeps the campaign's own link.
+	if code, _ := e.send(e.as(e.ua), []string{e.mineEmail}, ""); code != 200 {
+		t.Fatal(code)
 	}
-	if n := e.count(`SELECT COUNT(*) FROM campaign_views`); n != 0 {
-		t.Errorf("%d views", n)
+	e.waitSent(3)
+	if b := string(e.msgr.to(e.mineEmail)[1].Body); strings.Count(b, `href="https://lists.example.invalid/campaign/`+e.campUUID+"/"+e.subUUID(e.mine)+`"`) != 2 ||
+		strings.Contains(b, "/test-message/") || !strings.HasPrefix(b, "<p>김하늘 / 구독자 주제</p>") {
+		t.Errorf("subscriber's message: %s", b)
+	}
+	// A plain text message is shown as text.
+	b, _ := json.Marshal(map[string]any{"name": "n", "subject": "s", "lists": []int{e.aList}, "messenger": "email", "content_type": "plain",
+		"body": "{{ .Subscriber.Name }} <b> {{ MessageURL }}", "subscribers": []string{internal}, "sample": map[string]any{"name": "서하늘", "attribs": map[string]any{}}})
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(string(b)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	if _, he := e.do(e.a.TestCampaign, e.as(e.ua), req, e.camp, nil); he != nil {
+		t.Fatal(he)
+	}
+	e.waitSent(4)
+	plain := string(e.msgr.to(internal)[1].Body)
+	pm := reTestViewLink.FindStringSubmatch(plain)
+	if pm == nil {
+		t.Fatalf("plain message: %s", plain)
+	}
+	reqV := httptest.NewRequest("GET", "/x", nil)
+	recV := httptest.NewRecorder()
+	cV := echo.New().NewContext(reqV, recV)
+	cV.SetParamNames("token")
+	cV.SetParamValues(pm[1])
+	if err := e.a.TestMessageView(cV); err != nil || recV.Body.String() != plain || !strings.HasPrefix(recV.Header().Get("Content-Type"), "text/plain") {
+		t.Errorf("plain view: %v %q %q", err, recV.Header().Get("Content-Type"), recV.Body.String())
+	}
+
+	// Unknown tokens, and messages older than the limit, are gone.
+	if code, _ := show(strings.Repeat("x", 32)); code != 404 {
+		t.Errorf("unknown token: %d", code)
+	}
+	e.now = e.now.Add(testViewTTL - time.Minute)
+	if code, _ := show(tokens[0]); code != 200 {
+		t.Errorf("just before the limit: %d", code)
+	}
+	e.now = e.now.Add(time.Minute)
+	if code, _ := show(tokens[0]); code != 404 {
+		t.Errorf("at the limit: %d", code)
+	}
+	// Nothing of all this was counted, and the kept messages stay bounded.
+	if n := e.count(`SELECT COUNT(*) FROM campaign_views`) + e.count(`SELECT COUNT(*) FROM link_clicks`); n != 0 {
+		t.Errorf("%d views and clicks", n)
+	}
+	var st testViewStore
+	for i := 0; i < testViewMax+50; i++ {
+		st.put(fmt.Sprintf("t%d", i), []byte("x"), false)
+	}
+	if _, ok := st.get("t0"); ok || len(st.items) != testViewMax || len(st.order) != testViewMax {
+		t.Errorf("the store holds %d messages", len(st.items))
+	}
+	if _, ok := st.get(fmt.Sprintf("t%d", testViewMax+49)); !ok {
+		t.Error("the newest message is gone")
 	}
 }
 

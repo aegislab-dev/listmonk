@@ -162,16 +162,8 @@ func (a *App) ViewCampaignMessage(c echo.Context) error {
 	}
 
 	// Get the subscriber.
-	// AXM (LST-41): the link in a sample test message names the dummy subscriber. It shows
-	// the campaign as a preview does: for the demo subscriber and with the dummy campaign
-	// UUID, so that nothing in the page is counted. Upstream answered with an error page.
 	subUUID := c.Param("subUUID")
-	var sub models.Subscriber
-	if subUUID == dummyUUID {
-		sub, camp.UUID = dummySubscriber, dummyUUID
-	} else {
-		sub, err = a.core.GetSubscriber(0, subUUID, "")
-	}
+	sub, err := a.core.GetSubscriber(0, subUUID, "")
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return c.Render(http.StatusNotFound, tplMessage,

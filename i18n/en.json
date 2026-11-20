@@ -515,6 +515,7 @@
     "email.testAddr.subject": "Confirm your address for newsletter test messages",
     "campaigns.testAddr.verifiedMessage": "This address can now receive test messages. Go back to the campaign and send again.",
     "campaigns.testAddr.sendFailed": "Could not send the confirmation mail. Try sending again.",
+    "campaigns.testView.gone": "This test message can no longer be shown in the browser. A test message can be viewed for 24 hours after it was sent, and until the server restarts.",
     "campaigns.testAddr.verifiedTitle": "Address confirmed",
     "campaigns.testAddr.verifyButton": "Confirm this address",
     "campaigns.testAddr.verifyPrompt": "If this e-mail address is yours and you want to receive newsletter test messages at it, press the button.",

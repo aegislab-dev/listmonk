@@ -665,11 +665,11 @@ func (a *App) TestCampaign(c echo.Context) error {
 		sub := r.Sub
 
 		// AXM (LST-41): a sample subscriber's message carries the dummy campaign UUID.
-		msgCamp, realUUID := &camp, ""
+		msgCamp := &camp
 		if sub.UUID == dummyUUID {
-			msgCamp, realUUID = sampleCampaign(camp), camp.UUID
+			msgCamp = sampleCampaign(camp)
 		}
-		if err := a.sendTestMessage(sub, msgCamp, realUUID); err != nil {
+		if err := a.sendTestMessage(sub, msgCamp); err != nil {
 			a.log.Printf("error sending test message: %v", err)
 			// AXM (LST-41): the messages that did go out are on the audit log, and the
 			// ones that did not do not count towards the limit.
@@ -735,8 +735,7 @@ func (a *App) GetCampaignViewAnalytics(c echo.Context) error {
 }
 
 // sendTestMessage takes a campaign and a subscriber and sends out a sample campaign message.
-// realUUID is the campaign's own UUID when camp is the copy made for a sample subscriber.
-func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign, realUUID string) error {
+func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign) error {
 	if err := a.manager.LoadInlineImages(camp); err != nil {
 		a.log.Printf("error loading inline images: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
@@ -754,9 +753,9 @@ func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign, real
 		a.log.Printf("error rendering message: %v", err)
 		return echo.NewHTTPError(http.StatusNotFound, a.i18n.Ts("templates.errorRendering", "error", err.Error()))
 	}
-	// AXM (LST-41): see sampleBrowserLink.
-	if realUUID != "" {
-		a.sampleBrowserLink(&msg, realUUID)
+	// AXM (LST-41): the "view in browser" link of a sample subscriber's message.
+	if sub.UUID == dummyUUID && camp.UUID == dummyUUID {
+		a.sampleBrowserLink(&msg, camp.ContentType == models.CampaignContentTypePlain)
 	}
 
 	return a.manager.PushCampaignMessage(msg)

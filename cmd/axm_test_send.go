@@ -546,15 +546,84 @@ func sampleCampaign(camp models.Campaign) *models.Campaign {
 	return &camp
 }
 
-// sampleBrowserLink points the "view in browser" link of a sample message at the campaign
-// itself (real campaign UUID, dummy subscriber), which ViewCampaignMessage shows with the
-// demo subscriber. With both UUIDs dummy the link would lead nowhere. The tracking pixel
-// has the same path plus "/px.png" and is left alone.
-func (a *App) sampleBrowserLink(msg *manager.CampaignMessage, campUUID string) {
+// Limits of the kept sample messages (see testViewStore).
+const (
+	testViewTTL      = 24 * time.Hour
+	testViewMax      = 200
+	testViewMaxBytes = 2 << 20
+)
+
+// testViewStore keeps the sample test messages that were sent lately, each under a random
+// token, so that the "view in browser" link of such a message can show exactly what was
+// mailed. A sample subscriber is in no table and the body of a test may not be saved yet, so
+// the page cannot be rendered again later. The messages live in memory for testViewTTL, at
+// most testViewMax of them: a restart forgets them, and the link then says so. The zero
+// value is ready to use.
+type testViewStore struct {
+	mu    sync.Mutex
+	now   func() time.Time
+	items map[string]testView
+	order []string
+}
+
+type testView struct {
+	body  []byte
+	plain bool
+	at    time.Time
+}
+
+func (s *testViewStore) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// put keeps a message under a token, dropping what is too old and, beyond the limit, the oldest.
+func (s *testViewStore) put(token string, body []byte, plain bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.items == nil {
+		s.items = map[string]testView{}
+	}
+	now := s.clock()
+	for len(s.order) > 0 && (len(s.order) >= testViewMax || now.Sub(s.items[s.order[0]].at) >= testViewTTL) {
+		delete(s.items, s.order[0])
+		s.order = s.order[1:]
+	}
+	s.items[token] = testView{body: body, plain: plain, at: now}
+	s.order = append(s.order, token)
+}
+
+// get returns the message of a token that is still kept.
+func (s *testViewStore) get(token string) (testView, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.items[token]
+	if !ok || s.clock().Sub(v.at) >= testViewTTL {
+		return testView{}, false
+	}
+	return v, true
+}
+
+// sampleBrowserLink makes the "view in browser" link of a sample message work: the link
+// (which carries the dummy UUIDs and would lead nowhere) is pointed at /test-message/<token>
+// and the finished message is kept under that token. The tracking pixel has the same
+// address plus "/px.png" and is left alone. A message without such a link, or one that is
+// very large, is left as it is.
+func (a *App) sampleBrowserLink(msg *manager.CampaignMessage, plain bool) {
+	from := []byte(fmt.Sprintf(a.urlCfg.MessageURL, dummyUUID, dummyUUID))
+	if !bytes.Contains(msg.Body(), from) || len(msg.Body()) > testViewMaxBytes {
+		return
+	}
+	token, err := generateRandomString(32)
+	if err != nil {
+		a.log.Printf("error making a test message token: %v", err)
+		return
+	}
 	var (
-		from = []byte(fmt.Sprintf(a.urlCfg.MessageURL, dummyUUID, dummyUUID))
-		to   = []byte(fmt.Sprintf(a.urlCfg.MessageURL, campUUID, dummyUUID))
-		px   = []byte("/px.png")
+		to = []byte(strings.TrimRight(a.urlCfg.RootURL, "/") + "/test-message/" + token)
+		px = []byte("/px.png")
 	)
 	msg.RewriteBody(func(b []byte) []byte {
 		out := make([]byte, 0, len(b))
@@ -573,6 +642,22 @@ func (a *App) sampleBrowserLink(msg *manager.CampaignMessage, campUUID string) {
 			b = rest
 		}
 	})
+	a.testViews.put(token, msg.Body(), plain)
+}
+
+// TestMessageView shows a sample test message in the browser, exactly as it was mailed.
+func (a *App) TestMessageView(c echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "no-store")
+	c.Response().Header().Set("Referrer-Policy", "no-referrer")
+	v, ok := a.testViews.get(c.Param("token"))
+	if !ok {
+		return c.Render(http.StatusNotFound, tplMessage,
+			makeMsgTpl(a.i18n.T("public.notFoundTitle"), "", a.i18n.T("campaigns.testView.gone")))
+	}
+	if v.plain {
+		return c.String(http.StatusOK, string(v.body))
+	}
+	return c.HTML(http.StatusOK, string(v.body))
 }
 
 // previewSample reads the "sample" form value of a campaign preview and returns the
