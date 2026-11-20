@@ -321,6 +321,42 @@ describe('Pre-send confirmation window', () => {
     cy.get(win).should('not.exist');
   });
 
+  it('shows a templated subject or Subject header as the mail has it', () => {
+    let listS;
+    cy.request('POST', '/api/lists', {
+      name: `Send S ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { listS = body.data.id; });
+    cy.then(() => {
+      person('s1', [listS]);
+      create('subjuuid', { lists: [listS], subject: 'Send uuid {{ .Campaign.UUID }}' });
+      create('subjhead', { lists: [listS], subject: 'Send plain field', headers: [{ Subject: 'Send head {{ .Campaign.Name }}' }] });
+    });
+    const inbox = Cypress.env('mailpitUrl');
+    expect(inbox, 'CYPRESS_mailpitUrl (the test inbox)').to.be.a('string').and.not.be.empty;
+    const to = `send-s1-${stamp}@example.invalid`;
+    const received = (subject, tries = 30) => cy.request(`${inbox}/api/v1/search?query=${encodeURIComponent(`to:"${to}" subject:"${subject}"`)}`)
+      .then(({ body }) => {
+        if (!body.messages.length && tries > 0) {
+          cy.wait(1000);
+          return received(subject, tries - 1);
+        }
+        return body.messages.map((m) => m.Subject);
+      });
+    ['subjuuid', 'subjhead'].forEach((key) => {
+      cy.visit('/admin/campaigns');
+      row(key).find('[data-cy=btn-start]').click();
+      ready();
+      cy.get('[data-cy=send-subject-rendered]').should('be.visible');
+      cy.get('[data-cy=send-subject]').invoke('text').then((text) => {
+        const shown = text.split('\n').map((l) => l.trim()).find((l) => l.startsWith('Send '));
+        expect(shown).to.not.contain('{{').and.not.contain('00000000-0000');
+        cy.get('[data-cy=send-ok]').click();
+        cy.get(win).should('not.exist');
+        received(shown).should('deep.equal', [shown]);
+      });
+    });
+  });
+
   it('keeps time by the server clock when the browser clock is behind', () => {
     // The server says it is 2 minutes later than this browser thinks: its send time 60 s
     // from the browser's now has passed already.

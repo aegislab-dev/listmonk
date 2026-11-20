@@ -469,6 +469,20 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 		if code != http.StatusOK || json.Unmarshal(data, &o) != nil || o.Subject != "Check "+name || !o.Rendered {
 			t.Fatalf("subject template: %d %s", code, data)
 		}
+		// The campaign's own UUID, as the mail has it (LST-48 review: a placeholder was shown).
+		var uuid string
+		e.get(&uuid, `SELECT uuid::TEXT FROM campaigns WHERE id=$1`, e.campID)
+		e.db.MustExec(`UPDATE campaigns SET subject='News {{ .Campaign.UUID }}' WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if json.Unmarshal(data, &o) != nil || o.Subject != "News "+uuid || !o.Rendered {
+			t.Fatalf("subject with the UUID: %s", data)
+		}
+		// A Subject header with a template expression goes out rendered too.
+		e.db.MustExec(`UPDATE campaigns SET headers='[{"Subject":"Header {{ .Campaign.Name }}"}]'::jsonb WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if json.Unmarshal(data, &o) != nil || o.Subject != "Header "+name || !o.Rendered {
+			t.Fatalf("templated Subject header: %s", data)
+		}
 		// A Subject header replaces it: shown as the header, not as rendered.
 		e.db.MustExec(`UPDATE campaigns SET headers='[{"Subject":"Header subject"}]'::jsonb WHERE id=$1`, e.campID)
 		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")

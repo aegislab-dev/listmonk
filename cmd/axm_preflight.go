@@ -313,20 +313,18 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	sendCamp.FromEmail = campFrom
 	statuses := manager.SendStatuses(camp.SendAt)
 
-	// A subject with a template expression goes out rendered: show it as the first mail of
-	// the send has it, for the example subscriber (a subject that uses the subscriber's
-	// fields differs from person to person; the window says so). It cannot be rendered: as
-	// written.
-	subject, subjectTpl := camp.Subject, strings.Contains(camp.Subject, "{{")
-	if subjectTpl {
-		if s, err := a.manager.RenderedSubject(&sendCamp, dummySubscriber, statuses[0]); err == nil {
-			subject = s
-		}
+	// The subject and the custom headers go out rendered when they hold a template expression:
+	// show them as the first mail of the send has them, for the example subscriber (one that
+	// uses the subscriber's fields differs from person to person; the window says so). What
+	// cannot be rendered is shown as written.
+	policy := len(a.cfg.SenderDomains) > 0
+	asWritten, _, _ := sendEnvelope(camp.Subject, from, camp.ReplyTo, camp.Messenger, server, camp.Headers, policy)
+	rSubject, rHeaders := camp.Subject, camp.Headers
+	if s, h, err := a.manager.RenderedEnvelope(&sendCamp, dummySubscriber, statuses[0]); err == nil {
+		rSubject, rHeaders = s, h
 	}
-	rendered := subject
-	subject, from, replyTo := sendEnvelope(subject, from, camp.ReplyTo, camp.Messenger, server, camp.Headers, len(a.cfg.SenderDomains) > 0)
-	// Shown as rendered only when it was, and no Subject header replaced it.
-	subjectTpl = subjectTpl && rendered != camp.Subject && subject == rendered
+	subject, from, replyTo := sendEnvelope(rSubject, from, camp.ReplyTo, camp.Messenger, server, rHeaders, policy)
+	subjectTpl := subject != asWritten
 
 	facts := preflightFacts{
 		Mode: mode, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,

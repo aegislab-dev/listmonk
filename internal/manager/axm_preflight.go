@@ -27,23 +27,25 @@ func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber, 
 	return hasUnsubscribeLink(msg), nil
 }
 
-// RenderedSubject is the subject line of the campaign's mail to sub, rendered as the sender
-// renders it when the campaign has the given status: a subject with a template expression
-// ({{ .Campaign.Name }} and the like) goes out as its result, not as written (LST-48 review).
-func (m *Manager) RenderedSubject(c *models.Campaign, sub models.Subscriber, status string) (string, error) {
+// RenderedEnvelope is the subject line and the custom headers of the campaign's mail to sub,
+// rendered as the sender renders them when the campaign has the given status: a subject or a
+// header value with a template expression ({{ .Campaign.Name }}, {{ .Campaign.UUID }} and the
+// like) goes out as its result, not as written (LST-48 review).
+func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, status string) (string, models.Headers, error) {
 	msg, err := m.checkRender(c, sub, status)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return msg.subject, nil
+	return msg.subject, msg.headers, nil
 }
 
 // checkRender compiles a copy of the campaign, with tracking functions that touch nothing,
 // and renders its mail to sub in the given status. It registers no links and writes nothing.
 func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status string) (*CampaignMessage, error) {
 	// Compile on a copy, with the tracking functions that do not touch the database.
+	// The campaign's own UUID: a subject, header or body can print it. The tracking functions
+	// below do not use it to register anything.
 	camp := *c
-	camp.UUID = dummyUUID
 	// A body may ask what state the campaign is in: render it with the one given (see
 	// SendStatuses).
 	camp.Status = status
