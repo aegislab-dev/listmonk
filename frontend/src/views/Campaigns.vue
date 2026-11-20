@@ -293,7 +293,6 @@ import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
 import CopyText from '../components/CopyText.vue';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
-import { isPlaceholderFrom, matchFromEntry } from '../senders';
 
 export default Vue.extend({
   components: {
@@ -445,12 +444,23 @@ export default Vue.extend({
     },
 
     async cloneCampaign(name, c) {
+      // The From list may have changed in another session: refresh it first,
+      // then read the campaign, whose from_match the server computes from it.
+      await this.$api.getServerConfig();
+
       // Fetch the template body from the server.
       let body = '';
       let bodySource = null;
+      let { fromEmail } = c;
+      const list = this.serverConfig.from_addresses || [];
+      const accountSenders = (this.serverConfig.sender_domains || []).length > 0;
       await this.$api.getCampaign(c.id).then((data) => {
         body = data.body;
         bodySource = data.bodySource;
+        // The copy gets the list entry the server matched, else the original
+        // From as is and the server decides.
+        fromEmail = !accountSenders && data.fromMatch !== null && data.fromMatch !== undefined
+          ? list[data.fromMatch] : data.fromEmail;
       });
 
       const now = this.$utils.getDate();
@@ -460,17 +470,8 @@ export default Vue.extend({
         sendAt = dayjs(c.sendAt).isAfter(now) ? c.sendAt : now.add(7, 'day');
       }
 
-      // The From list may have changed in another session.
-      await this.$api.getServerConfig();
-
-      // A From that the From list does not allow (or a placeholder) is left
-      // out so the server fills in the default instead of refusing the copy.
-      const list = this.serverConfig.from_addresses || [];
-      const fromOk = (this.serverConfig.sender_domains || []).length > 0
-        || (list.length > 0 ? !!matchFromEntry(c.fromEmail, list) : !isPlaceholderFrom(c.fromEmail));
-
       // With a From list a custom From header is refused, so a copy goes without one.
-      const fromHeaderFree = (this.serverConfig.sender_domains || []).length === 0 && list.length > 0;
+      const fromHeaderFree = !accountSenders && list.length > 0;
       const dropFromHeader = (set) => Object.fromEntries(Object.entries(set).filter(([k]) => k.trim().toLowerCase() !== 'from'));
 
       const data = {
@@ -478,7 +479,7 @@ export default Vue.extend({
         subject: c.subject,
         lists: c.lists.map((l) => l.id),
         type: c.type,
-        ...(fromOk ? { from_email: c.fromEmail } : {}),
+        from_email: fromEmail,
         reply_to: c.replyTo,
         content_type: c.contentType,
         messenger: c.messenger,

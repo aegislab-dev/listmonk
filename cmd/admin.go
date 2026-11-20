@@ -19,6 +19,7 @@ type serverConfig struct {
 	DefaultFrom        string   `json:"default_from"`
 	DefaultReplyTo     string   `json:"default_reply_to"`
 	FromAddresses      []string `json:"from_addresses"`
+	FromDefault        *int     `json:"from_default"`
 	ResolvedFrom       string   `json:"resolved_from"`
 	RootURL            string   `json:"root_url"`
 	FromEmail          string   `json:"from_email"`
@@ -70,6 +71,7 @@ func (a *App) GetServerConfig(c echo.Context) error {
 		DefaultFrom:    a.cfg.DefaultFrom,
 		DefaultReplyTo: a.cfg.DefaultReplyTo,
 		FromAddresses:  append([]string{}, a.cfg.FromAddresses...),
+		FromDefault:    fromDefault(a.cfg),
 		ResolvedFrom:   resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains),
 		RootURL:        a.urlCfg.RootURL,
 		FromEmail:      a.cfg.FromEmail,
@@ -163,4 +165,13 @@ func (a *App) ReloadApp(c echo.Context) error {
 	}()
 
 	return c.JSON(http.StatusOK, okResp{true})
+}
+
+// fromDefault is the From list entry a new campaign starts with (null: no list).
+func fromDefault(cfg *Config) *int {
+	i := defaultFromIndex(cfg.FromEmail, cfg.FromAddresses)
+	if i < 0 || len(cfg.SenderDomains) > 0 {
+		return nil
+	}
+	return &i
 }

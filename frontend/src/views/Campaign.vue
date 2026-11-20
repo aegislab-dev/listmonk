@@ -370,7 +370,7 @@ import AddressCheck from '../components/AddressCheck.vue';
 import RecentSendExclude from '../components/RecentSendExclude.vue';
 import Media from './Media.vue';
 import SenderAddressInput from '../components/SenderAddressInput.vue';
-import { isPlaceholderFrom, isSenderDomain, matchFromEntry } from '../senders';
+import { isSenderDomain } from '../senders';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
 
 export default Vue.extend({
@@ -421,6 +421,7 @@ export default Vue.extend({
         name: '',
         subject: '',
         fromEmail: '',
+        fromChoice: null,
         replyTo: '',
         headersStr: '[]',
         headers: [],
@@ -450,11 +451,23 @@ export default Vue.extend({
   },
 
   methods: {
-    // The From a new campaign starts with: the app default, or with a From
-    // list the default's entry (else the first entry).
+    // The From a new campaign starts with, as the server decides it: with a
+    // From list the entry in serverConfig.from_default, else the app default.
     defaultFrom() {
       if (this.senderPolicyEnabled || this.fromList.length === 0) return this.serverConfig.from_email;
-      return matchFromEntry(this.serverConfig.from_email, this.fromList) || this.fromList[0];
+      return this.fromList[this.serverConfig.from_default ?? 0];
+    },
+
+    // Remembers which list entry the From stands for (the server says: from_match).
+    chooseFrom(email) {
+      this.form.fromEmail = email;
+      this.form.fromChoice = this.fromList.includes(email) ? email : null;
+    },
+
+    // The list entry the server matched to a campaign's From, or null.
+    fromChoiceOf(d) {
+      return !this.senderPolicyEnabled && d.fromMatch !== null && d.fromMatch !== undefined
+        ? (this.fromList[d.fromMatch] || null) : null;
     },
 
     onReplyAddresses() {
@@ -607,6 +620,7 @@ export default Vue.extend({
             templateId: data.templateId,
           },
         };
+        this.form.fromChoice = this.fromChoiceOf(data);
         this.isAttachFieldVisible = this.form.media.length > 0;
 
         this.form.media = this.form.media.map((f) => {
@@ -745,6 +759,7 @@ export default Vue.extend({
         });
         this.data = d;
         this.form.fromEmail = d.fromEmail;
+        this.form.fromChoice = this.fromChoiceOf(d);
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
@@ -840,18 +855,20 @@ export default Vue.extend({
     // account-sender feature (which decides the From itself) is off.
     useFromSelect() { return !this.senderPolicyEnabled && this.fromList.length > 0 && this.canEdit; },
     fromSelected: {
-      get() { return matchFromEntry(this.form.fromEmail, this.fromList) || null; },
-      set(v) { this.form.fromEmail = v; },
+      get() { return this.form.fromChoice || null; },
+      set(v) { this.chooseFrom(v); },
     },
+    // Warns about a saved From that the server did not match to the list (or,
+    // with no list, called a placeholder). Gone once another entry is picked.
     fromWarning() {
-      const email = (this.form.fromEmail || '').trim();
-      if (!this.isEditing || !this.canEdit || !email) return '';
-      // With no list only placeholders are refused; with a list anything off it.
+      const email = (this.data.fromEmail || '').trim();
+      if (!this.isEditing || !this.canEdit || !email || this.senderPolicyEnabled) return '';
       if (this.fromList.length === 0) {
-        return isPlaceholderFrom(email) ? this.$t('campaigns.fromPlaceholderWarnFree', { email }) : '';
+        return this.data.fromPlaceholder && this.form.fromEmail === this.data.fromEmail
+          ? this.$t('campaigns.fromPlaceholderWarnFree', { email }) : '';
       }
-      if (matchFromEntry(email, this.fromList)) return '';
-      return this.$t(isPlaceholderFrom(email) ? 'campaigns.fromPlaceholderWarn' : 'campaigns.fromNotInListWarn', { email });
+      if (this.form.fromChoice) return '';
+      return this.$t(this.data.fromPlaceholder ? 'campaigns.fromPlaceholderWarn' : 'campaigns.fromNotInListWarn', { email });
     },
 
     senderPolicyEnabled() { return (this.serverConfig.sender_domains || []).length > 0; },
@@ -940,16 +957,17 @@ export default Vue.extend({
     // profile, and another session may have replaced the From list since this
     // page was loaded. A new campaign then takes the refreshed default.
     // Fill default form fields.
-    this.form.fromEmail = this.defaultFrom();
+    this.chooseFrom(this.defaultFrom());
     const initialFrom = this.form.fromEmail;
 
-    this.$api.getServerConfig().then(() => {
+    const cfgReady = this.$api.getServerConfig();
+    cfgReady.then(() => {
       if (!this.isNew || this.senderPolicyEnabled) return;
       // Replace a From that came from the old config: the untouched default,
       // or one that the refreshed list no longer has.
       if (this.form.fromEmail === initialFrom
-        || (this.fromList.length > 0 && !matchFromEntry(this.form.fromEmail, this.fromList))) {
-        this.form.fromEmail = this.defaultFrom();
+        || (this.fromList.length > 0 && !this.fromList.includes(this.form.fromEmail))) {
+        this.chooseFrom(this.defaultFrom());
       }
     });
     if (this.senderPolicyEnabled && !this.usesAccountFrom) this.form.replyTo = this.serverConfig.default_reply_to;
@@ -993,7 +1011,9 @@ export default Vue.extend({
 
     // Fetch campaign.
     if (this.isEditing) {
-      this.getCampaign(id).then(() => {
+      // The server matches the From to the list; read the list first so the
+      // index it returns points into the current list.
+      cfgReady.catch(() => {}).then(() => this.getCampaign(id)).then(() => {
         if (this.$route.hash !== '') {
           this.activeTab = this.$route.hash.replace('#', '');
         }

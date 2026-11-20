@@ -1020,9 +1020,9 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 - **From을 보내지 않았을 때**: 목록이 비어 있으면 기본값(`app.from_email`)도 같은 검사를 지난다(자리표시자면 400, 앞뒤 공백은 지움, 줄바꿈이 있으면 400). 목록이 있으면 기본값이 아니라 목록이 정한다(기본값이 목록에 있으면 그것, 아니면 첫 항목). 직접 보낸 값은 앞뒤 줄바꿈도 400이다.
 - **사용자 지정 `From` 헤더**는 목록을 쓰는 동안 400(`campaigns.fromHeaderNotAllowed`) — 보낼 때 헤더가 검사한 From을 덮어쓰기 때문이다. 일시정지 캠페인은 저장된 헤더를 그대로 둘 때만 통과하고(저장 전 값과 비교), 헤더를 넣거나 바꾸면 400이다. 복제는 From 헤더를 빼고 보낸다. 시작·예약 때도 같이 본다.
 - **기존 값은 고치지 않는다.** DB 일괄 수정 없음. 목록 밖 From의 초안을 열면 경고(`data-cy=from-warning`)가 뜨고 선택 칸이 비어 있다. 열기만 해서는 바뀌지 않고, 목록에서 골라 저장해야 한다. 완료·발송 중 캠페인은 저장된 값을 읽기 전용으로 보인다.
-- **복제**는 원본 From이 목록에 없거나 자리표시자이면 `from_email`을 빼고 보내 서버 기본값이 들어간다. **옵트인 캠페인**은 `from_email`을 보내지 않아 같은 기본값을 쓴다.
+- **복제**는 서버가 일치시킨 목록 항목(없으면 원본 From 그대로)을 보내고, 목록 밖 From이면 서버가 400으로 알린다(고른 뒤 복제). **옵트인 캠페인**은 `from_email`을 보내지 않아 같은 기본값을 쓴다.
 - **계정 발신자(LST-8, `axm.sender_domains`)와의 관계:** 그 기능이 켜지면 From은 로그인 계정이 정하므로 이 목록은 쓰이지 않는다(설정 값은 남는다) 이 모드에서는 자리표시자 검사도 하지 않는다(기존 동작 유지). 트랜잭션 메일 API와 시스템 알림 메일의 From은 범위 밖이다.
-- 규칙의 순수 함수는 `cmd/senders.go`의 `placeholderFrom`·`matchFromAddress`·`normalizeFromAddresses`다. 나중의 발송 전 확인 창이 `placeholderFrom`을 다시 쓸 수 있다. 화면 쪽 `frontend/src/senders.js`는 표시용 사본이고 판정은 서버가 한다.
+- 규칙의 순수 함수는 `cmd/senders.go`의 `placeholderFrom`·`matchFromAddress`·`normalizeFromAddresses`다. 나중의 발송 전 확인 창이 `placeholderFrom`을 다시 쓸 수 있다. 주소 해석은 서버 한 곳이다: 캠페인 응답(`from_match`: 목록의 몇 번째 항목과 일치하는지 또는 null, `from_placeholder`)과 `/api/config`(`from_default`: 새 캠페인이 시작하는 항목)가 답을 주고, 화면은 그 값만 써서 선택·경고를 정한다(주소를 직접 해석하지 않는다). 복제는 서버가 일치시킨 항목, 없으면 원본 From을 그대로 보내 서버가 판단한다(목록 밖 From의 초안은 복제가 400). 특이 표기(공백·주석·이스케이프·꺾쇠)는 `TestFromStateOddNotations`와 Cypress `from-addresses.cy.js`가 묶음으로 확인한다.
 
 마이그레이션 `v6.2.1-axm.14`는 설정 행 하나를 넣을 뿐이고 새 테이블·시퀀스는 없다. 이전 이미지로 되돌리면 행은 남고 이전 이미지는 읽지 않는다(From 검사만 사라진다).
 

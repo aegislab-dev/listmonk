@@ -7,72 +7,7 @@ export function senderMailbox(value) {
   return /^[^\s<>@,;]+@[^\s<>@,;]+$/.test(email) ? email.toLowerCase() : '';
 }
 
-// The address of a From value, with a quoted local part ("two words"@x) read
-// as the address without quotes, as the server does. Used to compare a From
-// with the From list.
-// Removes trailing (comments), which may nest: "a@x (Team (Korea))" -> "a@x".
-function stripTrailingComments(value) {
-  // A backslash escapes the next character, so "\)" is text, not a closing paren.
-  const escaped = (str, i) => {
-    let n = 0;
-    for (let j = i - 1; j >= 0 && str[j] === '\\'; j -= 1) n += 1;
-    return n % 2 === 1;
-  };
-  let s = value;
-  while (s.endsWith(')') && !escaped(s, s.length - 1)) {
-    let depth = 0;
-    let start = -1;
-    for (let i = s.length - 1; i >= 0; i -= 1) {
-      if (!escaped(s, i)) {
-        if (s[i] === ')') depth += 1;
-        else if (s[i] === '(') {
-          depth -= 1;
-          if (depth === 0) { start = i; break; }
-        }
-      }
-    }
-    if (start < 0) break;
-    s = s.slice(0, start).trimEnd();
-  }
-  return s;
-}
-
-export function fromAddress(value) {
-  // A trailing comment, as in "Team <a@x> (Newsletter)", is not part of the address.
-  const s = stripTrailingComments((value || '').trim());
-  if (!s || /[\r\n]/.test(s)) return '';
-  // The address is the last <...>; a quoted display name may hold angle brackets.
-  const match = s.match(/<([^<>]+)>$/);
-  const email = match ? match[1] : s;
-  const parts = email.match(/^(?:"((?:[^"\\]|\\.)+)"|([^\s<>@,;"]+))@([^\s<>@,;"]+)$/);
-  if (!parts) return '';
-  const local = parts[1] !== undefined ? parts[1].replace(/\\(.)/g, '$1') : parts[2];
-  return `${local}@${parts[3]}`.toLowerCase();
-}
-
 export function isSenderDomain(value, domains) {
   const email = senderMailbox(value);
   return !!email && (domains || []).includes(email.slice(email.lastIndexOf('@') + 1));
-}
-
-// The list entry a From value stands for: the same entry, or the first entry
-// with the same address. Display hint only; the server decides.
-export function matchFromEntry(value, list) {
-  const v = (value || '').trim();
-  if (!v) return '';
-  if ((list || []).includes(v)) return v;
-  const email = fromAddress(v);
-  return email ? ((list || []).find((e) => fromAddress(e) === email) || '') : '';
-}
-
-// Mirrors the server's placeholder rule (change-me@..., reserved example domains).
-export function isPlaceholderFrom(value) {
-  const email = fromAddress(value);
-  if (!email) return false;
-  const at = email.lastIndexOf('@');
-  const local = email.slice(0, at);
-  const domain = email.slice(at + 1);
-  if (['change-me', 'changeme', 'change_me'].includes(local)) return true;
-  if (['example.com', 'example.org', 'example.net'].some((d) => domain === d || domain.endsWith(`.${d}`))) return true;
-  return ['example', 'invalid', 'test'].some((t) => domain.endsWith(`.${t}`));
 }

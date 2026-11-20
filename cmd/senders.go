@@ -104,32 +104,63 @@ var reFromNameSpecial = regexp.MustCompile(`[,"<>@;:\\()\[\]]`)
 // address (case-insensitive) matches the first entry with that address, so a
 // stray space or a different display name is replaced by the list's spelling.
 func matchFromAddress(value string, list []string) (string, bool) {
-	v := strings.TrimSpace(value)
-	if v == "" {
-		return "", false
-	}
-	for _, e := range list {
-		if e == v {
-			return e, true
-		}
-	}
-	if a := addrOf(v); a != "" {
-		for _, e := range list {
-			if addrOf(e) == a {
-				return e, true
-			}
-		}
+	if i := matchFromIndex(value, list); i >= 0 {
+		return list[i], true
 	}
 	return "", false
 }
 
-// defaultFromFor is the From a new campaign gets when none is sent: the app
-// default if it is on the list, else the first list entry.
-func defaultFromFor(appFrom string, list []string) string {
-	if e, ok := matchFromAddress(appFrom, list); ok {
-		return e
+// matchFromIndex is the index of the list entry a From value stands for, or -1.
+// It is the one place that reads From values against the list; the admin UI
+// shows what this returns and never parses an address itself.
+func matchFromIndex(value string, list []string) int {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return -1
 	}
-	return list[0]
+	for i, e := range list {
+		if e == v {
+			return i
+		}
+	}
+	if a := addrOf(v); a != "" {
+		for i, e := range list {
+			if addrOf(e) == a {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// fromState is what a campaign's stored From means: the index of the matching
+// list entry (nil when there is no list or no match) and whether it is a
+// placeholder. Account senders (no list is used) and an empty From say nothing.
+func fromState(from string, list []string, accountSenders bool) (*int, bool) {
+	if accountSenders || strings.TrimSpace(from) == "" {
+		return nil, false
+	}
+	if i := matchFromIndex(from, list); i >= 0 {
+		return &i, false
+	}
+	return nil, placeholderFrom(from)
+}
+
+// defaultFromIndex is the list entry a new campaign starts with: the app
+// default if it is on the list, else the first entry. -1 for an empty list.
+func defaultFromIndex(appFrom string, list []string) int {
+	if len(list) == 0 {
+		return -1
+	}
+	if i := matchFromIndex(appFrom, list); i >= 0 {
+		return i
+	}
+	return 0
+}
+
+// defaultFromFor is the From a new campaign gets when none is sent.
+func defaultFromFor(appFrom string, list []string) string {
+	return list[defaultFromIndex(appFrom, list)]
 }
 
 // normalizeFromAddresses cleans the team's From list. Entries are "Name <addr>"
@@ -233,6 +264,8 @@ func hasReservedHeader(headers []map[string]string) bool {
 }
 
 func (a *App) campaignReplyVerified(camp *models.Campaign) error {
+	// Every campaign response passes here: tell the UI what the From means.
+	camp.FromMatch, camp.FromPlaceholder = fromState(camp.FromEmail, a.cfg.FromAddresses, len(a.cfg.SenderDomains) > 0)
 	if len(a.cfg.SenderDomains) == 0 {
 		camp.ReplyToVerified = true
 		return nil

@@ -139,20 +139,87 @@ describe('Team From address list', () => {
     cy.then(() => cy.request(`/api/campaigns/${oldDraft.id}`)).then(({ body }) => expect(body.data.from_email).to.eq(team));
   });
 
-  it('copies a draft whose From is not on the list with the default From', () => {
-    cy.then(() => cy.request(`/api/campaigns/${cloneDraft.id}`)).then(({ body }) => expect(body.data.from_email).to.eq('clone@crevasse.ai'));
+  it('refuses to copy a draft whose From is not on the list, and says why', () => {
+    cy.then(() => cy.request(`/api/campaigns/${cloneDraft.id}`)).then(({ body }) => {
+      expect(body.data.from_email).to.eq('clone@crevasse.ai');
+      expect(body.data.from_match).to.eq(null);
+    });
     cy.loginAndVisit('/admin/campaigns');
     cy.get('input[name=query]').clear().type(`Synthetic clone source ${stamp}{enter}`);
     cy.get('tbody tr').should('have.length', 1);
     cy.get('[data-cy=btn-clone]').click();
     cy.get('.modal input').clear().type(`Synthetic from list copy ${stamp}`);
     cy.get('.modal button.is-primary:eq(0)').click();
-    cy.location('pathname').should('match', /\/admin\/campaigns\/\d+$/);
-    cy.request(`/api/campaigns?query=${encodeURIComponent(`Synthetic from list copy ${stamp}`)}&no_body=true`).then(({ body }) => {
-      expect(body.data.results).to.have.length(1);
-      campaigns.push(body.data.results[0].id);
-      expect(body.data.results[0].from_email).to.eq(mine);
+    cy.contains('clone@crevasse.ai').should('exist');
+    cy.request(`/api/campaigns?query=${encodeURIComponent(`Synthetic from list copy ${stamp}`)}&no_body=true`)
+      .then(({ body }) => expect(body.data.results).to.have.length(0));
+  });
+
+  // One reading of a From value, on the server (LST-49). The UI shows what the
+  // server says (from_match, from_default) and never parses an address, so every
+  // odd notation that cost a review round must give the same answer through the
+  // API, the editor, a copy and a new campaign.
+  const odd = [
+    '  team@crevasse.ai  ',
+    'TEAM@Crevasse.AI',
+    'News < team@crevasse.ai>',
+    'News <team@crevasse.ai> (Newsletter)',
+    'News <team@crevasse.ai> (Newsletter (Korea))',
+    'News <team@crevasse.ai> (Newsletter (Korea\\)))',
+    '"News <Korea>" <team@crevasse.ai>',
+    '"News, Korea" <team@crevasse.ai>',
+  ];
+  it('reads odd notations of a listed address the same way everywhere', () => {
+    setList([]);
+    const made = [];
+    odd.forEach((from, i) => {
+      create(from, `Synthetic odd ${i} ${stamp}`).then((r) => {
+        expect(r.status, from).to.eq(200);
+        made.push({ id: r.body.data.id, from, name: `Synthetic odd ${i} ${stamp}` });
+      });
     });
+    setList([mine, team]);
+    cy.then(() => {
+      made.forEach(({ id, from }) => {
+        cy.request(`/api/campaigns/${id}`).then(({ body }) => {
+          expect(body.data.from_match, from).to.eq(1);
+          expect(body.data.from_placeholder, from).to.eq(false);
+        });
+        cy.request({ method: 'POST', url: '/api/campaigns', body: fields(from) }).then((r) => {
+          campaigns.push(r.body.data.id);
+          expect(r.body.data.from_email, from).to.eq(team);
+          expect(r.body.data.from_match, from).to.eq(1);
+        });
+      });
+    });
+    cy.request('/api/config').then(({ body }) => expect(body.data.from_default).to.eq(0));
+
+    // The editor: preselected, no warning.
+    cy.then(() => made.slice(0, 1).concat(made.slice(-1)).forEach(({ id }) => {
+      cy.visit(`/admin/campaigns/${id}`);
+      cy.get('select[name=from_email]').should('have.value', team);
+      cy.get('[data-cy=from-warning]').should('not.exist');
+    }));
+
+    // A copy of each gets the list's entry.
+    cy.then(() => made.forEach(({ name, from }, i) => {
+      cy.loginAndVisit('/admin/campaigns');
+      cy.get('input[name=query]').clear().type(`${name}{enter}`);
+      cy.get('tbody tr').should('have.length', 1);
+      cy.get('[data-cy=btn-clone]').click();
+      cy.get('.modal input').clear().type(`Synthetic odd copy ${i} ${stamp}`);
+      cy.get('.modal button.is-primary:eq(0)').click();
+      cy.location('pathname').should('match', /\/admin\/campaigns\/\d+$/);
+      cy.request(`/api/campaigns?query=${encodeURIComponent(`Synthetic odd copy ${i} ${stamp}`)}&no_body=true`).then(({ body }) => {
+        expect(body.data.results, from).to.have.length(1);
+        campaigns.push(body.data.results[0].id);
+        expect(body.data.results[0].from_email, from).to.eq(team);
+      });
+    }));
+
+    // A new campaign starts with the server's default entry.
+    cy.visit('/admin/campaigns/new');
+    cy.get('select[name=from_email]').should('have.value', mine);
   });
 
   it('applies the same checks to the app default From when none is sent', () => {

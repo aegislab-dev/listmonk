@@ -1,12 +1,12 @@
 package main
 
 import (
-	"io"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/mail"
 	"net/url"

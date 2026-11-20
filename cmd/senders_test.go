@@ -247,3 +247,61 @@ func TestHasFromHeader(t *testing.T) {
 		}
 	}
 }
+
+// The one reading of a From value against the list. The admin UI shows what
+// fromState says and never parses an address itself, so every odd notation that
+// ever cost a review round is pinned here (LST-49).
+var oddFromNotations = []string{
+	"team@crevasse.ai",
+	"  team@crevasse.ai  ",
+	"TEAM@Crevasse.AI",
+	"News <team@crevasse.ai>",
+	"News < team@crevasse.ai>",
+	"News <team@crevasse.ai> (Newsletter)",
+	"News <team@crevasse.ai> (Newsletter (Korea))",
+	`News <team@crevasse.ai> (Newsletter (Korea\)))`,
+	`News <team@crevasse.ai> (a \\) (b)`,
+	`"News <Korea>" <team@crevasse.ai>`,
+	`"News, Korea" <team@crevasse.ai>`,
+	"team@crevasse.ai (Newsletter)",
+}
+
+func TestFromStateOddNotations(t *testing.T) {
+	list := []string{"aegislab_us@crevasse.ai", "AEGIS 팀 <team@crevasse.ai>"}
+	for _, v := range oddFromNotations {
+		idx, ph := fromState(v, list, false)
+		if idx == nil || *idx != 1 || ph {
+			t.Errorf("%q: index %v placeholder %v, want 1 false", v, idx, ph)
+		}
+		if got := matchFromIndex(v, list); got != 1 {
+			t.Errorf("%q: matchFromIndex %d", v, got)
+		}
+	}
+	for _, v := range []string{"other@crevasse.ai", "News <other@crevasse.ai> (team@crevasse.ai)"} {
+		if idx, _ := fromState(v, list, false); idx != nil {
+			t.Errorf("%q must not match", v)
+		}
+	}
+	// No list, an empty From and account senders say nothing about the list.
+	if idx, ph := fromState("change-me@crevasse.ai", nil, false); idx != nil || !ph {
+		t.Fatal(idx, ph)
+	}
+	if idx, ph := fromState("change-me@crevasse.ai", list, false); idx != nil || !ph {
+		t.Fatal(idx, ph)
+	}
+	if idx, ph := fromState("change-me@crevasse.ai", list, true); idx != nil || ph {
+		t.Fatal(idx, ph)
+	}
+	if idx, ph := fromState("  ", list, false); idx != nil || ph {
+		t.Fatal(idx, ph)
+	}
+	if i := defaultFromIndex("TEAM@crevasse.ai", list); i != 1 {
+		t.Fatal(i)
+	}
+	if i := defaultFromIndex("listmonk <noreply@listmonk.yoursite.com>", list); i != 0 {
+		t.Fatal(i)
+	}
+	if i := defaultFromIndex("x@y.z", nil); i != -1 {
+		t.Fatal(i)
+	}
+}

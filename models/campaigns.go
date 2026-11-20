@@ -39,6 +39,12 @@ type Campaign struct {
 	ReplyTo         string `db:"reply_to" json:"reply_to"`
 	ReplyToVerified bool   `db:"-" json:"reply_to_verified"`
 
+	// Set by the server from the From list (LST-49): the index of the list
+	// entry this campaign's From stands for (null if none or no list), and
+	// whether the From is a placeholder. The admin UI only uses these values.
+	FromMatch       *int `db:"-" json:"from_match"`
+	FromPlaceholder bool `db:"-" json:"from_placeholder"`
+
 	// LastSubscriberID is the sending checkpoint (campaigns.last_subscriber_id): the
 	// campaign is done with every subscriber up to it. The campaign manager continues
 	// after it when it picks a campaign up (AXM, LST-20). It is not part of the API.
