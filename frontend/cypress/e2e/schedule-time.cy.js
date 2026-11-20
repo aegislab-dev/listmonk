@@ -118,7 +118,8 @@ describe('Scheduled send time zone', () => {
     // Names without a slash work too.
     zoneButton().click();
     cy.get('[data-cy=send-tz-search]').type('EST5EDT');
-    cy.get('[data-cy=send-tz-panel] [data-tz="EST5EDT"]').first().click();
+    // A browser may give such an old name its current one (America/New_York); one row either way.
+    cy.get('[data-cy=send-tz-panel] [data-tz]').should('have.length', 1).first().click();
     pickerValue().should('have.value', '2030-01-14 19:00');
   });
 

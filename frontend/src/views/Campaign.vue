@@ -1030,7 +1030,7 @@ export default Vue.extend({
 .send-at-row { margin-bottom: 0; }
 @media (max-width: 520px) {
   /* The zone button goes under the input instead of past the edge of the screen. */
-  .send-at-row { flex-wrap: wrap; }
+  .send-at-row ::v-deep .has-addons { flex-wrap: wrap; }
   .send-at-row ::v-deep .datepicker { flex: 1 1 100%; min-width: 0; }
 }
 .send-at-duration { margin-top: .5rem; }
