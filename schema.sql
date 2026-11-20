@@ -1177,6 +1177,8 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     condition          JSONB NOT NULL,
     counts             JSONB NOT NULL DEFAULT '{}',
     recheck            JSONB NOT NULL DEFAULT '{}',
+    -- People the check before sending holds back (subscriber, status before, updated_at after, reason).
+    held               JSONB NOT NULL DEFAULT '[]',
     rechecked_at       TIMESTAMP WITH TIME ZONE NULL,
     created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),

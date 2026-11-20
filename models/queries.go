@@ -60,7 +60,7 @@ type Queries struct {
 	AxmFollowupFinishEmpty         *sqlx.Stmt `query:"axm-followup-finish-empty"`
 	AxmFollowupRecheck             *sqlx.Stmt `query:"axm-followup-recheck"`
 	AxmFollowupPending             *sqlx.Stmt `query:"axm-followup-pending"`
-	AxmFollowupRecord              *sqlx.Stmt `query:"axm-followup-record"`
+	AxmFollowupHold                *sqlx.Stmt `query:"axm-followup-hold"`
 	AxmGetColumnPresets            *sqlx.Stmt `query:"axm-get-column-presets"`
 	AxmGetColumnPreset             *sqlx.Stmt `query:"axm-get-column-preset"`
 	AxmColumnPresetExists          *sqlx.Stmt `query:"axm-column-preset-exists"`

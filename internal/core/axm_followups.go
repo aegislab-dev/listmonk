@@ -152,6 +152,15 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 	return nil
 }
 
+// followupChange is a subscription the check held back or gave back.
+type followupChange struct {
+	SubscriberID int       `db:"subscriber_id"`
+	NewStatus    string    `db:"new_status"`
+	Before       string    `db:"before_status"`
+	Reason       int       `db:"reason"`
+	UpdatedAt    time.Time `db:"updated_at"`
+}
+
 type followupDue struct {
 	CampaignID int             `db:"campaign_id"`
 	ParentID   int             `db:"parent_campaign_id"`
@@ -195,14 +204,25 @@ func (c *Core) recheck(ctx context.Context, rows []followupDue) (done, finished 
 		if err != nil {
 			return done, finished, err
 		}
-		var gone models.FollowupPending
+		var changed []followupChange
 		if len(f.ListIDs) > 0 {
 			args := []any{f.ParentID, s.Open, s.Click, pq.Array([]int(nil)), true, f.ListIDs, f.CampaignID}
-			if err := tx.Stmtx(c.q.AxmFollowupRecheck).GetContext(ctx, &gone, args...); err != nil {
+			if err := tx.Stmtx(c.q.AxmFollowupRecheck).SelectContext(ctx, &changed, args...); err != nil {
 				tx.Rollback()
 				return done, finished, err
 			}
-			if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID, gone.Reacted, gone.OptedOut, gone.Blocked); err != nil {
+			held := make([]map[string]any, 0, len(changed))
+			for _, ch := range changed {
+				if ch.NewStatus == "unsubscribed" {
+					held = append(held, map[string]any{"s": ch.SubscriberID, "st": ch.Before, "r": ch.Reason, "u": ch.UpdatedAt.Format(time.RFC3339Nano)})
+				}
+			}
+			raw, err := json.Marshal(held)
+			if err != nil {
+				tx.Rollback()
+				return done, finished, err
+			}
+			if _, err := tx.Stmtx(c.q.AxmFollowupHold).ExecContext(ctx, f.CampaignID, f.ListIDs, string(raw)); err != nil {
 				tx.Rollback()
 				return done, finished, err
 			}
@@ -228,8 +248,8 @@ func (c *Core) recheck(ctx context.Context, rows []followupDue) (done, finished 
 			return done, finished, err
 		}
 		if len(f.ListIDs) > 0 {
-			c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, removed %d who reacted, %d who opted out, %d blocked",
-				f.CampaignID, f.ParentID, gone.Reacted, gone.OptedOut, gone.Blocked)
+			c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, %d people changed (held back or given back)",
+				f.CampaignID, f.ParentID, len(changed))
 			_ = c.refreshCache(matListSubStats, false)
 		}
 		if ended != 0 {

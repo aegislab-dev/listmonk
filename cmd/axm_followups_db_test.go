@@ -287,16 +287,47 @@ func TestFollowupRecheckRemovesWhoReactedOrOptedOut(t *testing.T) {
 	if code != 200 || info.Recheck == nil || info.Recheck.Reacted != 1 || info.Recheck.OptedOut != 1 || info.Recheck.Blocked != 0 || info.Recheck.Runs != 1 || info.RecheckedAt == nil {
 		t.Fatalf("recorded: %d %+v", code, info.Recheck)
 	}
-	// Two more people leave before a resume: it runs again, and counts add up.
+	// Charlie is blocked before a resume: he stays held, and the counts are those of the people held now.
 	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, charlie)
-	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, charlie, list)
 	state("running", "NULL")
 	run()
 	wantSame(t, "after the resume", e.members(list), []int{manual})
-	// Blocking a person already unsubscribes them everywhere (a trigger), so there is nothing
-	// left for the check to remove or count as blocked; it still ran.
-	if _, info := e.callGet(e.admin, camp); info.Recheck.Blocked != 0 || info.Recheck.Runs != 2 {
+	if _, info := e.callGet(e.admin, camp); info.Recheck.Reacted != 1 || info.Recheck.OptedOut != 1 || info.Recheck.Runs != 2 {
 		t.Fatalf("second run: %+v", info.Recheck)
+	}
+}
+
+// The check holds people back instead of deleting them, so a later check gives them back when they
+// qualify again (a schedule that moved, a subscription that came back), and a person who unsubscribes
+// from the follow-up list himself is never given back.
+func TestFollowupHeldPeopleAreGivenBackOrKept(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	charlie, daniel := e.ids[2], e.ids[3]
+	run := func() {
+		t.Helper()
+		e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+			t.Fatal(err)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'draft' WHERE id = $1`, got.Followup.ID)
+	}
+	// Both leave the original's list and are held; their rows stay.
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = ANY($1::INT[]) AND list_id = $2`, pq.Array([]int{charlie, daniel}), e.aList)
+	run()
+	wantSame(t, "held", e.members(got.List.ID), []int{})
+	if e.count(`SELECT COUNT(*) FROM subscriber_lists WHERE list_id = $1`, got.List.ID) != 2 {
+		t.Fatal("a row was deleted")
+	}
+	// Daniel unsubscribes from the follow-up list himself; Charlie's subscription to the original comes back.
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed', updated_at = NOW() + INTERVAL '1 second' WHERE subscriber_id = $1 AND list_id = $2`, daniel, got.List.ID)
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'confirmed' WHERE subscriber_id = ANY($1::INT[]) AND list_id = $2`, pq.Array([]int{charlie, daniel}), e.aList)
+	run()
+	wantSame(t, "Charlie is given back, Daniel stays unsubscribed", e.members(got.List.ID), []int{charlie})
+	var h int
+	e.get(&h, `SELECT jsonb_array_length(held) FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
+	if h != 0 {
+		t.Fatalf("%d held entries remain", h)
 	}
 }
 

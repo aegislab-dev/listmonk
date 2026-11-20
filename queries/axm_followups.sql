@@ -71,36 +71,45 @@ WHERE id = $1 AND (status = 'running' OR (status = 'scheduled' AND NOW() >= send
 RETURNING id;
 
 -- name: axm-followup-recheck
--- Removes from the follow-up list the people who got the original campaign and no longer meet
--- its condition. A person who is not in the shared candidate set reacted since the list was
--- made, and one with a reason other than 0 is blocked or opted out. People who were added by
--- hand and never got the original, and people who already got the follow-up, are left alone.
--- This text continues the shared candidate CTE, which is put in front of it at startup.
-, verdict AS (
-    SELECT sl.subscriber_id, COALESCE(rc.reason, -1) AS reason
+-- Holds back from the follow-up list the people who got the original campaign and no longer meet
+-- its condition, and gives back the people held by an earlier check who meet it again. A person is
+-- held by setting the subscription to unsubscribed; nothing is deleted, so the check can be undone
+-- by the next one (a schedule that moved, a subscription that came back) and a record of the person
+-- is never lost. The held rows are remembered in held (subscriber, status before, updated_at after):
+-- a row that changed since, for example an unsubscribe by the person, is no longer ours and is left
+-- alone. People added by hand who never got the original, and people who already got the follow-up,
+-- are not judged. This text continues the shared candidate CTE put in front of it at startup.
+, held AS (
+    SELECT (h->>'s')::INT AS sid, h->>'st' AS st, (h->>'u')::TIMESTAMPTZ AS u
+    FROM jsonb_array_elements((SELECT held FROM axm_campaign_followups WHERE campaign_id = $7)) h
+),
+verdict AS (
+    SELECT sl.list_id, sl.subscriber_id, sl.status AS cur, hd.st AS held_st, hd.u AS held_u, COALESCE(rc.reason, -1) AS reason
     FROM subscriber_lists sl
     JOIN axm_campaign_sends cs ON cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id
+    LEFT JOIN held hd ON hd.sid = sl.subscriber_id AND sl.status = 'unsubscribed' AND sl.updated_at = hd.u
     LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
-    WHERE sl.list_id = ANY($6::INT[]) AND sl.status != 'unsubscribed'
+    WHERE sl.list_id = ANY($6::INT[]) AND (sl.status != 'unsubscribed' OR hd.sid IS NOT NULL)
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $7 AND sent.subscriber_id = sl.subscriber_id)
-),
-gone AS (
-    DELETE FROM subscriber_lists sl USING verdict v
-    WHERE sl.list_id = ANY($6::INT[]) AND sl.subscriber_id = v.subscriber_id AND v.reason <> 0
-        -- Checked again on the row itself: a person who unsubscribed while this waited for the row keeps that record.
-        AND sl.status != 'unsubscribed'
-    RETURNING v.reason
 )
-SELECT COUNT(*) FILTER (WHERE reason = -1) AS reacted,
-    COUNT(*) FILTER (WHERE reason IN (2, 3)) AS opted_out,
-    COUNT(*) FILTER (WHERE reason = 1) AS blocked
-FROM gone;
+UPDATE subscriber_lists sl
+SET status = (CASE WHEN v.reason <> 0 THEN 'unsubscribed' ELSE v.held_st END)::subscription_status, updated_at = NOW()
+FROM verdict v
+WHERE sl.list_id = v.list_id AND sl.subscriber_id = v.subscriber_id
+    AND ((v.reason <> 0 AND v.held_st IS NULL AND sl.status != 'unsubscribed')
+        OR (v.reason = 0 AND v.held_st IS NOT NULL AND sl.status = 'unsubscribed' AND sl.updated_at = v.held_u))
+RETURNING sl.subscriber_id AS subscriber_id, sl.status::TEXT AS new_status, v.cur::TEXT AS before_status,
+    v.reason AS reason, sl.updated_at AS updated_at;
 
 -- name: axm-followup-pending
--- The same judgement as the recheck, read only: how many would leave the list if it ran now.
--- This text continues the shared candidate CTE, which is put in front of it at startup.
-, verdict AS (
-    SELECT sl.subscriber_id, COALESCE(rc.reason, -1) AS reason
+-- The same judgement, read only: how many people still on the list would be held back if the check
+-- ran now. This text continues the shared candidate CTE, which is put in front of it at startup.
+, held AS (
+    SELECT (h->>'s')::INT AS sid, (h->>'u')::TIMESTAMPTZ AS u
+    FROM jsonb_array_elements((SELECT held FROM axm_campaign_followups WHERE campaign_id = $7)) h
+),
+verdict AS (
+    SELECT COALESCE(rc.reason, -1) AS reason
     FROM subscriber_lists sl
     JOIN axm_campaign_sends cs ON cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id
     LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
@@ -119,10 +128,22 @@ SELECT id FROM campaigns
 WHERE id = $1 AND (status = 'running' OR (status = 'scheduled' AND NOW() >= send_at))
 FOR UPDATE;
 
--- name: axm-followup-record
-UPDATE axm_campaign_followups SET rechecked_at = NOW(), recheck = jsonb_build_object(
-    'reacted', COALESCE((recheck->>'reacted')::INT, 0) + $2,
-    'opted_out', COALESCE((recheck->>'opted_out')::INT, 0) + $3,
-    'blocked', COALESCE((recheck->>'blocked')::INT, 0) + $4,
-    'runs', COALESCE((recheck->>'runs')::INT, 0) + 1)
-WHERE campaign_id = $1;
+-- name: axm-followup-hold
+-- Remembers who the check holds back: the earlier ones that are still held (their row has not
+-- changed since) and the new ones ($3), and sets the counts to those held now.
+WITH kept AS (
+    SELECT e FROM axm_campaign_followups f, jsonb_array_elements(f.held) e
+    WHERE f.campaign_id = $1 AND EXISTS (
+        SELECT 1 FROM subscriber_lists sl
+        WHERE sl.list_id = ANY($2::INT[]) AND sl.subscriber_id = (e->>'s')::INT
+            AND sl.status = 'unsubscribed' AND sl.updated_at = (e->>'u')::TIMESTAMPTZ)
+), merged AS (
+    SELECT COALESCE(jsonb_agg(x.e), '[]'::JSONB) AS h
+    FROM (SELECT e FROM kept UNION ALL SELECT jsonb_array_elements($3::JSONB) AS e) x
+)
+UPDATE axm_campaign_followups f SET held = m.h, rechecked_at = NOW(), recheck = jsonb_build_object(
+    'reacted', (SELECT COUNT(*) FROM jsonb_array_elements(m.h) e WHERE e->>'r' = '-1'),
+    'opted_out', (SELECT COUNT(*) FROM jsonb_array_elements(m.h) e WHERE e->>'r' IN ('2', '3')),
+    'blocked', (SELECT COUNT(*) FROM jsonb_array_elements(m.h) e WHERE e->>'r' = '1'),
+    'runs', COALESCE((f.recheck->>'runs')::INT, 0) + 1)
+FROM merged m WHERE f.campaign_id = $1;
