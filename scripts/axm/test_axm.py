@@ -92,7 +92,9 @@ class SelectSpecTest(unittest.TestCase):
 
     def test_workflow_file_runs_nothing_locally(self):
         r = pick('.github/workflows/axm-image.yml')
-        self.assertEqual((r['specs'], r['go'], r['full_build']), ([], {}, False))
+        # 고르는 것은 파일이 없는 CI spec 뿐이다(정상 트리에서는 없음 — test_all_spec_files_exist 가 따로 본다).
+        missing = [s for s in TMAP['ci_specs'] if not (ROOT / 'frontend/cypress/e2e' / s).is_file()]
+        self.assertEqual((r['specs'], r['go'], r['full_build']), (missing, {}, False))
         self.assertTrue(r['python'])  # spec 목록이 바뀌면 맵 일치 시험을 돌린다
 
     def test_tool_files_run_python_tests(self):
