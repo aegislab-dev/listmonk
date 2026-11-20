@@ -186,7 +186,7 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 		}
 	}
 
-	rep, err := a.manager.CheckTracking(&camp, dummySubscriber)
+	rep, err := a.manager.CheckTracking(&camp, dummySubscriber, req.Mode != "test")
 	if err != nil {
 		key := "templates.errorRendering"
 		var checkErr *manager.TrackingCheckError

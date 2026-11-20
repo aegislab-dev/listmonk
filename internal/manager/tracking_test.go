@@ -26,6 +26,21 @@ func (s *trackingStore) CreateLink(url string) (string, error) {
 	return fmt.Sprintf("link-%d", len(s.urls)), nil
 }
 
+// The media of the attachment tests: ID 1 is a file, "inline.png" an inline image.
+func (s *trackingStore) GetAttachment(mediaID int) (models.Attachment, error) {
+	if mediaID != 1 {
+		return models.Attachment{}, errors.New("no such media")
+	}
+	return models.Attachment{Name: "guide.pdf", Content: []byte("pdf")}, nil
+}
+
+func (s *trackingStore) GetInlineAttachmentByFilename(name string) (models.Attachment, string, error) {
+	if name != "inline.png" {
+		return models.Attachment{}, "", errors.New("no such media")
+	}
+	return models.Attachment{Name: name, Content: []byte("png"), IsInline: true}, "inline@email", nil
+}
+
 func trackingManager() (*Manager, *trackingStore) {
 	s := &trackingStore{}
 	return &Manager{

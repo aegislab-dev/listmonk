@@ -100,7 +100,12 @@ func trimPlainURL(u string) string {
 
 // CheckTracking renders the campaign for one subscriber and reports whether views and
 // clicks would be recorded. The campaign that is passed in is not changed.
-func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber) (TrackingReport, error) {
+//
+// Templates can read .Campaign.Attachments, which the sends fill at different points:
+// a real send (newPipe) loads the inline images and the media before any message is
+// rendered; a test send (sendTestMessage) renders before PushCampaignMessage loads the
+// media, so it sees the inline images only. asSend picks which one is checked.
+func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber, asSend bool) (TrackingReport, error) {
 	rep := TrackingReport{
 		State:       TrackingStateOK,
 		Disabled:    m.cfg.DisableTracking,
@@ -120,6 +125,10 @@ func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber) (Trac
 	// never reach a send.
 	camp := *c
 	camp.UUID = dummyUUID
+	camp.Attachments = append([]models.Attachment(nil), c.Attachments...)
+	if err := m.LoadInlineImages(&camp); err != nil {
+		return rep, &TrackingCheckError{Err: err}
+	}
 	funcs := m.TemplateFuncs(&camp)
 	funcs["TrackLink"] = func(u string, _ *CampaignMessage) string {
 		// Same decoding as trackMessageLink. QueryEscape writes a space as "+", which
@@ -132,6 +141,11 @@ func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber) (Trac
 	}
 	if err := camp.CompileTemplate(funcs); err != nil {
 		return rep, &TrackingCheckError{Compile: true, Err: err}
+	}
+	if asSend {
+		if err := m.attachMedia(&camp); err != nil {
+			return rep, &TrackingCheckError{Err: err}
+		}
 	}
 
 	sub.Attribs = models.PlainNumbers(sub.Attribs)

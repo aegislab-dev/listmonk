@@ -17,7 +17,7 @@ const untrackedTpl = `<html><body>{{ template "content" . }}<a href="{{ Unsubscr
 
 func checkTracking(t *testing.T, m *Manager, c models.Campaign) TrackingReport {
 	t.Helper()
-	rep, err := m.CheckTracking(&c, models.Subscriber{UUID: dummyUUID, Name: "Alice", Email: "alice@example.test"})
+	rep, err := m.CheckTracking(&c, models.Subscriber{UUID: dummyUUID, Name: "Alice", Email: "alice@example.test"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,6 +188,74 @@ func checkTrackingMatchesSend(t *testing.T, body string) {
 	}
 }
 
+// Templates can read .Campaign.Attachments. A real send loads the inline images and
+// the media before it renders (newPipe), a test send only the inline images
+// (sendTestMessage renders before PushCampaignMessage attaches the media). The check
+// follows each and matches what is sent (LST-44 review).
+func TestCheckTrackingAttachments(t *testing.T) {
+	const fileCond = `{{ range .Campaign.Attachments }}{{ if not .IsInline }}<a href="https://g.test/guide">Guide</a>{{ end }}{{ end }}<p>x</p>`
+	const inlineCond = `<img data-embed src="/uploads/inline.png">{{ if not .Campaign.Attachments }}{{ TrackView }}{{ end }}<a href="https://g.test/a@TrackLink">A</a>`
+	for _, tc := range []struct {
+		name   string
+		body   string
+		media  []int64
+		asSend bool
+	}{
+		{"file attached, real send", fileCond, []int64{1}, true},
+		{"file attached, test send", fileCond, []int64{1}, false},
+		{"no file, real send", fileCond, nil, true},
+		{"inline image, real send", inlineCond, nil, true},
+		{"inline image, test send", inlineCond, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := trackingManager()
+			c := models.Campaign{UUID: "campaign", ContentType: "html", Messenger: "email", Body: tc.body, MediaIDs: tc.media}
+			rep, err := m.CheckTracking(&c, models.Subscriber{UUID: dummyUUID, Name: "Alice"}, tc.asSend)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Attachments != nil || c.Body != tc.body {
+				t.Fatalf("the check changed the campaign: %+v", c)
+			}
+
+			// What the send does, step by step.
+			sent := c
+			if err := m.LoadInlineImages(&sent); err != nil {
+				t.Fatal(err)
+			}
+			if err := sent.CompileTemplate(m.TemplateFuncs(&sent)); err != nil {
+				t.Fatal(err)
+			}
+			if tc.asSend {
+				if err := m.attachMedia(&sent); err != nil {
+					t.Fatal(err)
+				}
+			}
+			msg, err := m.NewCampaignMessage(&sent, models.Subscriber{UUID: "subscriber", Name: "Alice"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := string(msg.Body())
+			if pixel := strings.Contains(out, "/px.png"); pixel != (rep.View == TrackingViewManual) {
+				t.Errorf("view %q, pixel sent %v: %s", rep.View, pixel, out)
+			}
+			if direct := strings.Count(out, `href="https://g.test/guide"`); direct != rep.Links.Untracked {
+				t.Errorf("untracked %d, %d direct links sent: %s", rep.Links.Untracked, direct, out)
+			}
+			if tracked := strings.Count(out, "/link/link-"); tracked != rep.Links.Manual {
+				t.Errorf("manual %d, %d tracked links sent: %s", rep.Links.Manual, tracked, out)
+			}
+		})
+	}
+
+	// A medium that cannot be loaded stops the send; the check says so.
+	m, _ := trackingManager()
+	if _, err := m.CheckTracking(&models.Campaign{ContentType: "html", Messenger: "email", Body: "x", MediaIDs: []int64{9}},
+		models.Subscriber{UUID: dummyUUID}, true); err == nil {
+		t.Fatal("missing medium: no error")
+	}
+}
+
 func TestCheckTrackingCapsUntrackedList(t *testing.T) {
 	m, _ := trackingManager()
 	var b strings.Builder
@@ -204,13 +272,13 @@ func TestCheckTrackingErrors(t *testing.T) {
 	m, _ := trackingManager()
 	sub := models.Subscriber{UUID: dummyUUID}
 
-	_, err := m.CheckTracking(&models.Campaign{ContentType: "html", Messenger: "email", Body: `{{ .Subscriber.Name }`}, sub)
+	_, err := m.CheckTracking(&models.Campaign{ContentType: "html", Messenger: "email", Body: `{{ .Subscriber.Name }`}, sub, true)
 	var checkErr *TrackingCheckError
 	if !errors.As(err, &checkErr) || !checkErr.Compile {
 		t.Fatalf("want a compile error, got %v", err)
 	}
 
-	_, err = m.CheckTracking(&models.Campaign{ContentType: "html", Messenger: "email", Body: `{{ .Subscriber.NoSuchField }}`}, sub)
+	_, err = m.CheckTracking(&models.Campaign{ContentType: "html", Messenger: "email", Body: `{{ .Subscriber.NoSuchField }}`}, sub, true)
 	if !errors.As(err, &checkErr) || checkErr.Compile {
 		t.Fatalf("want a render error, got %v", err)
 	}
