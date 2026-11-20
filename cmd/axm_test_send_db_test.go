@@ -107,7 +107,7 @@ func newTestSendEnvTracking(t *testing.T, individual bool) *testSendEnv {
 	e.sys = &listMessenger{}
 	e.a.emailMsgr = e.sys
 	e.a.urlCfg = &UrlConfig{RootURL: "https://lists.example.invalid"}
-	e.a.cfg = &Config{TestDomains: []string{testSendDomain}, FromEmail: "Sender <sender@example.invalid>"}
+	e.a.cfg = &Config{TestDomains: []string{testSendDomain}, FromEmail: "Sender <sender@sender-corp.org>"}
 	e.a.cfg.Privacy.IndividualTracking = individual
 	e.a.testLimiter.now = func() time.Time { return e.now }
 
@@ -157,7 +157,7 @@ func (e *testSendEnv) send(user auth.User, emails []string, sample string) (int,
 	e.t.Helper()
 	body := map[string]any{
 		"name": "시험 캠페인", "subject": "{{ .Subscriber.Name }} 님께", "lists": []int{e.aList},
-		"from_email": "Sender <sender@example.invalid>", "messenger": "email", "content_type": "html",
+		"from_email": "Sender <sender@sender-corp.org>", "messenger": "email", "content_type": "html",
 		"body": e.body, "subscribers": emails,
 	}
 	if sample != "" {

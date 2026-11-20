@@ -116,3 +116,203 @@ func TestDefaultReply(t *testing.T) {
 		}
 	}
 }
+
+func TestPlaceholderFrom(t *testing.T) {
+	for v, want := range map[string]bool{
+		"change-me@crevasse.ai":          true,
+		"Team <Change-Me@crevasse.ai>":   true,
+		"changeme@crevasse.ai":           true,
+		"change_me@crevasse.ai":          true,
+		"a@example.com":                  true,
+		"a@mail.example.org":             true,
+		"a@example.net":                  true,
+		"a@foo.example":                  true,
+		"a@foo.invalid":                  true,
+		"a@foo.test":                     true,
+		"aegislab_us@crevasse.ai":        false,
+		"Team <aegislab_us@crevasse.ai>": false,
+		"noreply@listmonk.yoursite.com":  false, // only the settings list refuses the stock address
+		"a@notexample.com":               false,
+		"change-me-not@crevasse.ai":      false,
+		"not an address":                 false,
+		"":                               false,
+	} {
+		if got := placeholderFrom(v); got != want {
+			t.Errorf("placeholderFrom(%q) = %v, want %v", v, got, want)
+		}
+	}
+	if !placeholderListFrom("noreply@listmonk.yoursite.com") || !placeholderListFrom("a@x.yoursite.com") || placeholderListFrom("a@crevasse.ai") {
+		t.Fatal("placeholderListFrom")
+	}
+}
+
+func TestMatchFromAddress(t *testing.T) {
+	list := []string{"aegislab_us@crevasse.ai", "AEGIS 팀 <team@crevasse.ai>"}
+	for _, tc := range []struct {
+		in, want string
+		ok       bool
+	}{
+		{"aegislab_us@crevasse.ai", "aegislab_us@crevasse.ai", true},
+		{"  aegislab_us@crevasse.ai", "aegislab_us@crevasse.ai", true},
+		{"AegisLab_US@Crevasse.AI", "aegislab_us@crevasse.ai", true},
+		{"Other name <aegislab_us@crevasse.ai>", "aegislab_us@crevasse.ai", true},
+		{"AEGIS 팀 <team@crevasse.ai>", "AEGIS 팀 <team@crevasse.ai>", true},
+		{"team@crevasse.ai", "AEGIS 팀 <team@crevasse.ai>", true},
+		{"change-me@crevasse.ai", "", false},
+		{"other@crevasse.ai", "", false},
+		{"", "", false},
+		{"   ", "", false},
+		{"not an address", "", false},
+	} {
+		got, ok := matchFromAddress(tc.in, list)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("matchFromAddress(%q) = %q,%v want %q,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+	if _, ok := matchFromAddress("aegislab_us@crevasse.ai", nil); ok {
+		t.Fatal("empty list matches nothing")
+	}
+	if got := defaultFromFor("team@crevasse.ai", list); got != "AEGIS 팀 <team@crevasse.ai>" {
+		t.Fatal(got)
+	}
+	if got := defaultFromFor("listmonk <noreply@listmonk.yoursite.com>", list); got != list[0] {
+		t.Fatal(got)
+	}
+}
+
+func TestNormalizeFromAddresses(t *testing.T) {
+	got, err := normalizeFromAddresses([]string{
+		"  Aegislab_US@Crevasse.ai ", "aegislab_us@crevasse.ai", "AEGIS 팀 <Team@Crevasse.ai>",
+		`"Kim, Min" <kim@crevasse.ai>`, "AEGIS 팀 <team@crevasse.ai>",
+	})
+	want := []string{"aegislab_us@crevasse.ai", "AEGIS 팀 <team@crevasse.ai>", `"Kim, Min" <kim@crevasse.ai>`}
+	if err != nil || len(got) != len(want) {
+		t.Fatalf("%v %v", got, err)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("%d: %q != %q", i, got[i], want[i])
+		}
+	}
+	if got, err := normalizeFromAddresses(nil); err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("nil must become an empty list: %#v %v", got, err)
+	}
+	for _, bad := range []string{
+		"", "   ", "not an address", "change-me@crevasse.ai", "a@example.com", "noreply@listmonk.yoursite.com",
+		`"News Team"@example.org`, `"change-me"@crevasse.ai`, `X <"a b"@foo.example>`,
+		"a@foo.yoursite.com", "a@crevasse.ai\r\nBcc: x@y.z", "Team <a@crevasse.ai\n>", "a@foo.invalid",
+	} {
+		if _, err := normalizeFromAddresses([]string{"ok@crevasse.ai", bad}); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+	// A local part that needs quotes keeps them, so the entry is still a valid From.
+	got, err = normalizeFromAddresses([]string{`"two words"@crevasse.ai`, `Kim <"a b"@crevasse.ai>`})
+	if err != nil || len(got) != 2 || got[0] != `"two words"@crevasse.ai` || got[1] != `Kim <"a b"@crevasse.ai>` {
+		t.Fatalf("%q %v", got, err)
+	}
+	if a, ok := matchFromAddress(`"two words"@crevasse.ai`, got); !ok || a != got[0] {
+		t.Fatal(a, ok)
+	}
+	// A line break anywhere, also at either end, is refused rather than trimmed.
+	for _, bad := range []string{"a@crevasse.ai\n", "\na@crevasse.ai", "a@crevasse.ai\r\n"} {
+		if _, err := normalizeFromAddresses([]string{bad}); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+	// The settings normalizer applies it too.
+	set := models.Settings{AxmFromAddresses: []string{" A@crevasse.ai "}}
+	if err := normalizeSenderSettings(&set); err != nil || set.AxmFromAddresses[0] != "a@crevasse.ai" {
+		t.Fatal(set.AxmFromAddresses, err)
+	}
+	set = models.Settings{AxmFromAddresses: []string{"change-me@crevasse.ai"}}
+	if normalizeSenderSettings(&set) == nil {
+		t.Fatal("placeholder must be refused in settings")
+	}
+}
+
+func TestHasFromHeader(t *testing.T) {
+	for _, tc := range []struct {
+		h    []map[string]string
+		want bool
+	}{
+		{nil, false},
+		{[]map[string]string{{"X-Team": "a"}}, false},
+		{[]map[string]string{{"Reply-To": "a@crevasse.ai"}}, false},
+		{[]map[string]string{{"From": "a@crevasse.ai"}}, true},
+		{[]map[string]string{{"X-Team": "a"}, {" fRom ": "a@crevasse.ai"}}, true},
+	} {
+		if got := hasFromHeader(tc.h); got != tc.want {
+			t.Errorf("%v: %v", tc.h, got)
+		}
+	}
+}
+
+// The one reading of a From value against the list. The admin UI shows what
+// fromState says and never parses an address itself, so every odd notation that
+// ever cost a review round is pinned here (LST-49).
+var oddFromNotations = []string{
+	"team@crevasse.ai",
+	"  team@crevasse.ai  ",
+	"TEAM@Crevasse.AI",
+	"News <team@crevasse.ai>",
+	"News < team@crevasse.ai>",
+	"News <team@crevasse.ai> (Newsletter)",
+	"News <team@crevasse.ai> (Newsletter (Korea))",
+	`News <team@crevasse.ai> (Newsletter (Korea\)))`,
+	`News <team@crevasse.ai> (a \\) (b)`,
+	`"News <Korea>" <team@crevasse.ai>`,
+	`"News, Korea" <team@crevasse.ai>`,
+	"team@crevasse.ai (Newsletter)",
+}
+
+func TestFromStateOddNotations(t *testing.T) {
+	list := []string{"aegislab_us@crevasse.ai", "AEGIS 팀 <team@crevasse.ai>"}
+	for _, v := range oddFromNotations {
+		idx, ph := fromState(v, list, false)
+		if idx == nil || *idx != 1 || ph {
+			t.Errorf("%q: index %v placeholder %v, want 1 false", v, idx, ph)
+		}
+		if got := matchFromIndex(v, list); got != 1 {
+			t.Errorf("%q: matchFromIndex %d", v, got)
+		}
+	}
+	for _, v := range []string{"other@crevasse.ai", "News <other@crevasse.ai> (team@crevasse.ai)"} {
+		if idx, _ := fromState(v, list, false); idx != nil {
+			t.Errorf("%q must not match", v)
+		}
+	}
+	// No list, an empty From and account senders say nothing about the list.
+	if idx, ph := fromState("change-me@crevasse.ai", nil, false); idx != nil || !ph {
+		t.Fatal(idx, ph)
+	}
+	if idx, ph := fromState("change-me@crevasse.ai", list, false); idx != nil || !ph {
+		t.Fatal(idx, ph)
+	}
+	if idx, ph := fromState("change-me@crevasse.ai", list, true); idx != nil || ph {
+		t.Fatal(idx, ph)
+	}
+	if idx, ph := fromState("  ", list, false); idx != nil || ph {
+		t.Fatal(idx, ph)
+	}
+	if i := defaultFromIndex("TEAM@crevasse.ai", list); i != 1 {
+		t.Fatal(i)
+	}
+	if i := defaultFromIndex("listmonk <noreply@listmonk.yoursite.com>", list); i != 0 {
+		t.Fatal(i)
+	}
+	if i := defaultFromIndex("x@y.z", nil); i != -1 {
+		t.Fatal(i)
+	}
+}
+
+func TestFromListNameIsTrimmed(t *testing.T) {
+	got, err := normalizeFromAddresses([]string{`" Editorial " <Editorial@crevasse.ai>`, `"   " <blank@crevasse.ai>`})
+	if err != nil || len(got) != 2 || got[0] != "Editorial <editorial@crevasse.ai>" || got[1] != "blank@crevasse.ai" {
+		t.Fatalf("%q %v", got, err)
+	}
+	// A list saved before the trim still hands out entries without the space.
+	if got := defaultFromFor("x@y.z", []string{" Old <old@crevasse.ai>"}); got != "Old <old@crevasse.ai>" {
+		t.Fatal(got)
+	}
+}

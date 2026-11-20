@@ -87,7 +87,18 @@
                   <sender-address-input ref="replyTo" v-model="form.replyTo" :label="$t('campaigns.replyTo')"
                     :disabled="!canEdit" @addresses="onReplyAddresses" />
                 </template>
-                <b-field v-else :label="$t('campaigns.fromAddress')" label-position="on-border">
+                <b-notification v-if="!senderPolicyEnabled && fromWarning" type="is-warning" :closable="false"
+                  class="mb-4" data-cy="from-warning" role="alert">
+                  {{ fromWarning }}
+                </b-notification>
+                <b-field v-if="useFromSelect" :label="$t('campaigns.fromAddress')" label-position="on-border"
+                  :message="$t('campaigns.fromAddressListHelp')">
+                  <b-select v-model="fromSelected" name="from_email" :placeholder="$t('campaigns.fromAddressPick')"
+                    :disabled="!canEdit" required expanded data-cy="from-select">
+                    <option v-for="a in fromList" :value="a" :key="a">{{ a }}</option>
+                  </b-select>
+                </b-field>
+                <b-field v-else-if="!senderPolicyEnabled" :label="$t('campaigns.fromAddress')" label-position="on-border">
                   <b-input :maxlength="200" v-model="form.fromEmail" name="from_email" :disabled="!canEdit"
                     :placeholder="$t('campaigns.fromAddressPlaceholder')" required />
                 </b-field>
@@ -440,6 +451,7 @@ export default Vue.extend({
         name: '',
         subject: '',
         fromEmail: '',
+        fromChoice: null,
         replyTo: '',
         headersStr: '[]',
         headers: [],
@@ -471,6 +483,24 @@ export default Vue.extend({
   },
 
   methods: {
+    // The From a new campaign starts with, as the server decides it: with a
+    // From list the entry in serverConfig.from_default, else the app default.
+    defaultFrom() {
+      if (this.senderPolicyEnabled || this.fromList.length === 0) return this.serverConfig.from_email;
+      return this.fromList[this.serverConfig.from_default ?? 0];
+    },
+
+    // Remembers which list entry the From stands for (the server says: from_match).
+    chooseFrom(email) {
+      this.form.fromEmail = email;
+      this.form.fromChoice = this.fromList.includes(email) ? email : null;
+    },
+
+    // The list entry the server matched to a campaign's From, or null.
+    fromChoiceOf(d) {
+      return !this.senderPolicyEnabled && d.fromEntry ? d.fromEntry : null;
+    },
+
     onReplyAddresses() {
       if (this.$refs.replyTo?.allowed) this.replyError = '';
     },
@@ -640,6 +670,7 @@ export default Vue.extend({
             templateId: data.templateId,
           },
         };
+        this.form.fromChoice = this.fromChoiceOf(data);
         this.isAttachFieldVisible = this.form.media.length > 0;
 
         this.form.media = this.form.media.map((f) => {
@@ -811,6 +842,7 @@ export default Vue.extend({
         });
         this.data = d;
         this.form.fromEmail = d.fromEmail;
+        this.form.fromChoice = this.fromChoiceOf(d);
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
@@ -1048,6 +1080,27 @@ export default Vue.extend({
       return this.canShowRecentRule && this.recentRuleKey !== this.savedRecentRule;
     },
 
+    fromList() { return this.serverConfig.from_addresses || []; },
+    // The From list replaces free input only while it can be edited and the
+    // account-sender feature (which decides the From itself) is off.
+    useFromSelect() { return !this.senderPolicyEnabled && this.fromList.length > 0 && this.canEdit; },
+    fromSelected: {
+      get() { return this.form.fromChoice || null; },
+      set(v) { this.chooseFrom(v); },
+    },
+    // Warns about a saved From that the server did not match to the list (or,
+    // with no list, called a placeholder). Gone once another entry is picked.
+    fromWarning() {
+      const email = (this.data.fromEmail || '').trim();
+      if (!this.isEditing || !this.canEdit || !email || this.senderPolicyEnabled) return '';
+      if (this.fromList.length === 0) {
+        return this.data.fromPlaceholder && this.form.fromEmail === this.data.fromEmail
+          ? this.$t('campaigns.fromPlaceholderWarnFree', { email }) : '';
+      }
+      if (this.form.fromChoice) return '';
+      return this.$t(this.data.fromPlaceholder ? 'campaigns.fromPlaceholderWarn' : 'campaigns.fromNotInListWarn', { email });
+    },
+
     senderPolicyEnabled() { return (this.serverConfig.sender_domains || []).length > 0; },
 
     // The sample of the test box as the preview takes it, and its name for the preview header.
@@ -1162,11 +1215,23 @@ export default Vue.extend({
   mounted() {
     window.onbeforeunload = () => this.isUnsaved() || null;
 
-    // Refresh the server-computed sender after a profile change in this session.
-    if (this.senderPolicyEnabled) this.$api.getServerConfig();
-
+    // Refresh the server config: the computed sender may have changed with the
+    // profile, and another session may have replaced the From list since this
+    // page was loaded. A new campaign then takes the refreshed default.
     // Fill default form fields.
-    this.form.fromEmail = this.serverConfig.from_email;
+    this.chooseFrom(this.defaultFrom());
+    const initialFrom = this.form.fromEmail;
+
+    const cfgReady = this.$api.getServerConfig();
+    cfgReady.then(() => {
+      if (!this.isNew || this.senderPolicyEnabled) return;
+      // Replace a From that came from the old config: the untouched default,
+      // or one that the refreshed list no longer has.
+      if (this.form.fromEmail === initialFrom
+        || (this.fromList.length > 0 && !this.fromList.includes(this.form.fromEmail))) {
+        this.chooseFrom(this.defaultFrom());
+      }
+    });
     if (this.senderPolicyEnabled && !this.usesAccountFrom) this.form.replyTo = this.serverConfig.default_reply_to;
 
     // New campaign.

@@ -500,7 +500,7 @@ describe('Pre-send tracking check', () => {
     cy.get('@anyStatus.all').should('have.length', 0);
   });
 
-  it('warns when a replaced custom header is still sent', () => {
+  it('reads a replaced custom header as saving does: the old one is gone', () => {
     cy.request('PUT', `/api/campaigns/${ids.ok}`, {
       name: `Tracking ok ${stamp}`,
       subject: 'Headers',
@@ -516,16 +516,14 @@ describe('Pre-send tracking check', () => {
     open('ok');
     cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn');
     cy.intercept('POST', check).as('headers');
-    cy.intercept('PUT', `/api/campaigns/${ids.ok}/status`, { statusCode: 200, body: { data: {} } }).as('start');
+    cy.intercept('PUT', `/api/campaigns/${ids.ok}`).as('savePut');
     cy.get('textarea[name=headers]').clear().type('[{"X-Other": "1"}]', { parseSpecialCharSequences: false });
-    // The server keeps the old header beside the new one, and the box says so already.
+    // Saving keeps only the headers of the request, and the box says so already.
     cy.wait('@headers');
-    cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn');
-    cy.get('[data-cy=btn-start]').click();
-    // The check of the page reads the headers as saving would merge them.
-    cy.get('.modal.is-active [data-cy=warn-box]').should('contain', 'There is no view tracking.');
-    cy.get('.modal.is-active .modal-card-foot button:not(.is-primary)').click();
-    cy.request(`/api/campaigns/${ids.ok}`).its('body.data.headers').should('deep.equal', [{ 'X-No-Track': '1' }]);
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-ok');
+    cy.get('[data-cy=btn-save]').first().click();
+    cy.wait('@savePut').its('response.statusCode').should('eq', 200);
+    cy.request(`/api/campaigns/${ids.ok}`).its('body.data.headers').should('deep.equal', [{ 'X-Other': '1' }]);
   });
 
   it('warns on the campaigns list too, for start and for schedule', () => {
