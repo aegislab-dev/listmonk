@@ -338,6 +338,21 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	if len(a.cfg.SenderDomains) > 0 && camp.Status == models.CampaignStatusDraft {
 		from = resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
 	}
+	// As UpdateCampaignStatus (LST-45): without account senders, a draft starts only with a
+	// From that the From list (or, with no list, the placeholder rule) allows, and one that
+	// matches the list in another spelling (another display name) is sent in the list's
+	// spelling. Show that one (LST-48 review: the window showed "North Desk", the mail went
+	// out as the list's "South Desk").
+	fromRefused := ""
+	if len(a.cfg.SenderDomains) == 0 && camp.Status == models.CampaignStatusDraft {
+		if len(a.cfg.FromAddresses) > 0 && hasFromHeader(camp.Headers) {
+			fromRefused = a.i18n.T("campaigns.fromHeaderNotAllowed")
+		} else if ok, err := a.checkFromAllowed(strings.TrimSpace(camp.FromEmail), a.cfg.FromAddresses); err != nil {
+			fromRefused = err.Error()
+		} else if ok != "" {
+			from = ok
+		}
+	}
 
 	// What the recipients will see, with the custom headers applied.
 	// The SMTP servers of the messenger set headers too, before the campaign's own.
@@ -399,15 +414,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		facts.Copies = append(facts.Copies, c.Address)
 	}
 	facts.CopiesPerSubscriber = perSubscriber
-	// As UpdateCampaignStatus (LST-45): without account senders, a draft starts only with a
-	// From that the From list (or, with no list, the placeholder rule) allows.
-	if len(a.cfg.SenderDomains) == 0 && camp.Status == models.CampaignStatusDraft {
-		if len(a.cfg.FromAddresses) > 0 && hasFromHeader(camp.Headers) {
-			facts.FromRefused = a.i18n.T("campaigns.fromHeaderNotAllowed")
-		} else if _, err := a.checkFromAllowed(strings.TrimSpace(camp.FromEmail), a.cfg.FromAddresses); err != nil {
-			facts.FromRefused = err.Error()
-		}
-	}
+	facts.FromRefused = fromRefused
 	// Whether the e-mail that is rendered has the link to leave, as every recipient gets it.
 	facts.Unsubscribe, facts.UnsubscribeKnown = unsubscribeInAll(statuses, func(status string) (bool, error) {
 		return a.manager.HasUnsubscribeLink(&sendCamp, dummySubscriber, status)

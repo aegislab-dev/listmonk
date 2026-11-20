@@ -989,3 +989,42 @@ func TestCampaignStatusSendTimePassed(t *testing.T) {
 		t.Fatalf("ahead: %v %s", err, status())
 	}
 }
+
+// A draft whose From matches the team's From list in another spelling starts with the list's
+// spelling (LST-45); the window shows that one, and a subject that prints the sender too
+// (LST-48 review: the window said "North Desk", the mail came from "South Desk").
+func TestCampaignPreflightFromListSpelling(t *testing.T) {
+	e := newPreflightApp(t)
+	member := e.as(e.ua)
+	e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	e.a.cfg.FromAddresses = []string{"South Desk <press@crevasse.ai>"}
+	defer func() { e.a.cfg.FromAddresses = nil }()
+	e.db.MustExec(`UPDATE campaigns SET from_email='North Desk <press@crevasse.ai>', subject='From {{ .Campaign.FromEmail }}' WHERE id=$1`, e.campID)
+	code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", strconv.Itoa(e.campID), "")
+	var o struct {
+		From    string                  `json:"from_email"`
+		Subject string                  `json:"subject"`
+		Checks  []models.PreflightCheck `json:"checks"`
+	}
+	if code != http.StatusOK || json.Unmarshal(data, &o) != nil || o.From != "South Desk <press@crevasse.ai>" || o.Subject != "From South Desk <press@crevasse.ai>" {
+		t.Fatalf("list spelling: %d %s", code, data)
+	}
+	for _, c := range o.Checks {
+		if c.Key == "from.refused" {
+			t.Fatalf("refused: %s", data)
+		}
+	}
+	// Not on the list: refused, as the status change refuses it.
+	e.db.MustExec(`UPDATE campaigns SET from_email='Other <other@crevasse.ai>' WHERE id=$1`, e.campID)
+	_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", strconv.Itoa(e.campID), "")
+	o.Checks = nil
+	found := false
+	if json.Unmarshal(data, &o) == nil {
+		for _, c := range o.Checks {
+			found = found || (c.Key == "from.refused" && c.Level == "block")
+		}
+	}
+	if !found {
+		t.Fatalf("not on the list: %s", data)
+	}
+}

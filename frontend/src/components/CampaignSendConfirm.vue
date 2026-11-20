@@ -174,13 +174,21 @@ import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 // What a reading of the checks shows, to tell whether a new reading differs from the one on
 // screen. Not the times of the reading itself, nor the passed send time that the window adds
 // on its own a few seconds early.
-const fingerprint = (pf) => JSON.stringify([
-  pf.mode, pf.sendAt, pf.sendTz, pf.subject, pf.subjectNote, pf.fromEmail, pf.replyTo, pf.senderPerSubscriber,
-  pf.copies, pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.count, l.deleted]),
-  (pf.checks || []).filter((c) => c.key !== 'schedule.past').map((c) => [c.key, c.level, c.params]),
-  pf.tracking ? [pf.tracking.state, pf.tracking.view, pf.tracking.links && pf.tracking.links.untracked] : null,
-  pf.trackingError || '',
-]);
+// An envelope that varies between mails (a subject with the campaign's change time, Date) is
+// rendered anew at each reading: its values are not compared, only that it varies (LST-48
+// review: a subject with {{ .Campaign.UpdatedAt }} differed at every reading and never sent).
+const fingerprint = (pf) => {
+  const varies = pf.subjectNote === 'varies';
+  return JSON.stringify([
+    pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, pf.senderPerSubscriber,
+    varies ? null : [pf.subject, pf.fromEmail, pf.replyTo, pf.copies],
+    pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.count, l.deleted]),
+    (pf.checks || []).filter((c) => c.key !== 'schedule.past')
+      .map((c) => [c.key, c.level, varies && c.key === 'mail.copies' ? null : c.params]),
+    pf.tracking ? [pf.tracking.state, pf.tracking.view, pf.tracking.links && pf.tracking.links.untracked] : null,
+    pf.trackingError || '',
+  ]);
+};
 
 // Seconds before the send time that the window already says it has passed.
 const PAST_MARGIN = 3000;
@@ -290,6 +298,16 @@ export default Vue.extend({
       }[note] || '';
     },
 
+    // What else tells a row's state besides its text: the notes under it.
+    rowKeys() {
+      if (!this.pf) return {};
+      return {
+        subject: this.pf.subjectNote || '',
+        from: this.pf.senderPerSubscriber ? 'perSubscriber' : '',
+        when: this.pf.sendTz || '',
+      };
+    },
+
     // The count before the change, shown next to the total. With one list that kept its
     // place, the list's own "before" already says it.
     totalWas() {
@@ -326,9 +344,11 @@ export default Vue.extend({
   methods: {
     // Whether a row other than the campaign and its recipients is shown: always, except in the
     // window read again after a change, where only a row that changed is (approved design A7).
+    // A row changed when its text or its note did (LST-48 review: a fixed From that became one
+    // taken from each subscriber, with the same example address, hid the row and its note).
     shows(row) {
       if (!this.stale || !this.prev || !this.rowTexts) return true;
-      return this.prev[row] !== this.rowTexts[row];
+      return this.prev[row] !== this.rowTexts[row] || (this.prev.keys || {})[row] !== this.rowKeys[row];
     },
 
     // The count a list had before the campaign changed under the window, if it is another now.
@@ -398,6 +418,7 @@ export default Vue.extend({
     rememberShown(why) {
       this.prev = {
         ...this.rowTexts,
+        keys: { ...this.rowKeys },
         count: this.model.count,
         lists: Object.fromEntries(this.pf.lists.map((l) => [`${l.id}`, l.count])),
       };
@@ -428,8 +449,21 @@ export default Vue.extend({
         // shared template edited elsewhere, a list that grew), which the server's updated_at
         // check does not see. Anything shown that differs is shown again first (LST-48 review).
         if (!blind) {
-          const fresh = await this.$api.getCampaignPreflight(this.campaignId).catch(() => null);
-          if (fresh && fingerprint(fresh) !== fingerprint(this.pf)) {
+          let fresh;
+          try {
+            fresh = await this.$api.getCampaignPreflight(this.campaignId);
+          } catch (err) {
+            // It could not be read again: what the window shows may be out of date. Say so, as
+            // when the checks cannot be loaded (approved design A6): try again, or go on
+            // knowingly without the checks (LST-48 review: it sent on the old reading).
+            this.pf = null;
+            this.stale = false;
+            this.prev = null;
+            this.state = 'error';
+            this.error = (err.response && err.response.data && err.response.data.message) || '';
+            return;
+          }
+          if (fingerprint(fresh) !== fingerprint(this.pf)) {
             this.showChanged(fresh, fresh.updatedAt !== this.pf.updatedAt ? 'campaign' : 'checks');
             return;
           }

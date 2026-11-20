@@ -486,6 +486,60 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-cancel]').click();
   });
 
+  it('sends at once a subject with the change time, which is rendered anew at each reading', () => {
+    cy.then(() => create('stamped', { lists: [listX], subject: 'Issue {{ .Campaign.UpdatedAt }}' }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath, { statusCode: 200, body: { data: { status: 'running' } } }).as('status');
+    row('stamped').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-subject-rendered]').should('have.attr', 'data-note', 'varies');
+    cy.get('[data-cy=send-ok]').click();
+    // The reading before sending renders another subject, but that is not a change.
+    cy.wait('@status').its('request.body.status').should('eq', 'running');
+    cy.get(win).should('not.exist');
+  });
+
+  it('shows the From row again when it comes to be taken from each subscriber', () => {
+    cy.then(() => create('fromsub', { lists: [listX], headers: [{ From: 'Desk <desk@crevasse.ai>' }] }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('fromsub').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-from-per-subscriber]').should('not.exist');
+    // The same address for the example subscriber, but each person's owner for the others.
+    cy.then(() => cy.request(`/api/campaigns/${camp.fromsub}`).then(({ body }) => {
+      const c = body.data;
+      cy.request('PUT', `/api/campaigns/${camp.fromsub}`, {
+        name: c.name, subject: c.subject, type: 'regular', messenger: 'email', lists: [listX], content_type: c.content_type, body: c.body,
+        headers: [{ From: '{{ with .Subscriber.Attribs.owner }}{{ . }}{{ else }}Desk <desk@crevasse.ai>{{ end }}' }],
+      });
+    }));
+    cy.get('[data-cy=send-ok]').click();
+    ready();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy=send-from]').should('be.visible');
+    cy.get('[data-cy=send-from-per-subscriber]').should('be.visible');
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
+  it('does not send when the checks cannot be read again before sending', () => {
+    cy.then(() => create('reread', { lists: [listX] }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('reread').find('[data-cy=btn-start]').click();
+    ready();
+    cy.intercept('GET', preflight, { statusCode: 503, body: { message: 'Service unavailable' } }).as('pfDown');
+    cy.get('[data-cy=send-ok]').click();
+    cy.wait('@pfDown');
+    // As when the checks cannot be loaded (A6): try again, or go on knowingly without them.
+    cy.get(`${win}[data-state=error]`).should('exist');
+    cy.get('[data-cy=send-retry]').should('be.visible');
+    cy.get('[data-cy=send-ok]').should('contain', 'Go on without the count');
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
   it('keeps time by the server clock when the browser clock is behind', () => {
     // The server says it is 2 minutes later than this browser thinks: its send time 60 s
     // from the browser's now has passed already.
