@@ -869,3 +869,58 @@ func TestFollowupPostponedWhileCheckWaitsKeepsItsList(t *testing.T) {
 		t.Fatalf("status %s", st)
 	}
 }
+
+// The same, when the sender waits on a list row and the new schedule is saved in the meantime.
+func TestFollowupPostponedWhileCheckDeletesKeepsItsList(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[2])
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
+	tx, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`SELECT 1 FROM subscriber_lists WHERE subscriber_id = $1 AND list_id = $2 FOR UPDATE`, e.ids[2], got.List.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := e.store.NextCampaigns([]int64{}); done <- err }()
+	time.Sleep(time.Second)
+	e.db.MustExec(`UPDATE campaigns SET send_at = NOW() + INTERVAL '1 hour' WHERE id = $1`, got.Followup.ID)
+	tx.Rollback()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "members", e.members(got.List.ID), []int{e.ids[2], e.ids[3]})
+}
+
+// A person who unsubscribes from the follow-up list while the check waits for that row keeps
+// the unsubscribe record.
+func TestFollowupUnsubscribeDuringCheckIsKept(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	charlie := e.ids[2]
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	tx, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, charlie, got.List.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := e.store.NextCampaigns([]int64{}); done <- err }()
+	time.Sleep(time.Second)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var st string
+	e.get(&st, `SELECT COALESCE((SELECT status::TEXT FROM subscriber_lists WHERE subscriber_id = $1 AND list_id = $2), 'gone')`, charlie, got.List.ID)
+	if st != "unsubscribed" {
+		t.Fatalf("the unsubscribe record is %s", st)
+	}
+}

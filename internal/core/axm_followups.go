@@ -195,17 +195,6 @@ func (c *Core) recheck(ctx context.Context, rows []followupDue) (done, finished 
 		if err != nil {
 			return done, finished, err
 		}
-		// The campaign is locked while it is still due: a schedule moved to a later time while
-		// this check waited must not have its list cut by a check made for the earlier time.
-		var locked int
-		if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &locked, f.CampaignID); err != nil {
-			tx.Rollback()
-			if errors.Is(err, sql.ErrNoRows) {
-				done = append(done, f.CampaignID)
-				continue
-			}
-			return done, finished, err
-		}
 		var gone models.FollowupPending
 		if len(f.ListIDs) > 0 {
 			args := []any{f.ParentID, s.Open, s.Click, pq.Array([]int(nil)), true, f.ListIDs, f.CampaignID}
@@ -217,6 +206,17 @@ func (c *Core) recheck(ctx context.Context, rows []followupDue) (done, finished 
 				tx.Rollback()
 				return done, finished, err
 			}
+		}
+		// Last, with the campaign locked: if the schedule was moved to a later time while this
+		// ran, the check was made for a time that no longer applies. Undo all of it.
+		var locked int
+		if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &locked, f.CampaignID); err != nil {
+			tx.Rollback()
+			if errors.Is(err, sql.ErrNoRows) {
+				done = append(done, f.CampaignID)
+				continue
+			}
+			return done, finished, err
 		}
 		// Nobody left: the campaign ends here instead of waiting for someone to be added.
 		var ended int

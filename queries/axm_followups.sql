@@ -87,6 +87,8 @@ RETURNING id;
 gone AS (
     DELETE FROM subscriber_lists sl USING verdict v
     WHERE sl.list_id = ANY($6::INT[]) AND sl.subscriber_id = v.subscriber_id AND v.reason <> 0
+        -- Checked again on the row itself: a person who unsubscribed while this waited for the row keeps that record.
+        AND sl.status != 'unsubscribed'
     RETURNING v.reason
 )
 SELECT COUNT(*) FILTER (WHERE reason = -1) AS reacted,
