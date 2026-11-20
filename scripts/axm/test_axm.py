@@ -429,6 +429,17 @@ class Round6Test(unittest.TestCase):
         r = axm.build_result(T(), [(1, 'RUN', 0.1, 0.0)], 0, 1.0, None)
         self.assertEqual((r['cpu'], r['cached']), (0.0, 1))
 
+    def test_build_cpu_comes_from_the_build_slice(self):
+        # 짧은 RUN 컨테이너는 폴링이 놓친다 → 빌드 컨테이너를 모은 slice 의 누적값을 쓴다.
+        class T:
+            steps = {1: dict(cmd='RUN chmod', ids=['abc'], cached=False)}
+            cpu = {}
+        r = axm.build_result(T(), [(1, 'RUN', 0.2, 0.0)], 0, 1.0, None, slice_cpu=0.8)
+        self.assertEqual(r['cpu'], 0.8)
+        text = (HERE / 'axm').read_text().split('def docker_build')[1].split('def build_result')[0]
+        self.assertIn("'--cgroup-parent'", text)
+        self.assertEqual(axm.slice_path('axm-x.slice').name, 'axm-x.slice')
+
     def test_build_tracker_reads_cache_lines(self):
         tr = axm.BuildTracker()
         for line in ['Step 1/3 : FROM alpine', ' ---> 1234', 'Step 2/3 : RUN apk add x', ' ---> Using cache',
