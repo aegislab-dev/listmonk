@@ -383,22 +383,62 @@ class RouteCoverageTest(unittest.TestCase):
     def _visits(spec):
         text = (ROOT / 'frontend/cypress/e2e' / spec).read_text()
         out = set(re.findall(r"(?:visit|loginAndVisit)\(\s*[`'\"]([^`'\"]*)", text))
+        # 클릭으로 옮겨 간 화면도 방문이다: cy.location('pathname').should('eq', '/admin/…')
+        out |= set(re.findall(r"location\(\s*'pathname'\s*\)\.should\(\s*'eq',\s*[`'\"]([^`'\"]*)", text))
         out |= {x.split('next=')[1] for x in out if 'next=' in x}
-        return {x.split('?')[0] for x in out}
+        return {x.split('?')[0].split('#')[0] for x in out}
 
     def _visitors(self, pattern):
         rx = re.compile(pattern)
         return {s for s in TMAP['ci_specs'] if any(rx.match(v) for v in self._visits(s))}
+
+    @staticmethod
+    def _api_calls(spec, base):
+        """spec 이 cy.request·cy.intercept 로 부르는 base 아래 API 경로(메서드 포함 원문)."""
+        text = (ROOT / 'frontend/cypress/e2e' / spec).read_text()
+        rx = (r"\b(?:request|intercept)\(\s*(?:\{[^}]*?url:\s*)?(?:'[A-Z]+',\s*)?[`'\"]"
+              r"(?:\$\{[^}]*\})?(" + re.escape(base) + r"[^`'\"]*)")
+        calls = []
+        for m in re.finditer(rx, text):
+            fixture = re.match(r"(?:request|intercept)\(\s*'POST',\s*[`'\"]" + re.escape(base) + "[`'\"]", m.group(0) + "'")
+            calls.append(('create' if fixture else '') + m.group(1))
+        return calls
 
     def test_subscribers_screens_select_exactly_the_specs_that_visit_them(self):
         want = self._visitors(r'^/admin/subscribers(?!/import)')
         for f in ('Subscribers.vue', 'SubscriberBulkList.vue', 'SubscriberForm.vue'):
             self.assertEqual(set(pick('frontend/src/views/' + f)['specs']), want, f)
 
-    def test_campaign_editor_selects_every_spec_that_opens_it(self):
-        want = self._visitors(r'^/admin/campaigns/(?!analytics)')
-        self.assertLessEqual(want, set(pick('frontend/src/views/Campaign.vue')['specs']))
-        self.assertIn('dynamic-lists.cy.js', pick('frontend/src/views/Campaign.vue')['specs'])
+    def test_campaign_editor_selects_exactly_the_specs_that_open_it(self):
+        want = self._visitors(r'^/admin/campaigns/(?!analytics|media|templates)')
+        self.assertEqual(set(pick('frontend/src/views/Campaign.vue')['specs']), want)
+        self.assertIn('dynamic-lists.cy.js', want)
+
+    def test_campaign_list_selects_exactly_the_specs_that_open_it(self):
+        # 리뷰 F24: Campaigns.vue(/admin/campaigns)만 바꿨는데 /admin/campaigns/new 만 여는 dynamic-lists 가 끌려왔다.
+        want = self._visitors(r'^/admin/campaigns$')
+        self.assertEqual(set(pick('frontend/src/views/Campaigns.vue')['specs']), want)
+        self.assertNotIn('dynamic-lists.cy.js', want)
+
+    def test_subscriber_api_selects_every_spec_that_uses_it_beyond_fixtures(self):
+        # 리뷰 F23: cmd/subscribers.go 의 일괄 구독 해지 감사 인원을 검증하는 address-check 가 빠졌다.
+        # 기준: 화면 방문 spec + /api/subscribers 를 만들기(POST 픽스처) 말고도 부르는 spec.
+        # 다른 파일의 경로(address-check → axm_address_check.go, bounces → bounces.go)는 뺀다.
+        def uses(spec):
+            return any(not c.startswith('create') and '/address-check' not in c and '/bounces' not in c
+                       for c in self._api_calls(spec, '/api/subscribers'))
+        want = self._visitors(r'^/admin/subscribers(?!/import)') | {s for s in TMAP['ci_specs'] if uses(s)}
+        self.assertIn('address-check.cy.js', want)
+        for f in ('cmd/subscribers.go', 'internal/core/subscribers.go'):
+            self.assertEqual(set(pick(f)['specs']), want, f)
+
+    def test_campaign_api_selects_every_spec_that_uses_it(self):
+        # 같은 기준: 캠페인 API 를 부르는 spec + 캠페인 데이터를 불러오는 화면(목록, /admin/campaigns/<id>)을 여는 spec.
+        # /admin/campaigns/new 는 캠페인 API 를 부르지 않는다(목록 선택만 보는 dynamic-lists 는 빠진다).
+        want = self._visitors(r'^/admin/campaigns(?:$|/(?!new$|analytics|media|templates))')
+        want |= {s for s in TMAP['ci_specs'] if self._api_calls(s, '/api/campaigns')}
+        for f in ('cmd/campaigns.go', 'internal/core/campaigns.go'):
+            self.assertEqual(set(pick(f)['specs']), want, f)
 
     def test_import_specs_are_not_pulled_in_by_subscriber_modals(self):
         self.assertNotIn('import-mapping.cy.js', pick('frontend/src/views/SubscriberBulkList.vue')['specs'])

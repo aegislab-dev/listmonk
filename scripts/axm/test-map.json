@@ -76,11 +76,7 @@
   },
   {
    "paths": [
-    "frontend/src/views/Campaign.vue",
-    "frontend/src/views/Campaigns.vue",
-    "cmd/campaigns.go",
-    "internal/core/campaigns.go",
-    "internal/core/campaigns.go"
+    "frontend/src/views/Campaign.vue"
    ],
    "specs": [
     "sender-addresses.cy.js",
@@ -89,6 +85,33 @@
     "campaign-tracking-check.cy.js",
     "reaction-lists.cy.js",
     "dynamic-lists.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/Campaigns.vue"
+   ],
+   "specs": [
+    "sender-addresses.cy.js",
+    "campaign-recent-exclude.cy.js",
+    "address-check.cy.js",
+    "campaign-tracking-check.cy.js",
+    "reaction-lists.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "cmd/campaigns.go",
+    "internal/core/campaigns.go"
+   ],
+   "specs": [
+    "sender-addresses.cy.js",
+    "campaign-recent-exclude.cy.js",
+    "address-check.cy.js",
+    "campaign-tracking-check.cy.js",
+    "reaction-lists.cy.js",
+    "analytics-proof.cy.js",
+    "list-trash.cy.js"
    ]
   },
   {
@@ -155,7 +178,17 @@
     "frontend/src/subscriber-columns.js",
     "frontend/src/views/Subscribers.vue",
     "frontend/src/views/SubscriberBulkList.vue",
-    "frontend/src/views/SubscriberForm.vue",
+    "frontend/src/views/SubscriberForm.vue"
+   ],
+   "specs": [
+    "subscriber-columns.cy.js",
+    "list-teams.cy.js",
+    "column-presets.cy.js",
+    "dynamic-lists.cy.js"
+   ]
+  },
+  {
+   "paths": [
     "cmd/subscribers.go",
     "internal/core/subscribers.go"
    ],
@@ -163,7 +196,11 @@
     "subscriber-columns.cy.js",
     "list-teams.cy.js",
     "column-presets.cy.js",
-    "dynamic-lists.cy.js"
+    "dynamic-lists.cy.js",
+    "address-check.cy.js",
+    "audit.cy.js",
+    "import-mapping.cy.js",
+    "list-trash.cy.js"
    ]
   },
   {
