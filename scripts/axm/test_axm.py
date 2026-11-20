@@ -144,11 +144,10 @@ class SelectGoTest(unittest.TestCase):
 
 class MapIntegrityTest(unittest.TestCase):
     def test_ci_specs_match_workflow(self):
-        wf = (ROOT / axm.CI_WORKFLOW).read_text()
-        m = re.search(r"--spec '([^']+)'", wf)
-        self.assertIsNotNone(m, '워크플로에서 --spec 줄을 못 찾았다')
-        ci = [s.split('/')[-1] for s in m.group(1).split(',')]
-        self.assertEqual(ci, TMAP['map_ci_specs'], 'test-map.json 의 ci_specs 가 axm-image.yml 의 --spec 과 다르다')
+        # 워크플로의 `cypress run` 명령 전부(두 번째 명령 포함)를 읽는다.
+        ci = axm.workflow_specs()
+        self.assertTrue(ci, '워크플로에서 cypress run 명령을 못 찾았다')
+        self.assertEqual(ci, TMAP['map_ci_specs'], 'test-map.json 의 ci_specs 가 axm-image.yml 의 cypress run 들과 다르다')
 
     def test_all_spec_files_exist(self):
         for s in TMAP['ci_specs']:
@@ -627,6 +626,56 @@ class Round7Test(unittest.TestCase):
         self.assertEqual(axm.deferred_record(st, ['audit.cy.js'], ['dynamic-lists.cy.js'], True),
                          ['dynamic-lists.cy.js', 'list-draw.cy.js'])
         self.assertEqual(axm.deferred_record(st, ['audit.cy.js'], [], False), ['list-draw.cy.js', 'audit.cy.js'])
+
+
+class Round8Test(unittest.TestCase):
+    """리뷰 8차 지적 회귀 시험."""
+
+    def test_workflow_reads_every_cypress_command(self):
+        wf = (ROOT / axm.CI_WORKFLOW).read_text()
+        line = re.search(r"^( *)npx cypress run[^\n]*\n", wf, re.M)
+        extra = line.group(0) + line.group(1) + "npx cypress run --browser chrome --spec 'cypress/e2e/campaign-extra.cy.js'\n"
+        specs = axm.workflow_specs(wf.replace(line.group(0), extra))
+        self.assertEqual(specs, TMAP['map_ci_specs'] + ['campaign-extra.cy.js'])
+        # 맵이 그 spec 을 모르면 뒤처진 맵으로 잡히고, 그 spec 파일 변경은 고른다.
+        raw = json.loads((HERE / 'test-map.json').read_text())
+        stale = axm.reconcile_ci(raw, specs)
+        self.assertEqual(stale['stale_ci'], ['campaign-extra.cy.js'])
+
+    def test_workflow_parser_forms(self):
+        t = '''
+          npx cypress run --spec "cypress/e2e/a.cy.js,cypress/e2e/b.cy.js"
+          npx cypress run --browser chrome \\
+            --spec=cypress/e2e/c.cy.js
+          npx cypress run --spec 'cypress/e2e/audit*.cy.js'
+        '''
+        self.assertEqual(axm.workflow_specs(t), ['a.cy.js', 'b.cy.js', 'c.cy.js', 'audit.cy.js'])
+        everything = sorted(p.name for p in (ROOT / 'frontend/cypress/e2e').glob('*.cy.js'))
+        self.assertEqual(axm.workflow_specs('run: npx cypress run --browser chrome'), everything)
+        self.assertIsNone(axm.workflow_specs('no cypress here'))
+
+    def test_renamed_ci_spec_is_selected_and_counted_as_failed(self):
+        # 리뷰 재현 1: CI 목록의 spec 파일 이름을 바꾸면(원래 이름 파일 없음) 그 spec 을 고르고, 결과가 없어 실패다.
+        raw = json.loads((HERE / 'test-map.json').read_text())
+        raw = axm.reconcile_ci(raw, axm.workflow_specs())
+        raw['ci_specs'] = raw['ci_specs'] + ['gone-renamed.cy.js']
+        r = axm.affected(['frontend/cypress/e2e/renamed.cy.js'], FILES, raw)
+        self.assertIn('gone-renamed.cy.js', r['specs'])
+        self.assertTrue(r['python'])
+        self.assertTrue(any('파일이 없다' in n for n in r['notes']))
+        # 줄여도 빠지지 않는다.
+        r = axm.affected(['cmd/campaigns.go', 'cmd/subscribers.go', 'frontend/src/views/ListForm.vue'], FILES, raw)
+        self.assertIn('gone-renamed.cy.js', r['specs'])
+
+    def test_spec_without_a_result_row_is_failed(self):
+        # 리뷰 재현 2: 2개를 골랐는데 Cypress 가 1개만 돌고 0 으로 끝나도 통과가 아니다.
+        ok, passed, failed = axm.judge_e2e(['audit.cy.js', 'campaign-test-send.cy.js'], True, ['audit.cy.js'], [])
+        self.assertEqual((ok, passed, failed), (False, ['audit.cy.js'], ['campaign-test-send.cy.js']))
+        ok, passed, failed = axm.judge_e2e(['audit.cy.js'], True, ['audit.cy.js'], [])
+        self.assertTrue(ok)
+        # 통과 기록의 ran_specs 는 실제로 통과한 spec 이다.
+        text = (HERE / 'axm').read_text().split('def cmd_check')[1].split('def failure_record')[0]
+        self.assertIn('ran_specs=ran_specs', text)
 
 
 if __name__ == '__main__':

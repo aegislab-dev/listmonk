@@ -818,13 +818,29 @@ class Pg:
 
 # ---------------------------------------------------------------- 바뀐 파일 → 시험
 
-def workflow_specs():
-    """CI(axm-image.yml)가 실제로 돌리는 spec 목록(순서 그대로). 못 읽으면 None."""
-    try:
-        m = re.search(r"--spec '([^']+)'", (ROOT / CI_WORKFLOW).read_text())
-    except OSError:
-        return None
-    return [x.split('/')[-1] for x in m.group(1).split(',')] if m else None
+def workflow_specs(text=None):
+    """CI(axm-image.yml)가 실제로 돌리는 spec 목록(처음 나온 순서). 못 읽으면 None.
+    `cypress run` 명령을 모두 읽는다(두 번째 명령에 넣은 spec 도). 줄 이음(\\)을 잇고, --spec 의 따옴표·=·글롭을
+    처리한다. --spec 없는 `cypress run` 은 e2e 폴더의 spec 전부를 돈다."""
+    if text is None:
+        try:
+            text = (ROOT / CI_WORKFLOW).read_text()
+        except OSError:
+            return None
+    text = re.sub(r'\\\s*\n\s*', ' ', text)
+    every = sorted(p.name for p in (ROOT / 'frontend/cypress/e2e').glob('*.cy.js'))
+    out, found = [], False
+    for line in text.splitlines():
+        if not re.search(r'\bcypress\s+run\b', line):
+            continue
+        found = True
+        m = re.search(r"""--spec(?:\s+|=)(?:'([^']*)'|"([^"]*)"|(\S+))""", line)
+        pats = [x.strip() for x in (m.group(1) or m.group(2) or m.group(3)).split(',')] if m else ['cypress/e2e/*.cy.js']
+        for pat in pats:
+            base = pat.split('/')[-1]
+            names = [n for n in every if fnmatch.fnmatchcase(n, base)] if any(c in base for c in '*?[') else [base]
+            out += [n for n in names if n and n not in out]
+    return out if found else None
 
 
 def load_map():
@@ -1053,6 +1069,13 @@ def affected(changed, files, tmap=None):
     fixture_dir = 'frontend/cypress/fixtures/'
     own_specs = []  # 내용이 바뀐 spec 파일 자체
     ext = unit_external_inputs()
+    # CI 가 돌리는 spec 의 파일이 없으면(이름을 바꾸거나 지움) CI 가 그 시험을 못 돈다. 골라서 실패로 드러낸다.
+    missing_ci = [x for x in tmap['ci_specs'] if not (ROOT / spec_dir / x).is_file()]
+    if missing_ci:
+        specs += missing_ci
+        own_specs += missing_ci  # 줄여도 빼지 않는다
+        notes.append('CI(axm-image.yml)가 돌리는 spec 의 파일이 없다: ' + ', '.join(missing_ci)
+                     + ' — 워크플로·test-map.json 의 이름을 같이 고쳐라. 이 spec 은 실패로 센다.')
     for f in changed:
         if match_any(f, tmap['none']):
             continue
@@ -1108,7 +1131,7 @@ def affected(changed, files, tmap=None):
     if deferred:
         notes.append(f'고른 spec 이 CI 의 spec 전부({len(tmap["ci_specs"])}개)라 로컬에서는 smoke 묶음과 바뀐 spec 만 돈다. '
                      f'나머지 {len(deferred)}개는 PR 의 CI(axm-image)가 판정한다: ' + ', '.join(deferred))
-    py = any(f.startswith('scripts/axm/') or f == CI_WORKFLOW for f in changed)
+    py = any(f.startswith('scripts/axm/') or f == CI_WORKFLOW for f in changed) or bool(missing_ci)
     if tmap.get('stale_ci'):
         py = True  # 맵 시험(test_ci_specs_match_workflow)이 실패해 검사가 통과로 기록되지 않는다
         notes.append('test-map.json 의 ci_specs 가 CI(axm-image.yml)와 다르다: ' + ', '.join(tmap['stale_ci'])
@@ -1388,14 +1411,32 @@ def start_app(ctx, steps, image, pg):
 
 
 def e2e(ctx, steps, specs, image, pg, profile=False, browser='electron', extra_env=None, extra_dargs=None):
-    """시험 이미지로 새 DB 설치 → 앱 기동 → Cypress. 끝나면 성공·실패와 무관하게 앱을 내린다."""
+    """시험 이미지로 새 DB 설치 → 앱 기동 → Cypress. 끝나면 성공·실패와 무관하게 앱을 내린다.
+    고른 spec 마다 결과 줄이 있어야 통과다: 파일이 없거나(이름을 바꾼 CI spec) 결과 줄이 없는 spec 은 실패로 센다."""
     if not specs:
         return True, [], []
-    app = start_app(ctx, steps, image, pg)
-    try:
-        return _e2e_run(ctx, steps, specs, app, profile, browser, extra_env, extra_dargs)
-    finally:
-        docker('rm', '-f', app, check=False)
+    present = [x for x in specs if (ROOT / 'frontend/cypress/e2e' / x).is_file()]
+    absent = [x for x in specs if x not in present]
+    if absent:
+        say('파일이 없는 spec(실행할 수 없음 → 실패): ' + ', '.join(absent))
+    ok, passed, failed = True, [], []
+    if present:
+        app = start_app(ctx, steps, image, pg)
+        try:
+            ok, passed, failed = _e2e_run(ctx, steps, present, app, profile, browser, extra_env, extra_dargs)
+        finally:
+            docker('rm', '-f', app, check=False)
+    return judge_e2e(specs, ok, passed, failed)
+
+
+def judge_e2e(specs, ok, passed, failed):
+    """Cypress 의 종료 코드만 믿지 않는다. 고른 spec 중 통과 줄이 없는 것은 실패다(실행되지 않은 시험을 통과로 적지 않는다)."""
+    passed = [x for x in passed if x in specs]
+    unrun = [x for x in specs if x not in passed and x not in failed]
+    if unrun:
+        say('결과가 없는 spec(실행되지 않음 → 실패): ' + ', '.join(unrun))
+    failed = [x for x in specs if x in set(failed) | set(unrun)]
+    return ok and not failed, passed, failed
 
 
 def _e2e_run(ctx, steps, specs, app, profile, browser, extra_env, extra_dargs):
@@ -1602,6 +1643,7 @@ def cmd_check(a):
         say('주의: ' + n)
     failed_specs, failed_go = [], {}
     go_ran = e2e_ran = False
+    ran_specs = []
     ok = True
     pg = Pg(ctx)
     t_all = time.time()
@@ -1626,10 +1668,11 @@ def cmd_check(a):
                 pg.start()
             good, passed, failed_specs = e2e(ctx, steps, specs, tag, pg, profile=a.profile)
             e2e_ran = True
+            ran_specs = passed
             if not good:
                 ok = False
                 if not failed_specs:
-                    failed_specs = list(specs)
+                    failed_specs = [x for x in specs if x not in passed]
         elif res['unit']:
             ensure_test_image(ctx, steps, files, hashes, unit_only=True)
         if res['full_build'] and a.full_build:
@@ -1648,7 +1691,7 @@ def cmd_check(a):
     if ok:
         deferred = deferred_record(st, specs, res['deferred_specs'], True)
         save_stamp(ctx, dict(ts=int(time.time()), branch=branch_name(), files=hashes, failed_specs=[], failed_go={},
-                             ran_specs=specs, ran_go=sorted(go_pkgs), deferred_specs=deferred))
+                             ran_specs=ran_specs, ran_go=sorted(go_pkgs), deferred_specs=deferred))
         say('통과 기록을 남겼다. 리뷰 재라운드·수정 뒤에는 `axm check --since-last`.')
         if deferred:
             say('단, 로컬에서 확인하지 않고 CI 판정에 맡긴 spec: ' + ', '.join(deferred))
