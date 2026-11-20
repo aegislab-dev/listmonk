@@ -615,6 +615,43 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-cancel]').click();
   });
 
+  it('sends at once a header that prints a subject with the time to the second', () => {
+    cy.then(() => create('subjhdrtime', { lists: [listX], subject: 'Issue {{ Date "15:04:05" }}', headers: [{ Subject: '[News] {{ .Subject }}' }] }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath, { statusCode: 200, body: { data: { status: 'running' } } }).as('status');
+    row('subjhdrtime').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-subject-rendered]').should('have.attr', 'data-note', 'varies');
+    cy.wait(1300);
+    cy.get('[data-cy=send-ok]').click();
+    cy.wait('@status').its('request.body.status').should('eq', 'running');
+    cy.get(win).should('not.exist');
+  });
+
+  it('compares a fixed Bcc that shares an address with a Cc that varies', () => {
+    cy.then(() => create('ccbccshare', {
+      lists: [listX], subject: 'Fixed',
+      headers: [{ Cc: '{{ if .Campaign.StartedAt.Valid }}desk@crevasse.ai{{ else }}support@crevasse.ai{{ end }}', Bcc: 'desk@crevasse.ai, archive@crevasse.ai' }],
+    }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('ccbccshare').find('[data-cy=btn-start]').click();
+    ready();
+    cy.then(() => cy.request(`/api/campaigns/${camp.ccbccshare}`).then(({ body }) => {
+      const c = body.data;
+      cy.request('PUT', `/api/campaigns/${camp.ccbccshare}`, {
+        name: c.name, subject: c.subject, type: 'regular', messenger: 'email', lists: [listX], content_type: c.content_type, body: c.body,
+        headers: [{ Cc: c.headers[0].Cc, Bcc: 'desk@crevasse.ai, partner@crevasse.ai' }],
+      });
+    }));
+    cy.get('[data-cy=send-ok]').click();
+    ready();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy="send-check-mail.copies"]').should('contain', 'partner@crevasse.ai');
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
   it('keeps time by the server clock when the browser clock is behind', () => {
     // The server says it is 2 minutes later than this browser thinks: its send time 60 s
     // from the browser's now has passed already.

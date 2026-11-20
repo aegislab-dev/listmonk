@@ -20,6 +20,7 @@ import (
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	"gopkg.in/volatiletech/null.v6"
 )
 
 // LST-48: the pre-send confirmation counts the people a campaign reaches with the same
@@ -1052,5 +1053,43 @@ func TestCampaignPreflightFromListSpelling(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("not on the list: %s", data)
+	}
+}
+
+// What varies between the mails is measured by rendering at two moments, not read from the
+// templates (LST-48 reviews): an SMTP header is never rendered, so a Date written in it does not
+// vary; a header that prints a subject with the time ({{ .Subject }}) does; a Bcc that shares an
+// address with a varying Cc stays fixed.
+func TestPreflightEnvelopeVaries(t *testing.T) {
+	e := newPreflightApp(t)
+	var camp models.Campaign
+	camp.ID, camp.Messenger, camp.ContentType, camp.Body = e.campID, "email", "richtext", "<p>Hi</p>"
+	camp.UUID = "9a7c9a2e-0000-4000-8000-000000000001"
+	camp.FromEmail = "News <news@crevasse.ai>"
+	camp.UpdatedAt = null.TimeFrom(time.Now())
+	statuses := []string{"scheduled", "running"}
+	vary := func(c models.Campaign, server map[string]string) []string {
+		t.Helper()
+		return sortedKeys(envelopeVaries(e.a, c, statuses, c.FromEmail, server, false))
+	}
+
+	c := camp
+	c.Subject = "Weekly update"
+	if got := vary(c, map[string]string{"Subject": `Standard {{ Date "2006-01-02" }}`}); len(got) != 0 {
+		t.Fatalf("SMTP subject with Date written in it: %v", got)
+	}
+
+	c = camp
+	c.Subject = `Issue {{ Date "15:04:05" }}`
+	c.Headers = models.Headers{{"Subject": "[News] {{ .Subject }}"}}
+	if got := vary(c, nil); len(got) != 1 || got[0] != "subject" {
+		t.Fatalf("header of a subject with the time: %v", got)
+	}
+
+	c = camp
+	c.Subject = "Fixed"
+	c.Headers = models.Headers{{"Cc": "{{ if .Campaign.StartedAt.Valid }}desk@crevasse.ai{{ else }}support@crevasse.ai{{ end }}"}}
+	if got := vary(c, map[string]string{"Bcc": "desk@crevasse.ai, archive@crevasse.ai"}); len(got) != 1 || got[0] != "cc" {
+		t.Fatalf("varying cc beside a fixed bcc with a common address: %v", got)
 	}
 }

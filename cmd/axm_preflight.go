@@ -41,6 +41,9 @@ type preflightResponse struct {
 	// Varies: which parts of the envelope differ between the mails (subject, from, reply_to,
 	// cc, bcc). The window does not compare those between readings; everything else it does.
 	Varies []string `json:"varies"`
+	// CopyLists: the addresses of the Cc and of the Bcc header each as it is, not merged, for
+	// the window to compare one without the other.
+	CopyLists map[string]string `json:"copy_lists"`
 	// Copies: the addresses that the Cc and Bcc headers add to every mail. Each of them gets
 	// one copy per recipient.
 	Copies []mailCopy `json:"copies"`
@@ -401,7 +404,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	subjectNote := ""
 	varies := map[string]bool{}
 	if !env.Unrendered {
-		varies = envelopeVaries(a, sendCamp, statuses, env, campFrom, server, policy)
+		varies = envelopeVaries(a, sendCamp, statuses, campFrom, server, policy)
 	}
 	switch {
 	case env.Unrendered:
@@ -449,7 +452,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode,
+		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
@@ -623,89 +626,76 @@ func envelopeCopies(messenger string, server map[string]string, headers models.H
 	return out
 }
 
-// envelopeVaries tells whether the subject, sender, reply address or copies of the mail
-// differ between the mails of a send: rendered in every status the sender may read the
-// campaign in, and with the campaign's times moved on (updated_at changes as the sent counts
-// are written, started_at is set by the first pick-up), as a restart reads them. The shift
-// moves every field of a clock (days, hours in 12 and 24 h, minutes, seconds), so that any
-// layout shows it. A template that calls Date prints the time of each mail: it varies too.
-func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manager.Envelope, from string, server map[string]string, policy bool) map[string]bool {
-	out := map[string]bool{}
-	// Date prints the time of each mail, where it reaches the mail: a Subject header (the
-	// campaign's, else the SMTP server's) replaces the subject field, so a Date in the field
-	// then varies nothing (LST-48 review: a fixed SMTP Subject was left out of the comparison).
-	src := func(name string) string {
-		v, _ := chosenHeader(name, server, camp.Headers)
-		return v
-	}
-	if v, ok := chosenHeader("Subject", server, camp.Headers); ok {
-		out["subject"] = callsDate(v, nil)
-	} else {
-		out["subject"] = callsDate(camp.Subject, nil)
-	}
-	out["from"] = callsDate(src("From"), nil)
-	out["reply_to"] = callsDate(src("Reply-To"), nil)
-	out["cc"] = callsDate(src("Cc"), nil)
-	out["bcc"] = callsDate(src("Bcc"), nil)
-	// Cc and Bcc apart: a Cc that varies does not hide a change of a fixed Bcc (LST-48 review).
+// envelopeVaries tells which parts of the mail's envelope (subject, from, reply_to, cc, bcc)
+// differ between the mails of a send. It does not read the templates for it: it renders the
+// envelope at two moments — the Date and now functions and the campaign's times (updated_at
+// changes as the sent counts are written, started_at is set by the first pick-up, as a restart
+// reads them) moved by an amount that changes every field of a clock — and in every status the
+// sender may read the campaign in, and sees what changes. So a header of the SMTP server, which
+// is never rendered, never varies however it is written, and a header that prints a subject
+// with the time ({{ .Subject }}) does (LST-48 reviews).
+func envelopeVaries(a *App, camp models.Campaign, statuses []string, from string, server map[string]string, policy bool) map[string]bool {
 	parts := func(e manager.Envelope) map[string]string {
 		s, f, r := sendEnvelope(e.Subject, from, camp.ReplyTo, camp.Messenger, server, e.Headers, policy)
-		p := map[string]string{"subject": s, "from": f, "reply_to": r, "cc": "", "bcc": ""}
-		for _, c := range envelopeCopies(camp.Messenger, server, e.Headers) {
-			p[c.Kind] += c.Address + ","
-		}
-		return p
+		return map[string]string{"subject": s, "from": f, "reply_to": r,
+			"cc": kindAddresses(camp.Messenger, server, e.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, e.Headers, "Bcc")}
 	}
-	want := parts(first)
+	out := map[string]bool{}
+	t0 := time.Now()
+	base, err := a.manager.RenderedEnvelope(&camp, dummySubscriber, statuses[0], t0)
+	if err != nil {
+		return out
+	}
+	want := parts(base)
 	later := camp
-	moved := time.Now().Add(37*time.Hour + 13*time.Minute + 17*time.Second + 250*time.Millisecond)
+	moved := t0.Add(37*time.Hour + 13*time.Minute + 17*time.Second + 250*time.Millisecond)
 	later.UpdatedAt = null.TimeFrom(moved)
 	later.StartedAt = null.TimeFrom(moved)
-	for _, c := range []models.Campaign{camp, later} {
+	for _, v := range []struct {
+		c  models.Campaign
+		at time.Time
+	}{{camp, t0}, {later, moved}} {
 		for _, st := range statuses {
-			e, err := a.manager.RenderedEnvelope(&c, dummySubscriber, st)
+			e, err := a.manager.RenderedEnvelope(&v.c, dummySubscriber, st, v.at)
 			if err != nil {
 				for k := range want {
 					out[k] = true
 				}
-				return clean(out)
+				return out
 			}
-			for k, v := range parts(e) {
-				if v != want[k] {
+			for k, val := range parts(e) {
+				if val != want[k] {
 					out[k] = true
 				}
 			}
 		}
 	}
-	return clean(out)
+	return out
 }
 
-// clean drops the false entries of a set.
-func clean(m map[string]bool) map[string]bool {
-	for k, v := range m {
-		if !v {
-			delete(m, k)
+// kindAddresses is the addresses one header (Cc or Bcc) adds to every e-mail, in order, each
+// as written and lowercased: the list of that header alone, so that one header that varies
+// does not make the other look so (LST-48 review: an address common to a varying Cc and a fixed
+// Bcc was taken out of the Bcc).
+func kindAddresses(messenger string, server map[string]string, headers models.Headers, name string) string {
+	if messenger != "email" && !strings.HasPrefix(messenger, "email-") {
+		return ""
+	}
+	val, ok := chosenHeader(name, server, headers)
+	if !ok {
+		return ""
+	}
+	var out []string
+	for _, part := range strings.Split(val, ",") {
+		addr := strings.TrimSpace(part)
+		if a, err := mail.ParseAddress(addr); err == nil {
+			addr = a.Address
+		}
+		if addr != "" {
+			out = append(out, strings.ToLower(addr))
 		}
 	}
-	return m
-}
-
-var reDateCall = regexp.MustCompile(`\{\{[^}]*\bDate\b[^}]*\}\}`)
-
-// callsDate tells whether a subject or header value calls the Date template function, which
-// prints the time each mail is rendered.
-func callsDate(subject string, headers models.Headers) bool {
-	if reDateCall.MatchString(subject) {
-		return true
-	}
-	for _, set := range headers {
-		for _, v := range set {
-			if reDateCall.MatchString(v) {
-				return true
-			}
-		}
-	}
-	return false
+	return strings.Join(out, ",")
 }
 
 // otherSubscriber is a second example subscriber, unlike dummySubscriber in every field, to

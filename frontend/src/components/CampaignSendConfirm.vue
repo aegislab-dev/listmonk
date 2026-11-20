@@ -184,7 +184,8 @@ const fingerprint = (pf) => {
   return JSON.stringify([
     pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, [...v].sort(), pf.senderPerSubscriber,
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
-    keep('cc', (pf.copies || []).filter((c) => c.kind === 'cc')), keep('bcc', (pf.copies || []).filter((c) => c.kind === 'bcc')),
+    // Each header's own list: the merged list drops an address of the Bcc that the Cc also has.
+    keep('cc', (pf.copyLists || {}).cc), keep('bcc', (pf.copyLists || {}).bcc),
     pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.count, l.deleted]),
     (pf.checks || []).filter((c) => c.key !== 'schedule.past')
       .map((c) => {

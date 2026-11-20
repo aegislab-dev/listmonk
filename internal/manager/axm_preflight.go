@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"strings"
+	"time"
 
 	"github.com/knadh/listmonk/models"
 	"gopkg.in/volatiletech/null.v6"
@@ -41,8 +42,15 @@ type Envelope struct {
 // value with a template expression ({{ .Campaign.Name }}, {{ .Campaign.UUID }} and the like)
 // goes out as its result, not as written (LST-48 review). Each is rendered on its own, apart
 // from the body: a body that cannot be rendered for sub does not hide a subject that can.
-func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, status string) (Envelope, error) {
-	msg, err := m.prepareCheck(c, sub, status)
+//
+// at, when given, is the clock the templates read (Date, now) instead of the real one: rendering
+// at two moments tells what changes with the time of each mail.
+func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, status string, at ...time.Time) (Envelope, error) {
+	var clock *time.Time
+	if len(at) > 0 {
+		clock = &at[0]
+	}
+	msg, err := m.prepareCheck(c, sub, status, clock)
 	if err != nil {
 		return Envelope{}, err
 	}
@@ -80,7 +88,7 @@ func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, st
 // checkRender compiles a copy of the campaign, with tracking functions that touch nothing,
 // and renders its mail to sub in the given status. It registers no links and writes nothing.
 func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status string) (*CampaignMessage, error) {
-	msg, err := m.prepareCheck(c, sub, status)
+	msg, err := m.prepareCheck(c, sub, status, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +100,9 @@ func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status 
 
 // prepareCheck compiles a copy of the campaign for a check, with tracking functions that
 // touch nothing, and makes its (not yet rendered) message to sub in the given status.
-func (m *Manager) prepareCheck(c *models.Campaign, sub models.Subscriber, status string) (*CampaignMessage, error) {
+//
+// clock, when not nil, is the time the Date and now template functions give.
+func (m *Manager) prepareCheck(c *models.Campaign, sub models.Subscriber, status string, clock *time.Time) (*CampaignMessage, error) {
 	// Compile on a copy, with the tracking functions that do not touch the database.
 	// The campaign's own UUID: a subject, header or body can print it. The tracking functions
 	// below do not use it to register anything.
@@ -109,6 +119,18 @@ func (m *Manager) prepareCheck(c *models.Campaign, sub models.Subscriber, status
 	funcs := m.TemplateFuncs(&camp)
 	funcs["TrackLink"] = func(u string, _ *CampaignMessage) string { return u }
 	funcs["TrackView"] = func(_ *CampaignMessage) template.HTML { return "" }
+	if clock != nil {
+		at := *clock
+		funcs["Date"] = func(layout string) string {
+			if layout == "" {
+				layout = time.ANSIC
+			}
+			return at.Format(layout)
+		}
+		if _, ok := funcs["now"]; ok {
+			funcs["now"] = func() time.Time { return at }
+		}
+	}
 	if err := camp.CompileTemplate(funcs); err != nil {
 		return nil, err
 	}
