@@ -56,7 +56,8 @@
 
     <b-loading :active="loading.campaigns || savingCampaign" />
 
-    <campaign-followup-banner v-if="isEditing && data.id" :campaign-id="data.id" :status="data.status" />
+    <campaign-followup-banner v-if="isEditing && data.id" :campaign-id="data.id" :status="data.status"
+      :updated-at="data.updatedAt" @loaded="onFollowupLoaded" />
 
     <b-tabs type="is-boxed" :animated="false" v-model="activeTab" @input="onTab">
       <b-tab-item :label="$tc('globals.terms.campaign')" label-position="on-border" value="campaign"
@@ -114,6 +115,9 @@
                 <recent-send-exclude v-if="canShowRecentRule" v-model="recentRule" :campaign-id="data.id || createdDraftId"
                   :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || !recentRuleLoaded || savingCampaign" />
                 <p v-if="recentRuleError" class="help is-danger mb-4" role="alert">{{ recentRuleError }}</p>
+                <p v-if="isFollowup && canShowRecentRule" class="help mb-4" data-cy="followup-exclude-note">
+                  {{ $t('campaigns.followup.excludeNote') }}
+                </p>
 
                 <div class="columns">
                   <div class="column is-6">
@@ -417,6 +421,7 @@ export default Vue.extend({
       }),
 
       isNew: false,
+      isFollowup: false,
       isEditing: false,
       isHeadersVisible: false,
       isAttachFieldVisible: false,
@@ -652,6 +657,10 @@ export default Vue.extend({
       if (attribs === undefined) return false;
       this.form.attribs = attribs;
       return true;
+    },
+
+    onFollowupLoaded(info) {
+      this.isFollowup = !!info && info.role === 'followup';
     },
 
     getCampaign(id) {

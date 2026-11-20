@@ -49,6 +49,7 @@ type ReactionCampaign struct {
 	ID        int        `db:"id" json:"id"`
 	Name      string     `db:"name" json:"name"`
 	Status    string     `db:"status" json:"status"`
+	Type      string     `db:"type" json:"type"`
 	StartedAt *time.Time `db:"started_at" json:"started_at"`
 }
 

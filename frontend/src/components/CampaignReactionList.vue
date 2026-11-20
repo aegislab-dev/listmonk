@@ -113,37 +113,39 @@
                     data-cy="reaction-name" @input="nameTouched = true" />
                 </b-field>
 
-                <div v-if="offer && (offer.existing || offer.available)" class="followup-box" data-cy="followup-box">
-                  <template v-if="offer.existing">
-                    <p>
-                      <strong>{{ f('existing') }}</strong>
-                      <a href="#" data-cy="followup-open-existing" @click.prevent="openFollowup(offer.existing.id)">
-                        {{ f('open', { id: offer.existing.id }) }}
-                      </a>
-                      · {{ $t(`campaigns.status.${offer.existing.status}`) }}
+                <div v-if="offer && offer.available" class="followup-box" data-cy="followup-box">
+                  <b-checkbox v-model="followup" :disabled="creating" data-cy="followup-toggle">
+                    <strong>{{ f('toggle') }}</strong>
+                    <span class="followup-hint">{{ f('toggleHint') }}</span>
+                  </b-checkbox>
+                  <template v-if="followup">
+                    <p v-if="followupSoon" class="reaction-note is-warning" data-cy="followup-warn">
+                      {{ f('warn', { days: offer.warnDays }) }}
                     </p>
-                    <p class="help">{{ f('existsHint') }}</p>
-                  </template>
-                  <template v-else>
-                    <b-checkbox v-model="followup" :disabled="creating" data-cy="followup-toggle">
-                      <strong>{{ f('toggle') }}</strong>
-                      <span class="followup-hint">{{ f('toggleHint') }}</span>
-                    </b-checkbox>
-                    <template v-if="followup">
-                      <p v-if="followupSoon" class="reaction-note is-warning" data-cy="followup-warn">
-                        {{ f('warn', { days: offer.warnDays }) }}
-                      </p>
-                      <b-field :label="f('name')">
-                        <b-input v-model="followupName" :maxlength="200" :disabled="creating"
-                          data-cy="followup-name" @input="followupNameTouched = true" />
-                      </b-field>
-                      <p class="reaction-note" data-cy="followup-note">
-                        <strong>{{ f('recheckTitle') }}</strong> {{ f('recheckBody') }}
-                      </p>
-                    </template>
+                    <b-field :label="f('name')">
+                      <b-input v-model="followupName" :maxlength="200" :disabled="creating"
+                        data-cy="followup-name" @input="followupNameTouched = true" />
+                    </b-field>
+                    <p class="reaction-note" data-cy="followup-note">
+                      <strong>{{ f('recheckTitle') }}</strong> {{ f('recheckBody') }}
+                    </p>
                   </template>
                 </div>
               </template>
+
+              <!-- Shown whatever this check found, even for nobody: the follow-up already made. -->
+              <div v-if="offer && offer.existing" class="followup-box" data-cy="followup-box">
+                <p>
+                  <strong>{{ f('existing') }}</strong>
+                  <a href="#" data-cy="followup-open-existing" @click.prevent="openFollowup(offer.existing.id)">
+                    {{ f('open', { id: offer.existing.id }) }}
+                  </a>
+                  · {{ $t(`campaigns.status.${offer.existing.status}`) }}
+                  <template v-if="existingCondition"> · {{ f('condition') }} {{ existingCondition }}</template>
+                  <template v-if="offer.existing.condition"> · {{ f('listCount', { count: num(offer.existing.count || 0) }) }}</template>
+                </p>
+                <p class="help">{{ f('existsHint') }}</p>
+              </div>
             </template>
           </template>
           <p v-if="error" class="reaction-note is-warning" role="alert" data-cy="reaction-error">{{ error }}</p>
@@ -262,6 +264,13 @@ export default Vue.extend({
     },
     // What the server says about making a follow-up draft with the list.
     offer() { return this.metadata?.followup || null; },
+    // The condition the existing follow-up was made with, in words.
+    existingCondition() {
+      const c = this.offer?.existing?.condition;
+      if (!c) return '';
+      return ['open', 'click'].filter((k) => c[k] && c[k] !== 'any')
+        .map((k) => this.$t(`campaigns.reactionList.${k}.${c[k]}`)).join(' · ');
+    },
     wantsFollowup() { return this.followup && !!this.offer?.available; },
     followupSoon() {
       return this.offer && this.offer.daysSince !== null && this.offer.daysSince < this.offer.warnDays;

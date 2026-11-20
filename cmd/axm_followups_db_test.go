@@ -326,7 +326,7 @@ func TestFollowupCheckFailureStartsNothing(t *testing.T) {
 	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
 	e.db.MustExec(`UPDATE axm_campaign_followups SET condition = '{"open":"bogus"}' WHERE campaign_id = $1`, got.Followup.ID)
 	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, e.addRunning())
-	camps, err := e.store.NextCampaigns(nil)
+	camps, err := e.store.NextCampaigns([]int64{})
 	if err == nil || len(camps) != 0 {
 		t.Fatalf("a failed check let campaigns through: %v %d", err, len(camps))
 	}
@@ -546,5 +546,178 @@ func TestFollowupHidesWhatTheReaderCannotOpen(t *testing.T) {
 	}
 	if _, info := e.callGet(e.admin, e.campID); info.Role != "parent" {
 		t.Fatalf("admin: %+v", info)
+	}
+}
+
+// addParent makes a second finished campaign, sent to the same four people, for a second
+// follow-up.
+func (e *followupEnv) addParent() int {
+	e.t.Helper()
+	var id int
+	e.get(&id, `INSERT INTO campaigns (uuid, name, subject, from_email, body, content_type, messenger, status, started_at)
+		VALUES (gen_random_uuid(), 'Second parent', 'Subject', 'Synthetic <sender@synthetic-sender.dev>', '<p>Hi</p>', 'html', 'email', 'finished', NOW()) RETURNING id`)
+	e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name) VALUES ($1, $2, 'A')`, id, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) SELECT $1, unnest($2::INT[])`, id, pq.Array(e.ids))
+	// Alice opened it, so the condition "did not open" is available.
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, id, e.ids[0])
+	return id
+}
+
+// Another follow-up's check is slow (it waits for a lock) and, meanwhile, this one's schedule
+// falls due. The sender must still check this one before it gives it back.
+func TestFollowupScheduleDueDuringAnotherCheckIsStillChecked(t *testing.T) {
+	e := newFollowupEnv(t)
+	slow := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	other := e.addParent()
+	code, data := e.sendRequest(true, e.admin, other, `{"open":"no","no_team":true,"followup":true}`)
+	var late models.ReactionResult
+	if code != http.StatusOK || json.Unmarshal(data, &late) != nil || late.Followup == nil {
+		t.Fatalf("second follow-up: %d %s", code, data)
+	}
+	charlie := e.ids[2]
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, charlie, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, slow.Followup.ID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() + INTERVAL '2 seconds' WHERE id = $1`, late.Followup.ID)
+
+	// Hold the row the first check has to delete.
+	tx, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`SELECT 1 FROM subscriber_lists WHERE subscriber_id = $1 AND list_id = $2 FOR UPDATE`, charlie, slow.List.ID); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		ids []int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		camps, err := e.store.NextCampaigns([]int64{})
+		r := result{err: err}
+		for _, c := range camps {
+			r.ids = append(r.ids, c.ID)
+		}
+		done <- r
+	}()
+	time.Sleep(3 * time.Second)
+	tx.Rollback()
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	t.Logf("picked up %v, slow %d late %d", r.ids, slow.Followup.ID, late.Followup.ID)
+	wantSame(t, "members of the one that fell due meanwhile", e.members(late.List.ID), []int{e.ids[1], e.ids[3]})
+	var runs int
+	e.get(&runs, `SELECT COALESCE((recheck->>'runs')::INT, 0) FROM axm_campaign_followups WHERE campaign_id = $1`, late.Followup.ID)
+	if runs != 1 {
+		t.Fatalf("checked %d times, picked up %v", runs, r.ids)
+	}
+	for _, id := range r.ids {
+		if id != slow.Followup.ID && id != late.Followup.ID {
+			t.Fatalf("picked up %d", id)
+		}
+	}
+}
+
+// A follow-up list that went to the trash and came back is still checked.
+func TestFollowupListRestoredFromTrashIsStillChecked(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	if code, _ := e.trash(got.List.ID, e.superAdmin); code != 200 {
+		t.Fatalf("trash: %d", code)
+	}
+	if code, _ := e.restore(got.List.ID, e.superAdmin); code != 200 {
+		t.Fatalf("restore: %d", code)
+	}
+	wantSame(t, "restored members", e.members(got.List.ID), []int{e.ids[2], e.ids[3]})
+	wantSame(t, "the campaign sends to the list again", e.sendsEnv.ids(`SELECT list_id FROM campaign_lists WHERE campaign_id = $1`, got.Followup.ID), []int{got.List.ID})
+	// The link lost its list when the list was deleted.
+	var listID *int
+	e.get(&listID, `SELECT list_id FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
+	// Charlie leaves the original's list, then the follow-up starts.
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, e.ids[2], e.aList)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns(nil); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "after the check", e.members(got.List.ID), []int{e.ids[3]})
+	var runs int
+	e.get(&runs, `SELECT COALESCE((recheck->>'runs')::INT, 0) FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
+	if runs != 1 {
+		t.Fatalf("checked %d times (link list %v)", runs, listID)
+	}
+	// And the banner still reads it, with the list shown as changed.
+	if c, info := e.callGet(e.admin, got.Followup.ID); c != 200 || info.Pending != nil && info.Role != "followup" {
+		t.Fatalf("info: %d %+v", c, info)
+	}
+}
+
+// What the editor copies includes the campaign's own attributes (a body may read them), but
+// not the time zone of a send time the copy does not have, and the parent is left as it was.
+func TestFollowupCopiesAttributesAndArchiveSettings(t *testing.T) {
+	e := newFollowupEnv(t)
+	var tpl1, tpl2 int
+	e.get(&tpl1, `INSERT INTO templates (name, type, subject, body, is_default) VALUES ('send', 'campaign', '', '{{ template "content" . }}', false) RETURNING id`)
+	e.get(&tpl2, `INSERT INTO templates (name, type, subject, body, is_default) VALUES ('archive', 'campaign', '', '{{ template "content" . }}', false) RETURNING id`)
+	e.db.MustExec(`UPDATE campaigns SET attribs = '{"event_code":"autumn","axm_send_tz":"Asia/Seoul"}', template_id = $2, archive = TRUE,
+		archive_slug = 'parent-slug', archive_template_id = $3, archive_meta = '{"name":"Archive person"}' WHERE id = $1`, e.campID, tpl1, tpl2)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+
+	var c struct {
+		Attribs, ArchiveMeta string
+		Archive              bool
+		Slug                 *string
+		Template, ArchiveTpl *int
+	}
+	row := e.db.QueryRowx(`SELECT attribs::TEXT, archive_meta::TEXT, archive, archive_slug, template_id, archive_template_id FROM campaigns WHERE id = $1`, got.Followup.ID)
+	if err := row.Scan(&c.Attribs, &c.ArchiveMeta, &c.Archive, &c.Slug, &c.Template, &c.ArchiveTpl); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.Attribs, `"event_code": "autumn"`) || strings.Contains(c.Attribs, "axm_send_tz") {
+		t.Fatalf("attributes: %s", c.Attribs)
+	}
+	if !c.Archive || c.Slug != nil || c.Template == nil || *c.Template != tpl1 || c.ArchiveTpl == nil || *c.ArchiveTpl != tpl2 ||
+		!strings.Contains(c.ArchiveMeta, "Archive person") {
+		t.Fatalf("archive settings: %+v", c)
+	}
+	var parent string
+	e.get(&parent, `SELECT attribs::TEXT FROM campaigns WHERE id = $1`, e.campID)
+	if !strings.Contains(parent, "axm_send_tz") {
+		t.Fatalf("the parent lost its time zone: %s", parent)
+	}
+}
+
+// An opt-in campaign has no follow-up draft: the dialog is not offered one and a request is refused.
+func TestFollowupOnlyForRegularCampaigns(t *testing.T) {
+	e := newFollowupEnv(t)
+	e.db.MustExec(`UPDATE campaigns SET type = 'optin' WHERE id = $1`, e.campID)
+	if o := e.preview(e.admin, `{"open":"no"}`).Followup; o == nil || o.Available || o.Reason != "not_regular" {
+		t.Fatalf("offer: %+v", o)
+	}
+	before := e.count(`SELECT COUNT(*) FROM campaigns`)
+	if code, _ := e.sendRequest(true, e.admin, e.campID, `{"open":"no","no_team":true,"followup":true}`); code != http.StatusBadRequest {
+		t.Fatalf("code %d", code)
+	}
+	if e.count(`SELECT COUNT(*) FROM campaigns`) != before {
+		t.Fatal("a refused request left a campaign")
+	}
+}
+
+// The dialog shows what the existing follow-up was made with, and the reading of a link names
+// when the original was sent and when the follow-up is scheduled.
+func TestFollowupExistingCarriesConditionAndInfoCarriesDates(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	o := e.preview(e.admin, `{"open":"yes","click":"yes"}`).Followup
+	if o == nil || o.Existing == nil || o.Existing.ID != got.Followup.ID || o.Existing.Count != 2 ||
+		!strings.Contains(string(o.Existing.Condition), `"open":"no"`) {
+		t.Fatalf("existing: %+v", o)
+	}
+	e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at = NOW() - INTERVAL '4 days' WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() + INTERVAL '1 day' WHERE id = $1`, got.Followup.ID)
+	_, info := e.callGet(e.admin, got.Followup.ID)
+	if info.FollowupSendAt == nil || info.ParentLastSentAt == nil || info.DaysSince == nil || *info.DaysSince != 4 {
+		t.Fatalf("dates: %+v", info)
 	}
 }

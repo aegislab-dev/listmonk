@@ -14,7 +14,7 @@
       </p>
       <p class="followup-line">
         {{ f('bannerRecheck') }}
-        <template v-if="pendingTotal > 0">
+        <template v-if="info.pending">
           <strong data-cy="followup-pending">{{ f('pending', { count: num(pendingTotal) }) }}</strong>
         </template>
         <template v-if="info.recheck && removedTotal > 0">
@@ -25,7 +25,6 @@
       <p v-if="info.listsChanged" class="followup-line followup-warn" data-cy="followup-lists-changed">
         {{ f('listsChanged') }}
       </p>
-      <p v-if="beforeStart" class="followup-line followup-muted">{{ f('excludeNote') }}</p>
     </template>
     <p v-else class="followup-line" data-cy="followup-child-link">
       {{ f('hasFollowup') }}
@@ -47,6 +46,8 @@ export default Vue.extend({
   props: {
     campaignId: { type: Number, required: true },
     status: { type: String, default: '' },
+    // Saving the campaign changes it (its lists, for one), so the banner reads again.
+    updatedAt: { type: String, default: '' },
   },
   data() {
     return { info: null };
@@ -72,7 +73,6 @@ export default Vue.extend({
         count: this.num(this.removedTotal), reacted: this.num(r.reacted), optedOut: this.num(r.optedOut), blocked: this.num(r.blocked),
       };
     },
-    beforeStart() { return ['draft', 'scheduled'].includes(this.status); },
     madeAt() {
       const { counts } = this.info;
       if (!counts || !this.info.createdAt) return '';
@@ -88,6 +88,7 @@ export default Vue.extend({
     campaignId() { this.load(); },
     // A status change (scheduled, started) changes what the banner can say.
     status() { this.load(); },
+    updatedAt() { this.load(); },
   },
   methods: {
     f(key, params) { return this.$t(`campaigns.followup.${key}`, params); },
@@ -99,6 +100,7 @@ export default Vue.extend({
         // The banner is an extra; the campaign page works without it.
         this.info = null;
       }
+      this.$emit('loaded', this.info);
     },
   },
   mounted() {

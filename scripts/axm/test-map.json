@@ -8,6 +8,7 @@
   "list-draw.cy.js",
   "list-teams.cy.js",
   "reaction-lists.cy.js",
+  "followup.cy.js",
   "subscriber-columns.cy.js",
   "column-presets.cy.js",
   "audit.cy.js",
@@ -120,6 +121,7 @@
     "address-check.cy.js",
     "campaign-tracking-check.cy.js",
     "reaction-lists.cy.js",
+    "followup.cy.js",
     "dynamic-lists.cy.js",
     "campaign-test-send.cy.js",
     "schedule-time.cy.js",
@@ -136,6 +138,7 @@
     "address-check.cy.js",
     "campaign-tracking-check.cy.js",
     "reaction-lists.cy.js",
+    "followup.cy.js",
     "campaign-test-send.cy.js",
     "schedule-time.cy.js",
     "from-addresses.cy.js"
@@ -152,6 +155,7 @@
     "address-check.cy.js",
     "campaign-tracking-check.cy.js",
     "reaction-lists.cy.js",
+    "followup.cy.js",
     "analytics-proof.cy.js",
     "list-trash.cy.js",
     "campaign-test-send.cy.js",
@@ -202,10 +206,14 @@
     "frontend/src/components/CampaignReactionList.vue",
     "frontend/src/campaign-reaction-list.js",
     "cmd/axm_reaction_lists*.go",
-    "internal/core/axm_reaction*.go"
+    "internal/core/axm_reaction*.go",
+    "frontend/src/components/CampaignFollowupBanner.vue",
+    "cmd/axm_followups*.go",
+    "internal/core/axm_followups*.go"
    ],
    "specs": [
-    "reaction-lists.cy.js"
+    "reaction-lists.cy.js",
+    "followup.cy.js"
    ]
   },
   {
@@ -215,7 +223,8 @@
    ],
    "specs": [
     "analytics-proof.cy.js",
-    "reaction-lists.cy.js"
+    "reaction-lists.cy.js",
+    "followup.cy.js"
    ]
   },
   {
@@ -357,7 +366,8 @@
     "queries/axm_reaction_lists.sql"
    ],
    "specs": [
-    "reaction-lists.cy.js"
+    "reaction-lists.cy.js",
+    "followup.cy.js"
    ]
   },
   {
@@ -390,6 +400,7 @@
    ],
    "specs": [
     "reaction-lists.cy.js",
+    "followup.cy.js",
     "analytics-proof.cy.js"
    ]
   },
@@ -399,6 +410,14 @@
    ],
    "specs": [
     "dynamic-lists.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_followups.sql"
+   ],
+   "specs": [
+    "followup.cy.js"
    ]
   }
  ],

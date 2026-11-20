@@ -1,5 +1,6 @@
 -- name: axm-followup-existing
-SELECT f.campaign_id AS id, c.name, c.status
+SELECT f.campaign_id AS id, c.name, c.status, f.condition,
+    (SELECT COUNT(*) FROM subscriber_lists sl WHERE sl.list_id = f.list_id AND sl.status != 'unsubscribed') AS list_count
 FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
 WHERE f.parent_campaign_id = $1;
 
@@ -20,7 +21,11 @@ SELECT CASE WHEN f.campaign_id = $1 THEN 'followup' ELSE 'parent' END AS role,
     l.name AS list_name,
     (SELECT COUNT(*) FROM subscriber_lists sl WHERE sl.list_id = f.list_id AND sl.status != 'unsubscribed') AS list_count,
     (SELECT COUNT(*) FROM campaign_lists cl WHERE cl.campaign_id = f.campaign_id) AS campaign_lists,
-    EXISTS (SELECT 1 FROM campaign_lists cl WHERE cl.campaign_id = f.campaign_id AND cl.list_id = f.list_id) AS has_list
+    EXISTS (SELECT 1 FROM campaign_lists cl WHERE cl.campaign_id = f.campaign_id AND cl.list_id = f.list_id) AS has_list,
+    (SELECT MAX(cs.sent_at) FROM axm_campaign_sends cs WHERE cs.campaign_id = f.parent_campaign_id) AS parent_last_sent_at,
+    CASE WHEN f.list_id IS NOT NULL THEN ARRAY[f.list_id] ELSE COALESCE((
+        SELECT ARRAY_AGG(cl.list_id) FROM campaign_lists cl JOIN lists li ON li.id = cl.list_id
+        WHERE cl.campaign_id = f.campaign_id AND li.axm_filter IS NULL), '{}') END AS list_ids
 FROM axm_campaign_followups f
 JOIN campaigns fc ON fc.id = f.campaign_id
 JOIN campaigns pc ON pc.id = f.parent_campaign_id
@@ -29,12 +34,25 @@ WHERE f.campaign_id = $1 OR f.parent_campaign_id = $1;
 
 -- name: axm-followup-due
 -- Follow-up campaigns the sender is about to pick up that it does not hold yet: running, or
--- scheduled and due. They are checked again before every start, resume and restart.
-SELECT f.campaign_id, f.parent_campaign_id, f.list_id, f.condition
+-- scheduled and due. They are checked again before every start, resume and restart. The lists
+-- to check are the follow-up list, or when that list was deleted (and perhaps restored from the
+-- trash, which does not restore the link) the plain lists the campaign sends to.
+SELECT f.campaign_id, f.parent_campaign_id, f.condition,
+    CASE WHEN f.list_id IS NOT NULL THEN ARRAY[f.list_id] ELSE COALESCE((
+        SELECT ARRAY_AGG(cl.list_id) FROM campaign_lists cl JOIN lists li ON li.id = cl.list_id
+        WHERE cl.campaign_id = f.campaign_id AND li.axm_filter IS NULL), '{}') END AS list_ids
 FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
-WHERE f.list_id IS NOT NULL
-    AND (c.status = 'running' OR (c.status = 'scheduled' AND NOW() >= c.send_at))
+WHERE (c.status = 'running' OR (c.status = 'scheduled' AND NOW() >= c.send_at))
     AND NOT (c.id = ANY(COALESCE($1::INT[], '{}')));
+
+-- name: axm-followup-by-ids
+-- The same rows for campaigns the sender just found, whatever made them start.
+SELECT f.campaign_id, f.parent_campaign_id, f.condition,
+    CASE WHEN f.list_id IS NOT NULL THEN ARRAY[f.list_id] ELSE COALESCE((
+        SELECT ARRAY_AGG(cl.list_id) FROM campaign_lists cl JOIN lists li ON li.id = cl.list_id
+        WHERE cl.campaign_id = f.campaign_id AND li.axm_filter IS NULL), '{}') END AS list_ids
+FROM axm_campaign_followups f
+WHERE f.campaign_id = ANY($1::INT[]);
 
 -- name: axm-followup-recheck
 -- Removes from the follow-up list the people who got the original campaign and no longer meet
@@ -47,12 +65,12 @@ WHERE f.list_id IS NOT NULL
     FROM subscriber_lists sl
     JOIN axm_campaign_sends cs ON cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id
     LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
-    WHERE sl.list_id = $6
+    WHERE sl.list_id = ANY($6::INT[])
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $7 AND sent.subscriber_id = sl.subscriber_id)
 ),
 gone AS (
     DELETE FROM subscriber_lists sl USING verdict v
-    WHERE sl.list_id = $6 AND sl.subscriber_id = v.subscriber_id AND v.reason <> 0
+    WHERE sl.list_id = ANY($6::INT[]) AND sl.subscriber_id = v.subscriber_id AND v.reason <> 0
     RETURNING v.reason
 )
 SELECT COUNT(*) FILTER (WHERE reason = -1) AS reacted,
@@ -68,7 +86,7 @@ FROM gone;
     FROM subscriber_lists sl
     JOIN axm_campaign_sends cs ON cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id
     LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
-    WHERE sl.list_id = $6
+    WHERE sl.list_id = ANY($6::INT[])
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $7 AND sent.subscriber_id = sl.subscriber_id)
 )
 SELECT COUNT(*) FILTER (WHERE reason = -1) AS reacted,

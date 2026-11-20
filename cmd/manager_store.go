@@ -64,15 +64,56 @@ func newManagerStore(q *models.Queries, c *core.Core, m media.Store, db *sqlx.DB
 // campaigns that are also being processed. Progress saves own sent counts;
 // discovery must not update them, as Select can fail after the SQL commits.
 func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
-	// AXM (LST-47): a follow-up campaign that is about to start is checked against its
-	// original first. If the check fails nothing is picked up in this round: it is tried again
-	// in the next one, and a follow-up never starts unchecked.
-	if err := s.core.RecheckFollowups(context.Background(), currentIDs); err != nil {
+	// AXM (LST-47): a follow-up campaign is checked against its original before it can be
+	// picked up. The first check covers the ones that are due now. A schedule can fall due while
+	// that check runs (a lock wait, a long list), so every campaign the query then finds is looked
+	// at again, and a follow-up that was not checked yet is checked before the result is given
+	// back. If a check fails nothing is picked up in this round: it is tried again in the next
+	// one, and a follow-up never starts unchecked.
+	ctx := context.Background()
+	checked := map[int]bool{}
+	ids, err := s.core.RecheckFollowups(ctx, currentIDs)
+	if err != nil {
 		return nil, err
 	}
-	var out []*models.Campaign
-	err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs))
-	return out, err
+	for _, id := range ids {
+		checked[id] = true
+	}
+	for round := 0; ; round++ {
+		var out []*models.Campaign
+		if err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs)); err != nil {
+			return out, err
+		}
+		var unchecked []int
+		for _, camp := range out {
+			if !checked[camp.ID] {
+				unchecked = append(unchecked, camp.ID)
+			}
+		}
+		if len(unchecked) == 0 {
+			return out, nil
+		}
+		followups, err := s.core.RecheckFollowupsByID(ctx, unchecked)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range unchecked {
+			checked[id] = true
+		}
+		if len(followups) == 0 {
+			return out, nil
+		}
+		if round >= 3 {
+			// Still changing: give back what was checked, the rest comes in the next round.
+			kept := out[:0]
+			for _, camp := range out {
+				if checked[camp.ID] {
+					kept = append(kept, camp)
+				}
+			}
+			return kept, nil
+		}
+	}
 }
 
 // NextSubscribers retrieves a subset of subscribers of a given campaign.

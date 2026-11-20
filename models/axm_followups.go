@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/lib/pq"
 	null "gopkg.in/volatiletech/null.v6"
 )
 
@@ -21,6 +22,10 @@ type FollowupRef struct {
 	ID     int    `db:"id" json:"id"`
 	Name   string `db:"name" json:"name"`
 	Status string `db:"status" json:"status"`
+	// Condition and Count are read only for an existing follow-up shown in the dialog: the
+	// condition the list was made with and how many people are on it now.
+	Condition json.RawMessage `db:"condition" json:"condition,omitempty"`
+	Count     int             `db:"list_count" json:"count,omitempty"`
 }
 
 // ReactionFollowup tells the reaction dialog whether it may offer the follow-up draft.
@@ -68,21 +73,28 @@ type FollowupRow struct {
 	ListCount        int             `db:"list_count"`
 	CampaignLists    int             `db:"campaign_lists"`
 	HasList          bool            `db:"has_list"`
+	ParentLastSentAt null.Time       `db:"parent_last_sent_at"`
+	ListIDs          pq.Int64Array   `db:"list_ids"`
 }
 
 // FollowupInfo is the answer of GET /api/campaigns/:id/followup.
 type FollowupInfo struct {
-	Role         string            `json:"role"` // none, parent or followup
-	Parent       *FollowupRef      `json:"parent,omitempty"`
-	Followup     *FollowupRef      `json:"followup,omitempty"`
-	Condition    *ReactionSettings `json:"condition,omitempty"`
-	Counts       json.RawMessage   `json:"counts,omitempty"`
-	Recheck      *FollowupRecheck  `json:"recheck,omitempty"`
-	RecheckedAt  *time.Time        `json:"rechecked_at,omitempty"`
-	CreatedAt    *time.Time        `json:"created_at,omitempty"`
-	List         *FollowupList     `json:"list,omitempty"`
-	ListsChanged bool              `json:"lists_changed"`
-	Pending      *FollowupPending  `json:"pending,omitempty"`
+	Role        string            `json:"role"` // none, parent or followup
+	Parent      *FollowupRef      `json:"parent,omitempty"`
+	Followup    *FollowupRef      `json:"followup,omitempty"`
+	Condition   *ReactionSettings `json:"condition,omitempty"`
+	Counts      json.RawMessage   `json:"counts,omitempty"`
+	Recheck     *FollowupRecheck  `json:"recheck,omitempty"`
+	RecheckedAt *time.Time        `json:"rechecked_at,omitempty"`
+	CreatedAt   *time.Time        `json:"created_at,omitempty"`
+	List        *FollowupList     `json:"list,omitempty"`
+	// FollowupSendAt is the schedule of the follow-up; ParentLastSentAt and DaysSince tell how
+	// long ago the original was sent.
+	FollowupSendAt   *time.Time       `json:"followup_send_at,omitempty"`
+	ParentLastSentAt *time.Time       `json:"parent_last_sent_at,omitempty"`
+	DaysSince        *int             `json:"days_since,omitempty"`
+	ListsChanged     bool             `json:"lists_changed"`
+	Pending          *FollowupPending `json:"pending,omitempty"`
 }
 
 type FollowupList struct {

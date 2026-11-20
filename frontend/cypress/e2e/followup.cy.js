@@ -101,6 +101,11 @@ describe('follow-up campaign draft', () => {
     cy.get('[data-cy=followup-banner]').should('contain', `#${campaignId}`).and('contain', campaign)
       .and('contain', 'checked again when sending starts');
     cy.get('[data-cy=followup-banner]').should('contain', '1 people').and('not.contain', 'lists of this campaign were changed');
+    // Nobody has left since it was made, and the banner still says so.
+    cy.get('[data-cy=followup-pending]').should('contain', '0 would leave');
+    // The note about the recent-send exclusion is under that panel, not in the banner.
+    cy.get('[data-cy=followup-banner]').should('not.contain', 'recent-send exclusion');
+    cy.get('[data-cy=followup-exclude-note]').should('be.visible').and('contain', 'recent-send exclusion');
     // The draft sends to the new list only.
     cy.get('.list-selector').contains('label', /\(1\)$/).should('be.visible');
     cy.get('[data-cy=followup-parent-link]').click();
@@ -115,6 +120,8 @@ describe('follow-up campaign draft', () => {
     checkOpenedNotClicked();
     cy.get(toggle).should('not.exist');
     cy.get('[data-cy=followup-open-existing]').should('contain', `#${followupId}`);
+    // The box tells what the follow-up was made with.
+    cy.get('[data-cy=followup-box]').should('contain', 'Draft').and('contain', 'Did not open').and('contain', '1 people');
     cy.get(teamSelect).select('__none__');
     cy.get('[data-cy=reaction-create]').click();
     cy.wait('@make').then(({ request, response }) => {
@@ -134,6 +141,33 @@ describe('follow-up campaign draft', () => {
   it('shows the follow-up on the campaign list with its tag', () => {
     cy.visit('/admin/campaigns');
     cy.contains('tr', `${campaign} follow-up`).should('contain', 'Draft').and('contain', '후속');
+  });
+
+  it('still offers the existing follow-up when this check finds nobody', () => {
+    cy.intercept('POST', '**/reaction-list/preview', (request) => {
+      request.continue((response) => {
+        if (request.body.tracking_only) return;
+        response.body.data.counts = { matched: 0, blocklisted: 0, campaign_opt_out: 0, all_opt_out: 0, out_of_scope: 0, eligible: 0 };
+        response.body.data.sample = [];
+      });
+    });
+    openDialog();
+    cy.get(input('open', 'yes')).check({ force: true });
+    cy.get('[data-cy=reaction-check]').click();
+    cy.get('[data-cy=reaction-empty]').should('be.visible');
+    cy.get('[data-cy=followup-open-existing]').should('contain', `#${followupId}`);
+    cy.get('[data-cy=reaction-create]').should('be.disabled');
+  });
+
+  it('warns on the draft when its lists are changed and saved', () => {
+    cy.visit(`/admin/campaigns/${followupId}`);
+    cy.get('[data-cy=followup-banner]').should('be.visible');
+    cy.get('[data-cy=followup-lists-changed]').should('not.exist');
+    cy.get('.list-selector input').type('Cypress followup audience');
+    cy.get('.list-selector').contains('.dropdown-item', 'Cypress followup audience').click();
+    cy.get('[data-cy=btn-save]').click();
+    // No reload: the banner reads again after the save.
+    cy.get('[data-cy=followup-lists-changed]').should('be.visible');
   });
 
   it('keeps the box away from a campaign that is not finished', () => {

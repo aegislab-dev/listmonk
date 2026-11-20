@@ -55,8 +55,18 @@ func (a *App) followupDraft(c echo.Context, user auth.User, parentID int, name s
 	req.Name = name
 	req.Status = models.CampaignStatusDraft
 	req.SendAt = null.Time{}
-	// The copy has no send time, so it keeps no time zone for one. The slug stays unique.
+	// The copy has no send time, so it keeps no time zone for one, but every other attribute
+	// of the campaign stays: the body may read them ({{ .Campaign.Attribs.x }}). The copy is
+	// made so that the parent's own map is not changed. The slug stays unique.
 	req.Attribs = nil
+	if len(parent.Attribs) > 0 {
+		req.Attribs = make(models.JSON, len(parent.Attribs))
+		for k, v := range parent.Attribs {
+			if k != sendTZKey {
+				req.Attribs[k] = v
+			}
+		}
+	}
 	req.ArchiveSlug = null.String{}
 	req.Tags = append(append([]string{}, parent.Tags...), models.FollowupTag)
 	if len(req.ListIDs) == 0 {
@@ -67,9 +77,6 @@ func (a *App) followupDraft(c echo.Context, user auth.User, parentID int, name s
 		return nil, echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
 		req = o
-	}
-	if req.ArchiveTemplateID.Valid && req.ArchiveTemplateID.Int != 0 {
-		req.ArchiveTemplateID = req.TemplateID
 	}
 	return &core.FollowupDraft{Campaign: req.Campaign, MediaIDs: req.MediaIDs, UserID: user.ID}, nil
 }

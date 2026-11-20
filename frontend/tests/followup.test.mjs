@@ -5,7 +5,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const ko = JSON.parse(read('../../i18n/ko.json'));
 const en = JSON.parse(read('../../i18n/en.json'));
-const files = ['../src/components/CampaignReactionList.vue', '../src/components/CampaignFollowupBanner.vue'];
+const files = [
+  '../src/components/CampaignReactionList.vue', '../src/components/CampaignFollowupBanner.vue', '../src/views/Campaign.vue',
+];
 
 // Keys the components read through f('key') or $t('campaigns.followup.key').
 function usedKeys() {

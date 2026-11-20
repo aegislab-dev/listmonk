@@ -60,6 +60,8 @@ func (c *Core) followupOffer(ctx context.Context, tx *sqlx.Tx, camp models.React
 		return nil, err
 	case !canMake:
 		out.Reason = "forbidden"
+	case camp.Type != models.CampaignTypeRegular:
+		out.Reason = "not_regular"
 	case camp.Status != models.CampaignStatusFinished:
 		out.Reason = "not_finished"
 	case isFollowup:
@@ -92,6 +94,9 @@ func (c *Core) followupBadRequest(code int, key string, params ...string) error 
 func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.ReactionResult, s models.ReactionSettings, d *FollowupDraft) error {
 	if out.Campaign.Status != models.CampaignStatusFinished {
 		return c.followupBadRequest(http.StatusBadRequest, "notFinished")
+	}
+	if out.Campaign.Type != models.CampaignTypeRegular {
+		return c.followupBadRequest(http.StatusBadRequest, "notRegular")
 	}
 	var isFollowup bool
 	if err := tx.Stmtx(c.q.AxmFollowupIsFollowup).GetContext(ctx, &isFollowup, out.Campaign.ID); err != nil {
@@ -150,47 +155,67 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 type followupDue struct {
 	CampaignID int             `db:"campaign_id"`
 	ParentID   int             `db:"parent_campaign_id"`
-	ListID     int             `db:"list_id"`
 	Condition  json.RawMessage `db:"condition"`
+	ListIDs    pq.Int64Array   `db:"list_ids"`
 }
 
-// RecheckFollowups runs the check before a follow-up campaign starts: the people of its
+// RecheckFollowups runs the check before follow-up campaigns start: the people on a follow-up
 // list who reacted to the original campaign since the list was made, opted out of it, or got
-// blocked are taken off the list. It covers every follow-up the sender is about to pick up
-// (a start, a due schedule, a resume, a restart) and does nothing when there are none. An
-// error means the check did not happen, and the caller must not start those campaigns.
-func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) error {
+// blocked are taken off the list. This covers the follow-ups the sender is about to pick up (a
+// start, a due schedule, a resume, a restart); it does nothing when there are none. It returns
+// the campaigns it checked. An error means the check did not happen, and the caller must not
+// start those campaigns.
+func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) ([]int, error) {
 	var due []followupDue
 	if err := c.q.AxmFollowupDue.SelectContext(ctx, &due, pq.Array(currentIDs)); err != nil {
-		return err
+		return nil, err
 	}
-	for _, f := range due {
+	return c.recheck(ctx, due)
+}
+
+// RecheckFollowupsByID checks the follow-ups among the given campaigns, whatever their state.
+// The sender uses it for a campaign it found after the first check (a schedule that fell due
+// while another check ran). It returns the campaigns that were follow-ups.
+func (c *Core) RecheckFollowupsByID(ctx context.Context, ids []int) ([]int, error) {
+	var rows []followupDue
+	if err := c.q.AxmFollowupByIDs.SelectContext(ctx, &rows, pq.Array(ids)); err != nil {
+		return nil, err
+	}
+	return c.recheck(ctx, rows)
+}
+
+func (c *Core) recheck(ctx context.Context, rows []followupDue) ([]int, error) {
+	done := []int{}
+	for _, f := range rows {
 		var s models.ReactionSettings
 		if err := json.Unmarshal(f.Condition, &s); err != nil || s.Validate() != nil {
-			return errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
+			return done, errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
 		}
-		tx, err := c.db.BeginTxx(ctx, nil)
-		if err != nil {
-			return err
+		if len(f.ListIDs) > 0 {
+			tx, err := c.db.BeginTxx(ctx, nil)
+			if err != nil {
+				return done, err
+			}
+			var gone models.FollowupPending
+			args := []any{f.ParentID, s.Open, s.Click, pq.Array([]int(nil)), true, f.ListIDs, f.CampaignID}
+			if err := tx.Stmtx(c.q.AxmFollowupRecheck).GetContext(ctx, &gone, args...); err != nil {
+				tx.Rollback()
+				return done, err
+			}
+			if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID, gone.Reacted, gone.OptedOut, gone.Blocked); err != nil {
+				tx.Rollback()
+				return done, err
+			}
+			if err := tx.Commit(); err != nil {
+				return done, err
+			}
+			c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, removed %d who reacted, %d who opted out, %d blocked",
+				f.CampaignID, f.ParentID, gone.Reacted, gone.OptedOut, gone.Blocked)
+			_ = c.refreshCache(matListSubStats, false)
 		}
-		var gone models.FollowupPending
-		args := []any{f.ParentID, s.Open, s.Click, pq.Array([]int(nil)), true, f.ListID, f.CampaignID}
-		if err := tx.Stmtx(c.q.AxmFollowupRecheck).GetContext(ctx, &gone, args...); err != nil {
-			tx.Rollback()
-			return err
-		}
-		if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID, gone.Reacted, gone.OptedOut, gone.Blocked); err != nil {
-			tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, removed %d who reacted, %d who opted out, %d blocked",
-			f.CampaignID, f.ParentID, gone.Reacted, gone.OptedOut, gone.Blocked)
-		_ = c.refreshCache(matListSubStats, false)
+		done = append(done, f.CampaignID)
 	}
-	return nil
+	return done, nil
 }
 
 // GetFollowupInfo describes the follow-up link of a campaign, if it has one. withPending adds
@@ -220,16 +245,24 @@ func (c *Core) GetFollowupInfo(ctx context.Context, id int, withPending bool) (m
 		}
 	}
 	out.CreatedAt = &row.CreatedAt
+	if row.FollowupSendAt.Valid {
+		out.FollowupSendAt = &row.FollowupSendAt.Time
+	}
+	if row.ParentLastSentAt.Valid {
+		out.ParentLastSentAt = &row.ParentLastSentAt.Time
+		days := int(time.Since(row.ParentLastSentAt.Time).Hours() / 24)
+		out.DaysSince = &days
+	}
 	if row.ListID.Valid && row.ListName.Valid {
 		out.List = &models.FollowupList{ID: int(row.ListID.Int), Name: row.ListName.String, Count: row.ListCount}
 	}
 	// The list was the only target when the draft was made. Any other set of lists means
 	// someone changed it, and the check before sending only covers the follow-up list.
 	out.ListsChanged = !row.HasList || row.CampaignLists != 1
-	if row.Role == "followup" && withPending && out.Condition != nil && row.ListID.Valid &&
+	if row.Role == "followup" && withPending && out.Condition != nil && len(row.ListIDs) > 0 &&
 		(row.FollowupStatus == models.CampaignStatusDraft || row.FollowupStatus == models.CampaignStatusScheduled) {
 		var p models.FollowupPending
-		args := []any{row.ParentCampaignID, out.Condition.Open, out.Condition.Click, pq.Array([]int(nil)), true, row.ListID.Int, row.CampaignID}
+		args := []any{row.ParentCampaignID, out.Condition.Open, out.Condition.Click, pq.Array([]int(nil)), true, row.ListIDs, row.CampaignID}
 		if err := c.q.AxmFollowupPending.GetContext(ctx, &p, args...); err != nil {
 			return out, err
 		}
