@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +19,7 @@ import (
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/models"
+	"github.com/labstack/echo/v4"
 )
 
 type recentListEnv struct {
@@ -452,5 +455,61 @@ func TestRecentListWorksWithOneConnection(t *testing.T) {
 		case <-time.After(20 * time.Second):
 			t.Fatalf("%s: making the list did not finish with one connection", team)
 		}
+	}
+}
+
+// Review: the teams were decided before the transaction, and the snapshot counted with the teams
+// it saw. A team taken off the source list in between made a same-team list of everybody under
+// the old team name. Now the transaction checks the teams and the decision is made again.
+func TestRecentListTeamChangedWhileMaking(t *testing.T) {
+	e := newRecentListEnv(t)
+	rule := models.RecentRule{Days: 14, Scope: models.RecentScopeTeam, CampaignIDs: []int64{}}
+	resolve := func(source []string) ([]string, error) { return source, nil }
+	preview := func() models.RecentCounts {
+		code, data := e.call(e.a.auth.Perm(e.a.PreviewRecentExclusion, auth.PermCampaignsManageAll, auth.PermCampaignsManage),
+			e.admin, http.MethodPost, "/preview", "", fmt.Sprintf(`{"list_ids":[%d],"campaign_id":%d,"days":14,"scope":"team"}`, e.aList, e.draft))
+		var out models.RecentCounts
+		if code != http.StatusOK || json.Unmarshal(data, &out) != nil {
+			t.Fatalf("preview %d %s", code, data)
+		}
+		return out
+	}
+
+	// The team is taken off: the same-team rule has nothing to count, and nothing is made.
+	before := e.lists()
+	changed := false
+	_, err := e.a.core.MakeRecentExcludeList(context.Background(), []int{e.aList}, rule, e.admin.ID, core.RecentListOptions{
+		ResolveTeams: resolve,
+		AfterTeams: func() {
+			if !changed {
+				changed = true
+				e.db.MustExec(`UPDATE lists SET tags = array_remove(tags, '팀:가') WHERE id=$1`, e.aList)
+			}
+		},
+	})
+	var he *echo.HTTPError
+	if !errors.As(err, &he) || he.Code != http.StatusBadRequest || e.lists() != before {
+		t.Fatalf("team removed: err %v, lists %d -> %d", err, before, e.lists())
+	}
+
+	// The team is swapped: the list carries the new team and the count of the new team.
+	e.db.MustExec(`UPDATE lists SET tags = array_append(tags, '팀:가') WHERE id=$1`, e.aList)
+	changed = false
+	out, err := e.a.core.MakeRecentExcludeList(context.Background(), []int{e.aList}, rule, e.admin.ID, core.RecentListOptions{
+		ResolveTeams: resolve,
+		AfterTeams: func() {
+			if !changed {
+				changed = true
+				e.db.MustExec(`UPDATE lists SET tags = array_replace(tags, '팀:가', '팀:나') WHERE id=$1`, e.aList)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := preview()
+	if !sameSet(out.List.Tags, []string{models.RecentListTag, "팀:나"}) || out.Counts.Target != want.Target ||
+		out.Counts.Excluded != want.Excluded || len(e.members(out.List.ID)) != want.WillSend {
+		t.Fatalf("team swapped: list %+v counts %+v, preview %+v, %d members", out.List.Tags, out.Counts, want, len(e.members(out.List.ID)))
 	}
 }

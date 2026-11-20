@@ -426,6 +426,8 @@ export default Vue.extend({
       recentRuleLoaded: false,
       recentRuleError: '',
       createdDraftId: 0,
+      // The list IDs the created draft was saved with (the page stays new while its rule fails).
+      createdLists: [],
       savingCampaign: false,
       // The list made from the recent-send exclusion result: { id, error }. Whether the server
       // has it as the target is read from the saved campaign (madeSaved), never remembered.
@@ -794,6 +796,7 @@ export default Vue.extend({
         const d = this.createdDraftId ? await this.$api.updateCampaign(this.createdDraftId, data)
           : await this.$api.createCampaign(data);
         this.createdDraftId = d.id;
+        this.createdLists = data.lists;
         await this.saveRecentRule(d.id);
         // The made list is the new campaign's target now (or was not chosen): nothing is pending.
         this.madeList = null;
@@ -1131,9 +1134,12 @@ export default Vue.extend({
       return this.form.lists.map(({ id }) => id).filter((id) => id > 0);
     },
     // The server has the made list as the campaign's only target (read from the saved campaign).
+    // A new campaign whose draft was created but whose rule failed reads the draft's lists.
     madeSaved() {
-      const saved = this.data.lists || [];
-      return !!this.madeList && !!this.data.id && saved.length === 1 && saved[0].id === this.madeList.id;
+      let saved = [];
+      if (this.data.id) saved = (this.data.lists || []).map(({ id }) => id);
+      else if (this.createdDraftId) saved = this.createdLists;
+      return !!this.madeList && saved.length === 1 && saved[0] === this.madeList.id;
     },
     // The form targets the made list, but the server does not have it yet.
     madeUnsaved() {

@@ -344,5 +344,33 @@ describe('Recent-send exclusion settings', () => {
     cy.get('select[data-cy=recent-list-team]').should('have.value', '__none__');
     cy.get('[data-cy=recent-list-create]').should('not.be.disabled');
   });
+
+  it('says a new campaign saved its target when only its rule failed to save', () => {
+    cy.intercept('POST', preview).as('recentPreview');
+    cy.intercept('POST', '/api/campaigns/recent-exclude/list').as('makeList');
+    cy.intercept('POST', '/api/campaigns').as('createCampaign');
+    cy.intercept('PUT', '/api/campaigns/*/recent-exclude', { statusCode: 503, body: { message: 'unavailable' } }).as('ruleRefused');
+    cy.visit(`/admin/campaigns/new?list_id=${sourceListId}`);
+    cy.get('.list-selector .tags .tag').should('have.length', 1);
+    cy.get('input[name=name]').type(`${name} rule refused`);
+    cy.get('input[name=subject]').type('Rule refused');
+    cy.get(switchControl).click();
+    cy.wait('@recentPreview');
+    cy.get('[data-cy=recent-make-list]').click();
+    cy.get('select[data-cy=recent-list-team]').select('__none__');
+    cy.get('[data-cy=recent-list-create]').click();
+    cy.wait('@makeList').its('response.body.data.list').then((list) => {
+      cy.get('[data-cy=recent-list-made]').should('contain', 'when you create');
+      cy.get('button[type=submit]').click();
+      cy.wait('@createCampaign').its('response.body.data.id').then((id) => {
+        cy.wait('@ruleRefused');
+        cy.contains('[role=alert]', 'exclusion rule failed to save').should('be.visible');
+        cy.get('[data-cy=recent-list-made]').should('contain', 'it is saved').and('not.contain', 'when you create');
+        cy.request(`/api/campaigns/${id}`).its('body.data.lists').then((lists) => {
+          expect(lists.map((l) => l.id)).to.deep.equal([list.id]);
+        });
+      });
+    });
+  });
 });
 

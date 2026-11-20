@@ -191,6 +191,9 @@ const recentListLockKey int64 = 746046
 type RecentListOptions struct {
 	Name         string
 	ResolveTeams func(source []string) ([]string, error)
+	// AfterTeams, when set, runs after the teams are decided and before the transaction (tests
+	// change the source lists there).
+	AfterTeams func()
 }
 
 func (c *Core) recentBadRequest(key string) error {
@@ -242,45 +245,71 @@ func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule mode
 
 	// The teams are resolved first, on the pool: resolving reads the database, and the request
 	// must not ask the pool for a second connection while it holds one (db.max_open may be 1).
-	if err := c.q.AxmRecentSourceLists.SelectContext(ctx, &out.SourceLists, ids); err != nil {
-		return out, c.recentError(err)
-	}
-	if len(out.SourceLists) != len(ids) {
-		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("globals.messages.invalidID"))
-	}
-	tags := []string{}
-	for _, source := range out.SourceLists {
-		for _, tag := range models.TeamTags(source.Tags) {
-			if !slices.Contains(tags, tag) {
-				tags = append(tags, tag)
-			}
+	// The transaction then checks that the source lists still have those teams; if a team was
+	// changed in between, the whole decision is made again.
+	for attempt := 1; ; attempt++ {
+		out = models.RecentListResult{}
+		if err := c.q.AxmRecentSourceLists.SelectContext(ctx, &out.SourceLists, ids); err != nil {
+			return out, c.recentError(err)
 		}
-	}
-	if rule.Scope == models.RecentScopeTeam && len(tags) == 0 {
-		return out, c.recentBadRequest("noTeam")
-	}
-	teams, err := o.ResolveTeams(tags)
-	if err != nil {
-		return out, err
-	}
-	// A same-team rule counts the teams of the campaign's lists: a list without a team would
-	// leave the rule with nothing to count.
-	if rule.Scope == models.RecentScopeTeam && len(teams) == 0 {
-		return out, c.recentBadRequest("noTeam")
-	}
+		if len(out.SourceLists) != len(ids) {
+			return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("globals.messages.invalidID"))
+		}
+		tags := recentSourceTeams(out.SourceLists)
+		if rule.Scope == models.RecentScopeTeam && len(tags) == 0 {
+			return out, c.recentBadRequest("noTeam")
+		}
+		teams, err := o.ResolveTeams(tags)
+		if err != nil {
+			return out, err
+		}
+		// A same-team rule counts the teams of the campaign's lists: a list without a team would
+		// leave the rule with nothing to count.
+		if rule.Scope == models.RecentScopeTeam && len(teams) == 0 {
+			return out, c.recentBadRequest("noTeam")
+		}
+		if o.AfterTeams != nil {
+			o.AfterTeams()
+		}
 
-	if out, err = c.makeRecentExcludeList(ctx, ids, rule, selfID, o.Name, teams, out); err != nil {
-		return out, err
+		out, err = c.makeRecentExcludeList(ctx, ids, rule, selfID, o.Name, tags, teams, out)
+		if errors.Is(err, errRecentTeamsChanged) {
+			if attempt < 3 {
+				continue
+			}
+			return out, c.recentError(err)
+		}
+		if err != nil {
+			return out, err
+		}
+		break
 	}
 	// The connection of the transaction is back in the pool here.
 	_ = c.refreshCache(matListSubStats, false)
 	return out, nil
 }
 
+// errRecentTeamsChanged: the source lists' teams changed between deciding the new list's teams
+// and the transaction's snapshot.
+var errRecentTeamsChanged = errors.New("the source lists' teams changed while the list was being made")
+
+// recentSourceTeams is the union of the source lists' team tags, in order.
+func recentSourceTeams(sources []models.RecentSourceList) []string {
+	tags := []string{}
+	for _, source := range sources {
+		for _, tag := range models.TeamTags(source.Tags) {
+			if !slices.Contains(tags, tag) {
+				tags = append(tags, tag)
+			}
+		}
+	}
+	return tags
+}
+
 // makeRecentExcludeList does the work of MakeRecentExcludeList on one connection: the lock and
 // the transaction share it, so the request never holds one connection while waiting for another.
 func (c *Core) makeRecentExcludeList(ctx context.Context, ids pq.Int64Array, rule models.RecentRule, selfID int,
-	reqName string, teams []string, out models.RecentListResult) (models.RecentListResult, error) {
+	reqName string, sourceTeams, teams []string, out models.RecentListResult) (models.RecentListResult, error) {
 	// Names are made unique by looking at the committed lists, so two makers must not run at
 	// once: the second one starts its snapshot only after the first one committed. The session
 	// lock is taken before the transaction takes its snapshot.
@@ -307,6 +336,12 @@ func (c *Core) makeRecentExcludeList(ctx context.Context, ids pq.Int64Array, rul
 	}
 	if len(out.SourceLists) != len(ids) {
 		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("globals.messages.invalidID"))
+	}
+	// The count below reads the teams of this snapshot (a same-team rule counts by them), and the
+	// new list's teams were decided from the teams read before: they must be the same.
+	if now := recentSourceTeams(out.SourceLists); len(now) != len(sourceTeams) ||
+		slices.ContainsFunc(now, func(t string) bool { return !slices.Contains(sourceTeams, t) }) {
+		return out, errRecentTeamsChanged
 	}
 
 	var counts models.RecentCounts
