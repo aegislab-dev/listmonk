@@ -86,7 +86,8 @@
     "sender-addresses.cy.js",
     "campaign-recent-exclude.cy.js",
     "address-check.cy.js",
-    "campaign-tracking-check.cy.js"
+    "campaign-tracking-check.cy.js",
+    "reaction-lists.cy.js"
    ]
   },
   {
@@ -98,7 +99,8 @@
    ],
    "specs": [
     "dynamic-lists.cy.js",
-    "list-draw.cy.js"
+    "list-draw.cy.js",
+    "column-presets.cy.js"
    ]
   },
   {
@@ -158,7 +160,11 @@
    ],
    "specs": [
     "subscriber-columns.cy.js",
-    "list-teams.cy.js"
+    "list-teams.cy.js",
+    "column-presets.cy.js",
+    "import-mapping.cy.js",
+    "address-check.cy.js",
+    "dynamic-lists.cy.js"
    ]
   },
   {
@@ -206,7 +212,8 @@
     "cmd/axm_recent_exclude*.go"
    ],
    "specs": [
-    "campaign-recent-exclude.cy.js"
+    "campaign-recent-exclude.cy.js",
+    "address-check.cy.js"
    ]
   },
   {
@@ -219,6 +226,80 @@
    ],
    "specs": [
     "campaign-tracking-check.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_address_check.sql"
+   ],
+   "specs": [
+    "address-check.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_audit.sql"
+   ],
+   "specs": [
+    "audit.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_column_presets.sql"
+   ],
+   "specs": [
+    "column-presets.cy.js",
+    "subscriber-columns.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_draws.sql"
+   ],
+   "specs": [
+    "list-draw.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_dynamic_lists.sql"
+   ],
+   "specs": [
+    "dynamic-lists.cy.js",
+    "list-draw.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_reaction_lists.sql"
+   ],
+   "specs": [
+    "reaction-lists.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_recent_exclude.sql"
+   ],
+   "specs": [
+    "campaign-recent-exclude.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_teams.sql"
+   ],
+   "specs": [
+    "list-teams.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "queries/axm_trash.sql"
+   ],
+   "specs": [
+    "list-trash.cy.js"
    ]
   }
  ],

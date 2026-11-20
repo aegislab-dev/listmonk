@@ -328,5 +328,53 @@ class StampFlowTest(unittest.TestCase):
             axm.load_stamp, axm.changed_since_base = orig_load, orig_base
 
 
+class SpecCoverageTest(unittest.TestCase):
+    """화면 파일이 선택하는 spec 이 그 화면의 data-cy 를 직접 단언하는 모든 CI spec 을 포함하는지 본다."""
+
+    @staticmethod
+    def _refs(text):
+        return set(re.findall(r'data-cy[\^$*]?=["\']?([\w-]+)', text))
+
+    def test_every_view_selects_the_specs_that_assert_its_data_cy(self):
+        specs = {s: self._refs((ROOT / 'frontend/cypress/e2e' / s).read_text()) for s in TMAP['ci_specs']}
+        missing = []
+        vues = {f: set(re.findall(r'data-cy="([\w-]+)"', (ROOT / f).read_text())) for f in FILES
+                if f.startswith('frontend/src/') and f.endswith('.vue')}
+        uses = {}
+        for v in vues.values():
+            for x in v:
+                uses[x] = uses.get(x, 0) + 1
+        for f, mine in vues.items():
+            mine = {x for x in mine if uses[x] == 1}  # 여러 화면이 같이 쓰는 이름(btn-save 등)은 제외
+            chosen = set(pick(f)['specs'])
+            for s, refs in specs.items():
+                hit = any(r == v or (v.endswith('-') and r.startswith(v)) or (r.endswith('-') and v.startswith(r))
+                          for r in refs for v in mine)
+                if hit and s not in chosen:
+                    missing.append(f'{f} -> {s}')
+        self.assertEqual(missing, [], '화면이 data-cy 로 검사되는 spec 이 선택에서 빠졌다: test-map.json 에 추가하라')
+
+    def test_every_axm_query_file_has_a_spec_rule(self):
+        allowed = {'queries/axm_sends.sql'}  # 발송 엔진 전용이라 화면 spec 이 없다(Go 시험이 덮는다)
+        for f in FILES:
+            if re.match(r'queries/axm_[^/]*\.sql$', f) and f not in allowed:
+                self.assertTrue(any(axm.match_any(f, r['paths']) for r in TMAP['rules']), f'{f} 규칙 없음')
+
+    def test_reviewer_cases(self):
+        self.assertIn('column-presets.cy.js', pick('frontend/src/views/Subscribers.vue')['specs'])
+        self.assertIn('list-draw.cy.js', pick('queries/axm_draws.sql')['specs'])
+        self.assertIn('list-trash.cy.js', pick('queries/axm_trash.sql')['specs'])
+
+    def test_embedded_file_plus_feature_file_keeps_whole_package(self):
+        r = pick('internal/core/axm_standard_attribs.json', 'internal/core/axm_audit.go')
+        self.assertIsNone(r['go']['internal/core'])
+
+    def test_parts_script_fails_on_setup_errors(self):
+        text = (HERE / 'axm').read_text()
+        text = text[text.index('PARTS_SH = r'):]
+        for needle in ('AXM_FAIL rm', 'AXM_FAIL clean-state', 'stuffbin-missing'):
+            self.assertIn(needle, text)
+
+
 if __name__ == '__main__':
     unittest.main()

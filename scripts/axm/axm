@@ -870,6 +870,7 @@ def select_go(changed, files):
             rev.setdefault(x, set()).add(d)
     notes = []
     direct, narrow = {}, {}
+    whole = set()  # 임베드 파일이 바뀌어 좁히지 않고 전체를 돌리는 패키지
     wide = False
     for f in changed:
         if f.endswith('.go'):
@@ -882,6 +883,7 @@ def select_go(changed, files):
         else:
             for d in embedding_packages(f, pk):
                 direct.setdefault(d, [])
+                whole.add(d)
                 notes.append(f'{d}: {f} 를 go:embed 하는 패키지라 전체')
     if wide:
         for d in ('cmd', 'internal/core'):
@@ -895,7 +897,7 @@ def select_go(changed, files):
     for d, fs in direct.items():
         if d not in ('cmd', 'internal/core') or not fs:
             continue
-        if wide:
+        if wide or d in whole:
             continue
         stems = []
         for f in fs:
@@ -1508,17 +1510,20 @@ PARTS_SH = r'''
 set -uo pipefail
 %(mark_fn)s
 export HOME=/tmp GOCACHE=/gocache GOMODCACHE=/gomod GOFLAGS=-buildvcs=false CYPRESS_INSTALL_BINARY=0 \
-       STUFFBIN=/go/bin/stuffbin CGO_ENABLED=0 CI=1
+       GOPATH=/tmp/gopath CGO_ENABLED=0 CI=1
+unset STUFFBIN   # Makefile 기본값 $(GOPATH)/bin/stuffbin = 비어 있는 /tmp/gopath/bin 에 make 가 직접 설치한다
 cd /src
-tar -C /work --null -T /axmctx/files.lst -cf - | tar -xf -
-rm -rf frontend/node_modules frontend/email-builder/node_modules /go/bin/stuffbin   # 지금 방식처럼 아무것도 없는 상태에서 시작
+tar -C /work --null -T /axmctx/files.lst -cf - | tar -xf - || { echo "AXM_FAIL copy"; exit 1; }
+rm -rf frontend/node_modules frontend/email-builder/node_modules || { echo "AXM_FAIL rm"; exit 1; }   # 지금 방식처럼 아무것도 없는 상태에서 시작
+[ ! -e /tmp/gopath/bin/stuffbin ] && [ ! -e frontend/node_modules ] || { echo "AXM_FAIL clean-state"; exit 1; }
 MK='VERSION=%(version)s LAST_COMMIT=%(commit)s'
 run() { n=$1; shift; mark $n:start; "$@"; rc=$?; mark $n:end; [ $rc = 0 ] || { echo "AXM_FAIL $n"; exit $rc; }; }
 run yarn_frontend  bash -c 'cd frontend && yarn install --frozen-lockfile'
 run yarn_emailbuilder bash -c 'cd frontend/email-builder && yarn install --frozen-lockfile'
 run unit bash -c 'cd frontend && yarn test:unit'
 run gotest_compile go test -count=1 -run '^$' ./...
-run stuffbin_install make $STUFFBIN
+run stuffbin_install make /tmp/gopath/bin/stuffbin
+[ -x /tmp/gopath/bin/stuffbin ] || { echo "AXM_FAIL stuffbin-missing"; exit 1; }
 run eb make build-email-builder $MK
 run fe make build-frontend $MK
 run gobuild make build $MK
