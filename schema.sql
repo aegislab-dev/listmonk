@@ -612,6 +612,7 @@ DROP TABLE IF EXISTS axm_deleted_lists CASCADE;
 DROP TABLE IF EXISTS axm_column_presets CASCADE;
 DROP TABLE IF EXISTS axm_campaign_recent_rules CASCADE;
 DROP TABLE IF EXISTS axm_test_addresses CASCADE;
+DROP TABLE IF EXISTS axm_campaign_followups CASCADE;
 
 -- AXM campaign send records. Keep this block identical to V6_2_1_axm_6.
 -- One row per campaign message that a messenger accepted: who got which campaign and when,
@@ -1166,3 +1167,21 @@ CREATE TABLE IF NOT EXISTS axm_test_addresses (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_axm_test_addr_token ON axm_test_addresses(token_hash) WHERE token_hash IS NOT NULL;
 -- End of AXM test addresses.
+
+-- AXM campaign follow-ups (LST-47). Keep this block identical to V6_2_1_axm_16.
+CREATE TABLE IF NOT EXISTS axm_campaign_followups (
+    campaign_id        INTEGER PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    parent_campaign_id INTEGER NOT NULL UNIQUE REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    -- The follow-up list by its UUID: a list that goes to the trash and comes back has the same UUID.
+    list_uuid          UUID NOT NULL,
+    condition          JSONB NOT NULL,
+    counts             JSONB NOT NULL DEFAULT '{}',
+    recheck            JSONB NOT NULL DEFAULT '{}',
+    -- People the check before sending holds back (subscriber, status before, updated_at after, reason).
+    held               JSONB NOT NULL DEFAULT '[]',
+    rechecked_at       TIMESTAMP WITH TIME ZONE NULL,
+    created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CHECK (campaign_id <> parent_campaign_id)
+);
+-- End of AXM campaign follow-ups.

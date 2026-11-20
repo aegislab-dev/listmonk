@@ -18,6 +18,9 @@ type reactionRequest struct {
 	Name         string `json:"name"`
 	Team         string `json:"team"`
 	NoTeam       bool   `json:"no_team"`
+	// Followup also makes a draft campaign that sends to the new list (LST-47).
+	Followup     bool   `json:"followup"`
+	FollowupName string `json:"followup_name"`
 }
 
 // reactionScope checks the same campaign read permission as the campaign page and the
@@ -38,6 +41,7 @@ func (a *App) reactionScope(c echo.Context, user auth.User) (core.ReactionScope,
 	return core.ReactionScope{
 		AllSubscribers: user.HasPerm(auth.PermSubscribersGetAll),
 		PermittedLists: permitted, IndividualTracking: a.cfg.Privacy.IndividualTracking,
+		CanFollowup: a.canMakeFollowup(c, user, getID(c)),
 	}, nil
 }
 
@@ -85,6 +89,7 @@ func (a *App) PreviewReactionList(c echo.Context) error {
 	if !user.HasPerm(auth.PermListManageAll) {
 		out.SourceTeams = []string{}
 	}
+	a.hideUnreadableFollowup(c, &out)
 	return c.JSON(http.StatusOK, okResp{out})
 }
 
@@ -105,16 +110,25 @@ func (a *App) MakeReactionList(c echo.Context) error {
 	if err := req.ReactionSettings.Validate(); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.reactionList.invalidCondition"))
 	}
-	out, err := a.core.MakeReactionList(c.Request().Context(), getID(c), req.ReactionSettings, core.ReactionListOptions{
+	opts := core.ReactionListOptions{
 		Name: req.Name, Scope: scope,
 		ResolveTeams: func(source []string) ([]string, error) { return a.reactionTeams(user, req, source) },
-	})
+	}
+	if req.Followup {
+		if !scope.CanFollowup {
+			return echo.NewHTTPError(http.StatusForbidden, a.i18n.Ts("globals.messages.permissionDenied", "name", auth.PermCampaignsManage))
+		}
+		if opts.Followup, err = a.followupDraft(c, user, getID(c), req.FollowupName); err != nil {
+			return err
+		}
+	}
+	out, err := a.core.MakeReactionList(c.Request().Context(), getID(c), req.ReactionSettings, opts)
 	if err != nil {
 		return a.reactionListError(err)
 	}
 	a.refreshTeamUsers()
 	list := out.List
-	a.audit(c, auditListCreate, auditTarget{auditTargetList, list.ID, list.Name}, list.SubscriberCount, map[string]any{
+	detail := map[string]any{
 		"type": list.Type, "optin": list.Optin, "teams": teamNames(list.Tags),
 		"made_from_campaign": map[string]any{
 			"id": out.Campaign.ID, "name": out.Campaign.Name, "open": req.Open, "click": req.Click,
@@ -123,7 +137,12 @@ func (a *App) MakeReactionList(c echo.Context) error {
 				models.ReactionCounts
 			}{out.Tracking.Sends, out.Counts},
 		},
-	})
+	}
+	if out.Followup != nil {
+		detail["followup_campaign"] = out.Followup.ID
+	}
+	a.audit(c, auditListCreate, auditTarget{auditTargetList, list.ID, list.Name}, list.SubscriberCount, detail)
+	a.auditFollowup(c, out, req.ReactionSettings)
 	return c.JSON(http.StatusOK, okResp{out})
 }
 

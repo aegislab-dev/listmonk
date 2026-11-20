@@ -54,6 +54,7 @@ const (
 	auditCampaignCancel     = "campaign.cancel"
 	auditCampaignDelete     = "campaign.delete"
 	auditCampaignTest       = "campaign.test"
+	auditCampaignFollowup   = "campaign.followup"
 
 	auditRoleCreate     = "role.create"
 	auditRoleUpdate     = "role.update"

@@ -50,6 +50,17 @@ type Queries struct {
 	AxmReactionCounts              *sqlx.Stmt `query:"axm-reaction-counts"`
 	AxmReactionSample              *sqlx.Stmt `query:"axm-reaction-sample"`
 	AxmReactionAddMembers          *sqlx.Stmt `query:"axm-reaction-add-members"`
+	AxmFollowupExisting            *sqlx.Stmt `query:"axm-followup-existing"`
+	AxmFollowupIsFollowup          *sqlx.Stmt `query:"axm-followup-is-followup"`
+	AxmFollowupInsert              *sqlx.Stmt `query:"axm-followup-insert"`
+	AxmFollowupGet                 *sqlx.Stmt `query:"axm-followup-get"`
+	AxmFollowupDue                 *sqlx.Stmt `query:"axm-followup-due"`
+	AxmFollowupByIDs               *sqlx.Stmt `query:"axm-followup-by-ids"`
+	AxmFollowupLockDue             *sqlx.Stmt `query:"axm-followup-lock-due"`
+	AxmFollowupFinishEmpty         *sqlx.Stmt `query:"axm-followup-finish-empty"`
+	AxmFollowupRecheck             *sqlx.Stmt `query:"axm-followup-recheck"`
+	AxmFollowupPending             *sqlx.Stmt `query:"axm-followup-pending"`
+	AxmFollowupHold                *sqlx.Stmt `query:"axm-followup-hold"`
 	AxmGetColumnPresets            *sqlx.Stmt `query:"axm-get-column-presets"`
 	AxmGetColumnPreset             *sqlx.Stmt `query:"axm-get-column-preset"`
 	AxmColumnPresetExists          *sqlx.Stmt `query:"axm-column-preset-exists"`
