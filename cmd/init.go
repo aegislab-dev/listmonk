@@ -82,6 +82,7 @@ type UrlConfig struct {
 // Config contains static, constant config values required by arbitrary handlers and functions.
 type Config struct {
 	SenderDomains                 []string
+	TestDomains                   []string
 	DefaultFrom                   string
 	DefaultReplyTo                string
 	FromAddresses                 []string
@@ -515,6 +516,7 @@ func initConstConfig(ko *koanf.Koanf) *Config {
 	}
 
 	c.SenderDomains = ko.Strings("axm.sender_domains")
+	c.TestDomains = ko.Strings("axm.test_domains")
 	c.DefaultFrom = ko.String("axm.default_from")
 	c.DefaultReplyTo = ko.String("axm.default_reply_to")
 	c.FromAddresses = ko.Strings("axm.from_addresses")

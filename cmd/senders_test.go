@@ -126,9 +126,9 @@ func TestPlaceholderFrom(t *testing.T) {
 		"a@example.com":                  true,
 		"a@mail.example.org":             true,
 		"a@example.net":                  true,
-		"a@foo.example":                  true,
-		"a@foo.invalid":                  true,
-		"a@foo.test":                     true,
+		"a@foo.example":                  false,
+		"a@foo.invalid":                  false,
+		"a@foo.test":                     false,
 		"aegislab_us@crevasse.ai":        false,
 		"Team <aegislab_us@crevasse.ai>": false,
 		"noreply@listmonk.yoursite.com":  false, // only the settings list refuses the stock address
@@ -140,6 +140,9 @@ func TestPlaceholderFrom(t *testing.T) {
 		if got := placeholderFrom(v); got != want {
 			t.Errorf("placeholderFrom(%q) = %v, want %v", v, got, want)
 		}
+	}
+	if !placeholderListFrom("a@foo.example") || !placeholderListFrom("a@foo.invalid") || !placeholderListFrom("a@foo.test") {
+		t.Fatal("the list refuses the reserved example TLDs")
 	}
 	if !placeholderListFrom("noreply@listmonk.yoursite.com") || !placeholderListFrom("a@x.yoursite.com") || placeholderListFrom("a@crevasse.ai") {
 		t.Fatal("placeholderListFrom")

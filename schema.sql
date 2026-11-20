@@ -232,6 +232,7 @@ CREATE TABLE settings (
 DROP INDEX IF EXISTS idx_settings_key; CREATE INDEX idx_settings_key ON settings(key);
 INSERT INTO settings (key, value) VALUES
     ('axm.sender_domains', '[]'),
+    ('axm.test_domains', '[]'),
     ('axm.default_from', '""'),
     ('axm.default_reply_to', '""'),
     ('axm.from_addresses', '[]'),
@@ -610,6 +611,7 @@ DROP TABLE IF EXISTS axm_deleted_list_subs CASCADE;
 DROP TABLE IF EXISTS axm_deleted_lists CASCADE;
 DROP TABLE IF EXISTS axm_column_presets CASCADE;
 DROP TABLE IF EXISTS axm_campaign_recent_rules CASCADE;
+DROP TABLE IF EXISTS axm_test_addresses CASCADE;
 
 -- AXM campaign send records. Keep this block identical to V6_2_1_axm_6.
 -- One row per campaign message that a messenger accepted: who got which campaign and when,
@@ -1152,3 +1154,15 @@ RETURNS TABLE(subscriber_id INT, excluded BOOL) LANGUAGE SQL STABLE AS $$
     FROM axm_campaign_audience(p_lists) t;
 $$;
 -- End of AXM recent-send exclusion.
+
+-- AXM test addresses (LST-41). Keep this block identical to V6_2_1_axm_14.
+CREATE TABLE IF NOT EXISTS axm_test_addresses (
+    user_id           INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    email             TEXT NOT NULL CHECK (email = LOWER(email)),
+    token_hash        TEXT NULL,
+    token_expires_at  TIMESTAMP WITH TIME ZONE NULL,
+    verified_at       TIMESTAMP WITH TIME ZONE NULL,
+    last_sent_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_axm_test_addr_token ON axm_test_addresses(token_hash) WHERE token_hash IS NOT NULL;
+-- End of AXM test addresses.
