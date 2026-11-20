@@ -26,19 +26,19 @@
         <div v-if="canManage || canSend" class="buttons">
           <b-field grouped v-if="isEditing && canEdit">
             <b-field v-if="canManage" expanded>
-              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns || savingCampaign" type="is-primary"
+              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
                 icon-left="content-save-outline" data-cy="btn-save" aria-keyshortcuts="ctrl+s">
                 <span class="has-kbd">{{ $t('globals.buttons.saveChanges') }} <span class="kbd">Ctrl+S</span></span>
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canStart">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
                 icon-left="rocket-launch-outline" data-cy="btn-start">
                 {{ $t('campaigns.start') }}
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canSchedule">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
                 icon-left="clock-start" data-cy="btn-schedule">
                 {{ $t('campaigns.schedule') }}
               </b-button>
@@ -87,7 +87,18 @@
                   <sender-address-input ref="replyTo" v-model="form.replyTo" :label="$t('campaigns.replyTo')"
                     :disabled="!canEdit" @addresses="onReplyAddresses" />
                 </template>
-                <b-field v-else :label="$t('campaigns.fromAddress')" label-position="on-border">
+                <b-notification v-if="!senderPolicyEnabled && fromWarning" type="is-warning" :closable="false"
+                  class="mb-4" data-cy="from-warning" role="alert">
+                  {{ fromWarning }}
+                </b-notification>
+                <b-field v-if="useFromSelect" :label="$t('campaigns.fromAddress')" label-position="on-border"
+                  :message="$t('campaigns.fromAddressListHelp')">
+                  <b-select v-model="fromSelected" name="from_email" :placeholder="$t('campaigns.fromAddressPick')"
+                    :disabled="!canEdit" required expanded data-cy="from-select">
+                    <option v-for="a in fromList" :value="a" :key="a">{{ a }}</option>
+                  </b-select>
+                </b-field>
+                <b-field v-else-if="!senderPolicyEnabled" :label="$t('campaigns.fromAddress')" label-position="on-border">
                   <b-input :maxlength="200" v-model="form.fromEmail" name="from_email" :disabled="!canEdit"
                     :placeholder="$t('campaigns.fromAddressPlaceholder')" required />
                 </b-field>
@@ -149,13 +160,28 @@
                   </div>
                   <div class="column">
                     <br />
-                    <b-field v-if="form.sendLater" data-cy="send_at"
-                      :message="form.sendAtDate ? $utils.duration(Date(), form.sendAtDate) : ''">
-                      <b-datetimepicker v-model="form.sendAtDate" :disabled="!canEdit" required editable mobile-native
-                        position="is-top-right" :placeholder="$t('campaigns.dateAndTime')" icon="calendar-clock"
-                        :timepicker="{ hourFormat: '24' }" :datetime-formatter="formatDateTime"
-                        horizontal-time-picker />
-                    </b-field>
+                    <div v-if="form.sendLater" class="send-at" data-cy="send_at">
+                      <b-field class="send-at-row">
+                        <b-datetimepicker v-model="sendAtPicker" :disabled="!canEdit" required editable mobile-native expanded
+                          position="is-top-right" :placeholder="$t('campaigns.dateAndTime')" icon="calendar-clock"
+                          :timepicker="{ hourFormat: '24' }" :datetime-formatter="formatDateTime"
+                          horizontal-time-picker />
+                        <timezone-picker v-model="form.sendTz" :instant="form.sendAtDate" :disabled="!canEdit" />
+                      </b-field>
+                      <p v-if="form.sendAtDate" class="help send-at-duration">
+                        {{ $utils.duration(Date(), form.sendAtDate) }}
+                      </p>
+                      <p v-if="form.sendAtDate" class="send-at-zones" data-cy="send-at-zones">
+                        <template v-for="(z, i) in sendAtZones">
+                          <span v-if="i > 0" :key="`s-${z.tz}`" class="sep">&#8203;|&#8203;</span>
+                          <span :key="z.tz" class="zone" :data-tz="z.tz">
+                            <b v-if="z.kst" class="kst">{{ $t('campaigns.sendTz.kst') }}</b><span v-else class="city">{{ z.city }}</span>
+                            <b>{{ z.parts.md }} ({{ $t(`globals.days.${z.parts.wd + 1}`) }}) {{ z.parts.hm }}</b>
+                          </span>
+                        </template>
+                      </p>
+                      <p v-if="sendAtBrowserNote" class="send-at-note" data-cy="send-at-browser-note">{{ sendAtBrowserNote }}</p>
+                    </div>
                   </div>
                 </div>
 
@@ -181,24 +207,12 @@
                 </b-field>
               </form>
             </div>
-            <div v-if="canManage" class="column is-4 is-offset-1">
+            <div v-if="canManage || canCheckTracking" class="column is-4 is-offset-1">
               <br />
-              <div class="box">
-                <h3 class="title is-size-6">
-                  {{ $t('campaigns.sendTest') }}
-                </h3>
-                <b-field :message="$t('campaigns.sendTestHelp')">
-                  <b-taginput v-model="form.testEmails" :before-adding="$utils.validateEmail" :disabled="isNew" ellipsis
-                    icon="email-outline" :placeholder="$t('campaigns.testEmails')" />
-                </b-field>
-                <p class="help mb-4">{{ $t('campaigns.personalize.testHelp') }}</p>
-                <b-field>
-                  <b-button @click="() => onSubmit('test')" :loading="loading.campaigns" :disabled="isNew"
-                    type="is-primary" icon-left="email-outline">
-                    {{ $t('campaigns.send') }}
-                  </b-button>
-                </b-field>
-              </div>
+              <tracking-check v-if="canCheckTracking" ref="tracking" :campaign-id="data.id" :payload="trackingPayload" />
+              <campaign-test-send v-if="canManage" v-model="form.testEmails" :sample.sync="testSample" :rejected.sync="testRejected"
+                :own-unverified="testOwnUnverified" :disabled="isNew" :loading="loading.campaigns" :preview="testPreview"
+                @send="() => onSubmit('test')" />
             </div>
           </div>
         </section>
@@ -206,7 +220,8 @@
 
       <b-tab-item :label="$t('campaigns.content')" icon="text" :disabled="isNew" value="content">
         <editor v-if="data.id" v-model="form.content" :id="data.id" :title="data.name" :disabled="!canEdit"
-          :templates="templates" :content-types="contentTypes" :list-ids="form.lists.map((l) => l.id)" />
+          :templates="templates" :content-types="contentTypes" :list-ids="form.lists.map((l) => l.id)"
+          :preview-sample="previewSample" :preview-sample-label="previewSampleLabel" />
 
         <div class="columns">
           <div class="column is-6">
@@ -248,7 +263,7 @@
         <section class="wrap">
           <b-field :label="$t('globals.terms.attribs')" :message="$t('campaigns.attribsHelp')"
             label-position="on-border">
-            <b-input v-model="form.attribsStr" type="textarea" :disabled="!canEdit" rows="15" />
+            <b-input v-model="form.attribsStr" type="textarea" :disabled="!canEdit" rows="15" data-cy="campaign-attribs" />
           </b-field>
         </section>
       </b-tab-item><!-- attribs -->
@@ -353,15 +368,25 @@ import Vue from 'vue';
 import { mapState } from 'vuex';
 
 import CampaignPreview from '../components/CampaignPreview.vue';
+import CampaignTestSend from '../components/CampaignTestSend.vue';
 import CopyText from '../components/CopyText.vue';
 import Editor from '../components/Editor.vue';
 import ListSelector from '../components/ListSelector.vue';
 import AddressCheck from '../components/AddressCheck.vue';
 import RecentSendExclude from '../components/RecentSendExclude.vue';
+import TimezonePicker from '../components/TimezonePicker.vue';
 import Media from './Media.vue';
 import SenderAddressInput from '../components/SenderAddressInput.vue';
+import TrackingCheck from '../components/TrackingCheck.vue';
 import { isSenderDomain } from '../senders';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
+import {
+  browserDiffers, browserZoneName, instantToWall, KST, mergeAttribs, otherZoneLines, splitAttribs, wallToInstant,
+} from '../schedule-time';
+import {
+  newSample, rejectedOf, sampleLabel, samplePayload,
+} from '../test-send';
+import { trackingConfirmLines, trackingToastParts, warningsCovered } from '../tracking-check';
 
 export default Vue.extend({
   components: {
@@ -370,9 +395,12 @@ export default Vue.extend({
     Media,
     CopyText,
     CampaignPreview,
+    CampaignTestSend,
     SenderAddressInput,
     AddressCheck,
     RecentSendExclude,
+    TimezonePicker,
+    TrackingCheck,
   },
 
   data() {
@@ -400,6 +428,19 @@ export default Vue.extend({
       createdDraftId: 0,
       savingCampaign: false,
 
+      // The test box (LST-41): the sample for addresses that are not subscribers, and the
+      // addresses the server refused last time.
+      testSample: newSample(),
+      testRejected: [],
+      testOwnUnverified: false,
+
+      // A start/schedule in progress (LST-44): its number, and its open confirmation.
+      startingCampaign: false,
+      startBusy: false,
+      startSeq: 0,
+      startAsk: null,
+      isDestroyed: false,
+
       data: {},
 
       // IDs from ?list_id query param.
@@ -411,6 +452,7 @@ export default Vue.extend({
         name: '',
         subject: '',
         fromEmail: '',
+        fromChoice: null,
         replyTo: '',
         headersStr: '[]',
         headers: [],
@@ -430,6 +472,8 @@ export default Vue.extend({
 
         // Parsed Date() version of send_at from the API.
         sendAtDate: null,
+        // The time zone the picker is read in (LST-50); kept in the campaign's attribs.
+        sendTz: KST,
         sendLater: false,
         archive: false,
         archiveMetaStr: '{}',
@@ -440,6 +484,24 @@ export default Vue.extend({
   },
 
   methods: {
+    // The From a new campaign starts with, as the server decides it: with a
+    // From list the entry in serverConfig.from_default, else the app default.
+    defaultFrom() {
+      if (this.senderPolicyEnabled || this.fromList.length === 0) return this.serverConfig.from_email;
+      return this.fromList[this.serverConfig.from_default ?? 0];
+    },
+
+    // Remembers which list entry the From stands for (the server says: from_match).
+    chooseFrom(email) {
+      this.form.fromEmail = email;
+      this.form.fromChoice = this.fromList.includes(email) ? email : null;
+    },
+
+    // The list entry the server matched to a campaign's From, or null.
+    fromChoiceOf(d) {
+      return !this.senderPolicyEnabled && d.fromEntry ? d.fromEntry : null;
+    },
+
     onReplyAddresses() {
       if (this.$refs.replyTo?.allowed) this.replyError = '';
     },
@@ -517,8 +579,49 @@ export default Vue.extend({
       this.form.archiveMetaStr = this.$utils.getPref('campaign.archiveMetaStr') || JSON.stringify(JSON.parse(archiveStr), null, 4);
     },
 
-    // Checks the JSON fields and keeps their parsed values for saving.
-    validateForm() {
+    // The attribs to send: the JSON tab (an object) plus the chosen send time zone. Returns undefined,
+    // after a message, when the JSON tab is not an object. Used by every save, so starting or
+    // scheduling straight from the screen keeps the time zone too.
+    attribsToSave() {
+      let attribs = null;
+      if (this.form.attribsStr && this.form.attribsStr.trim()) {
+        try {
+          attribs = JSON.parse(this.form.attribsStr);
+        } catch (e) {
+          this.$utils.toast(`${this.$t('subscribers.invalidJSON')}: ${e.toString()}`, 'is-danger', 3000);
+          return undefined;
+        }
+        if (attribs !== null && (typeof attribs !== 'object' || Array.isArray(attribs))) {
+          this.$utils.toast(this.$t('subscribers.invalidJSON'), 'is-danger', 3000);
+          return undefined;
+        }
+      }
+      const scheduled = !!(this.form.sendLater && this.form.sendAtDate);
+      return attribs === null && !scheduled ? null : mergeAttribs(attribs, this.form.sendTz, scheduled);
+    },
+
+    onSubmit(typ) {
+      // While a start is being checked and confirmed, a save would change what was checked.
+      if (this.savingCampaign || this.startingCampaign) return;
+      if (!this.parseFormJSON()) return;
+
+      switch (typ) {
+        case 'create':
+          this.createCampaign().catch(() => {});
+          break;
+        case 'test':
+          this.sendTest();
+          break;
+        default:
+          this.updateCampaign().catch(() => {});
+          break;
+      }
+    },
+
+    // Reads the JSON text fields (headers, archive meta, attributes) into the form values
+    // that are saved. Every path that saves calls this first: saving without it writes the
+    // values of the last save, not what is on the page. False: one of them does not parse.
+    parseFormJSON() {
       // Validate custom JSON headers.
       if (this.form.headersStr && this.form.headersStr !== '[]') {
         try {
@@ -542,49 +645,23 @@ export default Vue.extend({
       }
 
       // Validate custom JSON attribs.
-      let attribs = null;
-      if (this.form.attribsStr && this.form.attribsStr.trim()) {
-        try {
-          attribs = JSON.parse(this.form.attribsStr);
-        } catch (e) {
-          this.$utils.toast(
-            `${this.$t('subscribers.invalidJSON')}: ${e.toString()}`,
-            'is-danger',
-
-            3000,
-          );
-          return false;
-        }
-      }
+      const attribs = this.attribsToSave();
+      if (attribs === undefined) return false;
       this.form.attribs = attribs;
       return true;
-    },
-
-    onSubmit(typ) {
-      if (this.savingCampaign || !this.validateForm()) return;
-
-      switch (typ) {
-        case 'create':
-          this.createCampaign().catch(() => {});
-          break;
-        case 'test':
-          this.sendTest();
-          break;
-        default:
-          this.updateCampaign().catch(() => {});
-          break;
-      }
     },
 
     getCampaign(id) {
       return this.$api.getCampaign(id).then(async (data) => {
         this.data = data;
+        const { tz, rest } = splitAttribs(data.attribs);
         this.form = {
           ...this.form,
           ...data,
+          sendTz: tz,
           headersStr: JSON.stringify(data.headers, null, 4),
           archiveMetaStr: data.archiveMeta ? JSON.stringify(data.archiveMeta, null, 4) : '{}',
-          attribsStr: data.attribs ? JSON.stringify(data.attribs, null, 4) : '{}',
+          attribsStr: data.attribs ? JSON.stringify(rest, null, 4) : '{}',
 
           // The structure that is populated by editor input event.
           content: {
@@ -594,6 +671,7 @@ export default Vue.extend({
             templateId: data.templateId,
           },
         };
+        this.form.fromChoice = this.fromChoiceOf(data);
         this.isAttachFieldVisible = this.form.media.length > 0;
 
         this.form.media = this.form.media.map((f) => {
@@ -633,6 +711,8 @@ export default Vue.extend({
 
     async sendTest() {
       if (!await this.checkReplyTo()) return false;
+      const sample = samplePayload(this.testSample);
+      if (sample.error) return false;
       const data = {
         id: this.data.id,
         name: this.form.name,
@@ -650,11 +730,38 @@ export default Vue.extend({
         subscribers: this.form.testEmails,
         media: this.form.media.map((m) => m.id),
       };
+      if (sample.payload) data.sample = sample.payload;
 
-      this.$api.testCampaign(data).then(() => {
-        this.$utils.toast(this.$t('campaigns.testSent'));
+      this.testRejected = [];
+      // The tracking state of exactly what this test sends (LST-44): the test takes these
+      // fields from the form and the rest (the attributes) from the saved campaign.
+      const tracking = this.$api.checkCampaignTracking(this.data.id, {
+        content_type: data.content_type,
+        body: data.body || '',
+        template_id: data.template_id || 0,
+        messenger: data.messenger,
+        name: data.name,
+        subject: data.subject,
+        headers: data.headers,
+        mode: 'test',
+        media: data.media,
+        ...(data.altbody === null ? {} : { altbody: data.altbody }),
+        // The sender fields as the test sends them: with sender domains the server sets
+        // the sender from the account of the person sending the test (LST-44 review).
+        ...this.senderFields(),
+      }).catch(() => null);
+      this.$api.testCampaign(data).then(async () => {
+        const parts = trackingToastParts(await tracking).map(({ key, params }) => this.$t(key, params));
+        if (parts.length) {
+          this.$utils.toast([this.$t('campaigns.testSent'), ...parts].join(' · '), 'is-warning', 6000);
+        } else {
+          this.$utils.toast(this.$t('campaigns.testSent'));
+        }
       }).catch((err) => {
-        if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
+        // Refused addresses are marked in the test box itself.
+        this.testRejected = rejectedOf(err);
+        this.testOwnUnverified = !!err.response?.data?.data?.own_unverified;
+        if (this.senderPolicyEnabled && this.testRejected.length === 0) this.replyError = err.response?.data?.message || '';
       });
       return false;
     },
@@ -699,15 +806,19 @@ export default Vue.extend({
       this.madeList = { id, saved: false, error: '' };
       if (!this.data.id) return;
       try {
-        if (!this.validateForm()) throw new Error('invalid form');
+        if (!this.parseFormJSON()) throw new Error('invalid form');
         await this.updateCampaign();
       } catch (err) {
         this.madeList = { id, saved: false, error: this.$t('campaigns.recent.listSaveError') };
       }
     },
 
-    async updateCampaign(typ) {
+    // quiet: no notice (the start shows it after its questions).
+    async updateCampaign(typ, { quiet = false } = {}) {
       if (this.savingCampaign) return undefined;
+      const attribs = this.attribsToSave();
+      if (attribs === undefined) throw new Error('invalid attribs');
+      this.form.attribs = attribs;
       const data = {
         archive_slug: this.form.archiveSlug,
         name: this.form.name,
@@ -749,12 +860,16 @@ export default Vue.extend({
         });
         this.data = d;
         this.form.fromEmail = d.fromEmail;
+        this.form.fromChoice = this.fromChoiceOf(d);
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
-        this.form.attribsStr = d.attribs ? JSON.stringify(d.attribs, null, 4) : '{}';
+        this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
         await this.saveRecentRule(d.id);
         if (this.madeList) this.madeList = { ...this.madeList, saved: true, error: '' };
-        this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        if (!quiet) this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        // Saving can change what the check reads beyond the page (the sender of the
+        // person who saves, merged headers): check again (LST-44).
+        if (this.$refs.tracking) this.$refs.tracking.run();
         return d;
       } finally {
         this.savingCampaign = false;
@@ -779,37 +894,114 @@ export default Vue.extend({
     },
 
     // Starts or schedule a campaign.
+    //
+    // The tracking warning (LST-44) is about what will really be sent, and cancelling does
+    // nothing. So: check what is on the page, ask; only after the confirmation save, check
+    // the saved campaign again and start. If the saved campaign warns about something that
+    // was not confirmed (an edit made while the first check was on its way, headers that
+    // the server merges on save, a save from another tab), ask again with what was found.
+    // Every step first makes sure that this page still shows this campaign and that this
+    // start is the current one: a page that was left or a newer start drops it.
     async startCampaign() {
-      if (this.savingCampaign || (!this.canStart && !this.canSchedule)) {
+      if (this.savingCampaign || this.startingCampaign || (!this.canStart && !this.canSchedule)) {
         return;
       }
 
-      if (!await this.checkReplyTo()) return;
-      this.$utils.confirm(
-        this.recentRule.enabled
-          ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null,
-        () => {
-          if (this.savingCampaign) return;
-          // First save the campaign.
-          this.updateCampaign().then(() => {
-            // Then start/schedule it.
-            let status = '';
-            if (this.canStart) {
-              status = 'running';
-            } else if (this.canSchedule) {
-              status = 'scheduled';
-            } else {
-              return undefined;
-            }
+      const { id } = this.data;
+      this.startSeq += 1;
+      const seq = this.startSeq;
+      const current = () => !this.isDestroyed && this.startSeq === seq && this.data.id === id;
+      // Start or schedule: decided by the page as it is when asking, and again by what
+      // was saved (the send time may be switched off while the check is on its way).
+      const action = () => {
+        if (this.canStart) return 'running';
+        return this.canSchedule ? 'scheduled' : null;
+      };
+      // Only the requests show as loading on the buttons; an open question does not.
+      const busy = async (p) => {
+        this.startBusy = true;
+        try {
+          return await p;
+        } finally {
+          if (this.startSeq === seq) this.startBusy = false;
+        }
+      };
+      const check = (payload) => busy(this.$api.checkCampaignTracking(id, payload).catch(() => null)
+        .then((r) => trackingConfirmLines(r)));
 
-            return this.$api.changeCampaignStatus(this.data.id, status).then(() => {
-              this.$router.push({ name: 'campaigns' });
-            }).catch((err) => {
-              if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
-            });
-          }).catch(() => {});
-        },
-      );
+      this.startingCampaign = true;
+      let saved = null;
+      try {
+        if (!await busy(this.checkReplyTo()) || !current()) return;
+        if (!this.parseFormJSON()) return;
+
+        // The box checks the same values, so it shows what the question says.
+        if (this.$refs.tracking) this.$refs.tracking.run();
+        let lines = await check(this.trackingPayload);
+        let status = action();
+        for (;;) {
+          if (!current() || !status) return;
+          // eslint-disable-next-line no-await-in-loop
+          if (!await this.askStart(lines, status) || !current()) return;
+
+          if (!saved) {
+            // Saves the page as it is now (it may have been edited while the check was
+            // on its way); the check of the saved campaign below covers the difference.
+            if (!this.parseFormJSON()) return;
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              saved = await this.updateCampaign(undefined, { quiet: true });
+            } catch (e) {
+              return;
+            }
+            if (!saved || !current()) return;
+          }
+
+          const after = action();
+          if (!after) return;
+          // eslint-disable-next-line no-await-in-loop
+          const now = await check({ status: after });
+          if (!current()) return;
+          if (after === status && warningsCovered(lines, now)) break;
+          lines = now;
+          status = after;
+        }
+
+        await busy(this.$api.changeCampaignStatus(id, status).then(() => {
+          if (current()) this.$router.push({ name: 'campaigns' });
+        }).catch((err) => {
+          if (this.senderPolicyEnabled && current()) this.replyError = err.response?.data?.message || '';
+        }));
+      } finally {
+        if (this.startSeq === seq) this.startingCampaign = false;
+        // The save notice waits until the questions are answered: it does not belong
+        // over the confirmation (approved design v1).
+        if (saved) this.$utils.toast(this.$t('globals.messages.updated', { name: saved.name }));
+      }
+    },
+
+    // The start/schedule confirmation, with the tracking warnings when there are any.
+    // Resolves true on confirm, false on cancel or when the page goes away.
+    askStart(lines, status) {
+      return new Promise((resolve) => {
+        const done = (ok) => {
+          if (this.startAsk && this.startAsk.resolve === done) this.startAsk = null;
+          resolve(ok);
+        };
+        const warnings = lines.map(({ key, params }) => this.$t(key, params));
+        const msg = this.recentRule.enabled
+          ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null;
+        const dialog = warnings.length
+          ? this.$utils.confirmWithWarnings(
+            msg,
+            warnings,
+            this.$t(`campaigns.tracking.confirm.${status === 'running' ? 'start' : 'schedule'}`),
+            () => done(true),
+            () => done(false),
+          )
+          : this.$utils.confirm(msg, () => done(true), () => done(false));
+        this.startAsk = { dialog, resolve: done };
+      });
     },
 
     unscheduleCampaign() {
@@ -821,6 +1013,73 @@ export default Vue.extend({
 
   computed: {
     ...mapState(['serverConfig', 'loading', 'lists', 'templates', 'profile']),
+
+    // The picker works on local fields, so it gets the moment as a clock time in the chosen zone.
+    sendAtPicker: {
+      get() {
+        return this.form.sendAtDate ? instantToWall(this.form.sendAtDate, this.form.sendTz) : null;
+      },
+      set(v) {
+        this.form.sendAtDate = v ? wallToInstant(v, this.form.sendTz) : null;
+      },
+    },
+
+    // KST first, then the frequent zones, for the same moment.
+    sendAtZones() {
+      return this.form.sendAtDate ? otherZoneLines(this.form.sendAtDate, this.form.sendTz) : [];
+    },
+
+    sendAtBrowserNote() {
+      const t = this.form.sendAtDate;
+      if (!t || !browserDiffers(t, this.form.sendTz)) return '';
+      return this.$t('campaigns.sendTz.browserNote', { zone: browserZoneName(), time: dayjs(t).format('MM/DD HH:mm') });
+    },
+
+    // What the tracking check renders: everything a template can read from the campaign,
+    // as the form has it now. Starting saves exactly these first. JSON that is still being
+    // typed (headers, attributes) is left out until it parses, and the saved value counts.
+    trackingPayload() {
+      const json = (str) => { try { return JSON.parse(str); } catch (e) { return undefined; } };
+      const headers = this.form.headersStr && this.form.headersStr !== '[]' ? json(this.form.headersStr) : [];
+      // Empty or null attributes are saved as none: say so, or the saved ones would count.
+      let attribs = this.form.attribsStr && this.form.attribsStr.trim() ? (json(this.form.attribsStr) ?? {}) : {};
+      // Saving adds the send time zone (LST-50), which the attributes tab does not show.
+      if (attribs && typeof attribs === 'object' && !Array.isArray(attribs)) {
+        attribs = mergeAttribs(attribs, this.form.sendTz, !!(this.form.sendLater && this.form.sendAtDate));
+      }
+      const altbody = this.form.content.contentType !== 'plain' ? this.form.altbody : null;
+      // As saving reads it: the archive metadata on the page when it parses.
+      let archiveMeta = this.form.archive && this.form.archiveMetaStr ? json(this.form.archiveMetaStr) : undefined;
+      if (archiveMeta === undefined) archiveMeta = this.form.archiveMeta || undefined;
+      return {
+        content_type: this.form.content.contentType,
+        body: this.form.content.body || '',
+        template_id: this.form.content.templateId || 0,
+        messenger: this.form.messenger,
+        name: this.form.name,
+        subject: this.form.subject,
+        tags: this.form.tags,
+        ...(Array.isArray(headers) ? { headers } : {}),
+        ...(attribs && typeof attribs === 'object' && !Array.isArray(attribs) ? { attribs } : {}),
+        ...(altbody === null || altbody === undefined ? {} : { altbody }),
+        ...this.senderFields(),
+        // What the send will be: templates can read the status (LST-44 review).
+        status: this.form.sendLater && this.form.sendAtDate ? 'scheduled' : 'running',
+        send_at: this.form.sendLater ? this.form.sendAtDate : null,
+        // The rest of what saving sends that a template can read (LST-44 review).
+        archive: this.form.archive,
+        archive_slug: this.form.archiveSlug || null,
+        archive_template_id: this.form.archiveTemplateId || null,
+        ...(archiveMeta === undefined ? {} : { archive_meta: archiveMeta }),
+        body_source: this.form.content.bodySource || null,
+        media: this.form.media.map((m) => m.id),
+      };
+    },
+
+    // The pre-send tracking check is for a saved campaign that can still be edited.
+    canCheckTracking() {
+      return this.isEditing && !!this.data.id && this.canEdit;
+    },
 
     canShowRecentRule() {
       return this.isNew || this.data.type === 'regular';
@@ -840,7 +1099,50 @@ export default Vue.extend({
       return this.canShowRecentRule && this.recentRuleKey !== this.savedRecentRule;
     },
 
+    fromList() { return this.serverConfig.from_addresses || []; },
+    // The From list replaces free input only while it can be edited and the
+    // account-sender feature (which decides the From itself) is off.
+    useFromSelect() { return !this.senderPolicyEnabled && this.fromList.length > 0 && this.canEdit; },
+    fromSelected: {
+      get() { return this.form.fromChoice || null; },
+      set(v) { this.chooseFrom(v); },
+    },
+    // Warns about a saved From that the server did not match to the list (or,
+    // with no list, called a placeholder). Gone once another entry is picked.
+    fromWarning() {
+      const email = (this.data.fromEmail || '').trim();
+      if (!this.isEditing || !this.canEdit || !email || this.senderPolicyEnabled) return '';
+      if (this.fromList.length === 0) {
+        return this.data.fromPlaceholder && this.form.fromEmail === this.data.fromEmail
+          ? this.$t('campaigns.fromPlaceholderWarnFree', { email }) : '';
+      }
+      if (this.form.fromChoice) return '';
+      return this.$t(this.data.fromPlaceholder ? 'campaigns.fromPlaceholderWarn' : 'campaigns.fromNotInListWarn', { email });
+    },
+
     senderPolicyEnabled() { return (this.serverConfig.sender_domains || []).length > 0; },
+
+    // The sample of the test box as the preview takes it, and its name for the preview header.
+    previewSample() {
+      const { payload } = samplePayload(this.testSample);
+      return payload ? JSON.stringify(payload) : '';
+    },
+    previewSampleLabel() {
+      const label = sampleLabel(this.testSample);
+      if (label.kind === 'default') return '';
+      return this.$t(`campaigns.testSend.previewLabel.${label.kind}`, { name: label.name || '—' });
+    },
+    testPreview() {
+      return {
+        id: this.data.id || 0,
+        title: this.data.name || '',
+        contentType: this.form.content.contentType,
+        templateId: this.form.content.templateId,
+        body: this.form.content.body,
+        sample: this.previewSample,
+        sampleLabel: this.previewSampleLabel,
+      };
+    },
     usesAccountFrom() { return isSenderDomain(this.profile.email, this.serverConfig.sender_domains); },
     resolvedFrom() {
       if (this.isEditing && !['draft', 'scheduled'].includes(this.data.status)) return this.data.fromEmail;
@@ -912,6 +1214,16 @@ export default Vue.extend({
       this.form.lists = this.selectedLists;
     },
 
+    // The stored status decides what the check reads besides the page: a draft is sent
+    // with the sender of the person who starts it, a scheduled campaign with the stored
+    // one. When it changes on this page (unschedule), check again (LST-44).
+    'data.status': function onStatus(now, before) {
+      if (!before || now === before) return;
+      this.$nextTick(() => {
+        if (this.$refs.tracking) this.$refs.tracking.run();
+      });
+    },
+
     // eslint-disable-next-line func-names
     'data.sendAt': function () {
       if (this.data.sendAt !== null) {
@@ -927,11 +1239,23 @@ export default Vue.extend({
   mounted() {
     window.onbeforeunload = () => this.isUnsaved() || null;
 
-    // Refresh the server-computed sender after a profile change in this session.
-    if (this.senderPolicyEnabled) this.$api.getServerConfig();
-
+    // Refresh the server config: the computed sender may have changed with the
+    // profile, and another session may have replaced the From list since this
+    // page was loaded. A new campaign then takes the refreshed default.
     // Fill default form fields.
-    this.form.fromEmail = this.serverConfig.from_email;
+    this.chooseFrom(this.defaultFrom());
+    const initialFrom = this.form.fromEmail;
+
+    const cfgReady = this.$api.getServerConfig();
+    cfgReady.then(() => {
+      if (!this.isNew || this.senderPolicyEnabled) return;
+      // Replace a From that came from the old config: the untouched default,
+      // or one that the refreshed list no longer has.
+      if (this.form.fromEmail === initialFrom
+        || (this.fromList.length > 0 && !this.fromList.includes(this.form.fromEmail))) {
+        this.chooseFrom(this.defaultFrom());
+      }
+    });
     if (this.senderPolicyEnabled && !this.usesAccountFrom) this.form.replyTo = this.serverConfig.default_reply_to;
 
     // New campaign.
@@ -993,11 +1317,46 @@ export default Vue.extend({
 
   beforeDestroy() {
     this.$events.$off('campaign.update');
+
+    // A start that is still being checked or confirmed belongs to this page only.
+    this.isDestroyed = true;
+    this.startSeq += 1;
+    if (this.startAsk) {
+      const { dialog, resolve } = this.startAsk;
+      if (dialog) dialog.close();
+      resolve(false);
+    }
   },
 });
 </script>
 
 <style scoped>
+.send-at-row { margin-bottom: 0; }
+/* The column can be narrow on a wide screen too (tablets, small windows): the input keeps room
+   for the date and time, and the zone button goes under it rather than squeezing it. */
+.send-at { container-type: inline-size; }
+.send-at-row ::v-deep .has-addons { flex-wrap: wrap; row-gap: .5rem; }
+.send-at-row ::v-deep .datepicker { flex: 1 1 12rem; min-width: min(12rem, 100%); }
+/* 25rem: the input's 12rem and the button's 12.5rem side by side. */
+@container (max-width: 25rem) {
+  .send-at-row ::v-deep .datepicker { flex-basis: 100%; }
+  .send-at-row ::v-deep .field.has-addons .control.tzp { flex: 0 1 auto; max-width: 100%; }
+  .send-at-row ::v-deep .field.has-addons .control.tzp .tzp-button { width: auto; max-width: 100%; min-width: 0; border-radius: 4px; }
+  .send-at-row ::v-deep .tzp-panel { left: 0; right: auto; }
+}
+@media (max-width: 520px) {
+  /* The zone button goes under the input instead of past the edge of the screen. */
+  .send-at-row ::v-deep .datepicker { flex: 1 1 100%; min-width: 0; }
+  .send-at-row ::v-deep .field.has-addons .control.tzp .tzp-button { border-radius: 4px; }
+}
+.send-at-duration { margin-top: .5rem; }
+.send-at-zones { font-size: .8125rem; color: #6b7280; margin-top: .25rem; line-height: 1.7; }
+.send-at-zones .zone { white-space: nowrap; }
+.send-at-zones .zone b { color: #374151; font-weight: 600; }
+.send-at-zones .zone b.kst { color: #1d4ed8; }
+.send-at-zones .zone > :first-child { margin-right: .3em; }
+.send-at-zones .sep { margin: 0 .4rem; color: #c4c9d1; }
+.send-at-note { margin-top: .5rem; padding: .5rem .75rem; background: #fff8e1; border: 1px solid #f1dc9a; border-radius: 6px; font-size: .8125rem; color: #614600; line-height: 1.5; }
 .sender-readonly {
   background: #f7f8fa; border: 1px solid #ddd; border-radius: 4px; padding: 12px; font-size: 14px;
   display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; overflow-wrap: anywhere;

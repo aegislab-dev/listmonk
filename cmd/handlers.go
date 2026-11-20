@@ -192,6 +192,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/campaigns/:id/preview", pm(hasID(a.PreviewCampaign), "campaigns:get_all", "campaigns:get"))
 		g.POST("/api/campaigns/:id/preview/archive", pm(hasID(a.PreviewCampaignArchive), "campaigns:get_all", "campaigns:get"))
 		g.POST("/api/campaigns/:id/preview", pm(hasID(a.PreviewCampaign), "campaigns:get_all", "campaigns:get"))
+		g.POST("/api/campaigns/:id/tracking-check", pm(hasID(a.CheckCampaignTracking), "campaigns:get_all", "campaigns:get"))
 		g.POST("/api/campaigns/:id/content", pm(hasID(a.CampaignContent), "campaigns:manage_all", "campaigns:manage"))
 		g.POST("/api/campaigns/:id/text", pm(hasID(a.PreviewCampaign), "campaigns:get"))
 		g.POST("/api/campaigns/:id/test", pm(hasID(a.senderPolicyGuard(a.TestCampaign)), "campaigns:manage_all", "campaigns:manage"))
@@ -292,6 +293,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 
 		g.GET("/sender/verify/:token", noIndex(a.SenderVerify))
 		g.POST("/sender/verify/:token", noIndex(a.SenderVerify))
+		g.GET("/test-address/verify/:token", noIndex(a.TestAddressVerify))
+		g.POST("/test-address/verify/:token", noIndex(a.TestAddressVerify))
 		// Public APIs.
 		g.GET("/api/public/lists", a.GetPublicLists)
 		g.POST("/api/public/subscription", a.PublicSubscription)
@@ -312,6 +315,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/subscription/wipe/:subUUID", a.hasUUID(a.hasSub(a.WipeSubscriberData), "subUUID"))
 		g.GET("/link/:linkUUID/:campUUID/:subUUID", noIndex(a.hasUUID(a.LinkRedirect, "linkUUID", "campUUID", "subUUID")))
 		content.GET("/campaign/:campUUID/:subUUID", noIndex(a.hasUUID(a.ViewCampaignMessage, "campUUID", "subUUID")))
+		// AXM (LST-41): a sample test message, as it was mailed (see TestMessageView).
+		content.GET("/test-message/:token", noIndex(a.TestMessageView))
 		g.GET("/campaign/:campUUID/:subUUID/px.png", noIndex(a.hasUUID(a.RegisterCampaignView, "campUUID", "subUUID")))
 
 		if a.cfg.EnablePublicArchive {

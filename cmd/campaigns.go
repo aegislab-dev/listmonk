@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/mail"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,6 +40,15 @@ type campReq struct {
 
 	// This is only relevant to campaign test requests.
 	SubscriberEmails pq.StringArray `json:"subscribers"`
+
+	// The From value stored for a paused campaign being updated. Set by
+	// UpdateCampaign (never bound from JSON): an unchanged From on a paused
+	// campaign is not re-checked against the From list.
+	storedFrom    *string
+	storedHeaders models.Headers
+
+	// AXM (LST-41): the stand-in subscriber of a test request (see axm_test_send.go).
+	Sample *testSample `json:"sample"`
 }
 
 // campContentReq wraps params coming from API requests for converting
@@ -189,8 +200,16 @@ func (a *App) PreviewCampaign(c echo.Context) error {
 			a.i18n.Ts("templates.errorCompiling", "error", err.Error()))
 	}
 
+	// AXM (LST-41): a preview may be asked for with the sample of the test box.
+	previewSub := dummySubscriber
+	if isPost {
+		if previewSub, err = a.previewSample(c); err != nil {
+			return err
+		}
+	}
+
 	// Render the message body.
-	msg, err := a.manager.NewCampaignMessage(&camp, dummySubscriber)
+	msg, err := a.manager.NewCampaignMessage(&camp, previewSub)
 	if err != nil {
 		a.log.Printf("error rendering message: %v", err)
 		return echo.NewHTTPError(http.StatusBadRequest,
@@ -340,17 +359,47 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	// unchanged.
 	cm.Attribs = nil
 
+	// Bind below writes into the maps that cm shares with o, so keep a deep
+	// copy of the stored headers to compare with later.
+	origHeaders := make(models.Headers, 0, len(cm.Headers))
+	for _, set := range cm.Headers {
+		cp := make(map[string]string, len(set))
+		for k, v := range set {
+			cp[k] = v
+		}
+		origHeaders = append(origHeaders, cp)
+	}
+
 	// Read the incoming params into the existing campaign fields from the DB.
 	// This allows updating of values that have been sent whereas fields
 	// that are not in the request retain the old values.
+	// Headers are decoded from nothing: JSON decoding into the stored maps
+	// would keep keys the request left out (a removed From header).
+	// An explicit "headers": null clears them, as before; leaving the key out
+	// keeps them.
+	var probe struct {
+		Headers json.RawMessage `json:"headers"`
+	}
+	if body, err := io.ReadAll(c.Request().Body); err == nil {
+		c.Request().Body = io.NopCloser(bytes.NewReader(body))
+		_ = json.Unmarshal(body, &probe)
+	}
 	o := campReq{Campaign: cm}
+	o.Headers = nil
 	if err := c.Bind(&o); err != nil {
 		return err
+	}
+	if o.Headers == nil && len(probe.Headers) == 0 {
+		o.Headers = cm.Headers
 	}
 
 	o.Status = cm.Status
 	if len(a.cfg.SenderDomains) > 0 && cm.Status == models.CampaignStatusPaused {
 		o.FromEmail = cm.FromEmail
+	}
+	if cm.Status == models.CampaignStatusPaused {
+		o.storedFrom = &cm.FromEmail
+		o.storedHeaders = origHeaders
 	}
 
 	// Filter lists against the current user's permitted lists.
@@ -409,6 +458,29 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 		}
 		if camp.Status == models.CampaignStatusDraft {
 			from = resolveFrom(auth.GetUser(c), a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+		}
+	}
+	// A draft is only started or scheduled with a From that the From list (or,
+	// with no list, the placeholder rule) allows. This also covers the start
+	// button on the campaigns list, which sends without opening the campaign.
+	// A From that matches the list in another spelling is stored in the
+	// list's spelling as the campaign starts.
+	if len(a.cfg.SenderDomains) == 0 && (req.Status == models.CampaignStatusRunning || req.Status == models.CampaignStatusScheduled) {
+		camp, err := a.core.GetCampaign(id, "", "")
+		if err != nil {
+			return err
+		}
+		if camp.Status == models.CampaignStatusDraft {
+			if len(a.cfg.FromAddresses) > 0 && hasFromHeader(camp.Headers) {
+				return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.fromHeaderNotAllowed"))
+			}
+			ok, err := a.checkFromAllowed(strings.TrimSpace(camp.FromEmail), a.cfg.FromAddresses)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+			}
+			if ok != camp.FromEmail {
+				from = ok
+			}
 		}
 	}
 	// Update the campaign status in the DB.
@@ -607,35 +679,34 @@ func (a *App) TestCampaign(c echo.Context) error {
 		req.SubscriberEmails[i] = strings.ToLower(strings.TrimSpace(req.SubscriberEmails[i]))
 	}
 
-	// Get the subscribers from the DB by their e-mails.
-	subs, err := a.core.GetSubscribersByEmail(req.SubscriberEmails)
+	// AXM (LST-41): upstream sent only to subscribers the user may see and silently dropped
+	// every other address. The user's own address and the test domains may receive a test
+	// too, as a sample subscriber, and an address that may not receive one stops the request.
+	recips, sample, slot, err := a.testRecipients(c, &req, auth.GetUser(c))
 	if err != nil {
 		return err
 	}
 
-	// Exclude subscribers from lists that the user doesn't have access to.
-	user := auth.GetUser(c)
-	validSubs := subs[:0]
-	for _, s := range subs {
-		if err := a.hasSubPerm(user, []int{s.ID}); err == nil {
-			validSubs = append(validSubs, s)
-		}
-	}
-	subs = validSubs
-
 	// No subscribers.
-	if len(subs) == 0 {
+	if len(recips) == 0 {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.noKnownSubsToTest"))
 	}
 
 	// Get the campaign from the DB for previewing.
 	tplID, _ := strconv.Atoi(c.FormValue("template_id"))
+	// AXM (LST-44): the admin UI posts JSON, where FormValue finds nothing and the
+	// stored template was used instead of the one selected in the editor.
+	if tplID < 1 {
+		tplID = req.TemplateID.Int
+	}
 	camp, err := a.core.GetCampaignForPreview(id, tplID)
 	if err != nil {
+		a.testLimiter.giveBack(auth.GetUser(c).ID, slot, len(recips))
 		return err
 	}
 
 	// Override certain values from the DB with incoming values.
+	savedName := camp.Name
 	camp.Name = req.Name
 	camp.Subject = req.Subject
 	camp.FromEmail = req.FromEmail
@@ -656,15 +727,27 @@ func (a *App) TestCampaign(c echo.Context) error {
 	}
 
 	// Send the test messages.
-	for _, s := range subs {
-		sub := s
+	for i, r := range recips {
+		sub := r.Sub
 
-		if err := a.sendTestMessage(sub, &camp); err != nil {
+		// AXM (LST-41): a sample subscriber's message carries the dummy campaign UUID.
+		msgCamp := &camp
+		if sub.UUID == dummyUUID {
+			msgCamp = sampleCampaign(camp)
+		}
+		if err := a.sendTestMessage(sub, msgCamp); err != nil {
 			a.log.Printf("error sending test message: %v", err)
+			// AXM (LST-41): the messages that did go out are on the audit log, and the
+			// ones that did not do not count towards the limit.
+			a.testLimiter.giveBack(auth.GetUser(c).ID, slot, len(recips)-i)
+			if i > 0 {
+				a.auditTestSend(c, id, savedName, recips[:i], sample)
+			}
 			return echo.NewHTTPError(http.StatusInternalServerError,
 				a.i18n.Ts("campaigns.errorSendTest", "error", err.Error()))
 		}
 	}
+	a.auditTestSend(c, id, savedName, recips, sample)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
@@ -730,48 +813,112 @@ func (a *App) sendTestMessage(sub models.Subscriber, camp *models.Campaign) erro
 			a.i18n.Ts("templates.errorCompiling", "error", err.Error()))
 	}
 
+	// AXM (LST-44): the media too, before rendering, as the real send does. Otherwise
+	// the first test message renders without them and the next ones with them.
+	if err := a.manager.AttachMedia(camp); err != nil {
+		a.log.Printf("error attaching media: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
 	// Create a sample campaign message.
 	msg, err := a.manager.NewCampaignMessage(camp, sub)
 	if err != nil {
 		a.log.Printf("error rendering message: %v", err)
 		return echo.NewHTTPError(http.StatusNotFound, a.i18n.Ts("templates.errorRendering", "error", err.Error()))
 	}
+	// AXM (LST-41): the "view in browser" link of a sample subscriber's message.
+	if sub.UUID == dummyUUID && camp.UUID == dummyUUID {
+		a.sampleBrowserLink(&msg, camp.ContentType == models.CampaignContentTypePlain)
+	}
 
 	return a.manager.PushCampaignMessage(msg)
 }
 
-// validateCampaignFields validates incoming campaign field values.
-func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error) {
-	if len(a.cfg.SenderDomains) > 0 {
-		if c.ReplyToInput != nil {
-			c.ReplyTo = strings.TrimSpace(*c.ReplyToInput)
+// checkFromAllowed checks a trimmed, non-empty-or-default From value against
+// the team's From list. With a list, the value must match an entry and is
+// returned in the list's spelling. With no list, free input stays allowed
+// except for placeholder addresses.
+func (a *App) checkFromAllowed(from string, list []string) (string, error) {
+	if len(list) == 0 {
+		if from != "" && placeholderFrom(from) {
+			return from, errors.New(a.i18n.Ts("campaigns.fromPlaceholder", "email", from))
 		}
-		if c.ReplyTo != "" {
-			if _, err := mail.ParseAddress(c.ReplyTo); err != nil || strings.ContainsAny(c.ReplyTo, "\r\n") {
-				return c, errors.New(a.i18n.T("senders.invalidEmail"))
-			}
-			addr, _ := mail.ParseAddress(c.ReplyTo)
-			if addr.Name == "" {
-				c.ReplyTo = addr.Address
-			} else {
-				c.ReplyTo = strconv.Quote(addr.Name) + " " + (&mail.Address{Address: addr.Address}).String()
-			}
-		}
-		if hasReservedHeader(c.Headers) {
-			return c, errors.New(a.i18n.T("senders.reservedHeader"))
-		}
-		if c.Status == "" || c.Status == models.CampaignStatusDraft || c.Status == models.CampaignStatusScheduled {
-			c.FromEmail = resolveFrom(user, a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
-		}
-	} else {
-		c.ReplyTo = ""
+		return from, nil
 	}
+	if e, ok := matchFromAddress(from, list); ok {
+		return strings.TrimSpace(e), nil
+	}
+	if placeholderFrom(from) {
+		return from, errors.New(a.i18n.Ts("campaigns.fromPlaceholder", "email", from))
+	}
+	return from, errors.New(a.i18n.Ts("campaigns.fromNotAllowed", "email", from))
+}
+
+// validateFrom checks and normalises the From of a campaign when account
+// senders are off: trimmed, no line breaks, no placeholder, and (with a From
+// list) one of the list's entries in the list's spelling.
+func (a *App) validateFrom(c campReq, strict bool) (campReq, error) {
+	fromList := a.cfg.FromAddresses
+	if strings.ContainsAny(c.FromEmail, "\r\n") {
+		return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
+	}
+	c.FromEmail = strings.TrimSpace(c.FromEmail)
 	if c.FromEmail == "" {
-		c.FromEmail = a.cfg.FromEmail
-	} else if !reFromAddress.Match([]byte(c.FromEmail)) {
+		// No From sent: the app default, or with a list its closest entry.
+		// The default goes through the same checks, so a placeholder or a
+		// stray space in app.from_email is not saved into campaigns.
+		if len(fromList) > 0 {
+			// The list decides; the default only picks the entry.
+			c.FromEmail = defaultFromFor(strings.TrimSpace(a.cfg.FromEmail), fromList)
+		} else if strings.ContainsAny(a.cfg.FromEmail, "\r\n") {
+			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
+		} else {
+			c.FromEmail = strings.TrimSpace(a.cfg.FromEmail)
+		}
+	}
+
+	// An entry of the list was checked when the list was saved.
+	_, listed := matchFromAddress(c.FromEmail, fromList)
+	if c.FromEmail != "" && !listed && !reFromAddress.Match([]byte(c.FromEmail)) {
 		if _, err := a.importer.SanitizeEmail(c.FromEmail); err != nil {
 			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
 		}
+	}
+
+	// A paused campaign (maybe already sending) keeps a From it was saved with.
+	unchanged := c.Status == models.CampaignStatusPaused && c.storedFrom != nil &&
+		c.FromEmail == strings.TrimSpace(*c.storedFrom)
+	// A paused campaign may keep a From header it already had, but not gain or
+	// change one: the header would decide the From it resumes with.
+	if strict && len(fromList) > 0 && hasFromHeader(c.Headers) &&
+		!(c.Status == models.CampaignStatusPaused && c.storedFrom != nil && reflect.DeepEqual(c.Headers, c.storedHeaders)) {
+		return c, errors.New(a.i18n.T("campaigns.fromHeaderNotAllowed"))
+	}
+	if !strict {
+		// Read-only: use the list's spelling when there is one, never refuse.
+		if e, ok := matchFromAddress(c.FromEmail, fromList); ok {
+			c.FromEmail = e
+		}
+		return c, nil
+	}
+	if !unchanged {
+		from, err := a.checkFromAllowed(c.FromEmail, fromList)
+		if err != nil {
+			return c, err
+		}
+		c.FromEmail = from
+	}
+	return c, nil
+}
+
+// validateCampaignFields validates incoming campaign field values.
+func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error) {
+	if len(a.cfg.SenderDomains) > 0 && hasReservedHeader(c.Headers) {
+		return c, errors.New(a.i18n.T("senders.reservedHeader"))
+	}
+	c, err := a.campaignSender(c, user)
+	if err != nil {
+		return c, err
 	}
 
 	if !strHasLen(c.Name, 1, stdInputMaxLen) {
@@ -830,6 +977,11 @@ func (a *App) validateCampaignFields(c campReq, user auth.User) (campReq, error)
 		if _, err := json.Marshal(c.Attribs); err != nil {
 			return c, errors.New(a.i18n.T("subscribers.invalidJSON"))
 		}
+	}
+
+	// The time zone the send time was chosen in (LST-50) must be a real IANA name.
+	if !validSendTZ(c.Attribs) {
+		return c, errors.New(a.i18n.T("campaigns.sendTz.invalid"))
 	}
 
 	if len(c.ArchiveMeta) == 0 {
@@ -934,4 +1086,56 @@ func (a *App) checkCampaignPerm(types auth.PermType, id int, c echo.Context) err
 // its properties is allowed.
 func canEditCampaign(status string) bool {
 	return models.CanEditCampaign(status)
+}
+
+// campaignSender sets the sender fields (from, reply-to) of a campaign request as saving
+// and test sends do. AXM: split out of validateCampaignFields so that the pre-send
+// tracking check (LST-44) reads the same sender as the send it checks.
+func (a *App) campaignSender(c campReq, user auth.User) (campReq, error) {
+	return a.campaignSenderMode(c, user, true)
+}
+
+// campaignSenderLoose is campaignSender for a read-only look (the tracking
+// check): the From still gets its format check and the list's spelling, but a
+// From that the From list or the placeholder rule would refuse on save (a saved
+// legacy draft, a paused campaign) is read as it is, not refused.
+func (a *App) campaignSenderLoose(c campReq, user auth.User) (campReq, error) {
+	return a.campaignSenderMode(c, user, false)
+}
+
+func (a *App) campaignSenderMode(c campReq, user auth.User, strict bool) (campReq, error) {
+	if len(a.cfg.SenderDomains) > 0 {
+		if c.ReplyToInput != nil {
+			c.ReplyTo = strings.TrimSpace(*c.ReplyToInput)
+		}
+		if c.ReplyTo != "" {
+			if _, err := mail.ParseAddress(c.ReplyTo); err != nil || strings.ContainsAny(c.ReplyTo, "\r\n") {
+				return c, errors.New(a.i18n.T("senders.invalidEmail"))
+			}
+			addr, _ := mail.ParseAddress(c.ReplyTo)
+			if addr.Name == "" {
+				c.ReplyTo = addr.Address
+			} else {
+				c.ReplyTo = strconv.Quote(addr.Name) + " " + (&mail.Address{Address: addr.Address}).String()
+			}
+		}
+		if c.Status == "" || c.Status == models.CampaignStatusDraft || c.Status == models.CampaignStatusScheduled {
+			c.FromEmail = resolveFrom(user, a.cfg.DefaultFrom, a.cfg.FromEmail, a.cfg.SenderDomains)
+		}
+	} else {
+		c.ReplyTo = ""
+	}
+	// With account senders on, the From was set above and neither the From
+	// list nor the placeholder rule applies (the original format check stays).
+	if len(a.cfg.SenderDomains) == 0 {
+		return a.validateFrom(c, strict)
+	}
+	if c.FromEmail == "" {
+		c.FromEmail = a.cfg.FromEmail
+	} else if !reFromAddress.Match([]byte(c.FromEmail)) {
+		if _, err := a.importer.SanitizeEmail(c.FromEmail); err != nil {
+			return c, errors.New(a.i18n.T("campaigns.fieldInvalidFromEmail"))
+		}
+	}
+	return c, nil
 }

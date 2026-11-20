@@ -74,7 +74,7 @@
                 {{ $utils.duration(new Date(), props.row.sendAt, true) }}
                 <br />
               </span>
-              {{ $utils.niceDate(props.row.sendAt, true) }}
+              {{ sendAtLabel(props.row) }}
             </span>
           </p>
         </div>
@@ -186,7 +186,7 @@
           <!-- start / pause / resume / scheduled -->
           <template v-if="$can('campaigns:send')">
             <a v-if="canStart(props.row)" href="#"
-              @click.prevent="$utils.confirm(null, () => changeCampaignStatus(props.row, 'running'))"
+              @click.prevent="confirmSend(props.row, 'running')"
               data-cy="btn-start" :aria-label="$t('campaigns.start')">
               <b-tooltip :label="$t('campaigns.start')" type="is-dark">
                 <b-icon icon="rocket-launch-outline" size="is-small" />
@@ -202,7 +202,7 @@
             </a>
 
             <a v-if="canResume(props.row)" href="#"
-              @click.prevent="$utils.confirm(null, () => changeCampaignStatus(props.row, 'running'))"
+              @click.prevent="confirmSend(props.row, 'running')"
               data-cy="btn-resume" :aria-label="$t('campaigns.send')">
               <b-tooltip :label="$t('campaigns.send')" type="is-dark">
                 <b-icon icon="rocket-launch-outline" size="is-small" />
@@ -210,7 +210,7 @@
             </a>
 
             <a v-if="canSchedule(props.row)" href="#"
-              @click.prevent="$utils.confirm($t('campaigns.confirmSchedule'), () => changeCampaignStatus(props.row, 'scheduled'))"
+              @click.prevent="confirmSend(props.row, 'scheduled')"
               data-cy="btn-schedule" :aria-label="$t('campaigns.schedule')">
               <b-tooltip :label="$t('campaigns.schedule')" type="is-dark">
                 <b-icon icon="clock-start" size="is-small" />
@@ -289,6 +289,10 @@ import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import reactionStatuses from '../campaign-reaction-list';
+import {
+  splitAttribs, TZ_ATTRIB, zoneAbbr, zoneParts,
+} from '../schedule-time';
+import { trackingConfirmLines, warningsCovered } from '../tracking-check';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
 import CopyText from '../components/CopyText.vue';
@@ -304,6 +308,9 @@ export default Vue.extend({
 
   data() {
     return {
+      checkingSend: false,
+      sendAsk: null,
+      isDestroyed: false,
       previewItem: null,
       reactionCampaign: null,
       queryParams: {
@@ -344,6 +351,18 @@ export default Vue.extend({
     },
     canResume(c) {
       return c.status === 'paused';
+    },
+    // The scheduled time in the campaign's own time zone (KST when none is stored), with its short name.
+    sendAtLabel(c) {
+      const t = new Date(c.sendAt);
+      const { tz } = splitAttribs(c.attribs);
+      // Straight from the zone's own clock, not through a Date in this computer's zone: a time that
+      // does not exist on this computer (its clocks go forward) must still show as it is.
+      const p = zoneParts(t, tz);
+      const [y, m, d] = p.ymd.split('-');
+      const day = this.$t(`globals.days.${p.wd + 1}`);
+      const month = this.$t(`globals.months.${parseInt(m, 10)}`);
+      return `${day}, ${d} ${month} ${y}, ${p.hm} ${zoneAbbr(t, tz)}`;
     },
     isSheduled(c) {
       return c.status === 'scheduled' || c.sendAt !== null;
@@ -435,6 +454,56 @@ export default Vue.extend({
       }, 1000);
     },
 
+    // Starting, resuming or scheduling from the list sends the saved campaign as it is:
+    // the same tracking warning as on the campaign page comes first (LST-44). After the
+    // confirmation the campaign is checked once more, as it may have been saved elsewhere
+    // while the dialog was open; a warning that was not confirmed is asked again.
+    async confirmSend(c, status) {
+      if (this.checkingSend) return;
+      this.checkingSend = true;
+      // The status says what templates will read when it is sent (LST-44 review).
+      const check = () => this.$api.checkCampaignTracking(c.id, { status }).catch(() => null)
+        .then((r) => trackingConfirmLines(r));
+      try {
+        let lines = await check();
+        for (;;) {
+          if (this.isDestroyed) return;
+          // eslint-disable-next-line no-await-in-loop
+          if (!await this.askSend(status, lines) || this.isDestroyed) return;
+          // eslint-disable-next-line no-await-in-loop
+          const now = await check();
+          if (this.isDestroyed) return;
+          if (warningsCovered(lines, now)) break;
+          lines = now;
+        }
+        this.changeCampaignStatus(c, status);
+      } finally {
+        this.checkingSend = false;
+      }
+    },
+
+    // Resolves true on confirm, false on cancel or when the page goes away.
+    askSend(status, lines) {
+      return new Promise((resolve) => {
+        const done = (ok) => {
+          if (this.sendAsk && this.sendAsk.resolve === done) this.sendAsk = null;
+          resolve(ok);
+        };
+        const msg = status === 'scheduled' ? this.$t('campaigns.confirmSchedule') : null;
+        const warnings = lines.map(({ key, params }) => this.$t(key, params));
+        const dialog = warnings.length
+          ? this.$utils.confirmWithWarnings(
+            msg,
+            warnings,
+            this.$t(status === 'scheduled' ? 'campaigns.tracking.confirm.schedule' : 'campaigns.tracking.confirm.start'),
+            () => done(true),
+            () => done(false),
+          )
+          : this.$utils.confirm(msg, () => done(true), () => done(false));
+        this.sendAsk = { dialog, resolve: done };
+      });
+    },
+
     changeCampaignStatus(c, status) {
       this.$api.changeCampaignStatus(c.id, status).then(() => {
         this.$utils.toast(this.$t('campaigns.statusChanged', { name: c.name, status }));
@@ -444,12 +513,23 @@ export default Vue.extend({
     },
 
     async cloneCampaign(name, c) {
+      // The From list may have changed in another session: refresh it first,
+      // then read the campaign, whose from_match the server computes from it.
+      await this.$api.getServerConfig();
+
       // Fetch the template body from the server.
       let body = '';
       let bodySource = null;
+      let { fromEmail } = c;
+      const list = this.serverConfig.from_addresses || [];
+      const accountSenders = (this.serverConfig.sender_domains || []).length > 0;
       await this.$api.getCampaign(c.id).then((data) => {
         body = data.body;
         bodySource = data.bodySource;
+        // The original From goes as it is: the server matches it to the
+        // current list itself (an index from here could point at another entry
+        // if the list changed meanwhile).
+        fromEmail = data.fromEmail;
       });
 
       const now = this.$utils.getDate();
@@ -459,12 +539,17 @@ export default Vue.extend({
         sendAt = dayjs(c.sendAt).isAfter(now) ? c.sendAt : now.add(7, 'day');
       }
 
+      // With a From list a custom From header is refused, so a copy goes without one.
+      const fromHeaderFree = !accountSenders && list.length > 0;
+      const dropFromHeader = (set) => Object.fromEntries(Object.entries(set).filter(([k]) => k.trim().toLowerCase() !== 'from'));
+
+      const zone = splitAttribs(c.attribs);
       const data = {
         name,
         subject: c.subject,
         lists: c.lists.map((l) => l.id),
         type: c.type,
-        from_email: c.fromEmail,
+        from_email: fromEmail,
         reply_to: c.replyTo,
         content_type: c.contentType,
         messenger: c.messenger,
@@ -473,9 +558,11 @@ export default Vue.extend({
         body,
         body_source: bodySource,
         altbody: c.altbody,
-        headers: c.headers,
+        headers: fromHeaderFree ? (c.headers || []).map(dropFromHeader).filter((h) => Object.keys(h).length) : c.headers,
         send_later: sendLater,
         send_at: sendAt,
+        // The copy keeps the time zone the scheduled time was chosen in.
+        attribs: sendLater && zone.stored ? { [TZ_ATTRIB]: zone.tz } : undefined,
         archive: c.archive,
         archive_template_id: c.archiveTemplateId,
         archive_meta: c.archiveMeta,
@@ -544,7 +631,7 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['campaigns', 'loading']),
+    ...mapState(['campaigns', 'loading', 'serverConfig']),
 
     numSelectedCampaigns() {
       return this.bulk.all ? this.campaigns.total : this.bulk.checked.length;
@@ -558,6 +645,16 @@ export default Vue.extend({
   mounted() {
     this.getCampaigns();
     this.pollStats();
+  },
+
+  beforeDestroy() {
+    // A start that is still being checked or confirmed belongs to this page only (LST-44).
+    this.isDestroyed = true;
+    if (this.sendAsk) {
+      const { dialog, resolve } = this.sendAsk;
+      if (dialog) dialog.close();
+      resolve(false);
+    }
   },
 
   destroyed() {

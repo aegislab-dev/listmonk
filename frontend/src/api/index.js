@@ -438,6 +438,13 @@ export const convertCampaignContent = async (data) => http.post(
   { loading: models.campaigns },
 );
 
+// The pre-send tracking check (LST-44). The component shows the error itself.
+export const checkCampaignTracking = (id, data) => http.post(
+  `/api/campaigns/${id}/tracking-check`,
+  data,
+  { disableToast: true, timeout: 15000 },
+);
+
 export const testCampaign = async (data) => http.post(
   `/api/campaigns/${data.id}/test`,
   data,
