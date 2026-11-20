@@ -74,7 +74,7 @@
                 {{ $utils.duration(new Date(), props.row.sendAt, true) }}
                 <br />
               </span>
-              {{ $utils.niceDate(props.row.sendAt, true) }}
+              {{ sendAtLabel(props.row) }}
             </span>
           </p>
         </div>
@@ -289,6 +289,9 @@ import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import reactionStatuses from '../campaign-reaction-list';
+import {
+  splitAttribs, TZ_ATTRIB, zoneAbbr, zoneParts,
+} from '../schedule-time';
 import { trackingConfirmLines, warningsCovered } from '../tracking-check';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
@@ -348,6 +351,18 @@ export default Vue.extend({
     },
     canResume(c) {
       return c.status === 'paused';
+    },
+    // The scheduled time in the campaign's own time zone (KST when none is stored), with its short name.
+    sendAtLabel(c) {
+      const t = new Date(c.sendAt);
+      const { tz } = splitAttribs(c.attribs);
+      // Straight from the zone's own clock, not through a Date in this computer's zone: a time that
+      // does not exist on this computer (its clocks go forward) must still show as it is.
+      const p = zoneParts(t, tz);
+      const [y, m, d] = p.ymd.split('-');
+      const day = this.$t(`globals.days.${p.wd + 1}`);
+      const month = this.$t(`globals.months.${parseInt(m, 10)}`);
+      return `${day}, ${d} ${month} ${y}, ${p.hm} ${zoneAbbr(t, tz)}`;
     },
     isSheduled(c) {
       return c.status === 'scheduled' || c.sendAt !== null;
@@ -528,6 +543,7 @@ export default Vue.extend({
       const fromHeaderFree = !accountSenders && list.length > 0;
       const dropFromHeader = (set) => Object.fromEntries(Object.entries(set).filter(([k]) => k.trim().toLowerCase() !== 'from'));
 
+      const zone = splitAttribs(c.attribs);
       const data = {
         name,
         subject: c.subject,
@@ -545,6 +561,8 @@ export default Vue.extend({
         headers: fromHeaderFree ? (c.headers || []).map(dropFromHeader).filter((h) => Object.keys(h).length) : c.headers,
         send_later: sendLater,
         send_at: sendAt,
+        // The copy keeps the time zone the scheduled time was chosen in.
+        attribs: sendLater && zone.stored ? { [TZ_ATTRIB]: zone.tz } : undefined,
         archive: c.archive,
         archive_template_id: c.archiveTemplateId,
         archive_meta: c.archiveMeta,
