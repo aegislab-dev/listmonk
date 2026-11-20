@@ -633,19 +633,39 @@ class Round7Test(unittest.TestCase):
 class Round8Test(unittest.TestCase):
     """리뷰 8차 지적 회귀 시험."""
 
-    def test_workflow_reads_every_cypress_command(self):
+    @staticmethod
+    def _first_command(wf):
+        """첫 `cypress run` 명령의 논리적 범위(역슬래시로 이은 다음 줄들까지)와 들여쓰기."""
+        m = re.search(r"^( *)[^\n]*\bcypress\s+run\b[^\n]*\n", wf, re.M)
+        end = m.end()
+        while wf[:end].rstrip('\n').endswith('\\'):
+            end = wf.index('\n', end) + 1
+        return m.start(), end, m.group(1)
+
+    def _variants(self):
+        """실제 워크플로와, 같은 spec 을 같은 순서로 두 명령에 나누고 첫 명령의 --spec 을 다음 줄로 이은 변형(리뷰 재현)."""
         wf = (ROOT / axm.CI_WORKFLOW).read_text()
-        line = re.search(r"^( *)npx cypress run[^\n]*\n", wf, re.M)
-        extra = line.group(0) + line.group(1) + "npx cypress run --browser chrome --spec 'cypress/e2e/campaign-extra.cy.js'\n"
-        specs = axm.workflow_specs(wf.replace(line.group(0), extra))
-        # 순서는 명령이 나오는 순서다: 첫 명령의 spec 들 → 바로 뒤에 넣은 명령 → 그 뒤 명령들(CI 가 이미 나뉘어 있어도 맞게).
-        first = axm.workflow_specs(line.group(0))
-        rest = [x for x in TMAP['map_ci_specs'] if x not in first]
-        self.assertEqual(specs, first + ['campaign-extra.cy.js'] + rest)
-        # 맵이 그 spec 을 모르면 뒤처진 맵으로 잡히고, 그 spec 파일 변경은 고른다.
-        raw = json.loads((HERE / 'test-map.json').read_text())
-        stale = axm.reconcile_ci(raw, specs)
-        self.assertEqual(stale['stale_ci'], ['campaign-extra.cy.js'])
+        ci = TMAP['map_ci_specs']
+        arg = lambda xs: ','.join('cypress/e2e/' + x for x in xs)
+        a, b, ind = self._first_command(wf)
+        split = (f"{ind}npx cypress run --browser chrome \\\n{ind}  --spec '{arg(ci[:-2])}'\n"
+                 f"{ind}npx cypress run --browser chrome --spec '{arg(ci[-2:])}'\n")
+        return {'실제': wf, '나뉨+줄 이음': wf[:a] + split + wf[b:]}
+
+    def test_workflow_reads_every_cypress_command(self):
+        for name, wf in self._variants().items():
+            self.assertEqual(axm.workflow_specs(wf), TMAP['map_ci_specs'], name)
+            # 첫 명령(이어 쓴 줄까지) 바로 뒤에 새 명령을 넣는다.
+            a, b, ind = self._first_command(wf)
+            extra = f"{ind}npx cypress run --browser chrome --spec 'cypress/e2e/campaign-extra.cy.js'\n"
+            specs = axm.workflow_specs(wf[:b] + extra + wf[b:])
+            # 순서는 명령이 나오는 순서다: 첫 명령의 spec 들 → 넣은 명령 → 그 뒤 명령들.
+            first = axm.workflow_specs(wf[a:b])
+            rest = [x for x in TMAP['map_ci_specs'] if x not in first]
+            self.assertEqual(specs, first + ['campaign-extra.cy.js'] + rest, name)
+            # 맵이 그 spec 을 모르면 뒤처진 맵으로 잡힌다.
+            raw = json.loads((HERE / 'test-map.json').read_text())
+            self.assertEqual(axm.reconcile_ci(raw, specs)['stale_ci'], ['campaign-extra.cy.js'], name)
 
     def test_split_ci_with_the_same_order_matches_the_map(self):
         # 리뷰 재현: 기존 CI spec 을 같은 순서로 두 명령(14+나머지)에 나누면 맵과 그대로 같아야 한다.
