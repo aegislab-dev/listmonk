@@ -34,8 +34,8 @@ func newFollowupEnv(t *testing.T) *followupEnv { return newScanningFollowupEnv(t
 func newScanningFollowupEnv(t *testing.T, scan bool) *followupEnv {
 	t.Helper()
 	e := &followupEnv{reactionEnv: newReactionEnv(t), gate: &gateMessenger{}, logs: &strings.Builder{}}
-	e.db.MustExec(`UPDATE campaigns SET from_email = 'Synthetic <sender@example.invalid>' WHERE id = $1`, e.campID)
-	e.a.cfg.FromEmail = "Synthetic <sender@example.invalid>"
+	e.db.MustExec(`UPDATE campaigns SET from_email = 'Synthetic <sender@synthetic-sender.dev>' WHERE id = $1`, e.campID)
+	e.a.cfg.FromEmail = "Synthetic <sender@synthetic-sender.dev>"
 	e.store = newManagerStore(e.q, e.a.core, nil, e.db)
 	// Without scanning, the tests call NextCampaigns when they want the sender to look.
 	e.a.manager = e.startManagerWith(e.store, e.gate, io.Discard, func(c *manager.Config) { c.ScanCampaigns = scan })
@@ -495,8 +495,8 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	e := newFollowupEnv(t)
 	root := repoRoot(t)
 	schema, _ := os.ReadFile(filepath.Join(root, "schema.sql"))
-	mig, _ := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm.15.go"))
-	const start, end = "-- AXM campaign follow-ups (LST-47). Keep this block identical to V6_2_1_axm_15.", "-- End of AXM campaign follow-ups."
+	mig, _ := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm.16.go"))
+	const start, end = "-- AXM campaign follow-ups (LST-47). Keep this block identical to V6_2_1_axm_16.", "-- End of AXM campaign follow-ups."
 	_, tail, ok := strings.Cut(string(schema), start)
 	block, _, endOK := strings.Cut(tail, end)
 	if !ok || !endOK || !strings.Contains(string(mig), "`"+start+block+end+"`") {
@@ -504,7 +504,7 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	}
 	e.db.MustExec(`DROP TABLE axm_campaign_followups`)
 	for i := 0; i < 2; i++ {
-		if err := migrations.V6_2_1_axm_15(e.db, nil, nil, nil); err != nil {
+		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -516,7 +516,7 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	}
 	var last string
 	last = migList[len(migList)-1].version
-	if last != "v6.2.1-axm.15" {
+	if last != "v6.2.1-axm.16" {
 		t.Fatal(last)
 	}
 }

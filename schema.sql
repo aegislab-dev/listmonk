@@ -235,6 +235,7 @@ INSERT INTO settings (key, value) VALUES
     ('axm.test_domains', '[]'),
     ('axm.default_from', '""'),
     ('axm.default_reply_to', '""'),
+    ('axm.from_addresses', '[]'),
     ('axm.business_footer', '{"enabled": false, "company_name": "", "representative": "", "registration_no": "", "address": "", "phone": "", "email": "", "extra": ""}'),
     ('app.site_name', '"Mailing list"'),
     ('app.root_url', '"http://localhost:9000"'),
@@ -1167,7 +1168,7 @@ CREATE TABLE IF NOT EXISTS axm_test_addresses (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_axm_test_addr_token ON axm_test_addresses(token_hash) WHERE token_hash IS NOT NULL;
 -- End of AXM test addresses.
 
--- AXM campaign follow-ups (LST-47). Keep this block identical to V6_2_1_axm_15.
+-- AXM campaign follow-ups (LST-47). Keep this block identical to V6_2_1_axm_16.
 CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     campaign_id        INTEGER PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
     parent_campaign_id INTEGER NOT NULL UNIQUE REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
