@@ -87,7 +87,8 @@
     "campaign-recent-exclude.cy.js",
     "address-check.cy.js",
     "campaign-tracking-check.cy.js",
-    "reaction-lists.cy.js"
+    "reaction-lists.cy.js",
+    "dynamic-lists.cy.js"
    ]
   },
   {
@@ -162,8 +163,6 @@
     "subscriber-columns.cy.js",
     "list-teams.cy.js",
     "column-presets.cy.js",
-    "import-mapping.cy.js",
-    "address-check.cy.js",
     "dynamic-lists.cy.js"
    ]
   },

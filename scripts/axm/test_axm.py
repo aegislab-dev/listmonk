@@ -376,5 +376,33 @@ class SpecCoverageTest(unittest.TestCase):
             self.assertIn(needle, text)
 
 
+class RouteCoverageTest(unittest.TestCase):
+    """화면이 선택하는 spec 이 그 화면을 실제로 방문하는 spec 과 같은지(빠짐도 넘침도 없게) 본다."""
+
+    @staticmethod
+    def _visits(spec):
+        text = (ROOT / 'frontend/cypress/e2e' / spec).read_text()
+        out = set(re.findall(r"(?:visit|loginAndVisit)\(\s*[`'\"]([^`'\"]*)", text))
+        out |= {x.split('next=')[1] for x in out if 'next=' in x}
+        return {x.split('?')[0] for x in out}
+
+    def _visitors(self, pattern):
+        rx = re.compile(pattern)
+        return {s for s in TMAP['ci_specs'] if any(rx.match(v) for v in self._visits(s))}
+
+    def test_subscribers_screens_select_exactly_the_specs_that_visit_them(self):
+        want = self._visitors(r'^/admin/subscribers(?!/import)')
+        for f in ('Subscribers.vue', 'SubscriberBulkList.vue', 'SubscriberForm.vue'):
+            self.assertEqual(set(pick('frontend/src/views/' + f)['specs']), want, f)
+
+    def test_campaign_editor_selects_every_spec_that_opens_it(self):
+        want = self._visitors(r'^/admin/campaigns/(?!analytics)')
+        self.assertLessEqual(want, set(pick('frontend/src/views/Campaign.vue')['specs']))
+        self.assertIn('dynamic-lists.cy.js', pick('frontend/src/views/Campaign.vue')['specs'])
+
+    def test_import_specs_are_not_pulled_in_by_subscriber_modals(self):
+        self.assertNotIn('import-mapping.cy.js', pick('frontend/src/views/SubscriberBulkList.vue')['specs'])
+
+
 if __name__ == '__main__':
     unittest.main()
