@@ -379,6 +379,9 @@ export const getCampaign = async (id) => http.get(`/api/campaigns/${id}`, {
 export const previewRecentExclude = (data, signal) => http.post('/api/campaigns/recent-exclude/preview', data, {
   disableToast: true, signal,
 });
+export const makeRecentExcludeList = (data) => http.post('/api/campaigns/recent-exclude/list', data, {
+  disableToast: true,
+});
 // Address check (LST-43). Both only read; pending lookups are asked for again by the caller.
 export const checkListAddresses = (data, signal) => http.post('/api/lists/address-check', data, {
   disableToast: true, signal,

@@ -184,6 +184,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/campaigns/:id", pm(hasID(a.GetCampaign), "campaigns:get_all", "campaigns:get"))
 		g.GET("/api/campaigns/analytics/:type", pm(a.GetCampaignViewAnalytics, "campaigns:get_analytics"))
 		g.POST("/api/campaigns/recent-exclude/preview", pm(a.PreviewRecentExclusion, "campaigns:manage_all", "campaigns:manage"))
+		g.POST("/api/campaigns/recent-exclude/list", a.listMaker(pm(a.MakeRecentExcludeList, "campaigns:manage_all", "campaigns:manage")))
 		g.GET("/api/campaigns/:id/recent-exclude", pm(hasID(a.GetRecentRule), "campaigns:get_all", "campaigns:get"))
 		g.PUT("/api/campaigns/:id/recent-exclude", pm(hasID(a.PutRecentRule), "campaigns:manage_all", "campaigns:manage"))
 		g.POST("/api/campaigns/:id/reaction-list/preview", a.listMaker(hasID(a.PreviewReactionList)))

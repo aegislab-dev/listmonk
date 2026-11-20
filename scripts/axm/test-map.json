@@ -246,7 +246,8 @@
     "audit.cy.js",
     "import-mapping.cy.js",
     "list-trash.cy.js",
-    "campaign-test-send.cy.js"
+    "campaign-test-send.cy.js",
+    "campaign-recent-exclude.cy.js"
    ]
   },
   {
@@ -291,7 +292,9 @@
    "paths": [
     "frontend/src/components/RecentSendExclude.vue",
     "frontend/src/recent-send-exclude.js",
-    "cmd/axm_recent_exclude*.go"
+    "cmd/axm_recent_exclude*.go",
+    "internal/core/axm_recent_exclude*.go",
+    "models/axm_recent_exclude.go"
    ],
    "specs": [
     "campaign-recent-exclude.cy.js",
