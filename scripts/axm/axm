@@ -1540,8 +1540,7 @@ def measure_parts(ctx, steps):
     (ctxdir / 'files.lst').write_bytes(b'\0'.join(f.encode() for f in files if not f.startswith('docs/')) + b'\0')
     commit = git('rev-parse', '--short', 'HEAD', check=False).strip() or 'local'
     (ctxdir / 'parts.sh').write_text(PARTS_SH % dict(mark_fn=MARK_FN, version=LOCAL_VERSION, commit=commit))
-    cold = ctx.run / 'parts-go'
-    shutil.rmtree(cold, ignore_errors=True)
+    cold = ctx.run / f'parts-go-{os.getpid()}'
     (cold / 'gomod').mkdir(parents=True)
     (cold / 'gocache').mkdir(parents=True)
     dargs = ['--network', 'host', *limit_args(), '--user', f'{UID}:{GID}', '-v', f'{ROOT}:/work:ro',
@@ -1549,6 +1548,8 @@ def measure_parts(ctx, steps):
     with Slot() as sl:
         res = run_container(ctx, 'parts', ctx.name('parts'), dargs + [base], ['bash', '/axmctx/parts.sh'], log_name='parts',
                             tee_filter=lambda l: l.startswith('AXM_FAIL'))
+    subprocess.run(['chmod', '-R', 'u+w', str(cold)])  # Go 모듈 캐시는 읽기 전용으로 만들어진다
+    shutil.rmtree(cold, ignore_errors=True)
     steps.add('분해 측정 컨테이너 전체', res['wall'], res['cpu'], res['peak'], rc=res['rc'], waited=sl.waited)
     for nm, wall, cpu in marks_to_rows(res):
         steps.add('  ' + nm, wall, cpu)
