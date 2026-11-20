@@ -498,6 +498,8 @@ describe('Pre-send tracking check', () => {
     cy.wait('@listCheck');
     cy.get(warnLines).should('contain', 'There is no view tracking.');
     cy.get('[data-cy=send-ok]').should('contain', 'Schedule for').and('contain', 'anyway').click();
+    // The window reads the checks once more before it sends (LST-48).
+    cy.wait('@listCheck');
     cy.wait('@listStatus').its('request.body.status').should('eq', 'scheduled');
 
     // A campaign without a warning keeps the usual confirmation.

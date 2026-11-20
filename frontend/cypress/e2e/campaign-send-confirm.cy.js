@@ -225,7 +225,7 @@ describe('Pre-send confirmation window', () => {
     cy.get(win).should('not.exist');
   });
 
-  it('is refused by the server (409) when only the campaign's change time moved, and reads again', () => {
+  it('is refused by the server (409) when only the change time of the campaign moved, and reads again', () => {
     cy.then(() => create('touch', { lists: [listX] }));
     cy.visit('/admin/campaigns');
     cy.intercept('PUT', statusPath).as('status');
