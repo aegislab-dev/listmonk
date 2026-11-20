@@ -137,7 +137,7 @@ func (a *App) ownTestAddress(user auth.User) string {
 // requestOwnTestAddress mails the user's profile address a link that confirms it as their
 // own test address. It tells whether a mail went out: at most one goes out per user and
 // minute. The mail is a system mail, like the reply address verification.
-func (a *App) requestOwnTestAddress(user auth.User) (bool, error) {
+func (a *App) requestOwnTestAddress(c echo.Context, user auth.User) (bool, error) {
 	email := profileAddress(user)
 	if email == "" {
 		return false, nil
@@ -146,20 +146,23 @@ func (a *App) requestOwnTestAddress(user auth.User) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	ok, err := a.core.RequestTestAddress(user.ID, email, tokenHash(token))
-	if err != nil || !ok {
-		return false, err
-	}
 	// A confirmation mail counts towards the user's limit of test messages, so that changing
-	// the profile address over and over cannot be used to mail many addresses.
+	// the profile address over and over cannot be used to mail many addresses. The limit is
+	// looked at before anything is stored: a refused request leaves an earlier link valid.
 	slot, wait := a.testLimiter.take(user.ID, 1)
 	if slot == 0 {
-		a.core.ForgetTestAddressMail(user.ID)
 		mins := int(math.Ceil(wait.Minutes()))
 		if mins < 1 {
 			mins = 1
 		}
+		c.Response().Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
 		return false, echo.NewHTTPError(http.StatusTooManyRequests, a.i18n.Ts("campaigns.testRateLimited", "minutes", strconv.Itoa(mins)))
+	}
+	ok, err := a.core.RequestTestAddress(user.ID, email, tokenHash(token))
+	if err != nil || !ok {
+		// Nothing is mailed (a mail to this address went out less than a minute ago).
+		a.testLimiter.giveBack(user.ID, slot, 1)
+		return false, err
 	}
 	link := strings.TrimRight(a.urlCfg.RootURL, "/") + "/test-address/verify/" + token
 	body := "<p>" + html.EscapeString(a.i18n.Ts("email.testAddr.request", "name", user.Name, "username", user.Username)) + "</p>" +
@@ -463,7 +466,7 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 				}
 				// A mail goes out now, or one went to this very address within the last
 				// minute: either way the user is told to open the link in it.
-				if _, err := a.requestOwnTestAddress(user); err != nil {
+				if _, err := a.requestOwnTestAddress(c, user); err != nil {
 					return nil, none, 0, err
 				}
 				data["own_unverified"] = true
@@ -550,20 +553,22 @@ func sampleCampaign(camp models.Campaign) *models.Campaign {
 const (
 	testViewTTL      = 24 * time.Hour
 	testViewMax      = 200
-	testViewMaxBytes = 2 << 20
+	testViewMaxBytes = 64 << 20
 )
 
 // testViewStore keeps the sample test messages that were sent lately, each under a random
 // token, so that the "view in browser" link of such a message can show exactly what was
 // mailed. A sample subscriber is in no table and the body of a test may not be saved yet, so
 // the page cannot be rendered again later. The messages live in memory for testViewTTL, at
-// most testViewMax of them: a restart forgets them, and the link then says so. The zero
-// value is ready to use.
+// most testViewMax of them and testViewMaxBytes in all (the oldest go first): a restart
+// forgets them, and the link then answers that the message was not found. The zero value is
+// ready to use.
 type testViewStore struct {
 	mu    sync.Mutex
 	now   func() time.Time
 	items map[string]testView
 	order []string
+	bytes int
 }
 
 type testView struct {
@@ -579,7 +584,10 @@ func (s *testViewStore) clock() time.Time {
 	return time.Now()
 }
 
-// put keeps a message under a token, dropping what is too old and, beyond the limit, the oldest.
+// fits tells whether a message of n bytes can be kept at all.
+func (s *testViewStore) fits(n int) bool { return n <= testViewMaxBytes }
+
+// put keeps a message under a token, dropping what is too old and, beyond the limits, the oldest.
 func (s *testViewStore) put(token string, body []byte, plain bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -587,12 +595,15 @@ func (s *testViewStore) put(token string, body []byte, plain bool) {
 		s.items = map[string]testView{}
 	}
 	now := s.clock()
-	for len(s.order) > 0 && (len(s.order) >= testViewMax || now.Sub(s.items[s.order[0]].at) >= testViewTTL) {
+	for len(s.order) > 0 && (len(s.order) >= testViewMax || s.bytes+len(body) > testViewMaxBytes ||
+		now.Sub(s.items[s.order[0]].at) >= testViewTTL) {
+		s.bytes -= len(s.items[s.order[0]].body)
 		delete(s.items, s.order[0])
 		s.order = s.order[1:]
 	}
 	s.items[token] = testView{body: body, plain: plain, at: now}
 	s.order = append(s.order, token)
+	s.bytes += len(body)
 }
 
 // get returns the message of a token that is still kept.
@@ -613,7 +624,12 @@ func (s *testViewStore) get(token string) (testView, bool) {
 // very large, is left as it is.
 func (a *App) sampleBrowserLink(msg *manager.CampaignMessage, plain bool) {
 	from := []byte(fmt.Sprintf(a.urlCfg.MessageURL, dummyUUID, dummyUUID))
-	if !bytes.Contains(msg.Body(), from) || len(msg.Body()) > testViewMaxBytes {
+	// The link may be in the body, in the plain text alternative, or in both.
+	if !hasBrowserLink(msg.Body(), from) && !hasBrowserLink(msg.AltBody(), from) {
+		return
+	}
+	if !a.testViews.fits(len(msg.Body())) {
+		a.log.Printf("a test message of %d bytes is too large to keep for its browser link", len(msg.Body()))
 		return
 	}
 	token, err := generateRandomString(32)
@@ -645,14 +661,40 @@ func (a *App) sampleBrowserLink(msg *manager.CampaignMessage, plain bool) {
 	a.testViews.put(token, msg.Body(), plain)
 }
 
+// hasBrowserLink tells whether b holds the link, and not only the pixel address that starts
+// like it.
+func hasBrowserLink(b, link []byte) bool {
+	for {
+		i := bytes.Index(b, link)
+		if i < 0 {
+			return false
+		}
+		b = b[i+len(link):]
+		if !bytes.HasPrefix(b, []byte("/px.png")) {
+			return true
+		}
+	}
+}
+
+// testViewCSP isolates a sample message that is shown in the browser. The page is on the
+// origin of the admin screens and its HTML is whatever the author of the campaign wrote,
+// saved or not: "sandbox" gives the page an origin of its own, without scripts, forms or
+// access to the session; the rest allows only what a mail client would show.
+const testViewCSP = "sandbox; default-src 'none'; img-src * data:; media-src *; style-src 'unsafe-inline' *; font-src * data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
 // TestMessageView shows a sample test message in the browser, exactly as it was mailed.
 func (a *App) TestMessageView(c echo.Context) error {
-	c.Response().Header().Set("Cache-Control", "no-store")
-	c.Response().Header().Set("Referrer-Policy", "no-referrer")
+	h := c.Response().Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Content-Security-Policy", testViewCSP)
+	h.Set("X-Content-Type-Options", "nosniff")
 	v, ok := a.testViews.get(c.Param("token"))
 	if !ok {
+		// The message is no longer kept (or never was): the page says what the campaign's
+		// own link says for a message that cannot be found.
 		return c.Render(http.StatusNotFound, tplMessage,
-			makeMsgTpl(a.i18n.T("public.notFoundTitle"), "", a.i18n.T("campaigns.testView.gone")))
+			makeMsgTpl(a.i18n.T("public.notFoundTitle"), "", a.i18n.T("public.campaignNotFound")))
 	}
 	if v.plain {
 		return c.String(http.StatusOK, string(v.body))

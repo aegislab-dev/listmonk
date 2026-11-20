@@ -838,6 +838,28 @@ func TestTestSendConfirmationMailsUseTheLimit(t *testing.T) {
 	if n := len(e.sys.all()); n != testRateLimit {
 		t.Errorf("%d confirmation mails, want %d", n, testRateLimit)
 	}
+	// The refused request sent nothing, stored nothing and says when to come back: the link
+	// of the last mail that did go out still works.
+	last := e.sys.all()[testRateLimit-1]
+	lastToken := reTestAddrLink.FindStringSubmatch(string(last.Body))[1]
+	e.db.MustExec(`UPDATE users SET email=$2 WHERE id=$1`, e.ua, last.To[0])
+	e.db.MustExec(`UPDATE axm_test_addresses SET last_sent_at = NOW() - INTERVAL '2 minutes'`)
+	b, _ := json.Marshal(map[string]any{"name": "n", "subject": "s", "lists": []int{e.aList}, "messenger": "email",
+		"content_type": "html", "body": "<p>x</p>", "subscribers": []string{last.To[0]}})
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(string(b)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec, he := e.do(e.a.TestCampaign, e.as(e.ua), req, e.camp, nil)
+	if he == nil || he.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" || rec.Header().Get("Retry-After") == "0" {
+		t.Errorf("a repeated request at the limit: %v, Retry-After %q", he, rec.Header().Get("Retry-After"))
+	}
+	if email, err := e.a.core.GetTestAddressToken(tokenHash(lastToken)); err != nil || email != last.To[0] {
+		t.Errorf("the earlier link after a refused request: %q %v", email, err)
+	}
+	if n := len(e.sys.all()); n != testRateLimit {
+		t.Errorf("%d confirmation mails after the refused requests", n)
+	}
+	e.db.MustExec(`UPDATE users SET email='one-more@outside.invalid' WHERE id=$1`, e.ua)
+
 	// The refused request left nothing behind that would hold back a later one.
 	e.now = e.now.Add(testRateWindow)
 	if code, _ := e.send(e.as(e.ua), []string{"one-more@outside.invalid"}, ""); code != 400 || len(e.sys.to("one-more@outside.invalid")) != 1 {
@@ -923,6 +945,46 @@ func TestSampleMessageBrowserLink(t *testing.T) {
 		t.Errorf("plain view: %v %q %q", err, recV.Header().Get("Content-Type"), recV.Body.String())
 	}
 
+	// The page is isolated from the admin screens it shares an origin with: the author's
+	// HTML runs no script and cannot reach the session.
+	for _, tk := range []string{tokens[0], strings.Repeat("y", 32)} {
+		reqH := httptest.NewRequest("GET", "/x", nil)
+		recH := httptest.NewRecorder()
+		cH := echo.New().NewContext(reqH, recH)
+		cH.Echo().Renderer = nopRenderer{}
+		cH.SetParamNames("token")
+		cH.SetParamValues(tk)
+		if err := e.a.TestMessageView(cH); err != nil {
+			t.Fatal(err)
+		}
+		csp := recH.Header().Get("Content-Security-Policy")
+		if !strings.HasPrefix(csp, "sandbox;") || !strings.Contains(csp, "default-src 'none'") || strings.Contains(csp, "script-src") ||
+			strings.Contains(csp, "allow-scripts") || strings.Contains(csp, "allow-same-origin") ||
+			recH.Header().Get("X-Content-Type-Options") != "nosniff" || recH.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("headers of the browser view: %v", recH.Header())
+		}
+	}
+
+	// A link that is only in the plain text alternative is pointed at the kept message too.
+	b, _ = json.Marshal(map[string]any{"name": "n", "subject": "s", "lists": []int{e.aList}, "messenger": "email", "content_type": "html",
+		"body": "<p>{{ .Subscriber.Name }} only html</p>{{ TrackView }}", "altbody": "{{ .Subscriber.Name }} text {{ MessageURL }}",
+		"subscribers": []string{internal}, "sample": map[string]any{"name": "서하늘", "attribs": map[string]any{}}})
+	req = httptest.NewRequest("POST", "/x", strings.NewReader(string(b)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	if _, he := e.do(e.a.TestCampaign, e.as(e.ua), req, e.camp, nil); he != nil {
+		t.Fatal(he)
+	}
+	e.waitSent(5)
+	altMsg := e.msgr.to(internal)[2]
+	am := reTestViewLink.FindStringSubmatch(string(altMsg.AltBody))
+	if am == nil || strings.Contains(string(altMsg.AltBody), "/campaign/"+dummyUUID) || strings.Contains(string(altMsg.Body), "/test-message/") ||
+		!strings.Contains(string(altMsg.Body), "/campaign/"+dummyUUID+"/"+dummyUUID+"/px.png") {
+		t.Fatalf("message with the link in the text alternative only: %q / %q", altMsg.AltBody, altMsg.Body)
+	}
+	if code, page := show(am[1]); code != 200 || page != string(altMsg.Body) {
+		t.Errorf("browser view of that message: %d %q", code, page)
+	}
+
 	// Unknown tokens, and messages older than the limit, are gone.
 	if code, _ := show(strings.Repeat("x", 32)); code != 404 {
 		t.Errorf("unknown token: %d", code)
@@ -948,6 +1010,23 @@ func TestSampleMessageBrowserLink(t *testing.T) {
 	}
 	if _, ok := st.get(fmt.Sprintf("t%d", testViewMax+49)); !ok {
 		t.Error("the newest message is gone")
+	}
+	// The kept messages are bounded in size as well: the oldest make room, and a message is
+	// kept whatever its size as long as it fits at all.
+	var big testViewStore
+	third := make([]byte, testViewMaxBytes/3+1)
+	for _, tk := range []string{"a", "b", "c"} {
+		big.put(tk, third, false)
+	}
+	if _, ok := big.get("a"); ok || big.bytes != 2*len(third) || len(big.items) != 2 {
+		t.Errorf("size bound: %d bytes in %d messages", big.bytes, len(big.items))
+	}
+	if !big.fits(testViewMaxBytes) || big.fits(testViewMaxBytes+1) {
+		t.Error("fits is off by one")
+	}
+	big.put("whole", make([]byte, testViewMaxBytes), false)
+	if _, ok := big.get("whole"); !ok || len(big.items) != 1 || big.bytes != testViewMaxBytes {
+		t.Errorf("a message of the full size: %d bytes in %d messages", big.bytes, len(big.items))
 	}
 }
 
