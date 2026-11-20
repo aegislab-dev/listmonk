@@ -118,7 +118,8 @@
                   :optin="data.type === 'optin'" />
 
                 <recent-send-exclude v-if="canShowRecentRule" v-model="recentRule" :campaign-id="data.id || createdDraftId"
-                  :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || !recentRuleLoaded || savingCampaign" />
+                  :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || !recentRuleLoaded || savingCampaign"
+                  :lists-editable="canChangeLists" :saved-campaign="!!data.id" :made-list="madeListView" @list-made="onRecentListMade" />
                 <p v-if="recentRuleError" class="help is-danger mb-4" role="alert">{{ recentRuleError }}</p>
 
                 <div class="columns">
@@ -439,7 +440,14 @@ export default Vue.extend({
       recentRuleLoaded: false,
       recentRuleError: '',
       createdDraftId: 0,
+      // The list IDs the created draft was saved with (the page stays new while its rule fails).
+      createdLists: [],
       savingCampaign: false,
+      // The list made from the recent-send exclusion result: { id, error }. Whether the server
+      // has it as the target is read from the saved campaign (madeSaved), never remembered.
+      madeList: null,
+      // A leave confirmation is open: a save waiting for its turn must not run until it is answered.
+      leaveAsked: false,
 
       // The test box (LST-41): the sample for addresses that are not subscribers, and the
       // addresses the server refused last time.
@@ -565,7 +573,7 @@ export default Vue.extend({
     },
 
     isUnsaved() {
-      return this.recentRuleDirty || this.data.body !== this.form.content.body
+      return this.recentRuleDirty || this.madeUnsaved || this.data.body !== this.form.content.body
         || this.data.contentType !== this.form.content.contentType;
     },
 
@@ -794,10 +802,60 @@ export default Vue.extend({
         const d = this.createdDraftId ? await this.$api.updateCampaign(this.createdDraftId, data)
           : await this.$api.createCampaign(data);
         this.createdDraftId = d.id;
+        this.createdLists = data.lists;
         await this.saveRecentRule(d.id);
+        // The made list is the new campaign's target now (or was not chosen): nothing is pending.
+        this.madeList = null;
         this.$router.push({ name: 'campaign', hash: '#content', params: { id: d.id } });
       } finally {
         this.savingCampaign = false;
+      }
+    },
+
+    // Resolves when no save is running (or after 30 seconds of saving) and no leave confirmation is
+    // open, or once the page is gone. A save run while the person is being asked whether to discard
+    // would store what they then discard.
+    whenFree() {
+      return new Promise((resolve) => {
+        let ticks = 0;
+        const check = () => {
+          if (this.savingCampaign) ticks += 1;
+          if (this.isDestroyed || ((!this.savingCampaign || ticks > 300) && !this.leaveAsked)) resolve();
+          else setTimeout(check, 100);
+        };
+        check();
+      });
+    },
+
+    // Whether a save that sent these list IDs saved the made list as the only target.
+    sentMadeList(ids) {
+      return ids.length === 1 && ids[0] === this.madeList.id;
+    },
+
+    // The list made from the exclusion result becomes the campaign's only target. A campaign that
+    // exists on the server is saved right away; the list stays even if saving fails.
+    async onRecentListMade(result) {
+      const { id, name } = result.list;
+      // The target changes before anything is awaited, so a save pressed meanwhile carries it.
+      this.form.lists = [{ id, name }];
+      this.madeList = { id, error: '' };
+      this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' }).catch(() => {});
+      if (!this.data.id) return;
+      try {
+        // A save that started before the list existed carries the old target: let it finish, then
+        // save the new one (a skipped save would leave the old target on the server).
+        await this.whenFree();
+        // The person may have left (and discarded) or made another list meanwhile.
+        if (this.isDestroyed || !this.madeList || this.madeList.id !== id) return;
+        if (!this.parseFormJSON()) throw new Error('invalid form');
+        // The result line says it is saved; no second notice.
+        if (!await this.updateCampaign(undefined, { quiet: true })) throw new Error('not saved');
+      } catch (err) {
+        // A campaign saved with the made list whose rule alone was not saved has its target: the
+        // rule's own error says what failed.
+        if (!this.isDestroyed && this.madeList && this.madeList.id === id && !this.madeSaved) {
+          this.madeList = { id, error: this.$t('campaigns.recent.listSaveError') };
+        }
       }
     },
 
@@ -852,6 +910,8 @@ export default Vue.extend({
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
+        // The target is saved now, whatever happens to the rule below.
+        if (this.madeList && this.sentMadeList(data.lists)) this.madeList = { ...this.madeList, error: '' };
         await this.saveRecentRule(d.id);
         if (!quiet) this.$utils.toast(this.$t(typMsg, { name: d.name }));
         // Saving can change what the check reads beyond the page (the sender of the
@@ -1017,6 +1077,22 @@ export default Vue.extend({
     recentListIds() {
       return this.form.lists.map(({ id }) => id).filter((id) => id > 0);
     },
+    // The server has the made list as the campaign's only target (read from the saved campaign).
+    // A new campaign whose draft was created but whose rule failed reads the draft's lists.
+    madeSaved() {
+      let saved = [];
+      if (this.data.id) saved = (this.data.lists || []).map(({ id }) => id);
+      else if (this.createdDraftId) saved = this.createdLists;
+      return !!this.madeList && saved.length === 1 && saved[0] === this.madeList.id;
+    },
+    // The form targets the made list, but the server does not have it yet.
+    madeUnsaved() {
+      return !!this.madeList && this.form.lists.length === 1 && this.form.lists[0].id === this.madeList.id
+        && !this.madeSaved;
+    },
+    madeListView() {
+      return this.madeList && { ...this.madeList, saved: this.madeSaved };
+    },
     recentRuleKey() {
       return JSON.stringify(recentRulePayload(this.recentRule));
     },
@@ -1082,6 +1158,11 @@ export default Vue.extend({
       return this.$can('campaigns:send');
     },
 
+    // The target can change only while the campaign has not started (not while paused).
+    canChangeLists() {
+      return this.isNew || this.data.status === 'draft' || this.data.status === 'scheduled';
+    },
+
     canEdit() {
       return this.isNew
         || this.data.status === 'draft' || this.data.status === 'scheduled' || this.data.status === 'paused';
@@ -1122,7 +1203,10 @@ export default Vue.extend({
 
   beforeRouteLeave(to, from, next) {
     if (this.isUnsaved()) {
-      this.$utils.confirm(this.$t('globals.messages.confirmDiscard'), () => next(true));
+      this.leaveAsked = true;
+      this.$utils.confirm(this.$t('globals.messages.confirmDiscard'), () => next(true), () => {
+        this.leaveAsked = false;
+      });
       return;
     }
     next(true);
@@ -1130,8 +1214,12 @@ export default Vue.extend({
 
   watch: {
     'form.replyTo': function clearReplyError() { this.replyError = ''; },
-    selectedLists() {
-      this.form.lists = this.selectedLists;
+    // The ?list_id lists fill the target once, when the lists are known. A later refresh of the
+    // lists (making a list from the exclusion result reads them again) must not put them back.
+    selectedLists(lists) {
+      if (lists.length === 0) return;
+      this.form.lists = lists;
+      this.selListIDs = [];
     },
 
     // The stored status decides what the check reads besides the page: a draft is sent
