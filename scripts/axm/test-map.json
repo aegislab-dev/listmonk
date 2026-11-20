@@ -15,7 +15,8 @@
   "campaign-tracking-check.cy.js",
   "analytics-proof.cy.js",
   "address-check.cy.js",
-  "campaign-test-send.cy.js"
+  "campaign-test-send.cy.js",
+  "schedule-time.cy.js"
  ],
  "smoke": [
   "audit.cy.js",
@@ -96,6 +97,17 @@
   },
   {
    "paths": [
+    "frontend/src/components/TimezonePicker.vue",
+    "frontend/src/components/TimezoneRow.vue",
+    "frontend/src/schedule-time.js",
+    "cmd/axm_send_tz*.go"
+   ],
+   "specs": [
+    "schedule-time.cy.js"
+   ]
+  },
+  {
+   "paths": [
     "frontend/src/views/Campaign.vue",
     "frontend/src/components/Editor.vue"
    ],
@@ -106,7 +118,8 @@
     "campaign-tracking-check.cy.js",
     "reaction-lists.cy.js",
     "dynamic-lists.cy.js",
-    "campaign-test-send.cy.js"
+    "campaign-test-send.cy.js",
+    "schedule-time.cy.js"
    ]
   },
   {
@@ -119,7 +132,8 @@
     "address-check.cy.js",
     "campaign-tracking-check.cy.js",
     "reaction-lists.cy.js",
-    "campaign-test-send.cy.js"
+    "campaign-test-send.cy.js",
+    "schedule-time.cy.js"
    ]
   },
   {
@@ -135,7 +149,8 @@
     "reaction-lists.cy.js",
     "analytics-proof.cy.js",
     "list-trash.cy.js",
-    "campaign-test-send.cy.js"
+    "campaign-test-send.cy.js",
+    "schedule-time.cy.js"
    ]
   },
   {

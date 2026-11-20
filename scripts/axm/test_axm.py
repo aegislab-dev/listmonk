@@ -638,11 +638,48 @@ class Round8Test(unittest.TestCase):
         line = re.search(r"^( *)npx cypress run[^\n]*\n", wf, re.M)
         extra = line.group(0) + line.group(1) + "npx cypress run --browser chrome --spec 'cypress/e2e/campaign-extra.cy.js'\n"
         specs = axm.workflow_specs(wf.replace(line.group(0), extra))
-        self.assertEqual(specs, TMAP['map_ci_specs'] + ['campaign-extra.cy.js'])
+        # 순서는 명령이 나오는 순서다: 첫 명령의 spec 들 → 바로 뒤에 넣은 명령 → 그 뒤 명령들(CI 가 이미 나뉘어 있어도 맞게).
+        first = axm.workflow_specs(line.group(0))
+        rest = [x for x in TMAP['map_ci_specs'] if x not in first]
+        self.assertEqual(specs, first + ['campaign-extra.cy.js'] + rest)
         # 맵이 그 spec 을 모르면 뒤처진 맵으로 잡히고, 그 spec 파일 변경은 고른다.
         raw = json.loads((HERE / 'test-map.json').read_text())
         stale = axm.reconcile_ci(raw, specs)
         self.assertEqual(stale['stale_ci'], ['campaign-extra.cy.js'])
+
+    def test_split_ci_with_the_same_order_matches_the_map(self):
+        # 리뷰 재현: 기존 CI spec 을 같은 순서로 두 명령(14+나머지)에 나누면 맵과 그대로 같아야 한다.
+        ci = TMAP['map_ci_specs']
+        arg = lambda xs: ','.join('cypress/e2e/' + x for x in xs)
+        for k in (1, len(ci) - 2, len(ci) - 1):
+            t = (f"          npx cypress run --browser chrome --spec '{arg(ci[:k])}'\n"
+                 f"          npx cypress run --browser chrome --spec '{arg(ci[k:])}'\n")
+            self.assertEqual(axm.workflow_specs(t), ci, k)
+            self.assertEqual(axm.reconcile_ci(json.loads((HERE / 'test-map.json').read_text()), axm.workflow_specs(t))['stale_ci'], [])
+
+    def test_commands_chained_on_one_line(self):
+        # 리뷰 재현: 두 Cypress 명령을 && 로 이으면 두 번째 명령의 spec 도 CI spec 이다.
+        ci = TMAP['map_ci_specs']
+        arg = ','.join('cypress/e2e/' + x for x in ci)
+        for sep in (' && ', '; ', ' || '):
+            t = f"          npx cypress run --browser chrome --spec '{arg}'{sep}npx cypress run --spec 'cypress/e2e/review-smoke.cy.js'\n"
+            self.assertEqual(axm.workflow_specs(t), ci + ['review-smoke.cy.js'], sep)
+        t = "  yarn cypress run -s cypress/e2e/x.cy.js; cypress run --spec=\"cypress/e2e/y.cy.js\" | tee log"
+        self.assertEqual(axm.workflow_specs(t), ['x.cy.js', 'y.cy.js'])
+        # 그 spec 을 맵이 모르면 뒤처진 맵이고, 그 spec 파일은 CI spec 으로 골라진다(건너뜀 아님).
+        specs = axm.workflow_specs(f"npx cypress run --spec '{arg}' && npx cypress run --spec 'cypress/e2e/schedule-time.cy.js'")
+        raw = json.loads((HERE / 'test-map.json').read_text())
+        raw['ci_specs'] = [x for x in raw['ci_specs'] if x != 'schedule-time.cy.js']
+        stale = axm.reconcile_ci(raw, specs)
+        self.assertEqual(stale['stale_ci'], ['schedule-time.cy.js'])
+        r = axm.affected(['frontend/cypress/e2e/schedule-time.cy.js'], FILES, stale)
+        self.assertEqual((r['specs'], r['python']), (['schedule-time.cy.js'], True))
+
+    def test_schedule_time_screens_select_its_spec(self):
+        for f in ('frontend/src/components/TimezonePicker.vue', 'frontend/src/components/TimezoneRow.vue',
+                  'frontend/src/schedule-time.js', 'cmd/axm_send_tz.go', 'frontend/src/views/Campaign.vue',
+                  'frontend/src/views/Campaigns.vue', 'cmd/campaigns.go'):
+            self.assertIn('schedule-time.cy.js', pick(f)['specs'], f)
 
     def test_workflow_parser_forms(self):
         t = '''
