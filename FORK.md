@@ -124,6 +124,10 @@ React 이메일 빌더 → Vue 관리 프론트 → Go 바이너리 → **stuffb
 upstream `Makefile`·`Dockerfile`은 보존한다. Go 변경이 허용되는 후속 태스크도 `Dockerfile.axm`으로 전체 빌드한다.
 런타임의 `/listmonk`, `config.toml`, entrypoint, 포트 9000, 기본 명령 `./listmonk`은 공식 이미지와 같다.
 
+### 로컬 검사: 바뀐 부분만 (LST-51)
+
+여러 태스크가 한 PC 에서 같이 검사하면 CPU 가 몰리므로, 로컬에서는 `scripts/axm/axm check` 로 **바뀐 파일에 닿는 spec·Go 시험만** 돌리고 전체 e2e 와 위의 운영 방식 이미지 빌드는 PR 의 CI 가 한다. Go 모듈·빌드 캐시, 프론트 dist, 시험용 베이스 이미지(`listmonk-axm-base`)는 `~/.cache/listmonk-axm` 에서 태스크끼리 같이 쓴다. 시험 이미지는 같은 `make dist` 와 같은 런타임 단계(`scripts/axm/runtime.Dockerfile`)로 만들지만 `Dockerfile.axm` 으로 만든 것은 아니다. 운영 방식 빌드는 `axm build --full`. 규칙은 `AGENTS.md`, 바뀐 파일 → spec 표는 `scripts/axm/test-map.json`.
+
 CI는 빈 Postgres 17에 `--install --idempotent --yes` 후 `/health`, `/admin/login`, 임베드된 관리 JS 번들, 버전 출력과 라이선스 파일을 확인한다.
 프론트 lint는 `yarn build`의 prebuild에서 실행한다. LST-6부터 이미지 빌드에 `go test ./...`도 포함하며 크롤러 차단·메일 경로 예외·robots.txt와 사업자정보 푸터를 검사한다. 새 설치의 사업자정보 설정 기본값과 공식 v6.2.0 설치 DB에서 포크 이미지로 `--upgrade --yes`(반복 실행 포함) 후 설정 행·마이그레이션 번호·기동을 검사한다.
 
