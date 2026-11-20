@@ -1247,6 +1247,18 @@ func TestCampaignPreflightUnsubscribeTemplateResume(t *testing.T) {
 	if got := read(); got != "unsubscribe.missing=warn" && got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("same variable name in the template and the body: %q", got)
 	}
+	// A shared footer with the link, switched off by a campaign setting; the body's own link only
+	// for the full edition (LST-48 review: the switched-off footer passed).
+	e.db.MustExec(`UPDATE templates SET body='<html><body>{{ $url := "https://example.org/archive" }}{{ template "content" . }}{{ if .Campaign.Attribs.shared_footer }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}</body></html>' WHERE id=$1`, tpl)
+	e.db.MustExec(`UPDATE campaigns SET attribs='{"shared_footer":false}'::jsonb, body='{{ $url := "https://example.org/archive" }}<a href="{{ $url }}">archive</a>{{ if not .Subscriber.Attribs.compact }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.missing=warn" && got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("footer switched off by a campaign setting: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET attribs='{"shared_footer":true}'::jsonb WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.missing=ok" {
+		t.Fatalf("footer switched on: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET attribs='{}'::jsonb WHERE id=$1`, e.campID)
 	e.db.MustExec(`UPDATE templates SET body='<html><body>{{ if not .Subscriber.Attribs.compact }}{{ template "content" . }}{{ else }}<p>Compact</p>{{ end }}</body></html>' WHERE id=$1`, tpl)
 	e.db.MustExec(`UPDATE campaigns SET body='<p>Full</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID)
 
