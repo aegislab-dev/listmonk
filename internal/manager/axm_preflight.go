@@ -20,6 +20,27 @@ import (
 //
 // The business footer (LST-7) is not added: it carries no unsubscribe link.
 func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber, status string) (bool, error) {
+	msg, err := m.checkRender(c, sub, status)
+	if err != nil {
+		return false, err
+	}
+	return hasUnsubscribeLink(msg), nil
+}
+
+// RenderedSubject is the subject line of the campaign's mail to sub, rendered as the sender
+// renders it when the campaign has the given status: a subject with a template expression
+// ({{ .Campaign.Name }} and the like) goes out as its result, not as written (LST-48 review).
+func (m *Manager) RenderedSubject(c *models.Campaign, sub models.Subscriber, status string) (string, error) {
+	msg, err := m.checkRender(c, sub, status)
+	if err != nil {
+		return "", err
+	}
+	return msg.subject, nil
+}
+
+// checkRender compiles a copy of the campaign, with tracking functions that touch nothing,
+// and renders its mail to sub in the given status. It registers no links and writes nothing.
+func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status string) (*CampaignMessage, error) {
 	// Compile on a copy, with the tracking functions that do not touch the database.
 	camp := *c
 	camp.UUID = dummyUUID
@@ -30,7 +51,7 @@ func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber, 
 	funcs["TrackLink"] = func(u string, _ *CampaignMessage) string { return u }
 	funcs["TrackView"] = func(_ *CampaignMessage) template.HTML { return "" }
 	if err := camp.CompileTemplate(funcs); err != nil {
-		return false, err
+		return nil, err
 	}
 
 	sub.Attribs = models.PlainNumbers(sub.Attribs)
@@ -43,13 +64,19 @@ func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber, 
 		unsubURL:   fmt.Sprintf(m.cfg.UnsubURL, camp.UUID, sub.UUID),
 	}
 	if err := msg.render(); err != nil {
-		return false, err
+		return nil, err
 	}
+	return &msg, nil
+}
+
+// hasUnsubscribeLink tells whether a rendered message has the link to leave.
+func hasUnsubscribeLink(msg *CampaignMessage) bool {
+	camp := msg.Campaign
 	if bytes.Contains(msg.altBody, []byte(msg.unsubURL)) {
-		return true, nil
+		return true
 	}
 	if camp.ContentType == models.CampaignContentTypePlain {
-		return bytes.Contains(msg.body, []byte(msg.unsubURL)), nil
+		return bytes.Contains(msg.body, []byte(msg.unsubURL))
 	}
 	// An HTML body has the link when an <a> points at the address. The address in an
 	// attribute that cannot be clicked, or in the text, is not a link to leave.
@@ -60,7 +87,7 @@ func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber, 
 		}
 		return value
 	})
-	return found, nil
+	return found
 }
 
 // SendStatuses are the statuses a campaign may have when the sender reads it to render its

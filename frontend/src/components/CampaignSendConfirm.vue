@@ -59,6 +59,7 @@
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.subject') }}</div>
             <div class="send-v">
               {{ pf.subject }}
+              <div v-if="pf.subjectRendered" class="help" data-cy="send-subject-rendered">{{ $t('campaigns.sendConfirm.subjectRendered') }}</div>
               <div v-if="stale" class="send-was" data-cy="send-subject-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.subject }) }}</div>
             </div>
           </div>
@@ -443,6 +444,8 @@ export default Vue.extend({
 .send-k { color: #7a7a7a; }
 .send-v { min-width: 0; overflow-wrap: anywhere; }
 .send-list { margin: 0.1rem 0; }
+/* A long list name wraps instead of widening the window (390px). */
+.send-list .tag { white-space: normal; height: auto; max-width: 100%; overflow-wrap: anywhere; text-align: left; }
 .send-sum { margin-top: 0.3rem; padding: 0.3rem 0.5rem; background: #f5f5f5; border-radius: 6px; }
 .send-was { color: #b25e00; font-size: 0.8rem; margin-left: 0.25rem; }
 .lv-block-text { color: #cc0f35; }

@@ -456,6 +456,28 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 	}
 	e.db.MustExec(`UPDATE campaigns SET headers='[]'::jsonb WHERE id=$1`, e.campID)
 
+	// A subject with a template expression is shown rendered, as it goes out (LST-48 review).
+	e.db.MustExec(`UPDATE campaigns SET subject='Check {{ .Campaign.Name }}' WHERE id=$1`, e.campID)
+	{
+		var name string
+		e.get(&name, `SELECT name FROM campaigns WHERE id=$1`, e.campID)
+		code, data := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		var o struct {
+			Subject  string `json:"subject"`
+			Rendered bool   `json:"subject_rendered"`
+		}
+		if code != http.StatusOK || json.Unmarshal(data, &o) != nil || o.Subject != "Check "+name || !o.Rendered {
+			t.Fatalf("subject template: %d %s", code, data)
+		}
+		// A Subject header replaces it: shown as the header, not as rendered.
+		e.db.MustExec(`UPDATE campaigns SET headers='[{"Subject":"Header subject"}]'::jsonb WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if json.Unmarshal(data, &o) != nil || o.Subject != "Header subject" || o.Rendered {
+			t.Fatalf("subject header over a template: %s", data)
+		}
+	}
+	e.db.MustExec(`UPDATE campaigns SET subject='Stored subject', headers='[]'::jsonb WHERE id=$1`, e.campID)
+
 	// A link that is only in the source of a condition that does not hold is not in the mail.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>News {{ if false }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}</p>' WHERE id=$1`, e.campID)
 	if got := level(read().Checks, "unsubscribe.missing"); got != "warn" {
@@ -824,6 +846,24 @@ func TestCampaignStatusSendTimePassed(t *testing.T) {
 	if _, err := e.core.UpdateCampaignStatus(draft, models.CampaignStatusScheduled, "", "", false); err != nil || status() != "scheduled" {
 		t.Fatalf("api: %v %s", err, status())
 	}
+	// The send time comes while the request waits for the row lock: judged by the time after
+	// the wait (LST-48 review), so still refused.
+	e.db.MustExec(`UPDATE campaigns SET status='draft', send_at = clock_timestamp() + INTERVAL '1 second' WHERE id = $1`, draft)
+	{
+		hold, err := e.db.Beginx()
+		if err != nil {
+			t.Fatal(err)
+		}
+		hold.MustExec(`SELECT 1 FROM campaigns WHERE id = $1 FOR UPDATE`, draft)
+		seenNow := seen()
+		go func() { time.Sleep(2500 * time.Millisecond); hold.Rollback() }()
+		_, err = e.core.UpdateCampaignStatus(draft, models.CampaignStatusScheduled, "", seenNow, false)
+		var he *echo.HTTPError
+		if !errors.As(err, &he) || he.Code != http.StatusPreconditionFailed || status() != "draft" {
+			t.Fatalf("time came during the lock wait: %v %s", err, status())
+		}
+	}
+
 	// A time ahead is not judged.
 	e.db.MustExec(`UPDATE campaigns SET status='draft', send_at = NOW() + INTERVAL '1 hour' WHERE id = $1`, draft)
 	if _, err := e.core.UpdateCampaignStatus(draft, models.CampaignStatusScheduled, "", seen(), false); err != nil || status() != "scheduled" {

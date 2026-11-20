@@ -93,8 +93,34 @@ describe('Pre-send confirmation window', () => {
     });
     cy.location('pathname').should('match', /\/admin\/campaigns$/);
     cy.request(`/api/campaigns/${camp.page}`).then(({ body }) => {
-      expect(['running', 'finished']).to.include(body.data.status);
       expect(body.data.lists.map((l) => l.id).sort()).to.deep.equal([listX, listY].sort());
+    });
+
+    // It really went to the 4 people the window counted, once each, and to nobody else
+    // (the blocked person is left out): read the test inbox.
+    const want = [1, 2, 3, 4].map((n) => `send-${n}-${stamp}@example.invalid`).sort();
+    const inbox = Cypress.env('mailpitUrl');
+    expect(inbox, 'CYPRESS_mailpitUrl (the test inbox)').to.be.a('string').and.not.be.empty;
+    const received = (tries = 30) => cy.request(`${inbox}/api/v1/search?query=${encodeURIComponent('subject:"Send page subject"')}&limit=50`)
+      .then(({ body }) => {
+        const to = body.messages.flatMap((m) => m.To.map((a) => a.Address)).sort();
+        if (to.length < want.length && tries > 0) {
+          cy.wait(1000);
+          return received(tries - 1);
+        }
+        return to;
+      });
+    received().should('deep.equal', want);
+    const finished = (tries = 30) => cy.request(`/api/campaigns/${camp.page}`).then(({ body }) => {
+      if (body.data.status !== 'finished' && tries > 0) {
+        cy.wait(1000);
+        return finished(tries - 1);
+      }
+      return body.data;
+    });
+    finished().then((c) => {
+      expect(c.status).to.equal('finished');
+      expect(c.sent).to.equal(4);
     });
   });
 

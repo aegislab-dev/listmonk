@@ -71,11 +71,20 @@ func (c *Core) lockCampaignState(tx *sqlx.Tx, id int) (models.Campaign, bool, er
 		cm  models.Campaign
 		due bool
 	)
-	err := tx.QueryRowx(`SELECT id, status, send_at, COALESCE(NOW() >= send_at, false) FROM campaigns WHERE id = $1 FOR UPDATE`, id).
-		Scan(&cm.ID, &cm.Status, &cm.SendAt, &due)
+	err := tx.QueryRowx(`SELECT id, status, send_at FROM campaigns WHERE id = $1 FOR UPDATE`, id).
+		Scan(&cm.ID, &cm.Status, &cm.SendAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return cm, false, echo.NewHTTPError(http.StatusBadRequest,
 			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
+	}
+	if err != nil {
+		return cm, false, err
+	}
+	// Read the clock now that the row is held, with clock_timestamp(): NOW() is when the
+	// transaction began, before any wait for the lock (LST-48 review: a request that waited
+	// 12 s for the lock was judged by the time before the wait and the campaign went out).
+	if cm.SendAt.Valid {
+		err = tx.QueryRowx(`SELECT clock_timestamp() >= $1::TIMESTAMPTZ`, cm.SendAt.Time).Scan(&due)
 	}
 	return cm, due, err
 }

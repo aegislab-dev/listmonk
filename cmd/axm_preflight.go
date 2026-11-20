@@ -29,10 +29,13 @@ type preflightResponse struct {
 
 	// What the recipients will really see: the stored values, replaced by what the custom
 	// headers of an e-mail campaign set, which the mail goes out with (see sendEnvelope).
-	Subject   string    `json:"subject"`
-	FromEmail string    `json:"from_email"`
-	ReplyTo   string    `json:"reply_to"`
-	SendAt    null.Time `json:"send_at"`
+	Subject string `json:"subject"`
+	// SubjectRendered: the subject field has a template expression and Subject is its result
+	// for the example subscriber.
+	SubjectRendered bool      `json:"subject_rendered"`
+	FromEmail       string    `json:"from_email"`
+	ReplyTo         string    `json:"reply_to"`
+	SendAt          null.Time `json:"send_at"`
 	// PausedAt is when a paused campaign was paused (the last pause in the audit log, else
 	// the campaign's last change).
 	PausedAt null.Time `json:"paused_at"`
@@ -299,13 +302,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	}
 	// The sender address the campaign itself has when it is sent, which templates can read.
 	campFrom := from
-	subject, from, replyTo := sendEnvelope(camp.Subject, from, camp.ReplyTo, camp.Messenger, server, camp.Headers, len(a.cfg.SenderDomains) > 0)
 
-	facts := preflightFacts{
-		Mode: mode, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
-		Total: aud.Total, Remaining: aud.Remaining, ListCount: len(lists),
-		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1, HeadersVary: headersVary,
-	}
 	// The campaign as the sender reads it: with the sender set at the start of a draft, and
 	// in each status it may be read in (a scheduled one is read again as "running" after a
 	// restart). The mail has to be right in all of them.
@@ -313,6 +310,26 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	sendCamp.FromEmail = campFrom
 	statuses := manager.SendStatuses(camp.SendAt)
 
+	// A subject with a template expression goes out rendered: show it as the first mail of
+	// the send has it, for the example subscriber (a subject that uses the subscriber's
+	// fields differs from person to person; the window says so). It cannot be rendered: as
+	// written.
+	subject, subjectTpl := camp.Subject, strings.Contains(camp.Subject, "{{")
+	if subjectTpl {
+		if s, err := a.manager.RenderedSubject(&sendCamp, dummySubscriber, statuses[0]); err == nil {
+			subject = s
+		}
+	}
+	rendered := subject
+	subject, from, replyTo := sendEnvelope(subject, from, camp.ReplyTo, camp.Messenger, server, camp.Headers, len(a.cfg.SenderDomains) > 0)
+	// Shown as rendered only when it was, and no Subject header replaced it.
+	subjectTpl = subjectTpl && rendered != camp.Subject && subject == rendered
+
+	facts := preflightFacts{
+		Mode: mode, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
+		Total: aud.Total, Remaining: aud.Remaining, ListCount: len(lists),
+		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1, HeadersVary: headersVary,
+	}
 	// Whether the e-mail that is rendered has the link to leave, as every recipient gets it.
 	facts.Unsubscribe, facts.UnsubscribeKnown = unsubscribeInAll(statuses, func(status string) (bool, error) {
 		return a.manager.HasUnsubscribeLink(&sendCamp, dummySubscriber, status)
@@ -340,7 +357,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: subject, Messenger: camp.Messenger, Mode: mode,
+		Subject: subject, SubjectRendered: subjectTpl, Messenger: camp.Messenger, Mode: mode,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
