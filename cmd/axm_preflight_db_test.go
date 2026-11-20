@@ -483,6 +483,47 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 		if json.Unmarshal(data, &o) != nil || o.Subject != "Header "+name || !o.Rendered {
 			t.Fatalf("templated Subject header: %s", data)
 		}
+		// A body that the example subscriber cannot fill does not hide a subject that does not
+		// depend on the subscriber (LST-48 review).
+		var body string
+		e.get(&body, `SELECT body FROM campaigns WHERE id=$1`, e.campID)
+		e.db.MustExec(`UPDATE campaigns SET headers='[]'::jsonb, subject='News {{ .Campaign.Name }}', body='<p>{{ index .Subscriber.Attribs.offers 0 }}</p>' WHERE id=$1`, e.campID)
+		var o2 struct {
+			Subject string `json:"subject"`
+			Note    string `json:"subject_note"`
+		}
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if json.Unmarshal(data, &o2) != nil || o2.Subject != "News "+name || o2.Note != "rendered" {
+			t.Fatalf("subject with a body the example cannot fill: %s", data)
+		}
+		e.db.MustExec(`UPDATE campaigns SET body=$2 WHERE id=$1`, e.campID, body)
+		// A subject with the campaign's change time: the status change sets it, so the window
+		// shows today's, and says that it can vary between the mails (LST-48 review).
+		e.db.MustExec(`UPDATE campaigns SET subject='Brief {{ .Campaign.UpdatedAt.Time.Format "2006-01-02" }}', updated_at=NOW() - INTERVAL '1 day' WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if json.Unmarshal(data, &o2) != nil || o2.Subject != "Brief "+time.Now().Format("2006-01-02") || o2.Note != "varies" {
+			t.Fatalf("subject with the change time: %s", data)
+		}
+		// A subject the example subscriber cannot fill is shown as written, and said so.
+		e.db.MustExec(`UPDATE campaigns SET subject='Hi {{ index .Subscriber.Attribs.offers 0 }}' WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if json.Unmarshal(data, &o2) != nil || o2.Note != "unrendered" {
+			t.Fatalf("subject the example cannot fill: %s", data)
+		}
+		// A Cc header: every mail also goes there, and the window counts those mails.
+		e.db.MustExec(`UPDATE campaigns SET subject='Stored subject', headers='[{"Cc":"Desk <desk@crevasse.ai>"}]'::jsonb WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		var o3 struct {
+			Copies []struct {
+				Kind, Address string
+			} `json:"copies"`
+			Checks []models.PreflightCheck `json:"checks"`
+		}
+		if json.Unmarshal(data, &o3) != nil || len(o3.Copies) != 1 || o3.Copies[0].Address != "desk@crevasse.ai" || level(o3.Checks, "mail.copies") != "warn" {
+			t.Fatalf("cc header: %s", data)
+		}
+		e.db.MustExec(`UPDATE campaigns SET subject='Check {{ .Campaign.Name }}', headers='[]'::jsonb WHERE id=$1`, e.campID)
+
 		// A Subject header replaces it: shown as the header, not as rendered.
 		e.db.MustExec(`UPDATE campaigns SET headers='[{"Subject":"Header subject"}]'::jsonb WHERE id=$1`, e.campID)
 		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")

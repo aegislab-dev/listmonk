@@ -358,6 +358,41 @@ describe('Pre-send confirmation window', () => {
     });
   });
 
+  it('says that a Cc header sends every mail to one more address, as the inbox shows', () => {
+    let listC2;
+    const desk = `desk-${stamp}@example.invalid`;
+    cy.request('POST', '/api/lists', {
+      name: `Send CC ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { listC2 = body.data.id; });
+    cy.then(() => {
+      person('cc1', [listC2]);
+      person('cc2', [listC2]);
+      create('cc', { lists: [listC2], subject: 'Send cc subject', headers: [{ Cc: desk }] });
+    });
+    cy.visit('/admin/campaigns');
+    row('cc').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-title]').should('contain', 'Send to 2 people now');
+    cy.get('[data-cy=send-copies]').should('contain', desk);
+    cy.get('[data-cy="send-check-mail.copies"]').should('have.attr', 'data-level', 'warn')
+      .and('contain', '2 more mails');
+    cy.get('[data-cy=send-ok]').click();
+    cy.get(win).should('not.exist');
+    const inbox = Cypress.env('mailpitUrl');
+    const received = (tries = 30) => cy.request(`${inbox}/api/v1/search?query=${encodeURIComponent('subject:"Send cc subject"')}`)
+      .then(({ body }) => {
+        if (body.messages.length < 2 && tries > 0) {
+          cy.wait(1000);
+          return received(tries - 1);
+        }
+        return body.messages;
+      });
+    received().then((messages) => {
+      expect(messages).to.have.length(2);
+      messages.forEach((m) => expect(m.Cc.map((a) => a.Address)).to.deep.equal([desk]));
+    });
+  });
+
   it('keeps time by the server clock when the browser clock is behind', () => {
     // The server says it is 2 minutes later than this browser thinks: its send time 60 s
     // from the browser's now has passed already.

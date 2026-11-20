@@ -59,7 +59,7 @@
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.subject') }}</div>
             <div class="send-v">
               <span data-cy="send-subject-text">{{ pf.subject }}</span>
-              <div v-if="pf.subjectRendered" class="help" data-cy="send-subject-rendered">{{ $t('campaigns.sendConfirm.subjectRendered') }}</div>
+              <div v-if="subjectNoteKey" class="help" data-cy="send-subject-rendered" :data-note="pf.subjectNote">{{ $t(subjectNoteKey) }}</div>
               <div v-if="stale" class="send-was" data-cy="send-subject-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.subject }) }}</div>
             </div>
           </div>
@@ -88,6 +88,9 @@
               <div v-if="!isResume && (sumParts.length || totalWas !== null)" class="send-sum" data-cy="send-recipients">
                 {{ sumParts.length ? sumParts.join(' · ') : $t('campaigns.sendConfirm.total', { n: pf.recipients }) }}
                 <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
+              </div>
+              <div v-if="pf.copies && pf.copies.length" class="send-sum" data-cy="send-copies">
+                {{ $t('campaigns.sendConfirm.copies', { addresses: pf.copies.map((c) => c.address).join(', ') }) }}
               </div>
               <div v-if="model.zero" class="send-sum lv-block-text" data-cy="send-zero">{{ $t('campaigns.sendConfirm.zeroSummary') }}</div>
             </div>
@@ -262,6 +265,16 @@ export default Vue.extend({
         from: `${pf.fromEmail} · ${reply}`,
         when: this.model.when ? this.model.when.text : this.$t('campaigns.sendConfirm.now'),
       };
+    },
+
+    // The note under the subject: rendered for the example subscriber, could not be, or varies.
+    subjectNoteKey() {
+      const note = this.pf && (this.pf.subjectNote || (this.pf.subjectRendered ? 'rendered' : ''));
+      return {
+        rendered: 'campaigns.sendConfirm.subjectRendered',
+        unrendered: 'campaigns.sendConfirm.subjectUnrendered',
+        varies: 'campaigns.sendConfirm.subjectVaries',
+      }[note] || '';
     },
 
     // The count before the change, shown next to the total. With one list that kept its

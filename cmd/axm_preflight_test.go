@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -261,5 +262,36 @@ func TestPreflightEveryStatus(t *testing.T) {
 		return reps[s], nil
 	}); err == nil {
 		t.Fatal("an error in one status is an error")
+	}
+}
+
+// The Cc and Bcc headers add addresses to every e-mail: the campaign's first set that has
+// the header, over the SMTP server's, split on commas (LST-48 review: 3 people were shown
+// while a Cc address got a copy of each mail).
+func TestEnvelopeCopies(t *testing.T) {
+	got := envelopeCopies("email", map[string]string{"Cc": "server@x.invalid"},
+		models.Headers{{"cc": "A <a@x.invalid>, b@x.invalid"}, {"Cc": "ignored@x.invalid"}, {"Bcc": "c@x.invalid, B@X.invalid"}})
+	want := []mailCopy{{"cc", "a@x.invalid"}, {"cc", "b@x.invalid"}, {"bcc", "c@x.invalid"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v", got)
+	}
+	if got := envelopeCopies("email", map[string]string{"Bcc": "audit@x.invalid"}, nil); len(got) != 1 || got[0].Kind != "bcc" {
+		t.Fatalf("server only: %+v", got)
+	}
+	if got := envelopeCopies("postback", nil, models.Headers{{"Cc": "a@x.invalid"}}); len(got) != 0 {
+		t.Fatalf("not e-mail: %+v", got)
+	}
+
+	f := preflightFacts{Mode: "start", CampType: "regular", Messenger: "email", Total: 3, LiveLists: 1, ListCount: 1,
+		From: "News <news@crevasse.ai>", Unsubscribe: true, UnsubscribeKnown: true, RecentExcluded: -1, Copies: []string{"a@x.invalid"}}
+	var line *models.PreflightCheck
+	for _, c := range preflightChecks(f) {
+		if c.Key == "mail.copies" {
+			c := c
+			line = &c
+		}
+	}
+	if line == nil || line.Level != "warn" || line.Params["mails"] != 3 || line.Params["n"] != 1 {
+		t.Fatalf("copies line: %+v", line)
 	}
 }

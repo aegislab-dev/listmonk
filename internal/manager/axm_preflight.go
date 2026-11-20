@@ -27,21 +27,70 @@ func (m *Manager) HasUnsubscribeLink(c *models.Campaign, sub models.Subscriber, 
 	return hasUnsubscribeLink(msg), nil
 }
 
-// RenderedEnvelope is the subject line and the custom headers of the campaign's mail to sub,
-// rendered as the sender renders them when the campaign has the given status: a subject or a
-// header value with a template expression ({{ .Campaign.Name }}, {{ .Campaign.UUID }} and the
-// like) goes out as its result, not as written (LST-48 review).
-func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, status string) (string, models.Headers, error) {
-	msg, err := m.checkRender(c, sub, status)
+// Envelope is the subject line and the custom headers of a campaign's mail as the sender
+// renders them. Unrendered: a subject or header with a template expression could not be
+// rendered for the subscriber given, and is as written.
+type Envelope struct {
+	Subject    string
+	Headers    models.Headers
+	Unrendered bool
+}
+
+// RenderedEnvelope renders the subject line and the custom headers of the campaign's mail
+// to sub as the sender does when the campaign has the given status: a subject or a header
+// value with a template expression ({{ .Campaign.Name }}, {{ .Campaign.UUID }} and the like)
+// goes out as its result, not as written (LST-48 review). Each is rendered on its own, apart
+// from the body: a body that cannot be rendered for sub does not hide a subject that can.
+func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, status string) (Envelope, error) {
+	msg, err := m.prepareCheck(c, sub, status)
 	if err != nil {
-		return "", nil, err
+		return Envelope{}, err
 	}
-	return msg.subject, msg.headers, nil
+	out := Envelope{Subject: msg.Campaign.Subject, Headers: msg.Campaign.Headers}
+	var b bytes.Buffer
+	if msg.Campaign.SubjectTpl != nil {
+		if err := msg.Campaign.SubjectTpl.ExecuteTemplate(&b, models.ContentTpl, msg); err == nil {
+			out.Subject = b.String()
+		} else {
+			out.Unrendered = true
+		}
+	}
+	if msg.Campaign.HeaderTpls != nil {
+		out.Headers = make(models.Headers, len(msg.Campaign.Headers))
+		for i, set := range msg.Campaign.Headers {
+			out.Headers[i] = make(map[string]string, len(set))
+			for hdr, val := range set {
+				out.Headers[i][hdr] = val
+				if tpl := msg.Campaign.HeaderTpls[i][hdr]; tpl != nil {
+					b.Reset()
+					if err := tpl.ExecuteTemplate(&b, models.ContentTpl, msg); err == nil {
+						out.Headers[i][hdr] = b.String()
+					} else {
+						out.Unrendered = true
+					}
+				}
+			}
+		}
+	}
+	return out, nil
 }
 
 // checkRender compiles a copy of the campaign, with tracking functions that touch nothing,
 // and renders its mail to sub in the given status. It registers no links and writes nothing.
 func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status string) (*CampaignMessage, error) {
+	msg, err := m.prepareCheck(c, sub, status)
+	if err != nil {
+		return nil, err
+	}
+	if err := msg.render(); err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
+// prepareCheck compiles a copy of the campaign for a check, with tracking functions that
+// touch nothing, and makes its (not yet rendered) message to sub in the given status.
+func (m *Manager) prepareCheck(c *models.Campaign, sub models.Subscriber, status string) (*CampaignMessage, error) {
 	// Compile on a copy, with the tracking functions that do not touch the database.
 	// The campaign's own UUID: a subject, header or body can print it. The tracking functions
 	// below do not use it to register anything.
@@ -50,7 +99,7 @@ func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status 
 	// SendStatuses).
 	camp.Status = status
 	// The attachments as a real send fills them before rendering (newPipe: inline images,
-	// then the media), as LST-44's CheckTracking with asSend: templates can read them.
+	// then the media), as LST-44's CheckTracking: templates can read them.
 	camp.Attachments = append([]models.Attachment(nil), c.Attachments...)
 	if err := m.LoadInlineImages(&camp); err != nil {
 		return nil, err
@@ -66,18 +115,14 @@ func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status 
 	}
 
 	sub.Attribs = models.PlainNumbers(sub.Attribs)
-	msg := CampaignMessage{
+	return &CampaignMessage{
 		Campaign:   &camp,
 		Subscriber: sub,
 		subject:    camp.Subject,
 		from:       camp.FromEmail,
 		to:         sub.Email,
 		unsubURL:   fmt.Sprintf(m.cfg.UnsubURL, camp.UUID, sub.UUID),
-	}
-	if err := msg.render(); err != nil {
-		return nil, err
-	}
-	return &msg, nil
+	}, nil
 }
 
 // hasUnsubscribeLink tells whether a rendered message has the link to leave.

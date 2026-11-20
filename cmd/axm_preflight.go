@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/mail"
 	"net/textproto"
@@ -32,10 +33,17 @@ type preflightResponse struct {
 	Subject string `json:"subject"`
 	// SubjectRendered: the subject field has a template expression and Subject is its result
 	// for the example subscriber.
-	SubjectRendered bool      `json:"subject_rendered"`
-	FromEmail       string    `json:"from_email"`
-	ReplyTo         string    `json:"reply_to"`
-	SendAt          null.Time `json:"send_at"`
+	SubjectRendered bool `json:"subject_rendered"`
+	// SubjectNote: "rendered" (shown as rendered for the example subscriber), "unrendered"
+	// (it could not be rendered and is shown as written), "varies" (it differs between the
+	// mails of the send: with the status or the campaign's times), or "".
+	SubjectNote string `json:"subject_note"`
+	// Copies: the addresses that the Cc and Bcc headers add to every mail. Each of them gets
+	// one copy per recipient.
+	Copies    []mailCopy `json:"copies"`
+	FromEmail string     `json:"from_email"`
+	ReplyTo   string     `json:"reply_to"`
+	SendAt    null.Time  `json:"send_at"`
 	// PausedAt is when a paused campaign was paused (the last pause in the audit log, else
 	// the campaign's last change).
 	PausedAt null.Time `json:"paused_at"`
@@ -87,6 +95,8 @@ type preflightFacts struct {
 	// HeadersVary: the SMTP servers that may send the mail set different From, Subject or
 	// Reply-To headers, so what the recipient sees depends on the server.
 	HeadersVary bool
+	// Copies: the addresses that Cc and Bcc headers add to every mail.
+	Copies []string
 
 	RecentEnabled  bool
 	RecentDays     int
@@ -175,6 +185,18 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 				add("unsubscribe.missing", models.PreflightWarn, nil)
 			}
 		}
+	}
+
+	// Every mail also goes to the Cc and Bcc addresses: they get one copy per recipient, and
+	// the count of people in the title does not hold them (LST-48 review).
+	if len(f.Copies) > 0 {
+		count := f.Total
+		if f.Mode == models.PreflightModeResume {
+			count = f.Remaining
+		}
+		add("mail.copies", models.PreflightWarn, map[string]any{
+			"addresses": strings.Join(f.Copies, ", "), "n": len(f.Copies), "mails": count * len(f.Copies),
+		})
 	}
 
 	if f.HeadersVary {
@@ -300,7 +322,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	headersVary := false
 	for _, m := range a.messengers {
 		if em, ok := m.(*email.Emailer); ok && m.Name() == camp.Messenger {
-			server, headersVary = em.ServerHeaders(from, "From", "Subject", "Reply-To")
+			server, headersVary = em.ServerHeaders(from, "From", "Subject", "Reply-To", "Cc", "Bcc")
 		}
 	}
 	// The sender address the campaign itself has when it is sent, which templates can read.
@@ -311,25 +333,42 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	// restart). The mail has to be right in all of them.
 	sendCamp := camp
 	sendCamp.FromEmail = campFrom
+	// The status change sets updated_at; templates can read it (.Campaign.UpdatedAt).
+	sendCamp.UpdatedAt = null.TimeFrom(time.Now())
 	statuses := manager.SendStatuses(camp.SendAt)
 
 	// The subject and the custom headers go out rendered when they hold a template expression:
-	// show them as the first mail of the send has them, for the example subscriber (one that
-	// uses the subscriber's fields differs from person to person; the window says so). What
-	// cannot be rendered is shown as written.
+	// show them as the first mail of the send has them, for the example subscriber. Each is
+	// rendered on its own (a body that the example subscriber cannot fill does not hide them);
+	// one that cannot be rendered is shown as written and the window says so. One that uses the
+	// subscriber's fields differs from person to person; one that differs with the status or
+	// the campaign's times (the sender reads it again after a restart, and the sent counts
+	// move updated_at) is said to vary.
 	policy := len(a.cfg.SenderDomains) > 0
 	asWritten, _, _ := sendEnvelope(camp.Subject, from, camp.ReplyTo, camp.Messenger, server, camp.Headers, policy)
-	rSubject, rHeaders := camp.Subject, camp.Headers
-	if s, h, err := a.manager.RenderedEnvelope(&sendCamp, dummySubscriber, statuses[0]); err == nil {
-		rSubject, rHeaders = s, h
+	env := manager.Envelope{Subject: camp.Subject, Headers: camp.Headers, Unrendered: hasTemplate(camp.Subject, camp.Headers)}
+	if e, err := a.manager.RenderedEnvelope(&sendCamp, dummySubscriber, statuses[0]); err == nil {
+		env = e
 	}
-	subject, from, replyTo := sendEnvelope(rSubject, from, camp.ReplyTo, camp.Messenger, server, rHeaders, policy)
-	subjectTpl := subject != asWritten
+	subject, from, replyTo := sendEnvelope(env.Subject, from, camp.ReplyTo, camp.Messenger, server, env.Headers, policy)
+	copies := envelopeCopies(camp.Messenger, server, env.Headers)
+	subjectNote := ""
+	switch {
+	case env.Unrendered:
+		subjectNote = "unrendered"
+	case envelopeVaries(a, sendCamp, statuses, env, campFrom, server, policy):
+		subjectNote = "varies"
+	case subject != asWritten:
+		subjectNote = "rendered"
+	}
 
 	facts := preflightFacts{
 		Mode: mode, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
 		Total: aud.Total, Remaining: aud.Remaining, ListCount: len(lists),
 		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1, HeadersVary: headersVary,
+	}
+	for _, c := range copies {
+		facts.Copies = append(facts.Copies, c.Address)
 	}
 	// Whether the e-mail that is rendered has the link to leave, as every recipient gets it.
 	facts.Unsubscribe, facts.UnsubscribeKnown = unsubscribeInAll(statuses, func(status string) (bool, error) {
@@ -358,7 +397,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: subject, SubjectRendered: subjectTpl, Messenger: camp.Messenger, Mode: mode,
+		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Copies: copies, Messenger: camp.Messenger, Mode: mode,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
@@ -459,4 +498,92 @@ func trackingInAll(statuses []string, check func(status string) (manager.Trackin
 		out.State = manager.TrackingStateWarn
 	}
 	return out, nil
+}
+
+// mailCopy is an address that a Cc or Bcc header adds to every mail of a campaign.
+type mailCopy struct {
+	Kind    string `json:"kind"` // cc | bcc
+	Address string `json:"address"`
+}
+
+// hasTemplate tells whether a subject or a header value holds a template expression.
+func hasTemplate(subject string, headers models.Headers) bool {
+	if strings.Contains(subject, "{{") {
+		return true
+	}
+	for _, set := range headers {
+		for _, v := range set {
+			if strings.Contains(v, "{{") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// envelopeCopies is what the Cc and Bcc headers add to every e-mail of a campaign: the
+// campaign's (rendered) headers, the first set that has the header, over the SMTP server's,
+// split on commas as the e-mail messenger does (internal/messenger/email). Each address once.
+func envelopeCopies(messenger string, server map[string]string, headers models.Headers) []mailCopy {
+	out := []mailCopy{}
+	if messenger != "email" && !strings.HasPrefix(messenger, "email-") {
+		return out
+	}
+	seen := map[string]bool{}
+	for _, name := range []string{"Cc", "Bcc"} {
+		val, ok := server[name]
+		for _, set := range headers {
+			found := false
+			for k, v := range set {
+				if textproto.CanonicalMIMEHeaderKey(k) == name {
+					val, ok, found = v, true, true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		for _, part := range strings.Split(val, ",") {
+			addr := strings.TrimSpace(part)
+			if a, err := mail.ParseAddress(addr); err == nil {
+				addr = a.Address
+			}
+			key := strings.ToLower(addr)
+			if addr == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, mailCopy{Kind: strings.ToLower(name), Address: addr})
+		}
+	}
+	return out
+}
+
+// envelopeVaries tells whether the subject, sender, reply address or copies of the mail
+// differ between the mails of a send: rendered in every status the sender may read the
+// campaign in, and with the campaign's times moved on (updated_at changes as the sent counts
+// are written, started_at is set by the first pick-up), as a restart reads them.
+func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manager.Envelope, from string, server map[string]string, policy bool) bool {
+	key := func(e manager.Envelope) string {
+		s, f, r := sendEnvelope(e.Subject, from, camp.ReplyTo, camp.Messenger, server, e.Headers, policy)
+		return fmt.Sprintf("%s\x00%s\x00%s\x00%v", s, f, r, envelopeCopies(camp.Messenger, server, e.Headers))
+	}
+	want := key(first)
+	later := camp
+	moved := time.Now().Add(36 * time.Hour)
+	later.UpdatedAt = null.TimeFrom(moved)
+	later.StartedAt = null.TimeFrom(moved)
+	for _, c := range []models.Campaign{camp, later} {
+		for _, st := range statuses {
+			e, err := a.manager.RenderedEnvelope(&c, dummySubscriber, st)
+			if err != nil || key(e) != want {
+				return true
+			}
+		}
+	}
+	return false
 }
