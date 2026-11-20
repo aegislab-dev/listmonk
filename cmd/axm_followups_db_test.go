@@ -118,15 +118,15 @@ func TestFollowupMakeCopiesCampaignAndLinks(t *testing.T) {
 
 	var link struct {
 		Parent    int
-		List      int
+		List      string
 		Condition string
 		Counts    string
 	}
-	row = e.db.QueryRowx(`SELECT parent_campaign_id, list_id, condition::TEXT, counts::TEXT FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
+	row = e.db.QueryRowx(`SELECT parent_campaign_id, list_uuid::TEXT, condition::TEXT, counts::TEXT FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
 	if err := row.Scan(&link.Parent, &link.List, &link.Condition, &link.Counts); err != nil {
 		t.Fatal(err)
 	}
-	if link.Parent != parent || link.List != got.List.ID || !strings.Contains(link.Condition, `"open": "no"`) || !strings.Contains(link.Counts, `"eligible": 2`) ||
+	if link.Parent != parent || link.List != got.List.UUID || !strings.Contains(link.Condition, `"open": "no"`) || !strings.Contains(link.Counts, `"eligible": 2`) ||
 		!strings.Contains(link.Counts, `"received": 8`) {
 		t.Fatalf("link: %+v", link)
 	}
@@ -620,36 +620,75 @@ func TestFollowupScheduleDueDuringAnotherCheckIsStillChecked(t *testing.T) {
 	}
 }
 
-// A follow-up list that went to the trash and came back is still checked.
+// A follow-up list that went to the trash and came back is still checked, and only that list is:
+// a newsletter someone added to the campaign by hand keeps its subscriptions.
 func TestFollowupListRestoredFromTrashIsStillChecked(t *testing.T) {
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	var newsletter int
+	e.get(&newsletter, `INSERT INTO lists (uuid, name, type) VALUES (gen_random_uuid(), 'Independent newsletter', 'private') RETURNING id`)
+	e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name) VALUES ($1, $2, 'Independent newsletter')`, got.Followup.ID, newsletter)
+	eli, charlie := e.ids[3], e.ids[2]
+	for _, id := range []int{charlie, eli} {
+		e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, id, newsletter)
+	}
 	if code, _ := e.trash(got.List.ID, e.superAdmin); code != 200 {
 		t.Fatalf("trash: %d", code)
 	}
 	if code, _ := e.restore(got.List.ID, e.superAdmin); code != 200 {
 		t.Fatalf("restore: %d", code)
 	}
-	wantSame(t, "restored members", e.members(got.List.ID), []int{e.ids[2], e.ids[3]})
-	wantSame(t, "the campaign sends to the list again", e.sendsEnv.ids(`SELECT list_id FROM campaign_lists WHERE campaign_id = $1`, got.Followup.ID), []int{got.List.ID})
-	// The link lost its list when the list was deleted.
-	var listID *int
-	e.get(&listID, `SELECT list_id FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
-	// Charlie leaves the original's list, then the follow-up starts.
-	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, e.ids[2], e.aList)
+	wantSame(t, "restored members", e.members(got.List.ID), []int{charlie, eli})
+	// Both leave the original's list; the follow-up starts.
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = ANY($1::INT[]) AND list_id = $2`, pq.Array([]int{charlie, eli}), e.aList)
 	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
-	if _, err := e.store.NextCampaigns(nil); err != nil {
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
 		t.Fatal(err)
 	}
-	wantSame(t, "after the check", e.members(got.List.ID), []int{e.ids[3]})
-	var runs int
-	e.get(&runs, `SELECT COALESCE((recheck->>'runs')::INT, 0) FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
-	if runs != 1 {
-		t.Fatalf("checked %d times (link list %v)", runs, listID)
+	wantSame(t, "the follow-up list after the check", e.members(got.List.ID), []int{})
+	wantSame(t, "the newsletter is untouched", e.members(newsletter), []int{charlie, eli})
+	var gone int
+	e.get(&gone, `SELECT COALESCE((recheck->>'opted_out')::INT, 0) FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
+	if gone != 2 {
+		t.Fatalf("counted %d who opted out", gone)
 	}
-	// And the banner still reads it, with the list shown as changed.
-	if c, info := e.callGet(e.admin, got.Followup.ID); c != 200 || info.Pending != nil && info.Role != "followup" {
-		t.Fatalf("info: %d %+v", c, info)
+	// The banner reads the restored list again.
+	if c, info := e.callGet(e.admin, got.Followup.ID); c != 200 || info.List == nil || info.List.ID != got.List.ID {
+		t.Fatalf("info: %d %+v", c, info.List)
+	}
+}
+
+// When the check leaves nobody to send to, the campaign ends instead of staying scheduled: a person
+// added to the list later must not get the mail without a new schedule.
+func TestFollowupWithNobodyLeftEnds(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	// Both people open the original, and the schedule falls due.
+	for _, id := range []int{e.ids[2], e.ids[3]} {
+		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
+	}
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
+	for i := 0; i < 3; i++ {
+		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var st struct {
+		Status string
+		Sent   int
+	}
+	e.get(&st, `SELECT status, sent FROM campaigns WHERE id = $1`, got.Followup.ID)
+	if st.Status != "finished" || st.Sent != 0 {
+		t.Fatalf("campaign: %+v", st)
+	}
+	// Someone added afterwards is not sent to: the campaign is over.
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, e.ids[1], got.List.ID)
+	if camps, err := e.store.NextCampaigns([]int64{}); err != nil || len(camps) != 0 {
+		t.Fatalf("picked up %d after it ended: %v", len(camps), err)
+	}
+	e.get(&st, `SELECT status, sent FROM campaigns WHERE id = $1`, got.Followup.ID)
+	if st.Status != "finished" {
+		t.Fatalf("campaign: %+v", st)
 	}
 }
 
@@ -716,8 +755,9 @@ func TestFollowupExistingCarriesConditionAndInfoCarriesDates(t *testing.T) {
 	}
 	e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at = NOW() - INTERVAL '4 days' WHERE campaign_id = $1`, e.campID)
 	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() + INTERVAL '1 day' WHERE id = $1`, got.Followup.ID)
+	e.db.MustExec(`UPDATE campaigns SET send_at = NOW() - INTERVAL '5 days' WHERE id = $1`, e.campID)
 	_, info := e.callGet(e.admin, got.Followup.ID)
-	if info.FollowupSendAt == nil || info.ParentLastSentAt == nil || info.DaysSince == nil || *info.DaysSince != 4 {
+	if info.FollowupSendAt == nil || info.ParentSendAt == nil || info.ParentLastSentAt == nil || info.DaysSince == nil || *info.DaysSince != 4 {
 		t.Fatalf("dates: %+v", info)
 	}
 }

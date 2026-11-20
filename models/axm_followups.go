@@ -69,6 +69,7 @@ type FollowupRow struct {
 	FollowupSendAt   null.Time       `db:"followup_send_at"`
 	ParentName       string          `db:"parent_name"`
 	ParentStatus     string          `db:"parent_status"`
+	ParentSendAt     null.Time       `db:"parent_send_at"`
 	ListName         null.String     `db:"list_name"`
 	ListCount        int             `db:"list_count"`
 	CampaignLists    int             `db:"campaign_lists"`
@@ -91,6 +92,7 @@ type FollowupInfo struct {
 	// FollowupSendAt is the schedule of the follow-up; ParentLastSentAt and DaysSince tell how
 	// long ago the original was sent.
 	FollowupSendAt   *time.Time       `json:"followup_send_at,omitempty"`
+	ParentSendAt     *time.Time       `json:"parent_send_at,omitempty"`
 	ParentLastSentAt *time.Time       `json:"parent_last_sent_at,omitempty"`
 	DaysSince        *int             `json:"days_since,omitempty"`
 	ListsChanged     bool             `json:"lists_changed"`

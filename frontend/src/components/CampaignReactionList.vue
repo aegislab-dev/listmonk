@@ -197,6 +197,7 @@
 import Vue from 'vue';
 import dayjs from 'dayjs';
 import { NO_TEAM, teamName } from '../teams';
+import { conditionWords } from '../followup';
 
 export default Vue.extend({
   name: 'CampaignReactionList',
@@ -266,10 +267,7 @@ export default Vue.extend({
     offer() { return this.metadata?.followup || null; },
     // The condition the existing follow-up was made with, in words.
     existingCondition() {
-      const c = this.offer?.existing?.condition;
-      if (!c) return '';
-      return ['open', 'click'].filter((k) => c[k] && c[k] !== 'any')
-        .map((k) => this.$t(`campaigns.reactionList.${k}.${c[k]}`)).join(' · ');
+      return conditionWords(this.offer?.existing?.condition, (key) => this.$t(key));
     },
     wantsFollowup() { return this.followup && !!this.offer?.available; },
     followupSoon() {

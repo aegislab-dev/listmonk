@@ -159,6 +159,15 @@ describe('follow-up campaign draft', () => {
     cy.get('[data-cy=reaction-create]').should('be.disabled');
   });
 
+  it('names the condition of a follow-up made for everyone who received the campaign', () => {
+    cy.intercept('POST', '**/reaction-list/preview', (request) => {
+      request.continue((response) => { response.body.data.followup.existing.condition = { open: 'any', click: 'any' }; });
+    });
+    openDialog();
+    checkOpenedNotClicked();
+    cy.get('[data-cy=followup-box]').should('contain', 'Condition Received');
+  });
+
   it('warns on the draft when its lists are changed and saved', () => {
     cy.visit(`/admin/campaigns/${followupId}`);
     cy.get('[data-cy=followup-banner]').should('be.visible');

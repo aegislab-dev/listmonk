@@ -39,6 +39,7 @@
 <script>
 import Vue from 'vue';
 import dayjs from 'dayjs';
+import { conditionWords } from '../followup';
 
 // The link of a campaign to the campaign it follows, or to its own follow-up (LST-47).
 export default Vue.extend({
@@ -54,10 +55,7 @@ export default Vue.extend({
   },
   computed: {
     conditionText() {
-      const c = this.info?.condition;
-      if (!c) return '';
-      return ['open', 'click'].filter((k) => c[k] && c[k] !== 'any')
-        .map((k) => this.$t(`campaigns.reactionList.${k}.${c[k]}`)).join(' · ');
+      return conditionWords(this.info?.condition, (key) => this.$t(key));
     },
     pendingTotal() {
       const p = this.info?.pending;

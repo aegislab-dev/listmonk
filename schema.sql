@@ -1172,7 +1172,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_axm_test_addr_token ON axm_test_addresses(
 CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     campaign_id        INTEGER PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
     parent_campaign_id INTEGER NOT NULL UNIQUE REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    list_id            INTEGER NULL REFERENCES lists(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    -- The follow-up list by its UUID: a list that goes to the trash and comes back has the same UUID.
+    list_uuid          UUID NOT NULL,
     condition          JSONB NOT NULL,
     counts             JSONB NOT NULL DEFAULT '{}',
     recheck            JSONB NOT NULL DEFAULT '{}',

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
+import { conditionWords } from '../src/followup.js';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const ko = JSON.parse(read('../../i18n/ko.json'));
@@ -63,4 +64,12 @@ test('the reaction list dialog keeps the hooks of the list-only flow', () => {
   }
   // The follow-up part is optional: the request only carries it when the box is checked.
   assert.match(text, /wantsFollowup\s*\n?\s*\?\s*\{\s*followup: true/);
+});
+
+test('a follow-up made for everyone who received the campaign still names its condition', () => {
+  const t = (key) => ko[key] || key;
+  assert.equal(conditionWords({ open: 'any', click: 'any' }, t), ko['campaigns.reactionList.received']);
+  assert.equal(conditionWords({ open: 'yes', click: 'no' }, t), `${ko['campaigns.reactionList.open.yes']} · ${ko['campaigns.reactionList.click.no']}`);
+  assert.equal(conditionWords({ open: 'no', click: 'any' }, t), ko['campaigns.reactionList.open.no']);
+  assert.equal(conditionWords(null, t), '');
 });

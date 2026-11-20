@@ -209,7 +209,8 @@
     "internal/core/axm_reaction*.go",
     "frontend/src/components/CampaignFollowupBanner.vue",
     "cmd/axm_followups*.go",
-    "internal/core/axm_followups*.go"
+    "internal/core/axm_followups*.go",
+    "frontend/src/followup.js"
    ],
    "specs": [
     "reaction-lists.cy.js",

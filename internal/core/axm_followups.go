@@ -141,7 +141,7 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 	if d.UserID > 0 {
 		by = d.UserID
 	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupInsert).ExecContext(ctx, id, out.Campaign.ID, out.List.ID, cond, counts, by); err != nil {
+	if _, err := tx.Stmtx(c.q.AxmFollowupInsert).ExecContext(ctx, id, out.Campaign.ID, out.List.UUID, cond, counts, by); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pgUniqueViolation {
 			return c.followupExistsError(ctx, out.Campaign.ID)
@@ -191,12 +191,12 @@ func (c *Core) recheck(ctx context.Context, rows []followupDue) ([]int, error) {
 		if err := json.Unmarshal(f.Condition, &s); err != nil || s.Validate() != nil {
 			return done, errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
 		}
+		tx, err := c.db.BeginTxx(ctx, nil)
+		if err != nil {
+			return done, err
+		}
+		var gone models.FollowupPending
 		if len(f.ListIDs) > 0 {
-			tx, err := c.db.BeginTxx(ctx, nil)
-			if err != nil {
-				return done, err
-			}
-			var gone models.FollowupPending
 			args := []any{f.ParentID, s.Open, s.Click, pq.Array([]int(nil)), true, f.ListIDs, f.CampaignID}
 			if err := tx.Stmtx(c.q.AxmFollowupRecheck).GetContext(ctx, &gone, args...); err != nil {
 				tx.Rollback()
@@ -206,12 +206,23 @@ func (c *Core) recheck(ctx context.Context, rows []followupDue) ([]int, error) {
 				tx.Rollback()
 				return done, err
 			}
-			if err := tx.Commit(); err != nil {
-				return done, err
-			}
+		}
+		// Nobody left: the campaign ends here instead of waiting for someone to be added.
+		var ended int
+		if err := tx.Stmtx(c.q.AxmFollowupFinishEmpty).GetContext(ctx, &ended, f.CampaignID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			tx.Rollback()
+			return done, err
+		}
+		if err := tx.Commit(); err != nil {
+			return done, err
+		}
+		if len(f.ListIDs) > 0 {
 			c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, removed %d who reacted, %d who opted out, %d blocked",
 				f.CampaignID, f.ParentID, gone.Reacted, gone.OptedOut, gone.Blocked)
 			_ = c.refreshCache(matListSubStats, false)
+		}
+		if ended != 0 {
+			c.log.Printf("follow-up campaign %d: nobody is left to send to after the check, finished without sending", f.CampaignID)
 		}
 		done = append(done, f.CampaignID)
 	}
@@ -245,6 +256,9 @@ func (c *Core) GetFollowupInfo(ctx context.Context, id int, withPending bool) (m
 		}
 	}
 	out.CreatedAt = &row.CreatedAt
+	if row.ParentSendAt.Valid {
+		out.ParentSendAt = &row.ParentSendAt.Time
+	}
 	if row.FollowupSendAt.Valid {
 		out.FollowupSendAt = &row.FollowupSendAt.Time
 	}

@@ -1,6 +1,6 @@
 -- name: axm-followup-existing
 SELECT f.campaign_id AS id, c.name, c.status, f.condition,
-    (SELECT COUNT(*) FROM subscriber_lists sl WHERE sl.list_id = f.list_id AND sl.status != 'unsubscribed') AS list_count
+    (SELECT COUNT(*) FROM subscriber_lists sl JOIN lists l ON l.id = sl.list_id WHERE l.uuid = f.list_uuid AND sl.status != 'unsubscribed') AS list_count
 FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
 WHERE f.parent_campaign_id = $1;
 
@@ -8,51 +8,61 @@ WHERE f.parent_campaign_id = $1;
 SELECT EXISTS (SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1);
 
 -- name: axm-followup-insert
-INSERT INTO axm_campaign_followups (campaign_id, parent_campaign_id, list_id, condition, counts, created_by)
-VALUES ($1, $2, $3, $4, $5, $6);
+INSERT INTO axm_campaign_followups (campaign_id, parent_campaign_id, list_uuid, condition, counts, created_by)
+VALUES ($1, $2, $3::UUID, $4, $5, $6);
 
 -- name: axm-followup-get
 -- One row for the campaign on either side of a link. role is followup when the campaign is
--- the follow-up and parent when it is the original.
+-- the follow-up and parent when it is the original. The follow-up list is found by its UUID.
 SELECT CASE WHEN f.campaign_id = $1 THEN 'followup' ELSE 'parent' END AS role,
-    f.campaign_id, f.parent_campaign_id, f.list_id, f.condition, f.counts, f.recheck, f.rechecked_at, f.created_at,
+    f.campaign_id, f.parent_campaign_id, l.id AS list_id, f.condition, f.counts, f.recheck, f.rechecked_at, f.created_at,
     fc.name AS followup_name, fc.status AS followup_status, fc.send_at AS followup_send_at,
-    pc.name AS parent_name, pc.status AS parent_status,
+    pc.name AS parent_name, pc.status AS parent_status, pc.send_at AS parent_send_at,
     l.name AS list_name,
-    (SELECT COUNT(*) FROM subscriber_lists sl WHERE sl.list_id = f.list_id AND sl.status != 'unsubscribed') AS list_count,
+    (SELECT COUNT(*) FROM subscriber_lists sl WHERE sl.list_id = l.id AND sl.status != 'unsubscribed') AS list_count,
     (SELECT COUNT(*) FROM campaign_lists cl WHERE cl.campaign_id = f.campaign_id) AS campaign_lists,
-    EXISTS (SELECT 1 FROM campaign_lists cl WHERE cl.campaign_id = f.campaign_id AND cl.list_id = f.list_id) AS has_list,
+    EXISTS (SELECT 1 FROM campaign_lists cl WHERE cl.campaign_id = f.campaign_id AND cl.list_id = l.id) AS has_list,
     (SELECT MAX(cs.sent_at) FROM axm_campaign_sends cs WHERE cs.campaign_id = f.parent_campaign_id) AS parent_last_sent_at,
-    CASE WHEN f.list_id IS NOT NULL THEN ARRAY[f.list_id] ELSE COALESCE((
-        SELECT ARRAY_AGG(cl.list_id) FROM campaign_lists cl JOIN lists li ON li.id = cl.list_id
-        WHERE cl.campaign_id = f.campaign_id AND li.axm_filter IS NULL), '{}') END AS list_ids
+    CASE WHEN l.id IS NOT NULL AND l.axm_filter IS NULL THEN ARRAY[l.id] ELSE '{}'::INT[] END AS list_ids
 FROM axm_campaign_followups f
 JOIN campaigns fc ON fc.id = f.campaign_id
 JOIN campaigns pc ON pc.id = f.parent_campaign_id
-LEFT JOIN lists l ON l.id = f.list_id
+LEFT JOIN lists l ON l.uuid = f.list_uuid
 WHERE f.campaign_id = $1 OR f.parent_campaign_id = $1;
 
 -- name: axm-followup-due
 -- Follow-up campaigns the sender is about to pick up that it does not hold yet: running, or
--- scheduled and due. They are checked again before every start, resume and restart. The lists
--- to check are the follow-up list, or when that list was deleted (and perhaps restored from the
--- trash, which does not restore the link) the plain lists the campaign sends to.
+-- scheduled and due. They are checked again before every start, resume and restart. The list to
+-- check is the follow-up list, found by its UUID, so a list that was deleted and restored from
+-- the trash is still the one checked, and a list added to the campaign by hand is never touched.
 SELECT f.campaign_id, f.parent_campaign_id, f.condition,
-    CASE WHEN f.list_id IS NOT NULL THEN ARRAY[f.list_id] ELSE COALESCE((
-        SELECT ARRAY_AGG(cl.list_id) FROM campaign_lists cl JOIN lists li ON li.id = cl.list_id
-        WHERE cl.campaign_id = f.campaign_id AND li.axm_filter IS NULL), '{}') END AS list_ids
+    CASE WHEN l.id IS NOT NULL AND l.axm_filter IS NULL THEN ARRAY[l.id] ELSE '{}'::INT[] END AS list_ids
 FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
+LEFT JOIN lists l ON l.uuid = f.list_uuid
 WHERE (c.status = 'running' OR (c.status = 'scheduled' AND NOW() >= c.send_at))
     AND NOT (c.id = ANY(COALESCE($1::INT[], '{}')));
 
 -- name: axm-followup-by-ids
 -- The same rows for campaigns the sender just found, whatever made them start.
 SELECT f.campaign_id, f.parent_campaign_id, f.condition,
-    CASE WHEN f.list_id IS NOT NULL THEN ARRAY[f.list_id] ELSE COALESCE((
-        SELECT ARRAY_AGG(cl.list_id) FROM campaign_lists cl JOIN lists li ON li.id = cl.list_id
-        WHERE cl.campaign_id = f.campaign_id AND li.axm_filter IS NULL), '{}') END AS list_ids
+    CASE WHEN l.id IS NOT NULL AND l.axm_filter IS NULL THEN ARRAY[l.id] ELSE '{}'::INT[] END AS list_ids
 FROM axm_campaign_followups f
+LEFT JOIN lists l ON l.uuid = f.list_uuid
 WHERE f.campaign_id = ANY($1::INT[]);
+
+-- name: axm-followup-finish-empty
+-- A follow-up with nobody left to send to ends here. The sender does not finish a campaign
+-- that has no recipients at all (it stays scheduled), and someone added to the list later
+-- would then get the mail without being scheduled again.
+UPDATE campaigns SET status = 'finished', to_send = 0, started_at = COALESCE(started_at, NOW()), updated_at = NOW()
+WHERE id = $1 AND status IN ('scheduled', 'running')
+    AND NOT EXISTS (SELECT 1 FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+        WHERE cl.campaign_id = $1 AND l.axm_filter IS NOT NULL)
+    AND NOT EXISTS (SELECT 1 FROM campaign_lists cl
+        JOIN subscriber_lists sl ON sl.list_id = cl.list_id
+        JOIN subscribers s ON s.id = sl.subscriber_id
+        WHERE cl.campaign_id = $1 AND sl.status != 'unsubscribed' AND s.status != 'blocklisted')
+RETURNING id;
 
 -- name: axm-followup-recheck
 -- Removes from the follow-up list the people who got the original campaign and no longer meet
