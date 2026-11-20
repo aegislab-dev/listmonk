@@ -452,7 +452,10 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	// The renderings cover a few people. Where the link is printed only under a condition on
 	// the subscriber, they cannot vouch for the others (LST-48 review).
 	facts.UnsubscribeSampled = len(subs)
-	if unconditional, found := a.manager.UnsubscribeReach(&sendCamp); found && !unconditional {
+	// A pass needs a place that prints the link on every path, as the template reads. A link the
+	// reading cannot place (printed through another function, say) is not passed on the sample
+	// either (LST-48 review: printf around the address passed).
+	if unconditional, _ := a.manager.UnsubscribeReach(&sendCamp); !unconditional {
 		facts.UnsubscribePerSubscriber = true
 	}
 	var listIDs []int

@@ -48,6 +48,14 @@ func TestUnsubscribeReach(t *testing.T) {
 		{"overwritten under a condition, printed plainly", body,
 			`{{ $l := UnsubscribeURL . }}{{ if .Subscriber.Attribs.compact }}{{ $l = "" }}{{ end }}<a href="{{ $l }}">x</a>`, "", false, true},
 		{"overwritten plainly", body, `{{ $l := UnsubscribeURL . }}{{ $l = "" }}<a href="{{ $l }}">x</a>`, "", false, false},
+		{"printf around it, under a condition", body,
+			`{{ if not .Subscriber.Attribs.compact }}<a href="{{ printf "%s" (UnsubscribeURL .) }}">x</a>{{ end }}`, "", false, false},
+		// The review's case: the template's $url (the archive) and the body's $url (the address).
+		{"same variable name in the template and the body",
+			`{{ $url := "https://example.org/archive" }}{{ template "content" . }}<a href="{{ $url }}">archive</a>`,
+			`{{ $url := UnsubscribeURL . }}{{ if not .Subscriber.Attribs.compact }}<a href="{{ $url }}">x</a>{{ end }}`, "", false, true},
+		{"declared in a block, printed after it", body,
+			`{{ $u := "" }}{{ if .Subscriber.Name }}{{ $u := UnsubscribeURL . }}{{ end }}<a href="{{ $u }}">x</a>`, "", false, false},
 		{"another function around it", body, `{{ printf "%.0s" UnsubscribeURL }}`, "", false, false},
 		{"in a condition only", body, `{{ if UnsubscribeURL }}<p>Hi</p>{{ end }}`, "", false, false},
 	} {

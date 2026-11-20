@@ -47,13 +47,15 @@ func unsubscribeReach(base, body, alt string, funcs map[string]any) (uncondition
 	if !add(models.BaseTpl, base) || !add(models.ContentTpl, body) {
 		return false, false
 	}
-	w := reachWalker{trees: trees}
+	w := reachWalker{trees: trees, holds: map[string]int{}}
+	w.push()
 	if t := trees[models.BaseTpl]; t != nil && t.Root != nil {
 		w.walk(t.Root, false, 0)
 	}
 	if alt != "" {
 		if set, err := parse.Parse("alt", alt, "", "", funcs, builtins); err == nil && set["alt"] != nil {
-			aw := reachWalker{trees: set}
+			aw := reachWalker{trees: set, holds: map[string]int{}}
+			aw.push()
 			aw.walk(set["alt"].Root, false, 0)
 			w.found, w.free = w.found || aw.found, w.free || aw.free
 		}
@@ -79,6 +81,57 @@ type reachWalker struct {
 	// holdAlways when on every path, holdSometimes when only under a condition (or overwritten
 	// under one).
 	holds map[string]int
+	// scopes are the variable scopes open in the template being walked (each if, with and range
+	// branch opens one): what a := declaration in it shadowed, to put back when it ends.
+	scopes []map[string]shadowed
+}
+
+type shadowed struct {
+	val int
+	had bool
+}
+
+func (w *reachWalker) push() { w.scopes = append(w.scopes, map[string]shadowed{}) }
+
+func (w *reachWalker) pop() {
+	if len(w.scopes) == 0 {
+		return
+	}
+	top := w.scopes[len(w.scopes)-1]
+	w.scopes = w.scopes[:len(w.scopes)-1]
+	for name, sh := range top {
+		if sh.had {
+			w.holds[name] = sh.val
+		} else {
+			delete(w.holds, name)
+		}
+	}
+}
+
+// declare makes name a new variable of the current scope with value val (0: not the address).
+func (w *reachWalker) declare(name string, val int) {
+	if len(w.scopes) > 0 {
+		top := w.scopes[len(w.scopes)-1]
+		if _, ok := top[name]; !ok {
+			prev, had := w.holds[name]
+			top[name] = shadowed{prev, had}
+		}
+	}
+	if val > 0 {
+		w.holds[name] = val
+	} else {
+		delete(w.holds, name)
+	}
+}
+
+// block walks one branch in its own variable scope.
+func (w *reachWalker) block(n *parse.ListNode, cond bool, depth int) {
+	if n == nil {
+		return
+	}
+	w.push()
+	w.walk(n, cond, depth)
+	w.pop()
 }
 
 const (
@@ -106,11 +159,21 @@ func (w *reachWalker) walk(n parse.Node, cond bool, depth int) {
 		if len(x.Pipe.Decl) > 0 || x.Pipe.IsAssign {
 			gives := w.givesAddress(x.Pipe) > 0
 			whole := w.givesAddress(x.Pipe) == holdAlways
-			if w.holds == nil {
-				w.holds = map[string]int{}
-			}
 			for _, v := range x.Pipe.Decl {
 				name, prev := v.Ident[0], w.holds[v.Ident[0]]
+				if !x.Pipe.IsAssign {
+					// A new variable of this scope: what it holds is all it is (a print of it
+					// under a condition is conditional anyway).
+					val := 0
+					if gives {
+						val = holdSometimes
+						if whole {
+							val = holdAlways
+						}
+					}
+					w.declare(name, val)
+					continue
+				}
 				switch {
 				case gives && !cond && whole:
 					w.holds[name] = holdAlways
@@ -133,16 +196,16 @@ func (w *reachWalker) walk(n parse.Node, cond bool, depth int) {
 		}
 	case *parse.IfNode:
 		c := cond || dependent(x.Pipe)
-		w.walk(x.List, c, depth)
-		w.walk(x.ElseList, c, depth)
+		w.block(x.List, c, depth)
+		w.block(x.ElseList, c, depth)
 	case *parse.WithNode:
 		c := cond || dependent(x.Pipe)
-		w.walk(x.List, c, depth)
-		w.walk(x.ElseList, c, depth)
+		w.block(x.List, c, depth)
+		w.block(x.ElseList, c, depth)
 	case *parse.RangeNode:
 		// A range can run no times.
-		w.walk(x.List, true, depth)
-		w.walk(x.ElseList, true, depth)
+		w.block(x.List, true, depth)
+		w.block(x.ElseList, true, depth)
 	case *parse.TemplateNode:
 		t := w.trees[x.Name]
 		if t == nil || t.Root == nil {
@@ -150,7 +213,13 @@ func (w *reachWalker) walk(n parse.Node, cond bool, depth int) {
 		}
 		// Called with another dot than ".": the fields it reads may be the subscriber's.
 		c := cond || (x.Pipe != nil && !isDot(x.Pipe))
+		// A called template has variables of its own and gives none back (LST-48 review: the
+		// body's $url, the unsubscribe address, was taken for the template's $url).
+		holds, scopes := w.holds, w.scopes
+		w.holds, w.scopes = map[string]int{}, nil
+		w.push()
 		w.walk(t.Root, c, depth+1)
+		w.holds, w.scopes = holds, scopes
 	}
 }
 

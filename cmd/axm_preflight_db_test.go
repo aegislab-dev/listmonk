@@ -1187,6 +1187,11 @@ func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("address in a variable printed under a subscriber condition: %q", got)
 	}
+	// Printed through printf, only for the full edition: not a pass on the sample (LST-48 review).
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p>{{ if not .Subscriber.Attribs.compact }}<a href="{{ printf "%s" (UnsubscribeURL .) }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("printf around the address under a subscriber condition: %q", got)
+	}
 	// Printed always: a pass.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID)
 	if got := read(); got != "unsubscribe.missing=ok" {
@@ -1236,6 +1241,15 @@ func TestCampaignPreflightUnsubscribeTemplateResume(t *testing.T) {
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("body included from a named template called only for the full edition: %q", got)
 	}
+	// The template's $url (the archive) and the body's $url (the address, full edition only).
+	e.db.MustExec(`UPDATE templates SET body='<html><body>{{ $url := "https://example.org/archive" }}{{ template "content" . }}<a href="{{ $url }}">archive</a></body></html>' WHERE id=$1`, tpl)
+	e.db.MustExec(`UPDATE campaigns SET body='{{ $url := UnsubscribeURL . }}<p>Full</p>{{ if not .Subscriber.Attribs.compact }}<a href="{{ $url }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.missing=warn" && got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("same variable name in the template and the body: %q", got)
+	}
+	e.db.MustExec(`UPDATE templates SET body='<html><body>{{ if not .Subscriber.Attribs.compact }}{{ template "content" . }}{{ else }}<p>Compact</p>{{ end }}</body></html>' WHERE id=$1`, tpl)
+	e.db.MustExec(`UPDATE campaigns SET body='<p>Full</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID)
+
 	// Paused after the ten: the compact one is the only one left, and is in the sample.
 	e.db.MustExec(`UPDATE campaigns SET status='paused', last_subscriber_id=$2, to_send=11, sent=10 WHERE id=$1`, e.campID, last)
 	if got := read(); got != "unsubscribe.missing=warn" {
