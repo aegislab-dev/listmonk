@@ -373,9 +373,10 @@ describe('Pre-send confirmation window', () => {
     row('cc').find('[data-cy=btn-start]').click();
     ready();
     cy.get('[data-cy=send-title]').should('contain', 'Send to 2 people now');
-    cy.get('[data-cy=send-copies]').should('contain', desk);
+    // Said once, in the checks (approved design: no box of its own under the recipients).
+    cy.get('[data-cy=send-copies]').should('not.exist');
     cy.get('[data-cy="send-check-mail.copies"]').should('have.attr', 'data-level', 'warn')
-      .and('contain', '2 more mails');
+      .and('contain', desk).and('contain', '2 more mails');
     cy.get('[data-cy=send-ok]').click();
     cy.get(win).should('not.exist');
     const inbox = Cypress.env('mailpitUrl');

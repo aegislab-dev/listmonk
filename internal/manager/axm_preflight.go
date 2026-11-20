@@ -51,6 +51,8 @@ func (m *Manager) RenderedEnvelope(c *models.Campaign, sub models.Subscriber, st
 	if msg.Campaign.SubjectTpl != nil {
 		if err := msg.Campaign.SubjectTpl.ExecuteTemplate(&b, models.ContentTpl, msg); err == nil {
 			out.Subject = b.String()
+			// As render: the headers then read the rendered subject ({{ .Subject }}).
+			msg.subject = out.Subject
 		} else {
 			out.Unrendered = true
 		}

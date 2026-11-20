@@ -510,6 +510,23 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 		if json.Unmarshal(data, &o2) != nil || o2.Note != "unrendered" {
 			t.Fatalf("subject the example cannot fill: %s", data)
 		}
+		// A clock layout that a shift of whole days and 12 hours would not show (03:04): still
+		// said to vary (LST-48 review). So is a template that calls Date.
+		for _, subj := range []string{`At {{ .Campaign.UpdatedAt.Time.Format "03:04" }}`, `On {{ Date "2006-01-02" }}`} {
+			e.db.MustExec(`UPDATE campaigns SET subject=$2 WHERE id=$1`, e.campID, subj)
+			_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+			if json.Unmarshal(data, &o2) != nil || o2.Note != "varies" {
+				t.Fatalf("%s: %s", subj, data)
+			}
+		}
+		// A Subject header that reads the rendered subject field ({{ .Subject }}).
+		e.db.MustExec(`UPDATE campaigns SET subject='News {{ .Campaign.Name }}', headers='[{"Subject":"[Note] {{ .Subject }}"}]'::jsonb WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if json.Unmarshal(data, &o2) != nil || o2.Subject != "[Note] News "+name {
+			t.Fatalf("subject header of the rendered subject: %s", data)
+		}
+		e.db.MustExec(`UPDATE campaigns SET headers='[]'::jsonb WHERE id=$1`, e.campID)
+
 		// A Cc header: every mail also goes there, and the window counts those mails.
 		e.db.MustExec(`UPDATE campaigns SET subject='Stored subject', headers='[{"Cc":"Desk <desk@crevasse.ai>"}]'::jsonb WHERE id=$1`, e.campID)
 		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
@@ -521,6 +538,13 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 		}
 		if json.Unmarshal(data, &o3) != nil || len(o3.Copies) != 1 || o3.Copies[0].Address != "desk@crevasse.ai" || level(o3.Checks, "mail.copies") != "warn" {
 			t.Fatalf("cc header: %s", data)
+		}
+		// A Bcc taken from each subscriber: not listed, said to go to one more address per mail.
+		e.db.MustExec(`UPDATE campaigns SET headers='[{"Bcc":"{{ with .Subscriber.Attribs.owner }}{{ . }}{{ end }}"}]'::jsonb WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		o3.Copies, o3.Checks = nil, nil
+		if json.Unmarshal(data, &o3) != nil || len(o3.Copies) != 0 || level(o3.Checks, "mail.copiesPerSubscriber") != "warn" {
+			t.Fatalf("bcc per subscriber: %s", data)
 		}
 		e.db.MustExec(`UPDATE campaigns SET subject='Check {{ .Campaign.Name }}', headers='[]'::jsonb WHERE id=$1`, e.campID)
 

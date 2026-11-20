@@ -295,3 +295,13 @@ func TestEnvelopeCopies(t *testing.T) {
 		t.Fatalf("copies line: %+v", line)
 	}
 }
+
+// Templates that print the time of each mail vary between the mails of a send.
+func TestCallsDate(t *testing.T) {
+	if !callsDate(`On {{ Date "2006" }}`, nil) || !callsDate("x", models.Headers{{"Subject": `{{ Date "15:04" }}`}}) {
+		t.Fatal("Date not found")
+	}
+	if callsDate("Update {{ .Campaign.Name }}", nil) || callsDate("Date of birth", nil) {
+		t.Fatal("not a call")
+	}
+}

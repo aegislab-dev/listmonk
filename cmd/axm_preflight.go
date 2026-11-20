@@ -95,8 +95,10 @@ type preflightFacts struct {
 	// HeadersVary: the SMTP servers that may send the mail set different From, Subject or
 	// Reply-To headers, so what the recipient sees depends on the server.
 	HeadersVary bool
-	// Copies: the addresses that Cc and Bcc headers add to every mail.
-	Copies []string
+	// Copies: the addresses that Cc and Bcc headers add to every mail. CopiesPerSubscriber:
+	// the header takes them from each subscriber, so they cannot be listed.
+	Copies              []string
+	CopiesPerSubscriber bool
 
 	RecentEnabled  bool
 	RecentDays     int
@@ -197,6 +199,16 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		add("mail.copies", models.PreflightWarn, map[string]any{
 			"addresses": strings.Join(f.Copies, ", "), "n": len(f.Copies), "mails": count * len(f.Copies),
 		})
+	}
+
+	// Cc or Bcc addresses that come from each subscriber: every mail may also go to one more
+	// address of that person's, up to as many as there are recipients.
+	if f.CopiesPerSubscriber {
+		count := f.Total
+		if f.Mode == models.PreflightModeResume {
+			count = f.Remaining
+		}
+		add("mail.copiesPerSubscriber", models.PreflightWarn, map[string]any{"n": count})
 	}
 
 	if f.HeadersVary {
@@ -352,6 +364,11 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	}
 	subject, from, replyTo := sendEnvelope(env.Subject, from, camp.ReplyTo, camp.Messenger, server, env.Headers, policy)
 	copies := envelopeCopies(camp.Messenger, server, env.Headers)
+	// Addresses taken from each subscriber are not the example subscriber's to list.
+	perSubscriber := copiesPerSubscriber(a, sendCamp, statuses[0], env, server)
+	if perSubscriber {
+		copies = []mailCopy{}
+	}
 	subjectNote := ""
 	switch {
 	case env.Unrendered:
@@ -370,6 +387,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	for _, c := range copies {
 		facts.Copies = append(facts.Copies, c.Address)
 	}
+	facts.CopiesPerSubscriber = perSubscriber
 	// Whether the e-mail that is rendered has the link to leave, as every recipient gets it.
 	facts.Unsubscribe, facts.UnsubscribeKnown = unsubscribeInAll(statuses, func(status string) (bool, error) {
 		return a.manager.HasUnsubscribeLink(&sendCamp, dummySubscriber, status)
@@ -521,6 +539,20 @@ func hasTemplate(subject string, headers models.Headers) bool {
 	return false
 }
 
+// chosenHeader is the value of header name that an e-mail goes out with: the campaign's
+// first set that has it, over the SMTP server's (internal/messenger/email).
+func chosenHeader(name string, server map[string]string, headers models.Headers) (string, bool) {
+	for _, set := range headers {
+		for k, v := range set {
+			if textproto.CanonicalMIMEHeaderKey(k) == name {
+				return v, true
+			}
+		}
+	}
+	v, ok := server[name]
+	return v, ok
+}
+
 // envelopeCopies is what the Cc and Bcc headers add to every e-mail of a campaign: the
 // campaign's (rendered) headers, the first set that has the header, over the SMTP server's,
 // split on commas as the e-mail messenger does (internal/messenger/email). Each address once.
@@ -531,19 +563,7 @@ func envelopeCopies(messenger string, server map[string]string, headers models.H
 	}
 	seen := map[string]bool{}
 	for _, name := range []string{"Cc", "Bcc"} {
-		val, ok := server[name]
-		for _, set := range headers {
-			found := false
-			for k, v := range set {
-				if textproto.CanonicalMIMEHeaderKey(k) == name {
-					val, ok, found = v, true, true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
+		val, ok := chosenHeader(name, server, headers)
 		if !ok {
 			continue
 		}
@@ -566,15 +586,20 @@ func envelopeCopies(messenger string, server map[string]string, headers models.H
 // envelopeVaries tells whether the subject, sender, reply address or copies of the mail
 // differ between the mails of a send: rendered in every status the sender may read the
 // campaign in, and with the campaign's times moved on (updated_at changes as the sent counts
-// are written, started_at is set by the first pick-up), as a restart reads them.
+// are written, started_at is set by the first pick-up), as a restart reads them. The shift
+// moves every field of a clock (days, hours in 12 and 24 h, minutes, seconds), so that any
+// layout shows it. A template that calls Date prints the time of each mail: it varies too.
 func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manager.Envelope, from string, server map[string]string, policy bool) bool {
+	if callsDate(camp.Subject, camp.Headers) {
+		return true
+	}
 	key := func(e manager.Envelope) string {
 		s, f, r := sendEnvelope(e.Subject, from, camp.ReplyTo, camp.Messenger, server, e.Headers, policy)
 		return fmt.Sprintf("%s\x00%s\x00%s\x00%v", s, f, r, envelopeCopies(camp.Messenger, server, e.Headers))
 	}
 	want := key(first)
 	later := camp
-	moved := time.Now().Add(36 * time.Hour)
+	moved := time.Now().Add(37*time.Hour + 13*time.Minute + 17*time.Second + 250*time.Millisecond)
 	later.UpdatedAt = null.TimeFrom(moved)
 	later.StartedAt = null.TimeFrom(moved)
 	for _, c := range []models.Campaign{camp, later} {
@@ -586,4 +611,47 @@ func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manag
 		}
 	}
 	return false
+}
+
+var reDateCall = regexp.MustCompile(`\{\{[^}]*\bDate\b[^}]*\}\}`)
+
+// callsDate tells whether a subject or header value calls the Date template function, which
+// prints the time each mail is rendered.
+func callsDate(subject string, headers models.Headers) bool {
+	if reDateCall.MatchString(subject) {
+		return true
+	}
+	for _, set := range headers {
+		for _, v := range set {
+			if reDateCall.MatchString(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// otherSubscriber is a second example subscriber, unlike dummySubscriber in every field, to
+// find what a template takes from the subscriber.
+var otherSubscriber = models.Subscriber{
+	Email: "other@example.invalid", Name: "Other Example", UUID: "11111111-1111-1111-1111-111111111111",
+	Attribs: models.JSON{"city": "Seoul"},
+}
+
+// copiesPerSubscriber tells whether the Cc or Bcc header that applies takes its addresses
+// from the subscriber, so that every mail may go to a different extra address that the
+// window cannot list (LST-48 review: Bcc {{ .Subscriber.Attribs.owner }} added one address
+// per person while the window showed none). It does when the value names .Subscriber or
+// renders otherwise for another example subscriber.
+func copiesPerSubscriber(a *App, camp models.Campaign, status string, first manager.Envelope, server map[string]string) bool {
+	for _, name := range []string{"Cc", "Bcc"} {
+		if v, ok := chosenHeader(name, server, camp.Headers); ok && strings.Contains(v, "{{") && strings.Contains(v, "Subscriber") {
+			return true
+		}
+	}
+	e, err := a.manager.RenderedEnvelope(&camp, otherSubscriber, status)
+	if err != nil {
+		return false
+	}
+	return fmt.Sprint(envelopeCopies(camp.Messenger, server, e.Headers)) != fmt.Sprint(envelopeCopies(camp.Messenger, server, first.Headers))
 }

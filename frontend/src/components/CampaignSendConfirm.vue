@@ -89,9 +89,6 @@
                 {{ sumParts.length ? sumParts.join(' · ') : $t('campaigns.sendConfirm.total', { n: pf.recipients }) }}
                 <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
               </div>
-              <div v-if="pf.copies && pf.copies.length" class="send-sum" data-cy="send-copies">
-                {{ $t('campaigns.sendConfirm.copies', { addresses: pf.copies.map((c) => c.address).join(', ') }) }}
-              </div>
               <div v-if="model.zero" class="send-sum lv-block-text" data-cy="send-zero">{{ $t('campaigns.sendConfirm.zeroSummary') }}</div>
             </div>
           </div>
