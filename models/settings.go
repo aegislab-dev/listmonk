@@ -20,6 +20,7 @@ type Settings struct {
 	AxmTestDomains    []string       `json:"axm.test_domains"`
 	AxmDefaultFrom    string         `json:"axm.default_from"`
 	AxmDefaultReplyTo string         `json:"axm.default_reply_to"`
+	AxmFromAddresses  []string       `json:"axm.from_addresses"`
 	BusinessFooter    BusinessFooter `json:"axm.business_footer"`
 
 	AppSiteName                   string   `json:"app.site_name"`

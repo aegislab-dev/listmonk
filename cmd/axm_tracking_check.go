@@ -132,13 +132,10 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 		camp.AltBody = null.String{}
 	}
 	if len(req.Headers) > 0 {
-		// A test send replaces the headers. Saving decodes the request into the stored
-		// campaign, where a header that is no longer in the request stays in the set it
-		// was in (UpdateCampaign binds over the stored row). Decode the same way, so the
-		// check sees the headers that will really be sent.
-		if req.Mode == "test" {
-			camp.Headers = nil
-		}
+		// Saving and a test send both replace the headers with the request's
+		// (UpdateCampaign decodes them from nothing), so decode the same way and
+		// the check sees the headers that will really be sent.
+		camp.Headers = nil
 		if err := json.Unmarshal(req.Headers, &camp.Headers); err != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "headers"))
 		}
@@ -258,13 +255,13 @@ func (a *App) trackingSender(c echo.Context, camp *models.Campaign, req tracking
 	s.ReplyToInput = req.ReplyTo
 
 	stored := s
-	s, err := a.campaignSender(s, user)
+	s, err := a.campaignSenderLoose(s, user)
 	if err != nil && req.Mode != "test" {
 		// Saving refuses an invalid sender (one that is still being typed) and keeps the
 		// stored one: check with that.
 		stored.ReplyToInput = nil
 		stored.FromEmail = camp.FromEmail
-		s, err = a.campaignSender(stored, user)
+		s, err = a.campaignSenderLoose(stored, user)
 	}
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
