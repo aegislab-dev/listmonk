@@ -792,11 +792,29 @@ export default Vue.extend({
           : await this.$api.createCampaign(data);
         this.createdDraftId = d.id;
         await this.saveRecentRule(d.id);
-        if (this.madeList) this.madeList = { ...this.madeList, saved: true };
+        if (this.madeList && this.sentMadeList(data.lists)) this.madeList = { ...this.madeList, saved: true };
         this.$router.push({ name: 'campaign', hash: '#content', params: { id: d.id } });
       } finally {
         this.savingCampaign = false;
       }
+    },
+
+    // Resolves when no save is running (or after 30 seconds).
+    whenNotSaving() {
+      return new Promise((resolve) => {
+        let ticks = 0;
+        const check = () => {
+          ticks += 1;
+          if (!this.savingCampaign || ticks > 300) resolve();
+          else setTimeout(check, 100);
+        };
+        check();
+      });
+    },
+
+    // Whether a save that sent these list IDs saved the made list as the only target.
+    sentMadeList(ids) {
+      return ids.length === 1 && ids[0] === this.madeList.id;
     },
 
     // The list made from the exclusion result becomes the campaign's only target. A campaign that
@@ -809,6 +827,9 @@ export default Vue.extend({
       this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' }).catch(() => {});
       if (!this.data.id) return;
       try {
+        // A save that started before the list existed carries the old target: let it finish, then
+        // save the new one (a skipped save would leave the old target on the server).
+        await this.whenNotSaving();
         if (!this.parseFormJSON()) throw new Error('invalid form');
         // The result line says it is saved; no second notice.
         if (!await this.updateCampaign(undefined, { quiet: true })) throw new Error('not saved');
@@ -869,7 +890,7 @@ export default Vue.extend({
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
         await this.saveRecentRule(d.id);
-        if (this.madeList) this.madeList = { ...this.madeList, saved: true, error: '' };
+        if (this.madeList && this.sentMadeList(data.lists)) this.madeList = { ...this.madeList, saved: true, error: '' };
         if (!quiet) this.$utils.toast(this.$t(typMsg, { name: d.name }));
         // Saving can change what the check reads beyond the page (the sender of the
         // person who saves, merged headers): check again (LST-44).
