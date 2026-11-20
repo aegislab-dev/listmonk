@@ -367,6 +367,47 @@ describe('Pre-send tracking check', () => {
     });
   });
 
+  it('checks again when the campaign is unscheduled', () => {
+    // What the check reads besides the page depends on the stored status (with sender
+    // domains, a draft is sent with the sender of the person who starts it).
+    cy.request(`/api/campaigns/${ids.warn}`).then(({ body }) => {
+      const c = body.data;
+      cy.request('PUT', `/api/campaigns/${ids.warn}`, {
+        name: c.name,
+        subject: c.subject,
+        type: 'regular',
+        messenger: 'email',
+        lists: [listId],
+        content_type: c.content_type,
+        template_id: c.template_id,
+        body: c.body,
+        send_at: new Date(Date.now() + 86400000 * 30).toISOString(),
+      });
+      cy.request('PUT', `/api/campaigns/${ids.warn}/status`, { status: 'scheduled' });
+    });
+    open('warn');
+    cy.intercept('POST', check).as('afterUnschedule');
+    cy.get('[data-cy=btn-unschedule]').click();
+    cy.get('.modal.is-active button.is-primary').click();
+    cy.wait('@afterUnschedule').its('request.body.body').should('be.a', 'string');
+    cy.get(box).should('have.attr', 'data-state', 'warn');
+    cy.request(`/api/campaigns/${ids.warn}`).then(({ body }) => {
+      expect(body.data.status).to.equal('draft');
+      // Put the draft back as the next tests expect it.
+      cy.request('PUT', `/api/campaigns/${ids.warn}`, {
+        name: body.data.name,
+        subject: body.data.subject,
+        type: 'regular',
+        messenger: 'email',
+        lists: [listId],
+        content_type: body.data.content_type,
+        template_id: body.data.template_id,
+        body: body.data.body,
+        send_at: null,
+      });
+    });
+  });
+
   it('does not save over another tab when the start is cancelled', () => {
     open('ok');
     // Another tab saves a new name while this page still shows the old one.

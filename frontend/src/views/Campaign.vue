@@ -1037,6 +1037,16 @@ export default Vue.extend({
       this.form.lists = this.selectedLists;
     },
 
+    // The stored status decides what the check reads besides the page: a draft is sent
+    // with the sender of the person who starts it, a scheduled campaign with the stored
+    // one. When it changes on this page (unschedule), check again (LST-44).
+    'data.status': function onStatus(now, before) {
+      if (!before || now === before) return;
+      this.$nextTick(() => {
+        if (this.$refs.tracking) this.$refs.tracking.run();
+      });
+    },
+
     // eslint-disable-next-line func-names
     'data.sendAt': function () {
       if (this.data.sendAt !== null) {
