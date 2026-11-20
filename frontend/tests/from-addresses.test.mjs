@@ -21,6 +21,7 @@ test('match a From to the list: same entry, same address, quoted local part', ()
   assert.equal(matchFromEntry('X <"two words"@crevasse.ai>', list), list[2]);
   assert.equal(matchFromEntry('AEGIS <team@crevasse.ai> (Newsletter)', list), list[1]);
   assert.equal(matchFromEntry('team@crevasse.ai (Newsletter)', list), list[1]);
+  assert.equal(matchFromEntry('"News <Korea>" <team@crevasse.ai>', list), list[1]);
   assert.equal(matchFromEntry('other@crevasse.ai', list), '');
   assert.equal(matchFromEntry('', list), '');
   assert.equal(matchFromEntry('a@crevasse.ai', []), '');

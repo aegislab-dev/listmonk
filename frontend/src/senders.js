@@ -14,7 +14,8 @@ export function fromAddress(value) {
   // A trailing comment, as in "Team <a@x> (Newsletter)", is not part of the address.
   const s = (value || '').trim().replace(/\s*\([^()]*\)$/, '');
   if (!s || /[\r\n]/.test(s)) return '';
-  const match = s.match(/^(?:[^<>]*)<([^<>]+)>$/);
+  // The address is the last <...>; a quoted display name may hold angle brackets.
+  const match = s.match(/<([^<>]+)>$/);
   const email = match ? match[1] : s;
   const parts = email.match(/^(?:"((?:[^"\\]|\\.)+)"|([^\s<>@,;"]+))@([^\s<>@,;"]+)$/);
   if (!parts) return '';

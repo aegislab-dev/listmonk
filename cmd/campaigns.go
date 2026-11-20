@@ -361,9 +361,15 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	// Read the incoming params into the existing campaign fields from the DB.
 	// This allows updating of values that have been sent whereas fields
 	// that are not in the request retain the old values.
+	// Headers are decoded from nothing: JSON decoding into the stored maps
+	// would keep keys the request left out (a removed From header).
 	o := campReq{Campaign: cm}
+	o.Headers = nil
 	if err := c.Bind(&o); err != nil {
 		return err
+	}
+	if o.Headers == nil {
+		o.Headers = cm.Headers
 	}
 
 	o.Status = cm.Status
