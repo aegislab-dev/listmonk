@@ -254,6 +254,7 @@ upstream v6.2.0은 비주얼 캠페인에 기본 템플릿을 씌우지 않는�
 - `internal/manager/tracking.go`의 `trackVisualMessage`·`canTrackVisualLink` 조건을 바꾸면 점검도 같이 바뀐다(공용 함수). 템플릿 함수(`TemplateFuncs`)에 추적 함수가 늘면 `CheckTracking`의 탐침 교체 목록에도 넣는다.
 - `frontend/src/views/Campaign.vue`의 `startCampaign`·`sendTest`와 오른쪽 열(`v-if`), `frontend/src/views/Campaigns.vue`의 시작·재개·예약 단추(`confirmSend`)를 건드렸다.
 - `cmd/campaigns.go` `validateCampaignFields`: 발신·답장 주소 부분을 `campaignSender`로 떼어 냈다(동작 같음, 예약 헤더 오류를 먼저 본다).
+- `internal/manager/manager.go` `LoadInlineImages`: 비주얼 캠페인은 템플릿 본문의 삽입 이미지를 붙이지 않는다. 비주얼은 템플릿을 쓰지 않는데, 본 발송은 템플릿이 없는 비주얼 캠페인에 기본 템플릿을 읽어 그 로고를 보이지 않는 인라인 첨부로 붙였다(테스트 발송은 붙이지 않아 둘이 달랐다).
 - `cmd/campaigns.go` `sendTestMessage`: 첨부를 렌더링 **전에** 붙인다(`Manager.AttachMedia`). upstream은 첫 메시지를 큐에 넣을 때 같은 캠페인에 첨부를 붙여, 여러 명에게 보낸 테스트에서 첫 메일만 첨부 없이 렌더링됐다(`.Campaign.Attachments`를 읽는 본문이 수신자마다 달랐다). 이제 모든 테스트 메일이 본 발송처럼 렌더링된다.
 - `cmd/campaigns.go` `TestCampaign`: 화면은 JSON으로 보내는데 템플릿 ID를 폼에서만 읽어, 저장 전에 고른 템플릿 대신 저장된 템플릿으로 테스트 메일이 나가던 것을 고쳤다(폼 값이 없으면 JSON의 `template_id`).
 
