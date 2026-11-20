@@ -4,7 +4,12 @@
       <div>
         <div class="modal-card" style="width: auto">
           <header class="modal-card-head">
-            <h4>{{ title }}</h4>
+            <h4>
+              {{ title }}
+              <span v-if="sampleLabel" class="sample-note" data-cy="preview-sample">
+                <b-icon icon="account-outline" size="is-small" /> {{ sampleLabel }}
+              </span>
+            </h4>
           </header>
         </div>
         <section expanded class="modal-card-body preview">
@@ -15,6 +20,7 @@
             <input v-if="templateType" type="hidden" name="template_type" :value="templateType" />
             <input v-if="archiveMeta" type="hidden" name="archive_meta" :value="archiveMeta" />
             <input v-if="body" type="hidden" name="body" :value="body" />
+            <input v-if="sample" type="hidden" name="sample" :value="sample" />
           </form>
 
           <iframe id="iframe" name="iframe" ref="iframe" :title="title" :src="isPost ? 'about:blank' : previewURL"
@@ -55,6 +61,10 @@ export default {
     contentType: { type: String, default: '' },
     templateId: { type: [Number, null], default: null },
     isArchive: { type: Boolean, default: false },
+
+    // AXM (LST-41): the sample of the campaign test box, as JSON, and its name for the header.
+    sample: { type: String, default: '' },
+    sampleLabel: { type: String, default: '' },
   },
 
   data() {
@@ -112,3 +122,10 @@ export default {
   },
 };
 </script>
+
+<style scoped>
+.sample-note {
+  display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; background: #eef4ff; color: #0b3d91;
+  border-radius: 4px; padding: 0.15rem 0.6rem; margin-left: 0.6rem; vertical-align: middle; overflow-wrap: anywhere;
+}
+</style>
