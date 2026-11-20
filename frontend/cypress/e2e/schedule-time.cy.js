@@ -165,6 +165,7 @@ describe('Scheduled send time zone', () => {
 
   it('starts the schedule straight from the screen without losing the zone', () => {
     cy.intercept('PUT', '/api/campaigns/*').as('save');
+    cy.intercept('PUT', '/api/campaigns/*/status').as('status');
     open('sched');
     cy.get('[data-cy=btn-send-later] .check').click();
     zoneButton().click();
@@ -178,6 +179,7 @@ describe('Scheduled send time zone', () => {
       expect(new Date(b.send_at).toISOString()).to.eq('2030-02-01T14:00:00.000Z');
       expect(b.attribs[KEY]).to.eq('America/New_York');
     });
+    cy.wait('@status');
     cy.request(`/api/campaigns/${ids.sched}`).its('body.data').should((d) => {
       expect(d.status).to.eq('scheduled');
       expect(d.attribs[KEY]).to.eq('America/New_York');
