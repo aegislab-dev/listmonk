@@ -415,7 +415,8 @@
   },
   {
    "paths": [
-    "queries/axm_followups.sql"
+    "queries/axm_followups.sql",
+    "cmd/manager_store.go"
    ],
    "specs": [
     "followup.cy.js"
