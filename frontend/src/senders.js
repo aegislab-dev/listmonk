@@ -12,15 +12,23 @@ export function senderMailbox(value) {
 // with the From list.
 // Removes trailing (comments), which may nest: "a@x (Team (Korea))" -> "a@x".
 function stripTrailingComments(value) {
+  // A backslash escapes the next character, so "\)" is text, not a closing paren.
+  const escaped = (str, i) => {
+    let n = 0;
+    for (let j = i - 1; j >= 0 && str[j] === '\\'; j -= 1) n += 1;
+    return n % 2 === 1;
+  };
   let s = value;
-  while (s.endsWith(')')) {
+  while (s.endsWith(')') && !escaped(s, s.length - 1)) {
     let depth = 0;
     let start = -1;
     for (let i = s.length - 1; i >= 0; i -= 1) {
-      if (s[i] === ')') depth += 1;
-      else if (s[i] === '(') {
-        depth -= 1;
-        if (depth === 0) { start = i; break; }
+      if (!escaped(s, i)) {
+        if (s[i] === ')') depth += 1;
+        else if (s[i] === '(') {
+          depth -= 1;
+          if (depth === 0) { start = i; break; }
+        }
       }
     }
     if (start < 0) break;
