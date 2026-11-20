@@ -195,24 +195,33 @@ func checkTrackingMatchesSend(t *testing.T, body string) {
 func TestCheckTrackingAttachments(t *testing.T) {
 	const fileCond = `{{ if eq (len .Campaign.Attachments) 0 }}{{ TrackView }}<a href="https://g.test/a@TrackLink">A</a>{{ else }}<a href="https://g.test/guide">Guide</a>{{ end }}`
 	const inlineCond = `<img data-embed src="/uploads/inline.png">{{ if not .Campaign.Attachments }}{{ TrackView }}{{ end }}<a href="https://g.test/a@TrackLink">A</a>`
+	// A visual body with no attachment shows a download link; the send reads the default
+	// template for it, whose logo must not become an attachment of a mail that never
+	// shows the template.
+	const logoTpl = `<html><body><img data-embed src="/uploads/inline.png">{{ template "content" . }}</body></html>`
+	const visualCond = `<html><body>{{ if not .Campaign.Attachments }}<a href="https://g.test/download">Download</a>{{ end }}<p>x</p></body></html>`
 	for _, tc := range []struct {
-		name  string
-		body  string
-		media []int64
+		name        string
+		contentType string
+		tpl         string
+		body        string
+		media       []int64
 	}{
-		{"file attached", fileCond, []int64{1}},
-		{"no file", fileCond, nil},
-		{"inline image", inlineCond, nil},
-		{"inline image and file", inlineCond, []int64{1}},
+		{"file attached", "html", "", fileCond, []int64{1}},
+		{"no file", "html", "", fileCond, nil},
+		{"inline image", "html", "", inlineCond, nil},
+		{"inline image and file", "html", "", inlineCond, []int64{1}},
+		{"inline image in the template", "html", logoTpl, inlineCond, nil},
+		{"visual, template with an inline image", "visual", logoTpl, visualCond, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := trackingManager()
-			c := models.Campaign{UUID: "campaign", ContentType: "html", Messenger: "email", Body: tc.body, MediaIDs: tc.media}
+			c := models.Campaign{UUID: "campaign", ContentType: tc.contentType, Messenger: "email", TemplateBody: tc.tpl, Body: tc.body, MediaIDs: tc.media}
 			rep, err := m.CheckTracking(&c, models.Subscriber{UUID: dummyUUID, Name: "Alice"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if c.Attachments != nil || c.Body != tc.body {
+			if c.Attachments != nil || c.Body != tc.body || c.TemplateBody != tc.tpl {
 				t.Fatalf("the check changed the campaign: %+v", c)
 			}
 
@@ -236,8 +245,14 @@ func TestCheckTrackingAttachments(t *testing.T) {
 					t.Fatal(err)
 				}
 				out := string(msg.Body())
-				if pixel := strings.Contains(out, "/px.png"); pixel != (rep.View == TrackingViewManual) {
+				if pixel := strings.Contains(out, "/px.png"); pixel != (rep.View == TrackingViewManual || rep.View == TrackingViewAuto) {
 					t.Errorf("%s: view %q, pixel sent %v: %s", sub, rep.View, pixel, out)
+				}
+				if tc.contentType == "visual" {
+					if strings.Contains(out, "Download") != (rep.Links.Auto == 1) || len(msg.Campaign.Attachments) != 0 {
+						t.Errorf("%s: auto %d, attachments %d: %s", sub, rep.Links.Auto, len(msg.Campaign.Attachments), out)
+					}
+					continue
 				}
 				if direct := strings.Count(out, `href="https://g.test/guide"`); direct != rep.Links.Untracked {
 					t.Errorf("%s: untracked %d, %d direct links sent: %s", sub, rep.Links.Untracked, direct, out)
