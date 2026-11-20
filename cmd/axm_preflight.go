@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
 	"net/mail"
 	"net/textproto"
@@ -40,7 +39,7 @@ type preflightResponse struct {
 	// mails of the send: with the status or the campaign's times), or "".
 	SubjectNote string `json:"subject_note"`
 	// Varies: which parts of the envelope differ between the mails (subject, from, reply_to,
-	// copies). The window does not compare those between readings; everything else it does.
+	// cc, bcc). The window does not compare those between readings; everything else it does.
 	Varies []string `json:"varies"`
 	// Copies: the addresses that the Cc and Bcc headers add to every mail. Each of them gets
 	// one copy per recipient.
@@ -632,26 +631,30 @@ func envelopeCopies(messenger string, server map[string]string, headers models.H
 // layout shows it. A template that calls Date prints the time of each mail: it varies too.
 func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manager.Envelope, from string, server map[string]string, policy bool) map[string]bool {
 	out := map[string]bool{}
-	// What each part of the envelope is made from, to find the ones that call Date.
-	hdr := func(name string) string {
-		v, _ := chosenHeader(name, nil, camp.Headers)
+	// Date prints the time of each mail, where it reaches the mail: a Subject header (the
+	// campaign's, else the SMTP server's) replaces the subject field, so a Date in the field
+	// then varies nothing (LST-48 review: a fixed SMTP Subject was left out of the comparison).
+	src := func(name string) string {
+		v, _ := chosenHeader(name, server, camp.Headers)
 		return v
 	}
-	if callsDate(camp.Subject, nil) || callsDate(hdr("Subject"), nil) {
-		out["subject"] = true
+	if v, ok := chosenHeader("Subject", server, camp.Headers); ok {
+		out["subject"] = callsDate(v, nil)
+	} else {
+		out["subject"] = callsDate(camp.Subject, nil)
 	}
-	if callsDate(hdr("From"), nil) {
-		out["from"] = true
-	}
-	if callsDate(hdr("Reply-To"), nil) {
-		out["reply_to"] = true
-	}
-	if callsDate(hdr("Cc"), nil) || callsDate(hdr("Bcc"), nil) {
-		out["copies"] = true
-	}
+	out["from"] = callsDate(src("From"), nil)
+	out["reply_to"] = callsDate(src("Reply-To"), nil)
+	out["cc"] = callsDate(src("Cc"), nil)
+	out["bcc"] = callsDate(src("Bcc"), nil)
+	// Cc and Bcc apart: a Cc that varies does not hide a change of a fixed Bcc (LST-48 review).
 	parts := func(e manager.Envelope) map[string]string {
 		s, f, r := sendEnvelope(e.Subject, from, camp.ReplyTo, camp.Messenger, server, e.Headers, policy)
-		return map[string]string{"subject": s, "from": f, "reply_to": r, "copies": fmt.Sprint(envelopeCopies(camp.Messenger, server, e.Headers))}
+		p := map[string]string{"subject": s, "from": f, "reply_to": r, "cc": "", "bcc": ""}
+		for _, c := range envelopeCopies(camp.Messenger, server, e.Headers) {
+			p[c.Kind] += c.Address + ","
+		}
+		return p
 	}
 	want := parts(first)
 	later := camp
@@ -665,7 +668,7 @@ func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manag
 				for k := range want {
 					out[k] = true
 				}
-				return out
+				return clean(out)
 			}
 			for k, v := range parts(e) {
 				if v != want[k] {
@@ -674,7 +677,17 @@ func envelopeVaries(a *App, camp models.Campaign, statuses []string, first manag
 			}
 		}
 	}
-	return out
+	return clean(out)
+}
+
+// clean drops the false entries of a set.
+func clean(m map[string]bool) map[string]bool {
+	for k, v := range m {
+		if !v {
+			delete(m, k)
+		}
+	}
+	return m
 }
 
 var reDateCall = regexp.MustCompile(`\{\{[^}]*\bDate\b[^}]*\}\}`)

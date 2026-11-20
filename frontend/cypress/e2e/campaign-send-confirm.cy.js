@@ -329,7 +329,8 @@ describe('Pre-send confirmation window', () => {
     cy.get(`${win}[data-state=error]`).should('exist');
     // Which campaign it would go on for is still said.
     cy.get('[data-cy=send-error] [data-cy=send-campaign]').should('contain', `Send resume ${stamp}`);
-    cy.get('[data-cy=send-error] [data-cy=send-subject]').should('contain', 'Send resume subject');
+    // No subject without a reading: a Subject header (the campaign's or the SMTP server's) may replace it.
+    cy.get('[data-cy=send-error] [data-cy=send-subject]').should('not.exist');
     // The box keeps its heading (approved design A6), with the reason and a retry button.
     cy.get('[data-cy=send-error] [data-cy=send-checks] .send-checks-head').should('have.text', 'Checks before sending');
     cy.get('[data-cy=send-error] [data-cy=send-checks]').should('contain', 'Could not get the number of recipients');
@@ -583,6 +584,33 @@ describe('Pre-send confirmation window', () => {
     cy.wait('@pfDown');
     cy.get(`${win}[data-state=error]`).should('exist');
     cy.get('[data-cy=send-error] [data-cy=send-subject]').should('not.exist');
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
+  it('compares a fixed Bcc beside a Cc that varies, and a Subject header beside a Date subject', () => {
+    cy.then(() => create('ccvar', {
+      lists: [listX], subject: 'On {{ Date "2006-01-02" }}',
+      headers: [{ Cc: 'desk-{{ .Campaign.UpdatedAt.Time.Format "0405" }}@crevasse.ai', Bcc: 'archive@crevasse.ai', Subject: 'Delivery - Standard' }],
+    }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('ccvar').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-subject-text]').should('have.text', 'Delivery - Standard');
+    cy.then(() => cy.request(`/api/campaigns/${camp.ccvar}`).then(({ body }) => {
+      const c = body.data;
+      cy.request('PUT', `/api/campaigns/${camp.ccvar}`, {
+        name: c.name, subject: c.subject, type: 'regular', messenger: 'email', lists: [listX], content_type: c.content_type, body: c.body,
+        headers: [{ Cc: c.headers[0].Cc, Bcc: 'partner@crevasse.ai', Subject: 'Delivery - Express' }],
+      });
+    }));
+    cy.get('[data-cy=send-ok]').click();
+    ready();
+    // Both changes are shown before anything is sent.
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy=send-subject-text]').should('have.text', 'Delivery - Express');
+    cy.get('[data-cy="send-check-mail.copies"]').should('contain', 'partner@crevasse.ai');
     cy.get('@status.all').should('have.length', 0);
     cy.get('[data-cy=send-cancel]').click();
   });

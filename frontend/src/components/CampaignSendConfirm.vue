@@ -176,18 +176,20 @@ import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 // on its own a few seconds early.
 // A part of the envelope that varies between mails (a subject with the campaign's change time,
 // Date) is rendered anew at each reading: its value is not compared, only that it varies (LST-48
-// review: such a subject never sent). Only those parts: a fixed Bcc beside a varying subject is
-// still compared (LST-48 review: a changed SMTP Bcc went out unseen).
+// review: such a subject never sent). Only those parts, Cc and Bcc apart: a fixed Bcc beside a
+// varying subject or Cc is still compared (LST-48 review: a changed SMTP Bcc went out unseen).
 const fingerprint = (pf) => {
   const v = new Set(pf.varies || []);
   const keep = (part, value) => (v.has(part) ? null : value);
   return JSON.stringify([
     pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, [...v].sort(), pf.senderPerSubscriber,
-    keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo), keep('copies', pf.copies),
+    keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
+    keep('cc', (pf.copies || []).filter((c) => c.kind === 'cc')), keep('bcc', (pf.copies || []).filter((c) => c.kind === 'bcc')),
     pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.count, l.deleted]),
     (pf.checks || []).filter((c) => c.key !== 'schedule.past')
       .map((c) => {
-        if (c.key === 'mail.copies') return [c.key, c.level, keep('copies', c.params)];
+        // The addresses are compared above, kind by kind; the line itself by its count.
+        if (c.key === 'mail.copies') return [c.key, c.level, v.has('cc') || v.has('bcc') ? null : c.params];
         if (c.key === 'from.placeholder') return [c.key, c.level, keep('from', c.params)];
         return [c.key, c.level, c.params];
       }),
@@ -212,10 +214,6 @@ export default Vue.extend({
     status: { type: String, required: true },
     // What the window says while it has not read the campaign, or cannot: which campaign it is.
     campaignName: { type: String, default: '' },
-    campaignSubject: { type: String, default: '' },
-    // The campaign's custom headers as the caller has them: a Subject header replaces the
-    // subject field, so the field alone does not say what the mail is called.
-    campaignHeaders: { type: Array, default: () => [] },
   },
 
   data() {
@@ -284,14 +282,11 @@ export default Vue.extend({
     },
 
     // The subject shown when the checks cannot be read: the one the last reading gave (what the
-    // recipients get), else the subject field when nothing replaces or renders it (LST-48
-    // review: after a failed reading the field was shown, but a Subject header went out). With
-    // neither, no subject is shown rather than a wrong one.
+    // recipients get). Without a reading none: the subject field may be replaced by a Subject
+    // header of the campaign or of the SMTP server, which only the server knows (LST-48 review:
+    // the internal draft subject was shown, the SMTP Subject went out).
     errorSubject() {
-      if (this.lastSubject) return this.lastSubject;
-      const s = this.campaignSubject || '';
-      const header = (this.campaignHeaders || []).some((set) => Object.keys(set || {}).some((k) => k.trim().toLowerCase() === 'subject'));
-      return header || s.includes('{{') ? '' : s;
+      return this.lastSubject;
     },
 
     // What the rows other than the campaign and its recipients say now, to tell after a

@@ -285,7 +285,7 @@
       :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
       @close="sendAsk = null">
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
-        :campaign-name="sendAsk.name" :campaign-subject="sendAsk.subject || ''" :campaign-headers="sendAsk.headers" @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" />
+        :campaign-name="sendAsk.name" @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" />
     </b-modal>
   </section>
 </template>
@@ -466,7 +466,7 @@ export default Vue.extend({
     confirmSend(c, status) {
       // busy: the status change is on its way; the window cannot be closed then.
       this.sendAsk = {
-        id: c.id, name: c.name, subject: c.subject, headers: c.headers || [], status, busy: false,
+        id: c.id, name: c.name, status, busy: false,
       };
       this.isSendVisible = true;
     },

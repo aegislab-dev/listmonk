@@ -547,6 +547,18 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 				t.Fatalf("varies: %s", data)
 			}
 		}
+		// A Cc that varies beside a fixed Bcc: only "cc" varies. A Date in the subject field under
+		// a fixed Subject header varies nothing (LST-48 review).
+		e.db.MustExec(`UPDATE campaigns SET subject='On {{ Date "2006-01-02" }}', headers='[{"Cc":"desk-{{ .Campaign.UpdatedAt.Time.Format \"0405\" }}@crevasse.ai","Bcc":"archive@crevasse.ai","Subject":"Delivery - Standard"}]'::jsonb WHERE id=$1`, e.campID)
+		{
+			_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+			var ov struct {
+				Varies []string `json:"varies"`
+			}
+			if json.Unmarshal(data, &ov) != nil || len(ov.Varies) != 1 || ov.Varies[0] != "cc" {
+				t.Fatalf("varies cc only: %s", data)
+			}
+		}
 		e.db.MustExec(`UPDATE campaigns SET headers='[]'::jsonb WHERE id=$1`, e.campID)
 
 		// A Subject header that reads the rendered subject field ({{ .Subject }}).
