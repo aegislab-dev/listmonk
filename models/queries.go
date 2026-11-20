@@ -35,7 +35,8 @@ type Queries struct {
 	AxmAddressCheckAudienceOptin *sqlx.Stmt `query:"axm-address-check-audience-optin"`
 	AxmAddressCheckLinked        *sqlx.Stmt `query:"axm-address-check-linked"`
 
-	AxmPreflightAudience         *sqlx.Stmt `query:"axm-preflight-audience"`
+	AxmPreflightAudience    *sqlx.Stmt `query:"axm-preflight-audience"`
+	AxmCampaignForSendCheck *sqlx.Stmt `query:"axm-campaign-for-send-check"`
 
 	AxmDrawLock                    *sqlx.Stmt `query:"axm-draw-lock"`
 	AxmDrawSource                  *sqlx.Stmt `query:"axm-draw-source"`

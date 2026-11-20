@@ -53,7 +53,7 @@ func (m *Manager) trackVisualMessage(msg *CampaignMessage) {
 			hasPixel = true
 		}
 		if (tag == "a" || tag == "area" || tag == "v:roundrect") && attr == "href" && m.canTrackVisualLink(value) {
-			return m.trackLink(value, msg.Campaign.UUID, m.trackingSubscriber(msg))
+			return m.trackLink(browserURL(value), msg.Campaign.UUID, m.trackingSubscriber(msg))
 		}
 		return value
 	})
@@ -75,8 +75,16 @@ func tracksVisualAutomatically(c *models.Campaign) bool {
 	return c.ContentType == models.CampaignContentTypeVisual && isEmailMessenger(c.Messenger)
 }
 
+// browserURL is an href as a browser follows it: the URL parser of browsers drops
+// leading and trailing spaces and control characters and every tab and newline.
+// href=" https://example.test/ " is a working link (LST-44 review).
+func browserURL(value string) string {
+	value = strings.TrimFunc(value, func(r rune) bool { return r <= 0x20 })
+	return strings.NewReplacer("\t", "", "\n", "", "\r", "").Replace(value)
+}
+
 func (m *Manager) canTrackVisualLink(value string) bool {
-	u, err := url.Parse(value)
+	u, err := url.Parse(browserURL(value))
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
 	}

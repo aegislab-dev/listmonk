@@ -360,6 +360,35 @@ describe('Pre-send tracking check', () => {
     });
   });
 
+  it('follows the archive switch on the page', () => {
+    cy.request('PUT', `/api/campaigns/${ids.ok}`, {
+      name: `Tracking ok ${stamp}`,
+      subject: 'Archive',
+      type: 'regular',
+      messenger: 'email',
+      lists: [listId],
+      content_type: 'html',
+      template_id: bareTpl,
+      attribs: {},
+      archive: false,
+      body: '{{ if not .Campaign.Archive }}{{ TrackView }}{{ end }}<p>Hello</p>',
+    });
+    open('ok');
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-ok');
+    cy.intercept('POST', check).as('archived');
+    cy.get('.b-tabs nav a').eq(3).click();
+    cy.get('label[data-cy=btn-archive] .check, [data-cy=btn-archive] .switch .check').first().click();
+    cy.wait('@archived').its('request.body.archive').should('eq', true);
+    cy.get('.b-tabs nav a').eq(0).click();
+    cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn');
+    // The window reads the campaign as saved first (LST-48): the archive switch too.
+    cy.get('[data-cy=btn-start]').click();
+    ready();
+    cy.get(warnLines).should('contain', 'There is no view tracking.');
+    cy.get('[data-cy=send-cancel]').click();
+    cy.get('.modal.is-active').should('not.exist');
+  });
+
   it('drops a start whose window is still open or loading when the page is left', () => {
     let slow = true;
     cy.intercept('PUT', '/api/campaigns/*/status').as('anyStatus');

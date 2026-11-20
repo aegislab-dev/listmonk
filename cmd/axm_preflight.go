@@ -266,7 +266,10 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		return err
 	}
 
-	camp, err := a.core.GetCampaignForPreview(id, 0)
+	// The campaign as the send reads it (next-campaigns, LST-44's axm-campaign-for-send-check):
+	// the default template when it has none, its media, no lists. What is rendered below is
+	// then what goes out.
+	camp, err := a.core.GetCampaignForSendCheck(id, 0)
 	if err != nil {
 		return err
 	}
@@ -376,7 +379,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	rep, err := trackingInAll(statuses, func(status string) (manager.TrackingReport, error) {
 		c := sendCamp
 		c.Status = status
-		return a.manager.CheckTracking(&c, dummySubscriber)
+		return a.manager.CheckTracking(&c, dummySubscriber, true)
 	})
 	if err != nil {
 		out.TrackingError = err.Error()

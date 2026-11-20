@@ -41,6 +41,15 @@ type trackingCheckReq struct {
 	// SendAt the send time on the page (null for none; left out: the stored one).
 	Status *string         `json:"status"`
 	SendAt json.RawMessage `json:"send_at"`
+
+	// The rest of what saving takes from the page and a template can read (not for
+	// mode "test": a test send keeps the stored values, except the media it is given).
+	Archive           *bool           `json:"archive"`
+	ArchiveSlug       json.RawMessage `json:"archive_slug"`
+	ArchiveTemplateID json.RawMessage `json:"archive_template_id"`
+	ArchiveMeta       json.RawMessage `json:"archive_meta"`
+	BodySource        json.RawMessage `json:"body_source"`
+	Media             *[]int          `json:"media"`
 }
 
 // CheckCampaignTracking tells, before a campaign is sent, whether its views and clicks
@@ -76,7 +85,16 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 	if contentType == models.CampaignContentTypeVisual || tplID < 1 {
 		tplID = 0
 	}
-	camp, err := a.core.GetCampaignForPreview(id, tplID)
+	// A test send reads the campaign like the preview (TestCampaign); a real send reads
+	// it like next-campaigns: with the default template when it has none, its media
+	// and no lists (LST-44 review: a template can read all of these).
+	var camp models.Campaign
+	var err error
+	if req.Mode == "test" {
+		camp, err = a.core.GetCampaignForPreview(id, tplID)
+	} else {
+		camp, err = a.core.GetCampaignForSendCheck(id, tplID)
+	}
 	if err != nil {
 		return err
 	}
@@ -131,6 +149,33 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 	if req.Attribs != nil {
 		camp.Attribs = *req.Attribs
 	}
+	if req.Media != nil {
+		// As TestCampaign and saving: the media on the page.
+		camp.MediaIDs = nil
+		for _, m := range *req.Media {
+			if m > 0 {
+				camp.MediaIDs = append(camp.MediaIDs, int64(m))
+			}
+		}
+	}
+	if req.Mode != "test" {
+		if req.Archive != nil {
+			camp.Archive = *req.Archive
+		}
+		for _, f := range []struct {
+			raw json.RawMessage
+			to  any
+		}{{req.ArchiveSlug, &camp.ArchiveSlug}, {req.ArchiveTemplateID, &camp.ArchiveTemplateID}, {req.BodySource, &camp.BodySource}} {
+			if len(f.raw) > 0 {
+				if err := json.Unmarshal(f.raw, f.to); err != nil {
+					return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "archive"))
+				}
+			}
+		}
+		if len(req.ArchiveMeta) > 0 {
+			camp.ArchiveMeta = append(json.RawMessage(nil), req.ArchiveMeta...)
+		}
+	}
 
 	// Templates can read the campaign's status and sender. A test send renders the
 	// campaign as it is; a real send renders it as it is when the manager picks it up,
@@ -141,7 +186,7 @@ func (a *App) CheckCampaignTracking(c echo.Context) error {
 		}
 	}
 
-	rep, err := a.manager.CheckTracking(&camp, dummySubscriber)
+	rep, err := a.manager.CheckTracking(&camp, dummySubscriber, req.Mode != "test")
 	if err != nil {
 		key := "templates.errorRendering"
 		var checkErr *manager.TrackingCheckError

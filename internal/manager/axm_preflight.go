@@ -47,10 +47,19 @@ func (m *Manager) checkRender(c *models.Campaign, sub models.Subscriber, status 
 	// A body may ask what state the campaign is in: render it with the one given (see
 	// SendStatuses).
 	camp.Status = status
+	// The attachments as a real send fills them before rendering (newPipe: inline images,
+	// then the media), as LST-44's CheckTracking with asSend: templates can read them.
+	camp.Attachments = append([]models.Attachment(nil), c.Attachments...)
+	if err := m.LoadInlineImages(&camp); err != nil {
+		return nil, err
+	}
 	funcs := m.TemplateFuncs(&camp)
 	funcs["TrackLink"] = func(u string, _ *CampaignMessage) string { return u }
 	funcs["TrackView"] = func(_ *CampaignMessage) template.HTML { return "" }
 	if err := camp.CompileTemplate(funcs); err != nil {
+		return nil, err
+	}
+	if err := m.attachMedia(&camp); err != nil {
 		return nil, err
 	}
 

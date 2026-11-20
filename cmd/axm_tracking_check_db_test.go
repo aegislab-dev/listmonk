@@ -19,6 +19,7 @@ import (
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 )
 
 // The pre-send tracking check (LST-44) through the real handler, a real manager and a
@@ -149,6 +150,42 @@ func TestCampaignTrackingCheck(t *testing.T) {
 	byTpl["template_id"] = bare2
 	if rep = check(js(byTpl)); rep.View != "missing" {
 		t.Fatalf("unsaved template id: %+v", rep)
+	}
+
+	// The send reads the campaign without its lists and with the default template when it
+	// has none; a test send reads it like the preview, with the lists and no template.
+	// The page's archive setting counts like any other saved value (LST-44 review).
+	lists := map[string]any{"content_type": "html", "template_id": bare, "body": `{{ if .Campaign.Lists }}{{ TrackView }}{{ end }}<p>x</p>`}
+	if rep = check(js(lists)); rep.View != "missing" {
+		t.Fatalf("lists, real send: %+v", rep)
+	}
+	lists["mode"] = "test"
+	if rep = check(js(lists)); rep.View != "manual" {
+		t.Fatalf("lists, test send: %+v", rep)
+	}
+	var tplBefore int
+	e.get(&tplBefore, `SELECT template_id FROM campaigns WHERE id=$1`, e.campID)
+	var defTpl int
+	e.get(&defTpl, `INSERT INTO templates(name,type,subject,body) VALUES('deftpl','campaign','','<html><body>{{ template "content" . }}{{ TrackView }}</body></html>') RETURNING id`)
+	var oldDefault []int
+	e.db.Select(&oldDefault, `SELECT id FROM templates WHERE is_default`)
+	e.db.MustExec(`UPDATE templates SET is_default = (id = $1)`, defTpl)
+	e.db.MustExec(`UPDATE campaigns SET template_id=NULL, content_type='html', body='<p>x</p>' WHERE id=$1`, e.campID)
+	if rep = check(`{}`); rep.View != "manual" {
+		t.Fatalf("no template, real send uses the default: %+v", rep)
+	}
+	if rep = check(`{"mode":"test"}`); rep.View != "missing" {
+		t.Fatalf("no template, test send has none: %+v", rep)
+	}
+	e.db.MustExec(`UPDATE templates SET is_default = COALESCE(id = ANY($1::INT[]), false)`, pq.Array(oldDefault))
+	e.db.MustExec(`UPDATE campaigns SET template_id=$2, content_type='richtext', body=$3 WHERE id=$1`, e.campID, tplBefore, stored)
+	arch := map[string]any{"content_type": "html", "template_id": bare, "body": `{{ if not .Campaign.Archive }}{{ TrackView }}{{ end }}<p>x</p>`}
+	if rep = check(js(arch)); rep.View != "manual" {
+		t.Fatalf("archive off: %+v", rep)
+	}
+	arch["archive"] = true
+	if rep = check(js(arch)); rep.View != "missing" {
+		t.Fatalf("archive switched on on the page: %+v", rep)
 	}
 
 	// A template can read the status, which the start changes: the check renders the
