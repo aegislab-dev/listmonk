@@ -3,6 +3,7 @@
  "ci_specs": [
   "import-mapping.cy.js",
   "sender-addresses.cy.js",
+  "from-addresses.cy.js",
   "dynamic-lists.cy.js",
   "list-draw.cy.js",
   "list-teams.cy.js",
@@ -72,11 +73,13 @@
     "frontend/src/views/settings/general.vue",
     "cmd/axm_agent.go",
     "cmd/settings.go",
-    "cmd/senders.go"
+    "cmd/senders.go",
+    "cmd/admin.go"
    ],
    "specs": [
     "sender-addresses.cy.js",
-    "campaign-test-send.cy.js"
+    "campaign-test-send.cy.js",
+    "from-addresses.cy.js"
    ]
   },
   {
@@ -119,7 +122,8 @@
     "reaction-lists.cy.js",
     "dynamic-lists.cy.js",
     "campaign-test-send.cy.js",
-    "schedule-time.cy.js"
+    "schedule-time.cy.js",
+    "from-addresses.cy.js"
    ]
   },
   {
@@ -133,7 +137,8 @@
     "campaign-tracking-check.cy.js",
     "reaction-lists.cy.js",
     "campaign-test-send.cy.js",
-    "schedule-time.cy.js"
+    "schedule-time.cy.js",
+    "from-addresses.cy.js"
    ]
   },
   {
@@ -150,7 +155,8 @@
     "analytics-proof.cy.js",
     "list-trash.cy.js",
     "campaign-test-send.cy.js",
-    "schedule-time.cy.js"
+    "schedule-time.cy.js",
+    "from-addresses.cy.js"
    ]
   },
   {

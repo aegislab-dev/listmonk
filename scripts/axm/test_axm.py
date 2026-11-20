@@ -737,5 +737,14 @@ class Round8Test(unittest.TestCase):
         self.assertIn('ran_specs=ran_specs', text)
 
 
+class Round11Test(unittest.TestCase):
+    def test_from_addresses_screens_select_its_spec(self):
+        # 리뷰 재현: 기준 브랜치 병합(#39)으로 들어온 from-addresses.cy.js 를 캠페인 작성·발신 주소 설정·캠페인 API 가 고른다.
+        for f in ('frontend/src/views/Campaign.vue', 'frontend/src/views/Campaigns.vue',
+                  'frontend/src/views/settings/general.vue', 'cmd/campaigns.go', 'cmd/senders.go',
+                  'cmd/settings.go', 'cmd/admin.go', 'frontend/cypress/e2e/from-addresses.cy.js'):
+            self.assertIn('from-addresses.cy.js', pick(f)['specs'], f)
+
+
 if __name__ == '__main__':
     unittest.main()
