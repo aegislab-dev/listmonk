@@ -198,12 +198,12 @@ describe('Campaign test send to addresses that are not subscribers', () => {
     // An answer that arrives after the text was cut to one character is not shown.
     let release;
     const held = new Promise((resolve) => { release = resolve; });
-    cy.intercept('GET', '/api/subscribers?*', (req) => req.continue((res) => held.then(() => res.send()))).as('slow');
+    cy.intercept('GET', '/api/subscribers?*', (req) => req.continue((res) => held.then(() => res.send()))).as('heldSearch');
     box().find('input[data-cy=test-sample-search]').type(`kim-${stamp}`);
     cy.wait(600);
     box().find('input[data-cy=test-sample-search]').clear().type('z');
     cy.then(() => release());
-    cy.wait('@slow');
+    cy.wait('@heldSearch');
     cy.wait(300);
     box().find('.dropdown-item').should('not.contain', subEmail);
     box().find('input[data-cy=test-sample-search]').clear();
