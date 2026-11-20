@@ -124,6 +124,10 @@ React 이메일 빌더 → Vue 관리 프론트 → Go 바이너리 → **stuffb
 upstream `Makefile`·`Dockerfile`은 보존한다. Go 변경이 허용되는 후속 태스크도 `Dockerfile.axm`으로 전체 빌드한다.
 런타임의 `/listmonk`, `config.toml`, entrypoint, 포트 9000, 기본 명령 `./listmonk`은 공식 이미지와 같다.
 
+### 로컬 검사: 바뀐 부분만 (LST-51)
+
+여러 태스크가 한 PC 에서 같이 검사하면 CPU 가 몰리므로, 로컬에서는 `scripts/axm/axm check` 로 **바뀐 파일에 닿는 spec·Go 시험만** 돌리고 전체 e2e 와 위의 운영 방식 이미지 빌드는 PR 의 CI 가 한다. Go 모듈·빌드 캐시, 프론트 dist, 시험용 베이스 이미지(`listmonk-axm-base`)는 `~/.cache/listmonk-axm` 에서 태스크끼리 같이 쓴다. 시험 이미지는 같은 `make dist` 와 같은 런타임 단계(`scripts/axm/runtime.Dockerfile`)로 만들지만 `Dockerfile.axm` 으로 만든 것은 아니다. 운영 방식 빌드는 `axm build --full`. 규칙은 `AGENTS.md`, 바뀐 파일 → spec 표는 `scripts/axm/test-map.json`.
+
 CI는 빈 Postgres 17에 `--install --idempotent --yes` 후 `/health`, `/admin/login`, 임베드된 관리 JS 번들, 버전 출력과 라이선스 파일을 확인한다.
 프론트 lint는 `yarn build`의 prebuild에서 실행한다. LST-6부터 이미지 빌드에 `go test ./...`도 포함하며 크롤러 차단·메일 경로 예외·robots.txt와 사업자정보 푸터를 검사한다. 새 설치의 사업자정보 설정 기본값과 공식 v6.2.0 설치 DB에서 포크 이미지로 `--upgrade --yes`(반복 실행 포함) 후 설정 행·마이그레이션 번호·기동을 검사한다.
 
@@ -1063,7 +1067,7 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 
 **속도**: PostgreSQL 17.7 로컬 컨테이너, 합성 구독자 40만 명(`AXM_PREFLIGHT_BENCH=400000 go test ./cmd -run TestPreflightSpeed -v`), 두 번째(데워진) 실행 기준: 한 리스트 1.7초, 두 리스트(37%가 양쪽에 있음) 1.9초, 일반+동적 리스트 3.1초, 재개(절반 보냄) 2.1초(같은 기계에서 이미지 빌드와 겹쳐 돌렸다). 처음에는 리스트별 수와 합계를 따로 세어 2초(동적 포함 8–10초)였고, (리스트, 사람) 쌍을 한 번만 만들어 모두 거기서 세게 해 줄였다. 창은 읽는 동안 로딩 표시와 꺼진 버튼을 보이고 닫으면 요청을 끊는다. 40만 명을 넘는 리스트·동적 리스트가 아주 많은 캠페인에서는 몇 초 걸릴 수 있다.
 
-**CI**: `axm-image.yml`의 브라우저 시험 단계는 시험 수신함(Mailpit, `127.0.0.1:1025`/`8025`)을 띄우고 앱의 SMTP를 그리로 돌린다. `campaign-send-confirm.cy.js`는 창이 센 4명이 실제로 한 통씩 받았는지를 수신함에서 확인한다(`CYPRESS_mailpitUrl`, 없으면 실패).
+**CI**: `axm-image.yml`의 브라우저 시험 단계는 시험 수신함(Mailpit, `127.0.0.1:1025`/`8025`)을 띄우고 앱의 SMTP를 그리로 돌린다. 로컬 검사 도구(`scripts/axm/axm`, LST-51)도 e2e 때 같은 수신함을 띄우고(`start_mail`, TLS 없음) `CYPRESS_mailpitUrl`을 넘긴다. `test-map.json`에 이 창의 spec과 파일 규칙이 있다. `campaign-send-confirm.cy.js`는 창이 센 4명이 실제로 한 통씩 받았는지를 수신함에서 확인한다(`CYPRESS_mailpitUrl`, 없으면 실패).
 
 **업스트림을 따라갈 때 볼 곳**: `Campaign.vue`의 `startCampaign()`과 템플릿의 `b-modal`, `Campaigns.vue`의 시작·재개·예약 아이콘 세 줄(`confirmSend`)과 `b-modal`, `UpdateCampaignStatus`(`cmd/campaigns.go`, `internal/core/campaigns.go`의 `updated_at` 비교). 새 파일은 `axm_preflight.*`(Go·SQL), `CampaignSendConfirm.vue`, `send-confirm.js`와 `i18n`의 `campaigns.sendConfirm.*`.
 
