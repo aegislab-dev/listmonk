@@ -17,7 +17,7 @@ scripts/axm/axm down              # 내 컨테이너 정리(check 는 끝날 때
 
 ## 규칙
 
-1. **로컬 검사는 `axm check` 로 한다.** 직접 `yarn install`, `docker build -f Dockerfile.axm`, Cypress 전체 실행(`--spec` 없이 또는 13개 전부)을 하지 않는다. 예외는 `axm affected` 가 `--full` 을 요구할 때(`Dockerfile.axm`·`Makefile`·lockfile·`docker-entrypoint.sh` 변경: `axm build --full` 1회)와 릴리스 연습이다.
+1. **로컬 검사는 `axm check` 로 한다.** 직접 `yarn install`, `docker build -f Dockerfile.axm`, Cypress 전체 실행(`--spec` 없이 또는 CI spec 전부)을 하지 않는다. 여러 기능 파일을 고쳐 고른 spec 이 CI spec 전부가 되면 `axm check` 는 smoke 묶음과 바뀐 spec·지난번 실패한 spec 만 돌리고 나머지는 "CI 가 판정"으로 넘긴다(`affected` 출력의 `deferred_specs`). 예외는 `axm affected` 가 `--full` 을 요구할 때(`Dockerfile.axm`·`Makefile`·lockfile·`docker-entrypoint.sh` 변경: `axm build --full` 1회)와 릴리스 연습이다.
 2. **전체 e2e 와 운영 방식 이미지 빌드·smoke 는 CI 가 한다.** 마무리 보고와 PR 설명에 "로컬에서 돌린 spec·Go 시험"과 "CI 에 맡긴 것"을 나눠 적는다. CI(`.github/workflows/axm-image.yml`)의 시험 범위는 줄이지 않는다.
 3. **리뷰 재라운드와 수정 뒤 재검사는 `axm check --since-last`.** 비교는 파일 내용(blob 해시)이라 rebase·squash 뒤에도 맞는다.
 4. **캐시를 따로 만들지 않는다.** Go 모듈·빌드 캐시, 프론트 dist, 시험용 베이스 이미지는 `~/.cache/listmonk-axm`(`AXM_CACHE` 로 바꿈)에서 태스크끼리 같이 쓴다. `$TMPDIR` 에 Go 캐시나 `node_modules` 를 새로 만들지 않는다. 검사가 끝나면 컨테이너를 내린다(`axm down`).
@@ -29,6 +29,7 @@ scripts/axm/axm down              # 내 컨테이너 정리(check 는 끝날 때
 
 - 바뀐 spec 파일은 그 spec. 기능 파일(예: `Audit.vue`, `cmd/axm_audit.go`)은 그 기능의 spec.
 - 공용 파일(`main.js`, `router`, `store`, `api`, `cmd/handlers.go`, `models`, `queries`, `schema.sql`, `i18n` …)은 smoke 묶음(짧은 spec 4개) + 그 파일이 닿는 spec.
-- 어느 규칙에도 안 맞는 소스는 smoke 묶음 + "매핑 없음" 경고.
+- Cypress 픽스처(`frontend/cypress/fixtures/*`)는 그 파일 이름을 읽는 CI spec. 검사 도구가 DB 에 넣는 `reaction-lists.sql` 은 규칙에 적힌 spec + smoke.
+- 어느 규칙에도, 문서·도구 목록(`none`)에도 안 맞는 파일은 무엇이든 smoke 묶음 + "매핑 없음" 경고다(예: 설치가 읽는 `config.toml.sample` 은 공용 파일).
 - 문서만 바뀌면 시험 없음.
 - Go: 바뀐 파일의 패키지와 그것을 import 하는 패키지. `cmd`·`internal/core` 에서 `axm_<기능>*.go` 만 바뀌었으면 그 기능과 같은 접두어의 시험(과 그 파일의 식별자를 쓰는 시험)만 `-run` 으로 좁힌다.

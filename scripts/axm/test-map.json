@@ -1,5 +1,5 @@
 {
- "_doc": "바뀐 파일 → Cypress spec 매핑. CI(axm-image.yml)의 13개 spec 만 다룬다. 새 화면·API·spec 을 만들면 rules 에 줄을 추가한다.",
+ "_doc": "바뀐 파일 → Cypress spec 매핑. CI(axm-image.yml)의 spec 만 다룬다. 새 화면·API·spec·픽스처를 만들면 rules 에 줄을 추가한다. 어느 목록에도 안 맞는 파일은 smoke 묶음 + '매핑 없음' 경고다. 픽스처는 이름으로 읽는 CI spec 이 자동으로 걸리고, 이름이 spec 에 없는 픽스처(검사 도구가 DB 에 넣는 SQL 등)는 rules 에 적는다.",
  "ci_specs": [
   "import-mapping.cy.js",
   "sender-addresses.cy.js",
@@ -337,6 +337,15 @@
    "specs": [
     "list-trash.cy.js"
    ]
+  },
+  {
+   "paths": [
+    "frontend/cypress/fixtures/reaction-lists.sql"
+   ],
+   "specs": [
+    "reaction-lists.cy.js",
+    "analytics-proof.cy.js"
+   ]
   }
  ],
  "shared": [
@@ -368,7 +377,9 @@
   "i18n/**",
   "permissions.json",
   "go.mod",
-  "go.sum"
+  "go.sum",
+  "config.toml.sample",
+  "frontend/cypress/fixtures/reaction-lists.sql"
  ],
  "full_build": [
   "Dockerfile.axm",
@@ -387,6 +398,20 @@
   "LICENSE",
   ".gitignore",
   ".dockerignore",
-  "scripts/axm/test_axm.py"
+  "scripts/axm/test_axm.py",
+  "dev/**",
+  ".devcontainer/**",
+  "scripts/refresh-i18n.sh",
+  "scripts/translate-i18n.py",
+  ".gitattributes",
+  ".goreleaser.yml",
+  ".goreleaser-nightly.yml",
+  "Dockerfile",
+  "docker-compose.yml",
+  "listmonk-simple.service",
+  "listmonk@.service",
+  "project.inlang.json",
+  "VERSION",
+  ".go-version"
  ]
 }

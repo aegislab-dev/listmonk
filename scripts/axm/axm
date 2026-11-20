@@ -449,6 +449,9 @@ class BuildTracker:
             self.step = n
             self.steps[n] = dict(cmd=m.group(2)[:60], t0=time.time(), t1=None, ids=[])
             return
+        if line.strip() == '---> Using cache' and self.step in self.steps:
+            self.steps[self.step]['cached'] = True
+            return
         m = re.match(r'\s*---> Running in ([0-9a-f]{12})', line)
         if m and self.step in self.steps:
             self.ids[m.group(1)] = None
@@ -482,8 +485,21 @@ def docker_build(ctx, label, args, context, log_name=None):
             tr.feed(ANSI.sub('', line.rstrip('\n')))
         p.wait()
     wall = time.time() - t0
-    rows = tr.done()
-    return dict(rc=p.returncode, wall=wall, cpu=sum(r[3] for r in rows), steps=rows, log=log)
+    return build_result(tr, tr.done(), p.returncode, wall, log)
+
+
+def build_result(tr, rows, rc, wall, log):
+    run_steps = sum(1 for s in tr.steps.values() if s['ids'])
+    cached = sum(1 for s in tr.steps.values() if s.get('cached'))
+    # 단계 줄을 하나도 못 읽었으면(예: -q, BuildKit 출력) 잴 수 없었던 것이지 0 이 아니다.
+    # RUN 컨테이너의 cgroup 을 한 번도 못 읽은 단계도 0 이 아니라 '못 잼'이다.
+    missed = sum(1 for s in tr.steps.values() if s['ids'] and not any(i in tr.cpu for i in s['ids']))
+    cpu = sum(r[3] for r in rows) if rows and not (run_steps and missed == run_steps) else None
+    if not rows:
+        note = 'Dockerfile 단계를 못 읽어 CPU 미측정'
+    else:
+        note = f'Dockerfile {len(rows)}단계: RUN {run_steps - missed}/{run_steps}개 잼, 캐시 {cached}개'
+    return dict(rc=rc, wall=wall, cpu=cpu, steps=rows, log=log, note=note, run_steps=run_steps, cached=cached)
 
 
 # ---------------------------------------------------------------- 공유 캐시: 베이스 이미지
@@ -700,10 +716,10 @@ def _build_test_image(ctx, steps, files, hashes, unit_only, key, tag, ebk, fek, 
     shutil.copy(HERE / 'runtime.Dockerfile', rt / 'Dockerfile')
     t0 = time.time()
     with Slot():
-        b = docker_build(ctx, 'runtime', ['-t', tag, '-q'], rt)
+        b = docker_build(ctx, 'runtime', ['-t', tag], rt)  # -q 를 쓰면 단계 줄이 없어 CPU 를 못 잰다
     if b['rc'] != 0:
         raise StageFailed(f'런타임 이미지 빌드 실패: {b["log"]}')
-    steps.add('런타임 이미지', time.time() - t0, b['cpu'])
+    steps.add('런타임 이미지', time.time() - t0, b['cpu'], note=b['note'] + ' (COPY 는 dockerd 몫, 미측정)')
     return tag
 
 
@@ -961,6 +977,18 @@ def changed_since_base(ref):
     return sorted(n for n in names if n)
 
 
+def fixture_users(name):
+    """픽스처 이름(fixtures/ 아래 경로)을 글자 그대로 담은 spec 파일 이름들."""
+    out = []
+    for p in sorted((ROOT / 'frontend/cypress/e2e').glob('*.cy.js')):
+        try:
+            if name in p.read_text(errors='replace'):
+                out.append(p.name)
+        except OSError:
+            pass
+    return out
+
+
 def affected(changed, files, tmap=None):
     """바뀐 파일 묶음 → 돌릴 시험. 순수 함수(단위시험 대상)."""
     tmap = tmap or load_map()
@@ -971,6 +999,8 @@ def affected(changed, files, tmap=None):
     docs_only = True
     unit = False
     spec_dir = 'frontend/cypress/e2e/'
+    fixture_dir = 'frontend/cypress/fixtures/'
+    own_specs = []  # 내용이 바뀐 spec 파일 자체
     ext = unit_external_inputs()
     for f in changed:
         if match_any(f, tmap['none']):
@@ -984,6 +1014,7 @@ def affected(changed, files, tmap=None):
         if f.startswith(spec_dir) and f.endswith('.cy.js'):
             if (ROOT / f).exists() and os.path.basename(f) in tmap['ci_specs']:
                 specs.append(os.path.basename(f))
+                own_specs.append(os.path.basename(f))
             elif (ROOT / f).exists():
                 notes.append(f'{f}: CI 가 돌리지 않는 spec 이라 로컬에서도 건너뜀')
             continue
@@ -997,12 +1028,19 @@ def affected(changed, files, tmap=None):
         if match_any(f, tmap['shared']):
             shared_hit = True
             hit = True
-        if f.startswith('frontend/cypress/'):
-            shared_hit = True  # support·fixtures
-            hit = True
-        if not hit and (f.startswith('frontend/') or f.endswith('.go') or f.startswith(('cmd/', 'internal/', 'models/', 'static/', 'queries/', 'i18n/'))):
-            if not f.endswith('_test.go') and not f.startswith('frontend/tests/'):
-                unmapped.append(f)
+        if f.startswith(fixture_dir):
+            # 픽스처는 그 파일 이름을 읽는 spec 이 검증한다(cy.fixture·selectFile 경로 등).
+            users = fixture_users(f[len(fixture_dir):])
+            ci_users = [s for s in users if s in tmap['ci_specs']]
+            specs += ci_users
+            if ci_users:
+                hit = True
+            elif users and not hit:
+                notes.append(f'{f}: CI 가 돌리지 않는 spec({", ".join(users[:3])})만 써서 로컬에서도 건너뜀')
+                hit = True
+        if not hit and not f.endswith('_test.go') and not f.startswith('frontend/tests/') and not f.startswith('scripts/axm/'):
+            # 어느 목록에도 안 맞는 파일은 조용히 넘기지 않는다(예: 설치에 쓰는 설정 파일).
+            unmapped.append(f)
     if shared_hit:
         specs += smoke
         notes.append('공용 파일이 바뀌어 smoke 묶음을 더한다. 전체 e2e 는 PR 의 CI(axm-image)가 돈다.')
@@ -1015,9 +1053,25 @@ def affected(changed, files, tmap=None):
     go_pkgs, go_notes = select_go(changed, files)
     notes += go_notes
     ordered = [s for s in tmap['ci_specs'] if s in set(specs)]
+    ordered, deferred = local_specs(ordered, own_specs, tmap)
+    if deferred:
+        notes.append(f'고른 spec 이 CI 의 spec 전부({len(tmap["ci_specs"])}개)라 로컬에서는 smoke 묶음과 바뀐 spec 만 돈다. '
+                     f'나머지 {len(deferred)}개는 PR 의 CI(axm-image)가 판정한다: ' + ', '.join(deferred))
     py = any(f.startswith('scripts/axm/') for f in changed)
-    return dict(changed=changed, specs=ordered, go=go_pkgs, unit=unit, full_build=full_build, python=py,
-                docs_only=docs_only and not py, notes=notes, unmapped=unmapped)
+    return dict(changed=changed, specs=ordered, deferred_specs=deferred, own_specs=own_specs, go=go_pkgs, unit=unit, full_build=full_build,
+                python=py, docs_only=docs_only and not py, notes=notes, unmapped=unmapped)
+
+
+def local_specs(selected, own, tmap):
+    """로컬에서 CI 의 Cypress 전체를 돌리지 않는다(AGENTS.md 규칙 1·2).
+    고른 것이 CI spec 전부면 smoke 묶음 + 내용이 바뀐 spec 만 돌리고 나머지는 CI 몫으로 넘긴다."""
+    ci = tmap['ci_specs']
+    if not set(ci) <= set(selected):
+        return selected, []
+    keep = set(tmap['smoke']) | set(own)
+    if set(ci) <= keep:  # 바뀐 spec 이 이미 전부면 줄일 수 없다(전체를 직접 고친 경우)
+        keep = set(tmap['smoke'])
+    return [s for s in ci if s in keep], [s for s in ci if s not in keep]
 
 
 # ---------------------------------------------------------------- 통과 기록
@@ -1056,10 +1110,26 @@ def changed_since_stamp(stamp, files, hashes):
 
 # ---------------------------------------------------------------- Go 시험
 
+def go_failures(pkgs, text, rc):
+    """go test 출력에서 실패한 패키지만 고른다({디렉터리: -run}). 'ok  <모듈>/<디렉터리>' 줄이 없는 패키지가 실패다."""
+    if rc == 0:
+        return {}
+    mod = go_module()
+    passed = set()
+    for line in text.splitlines():
+        m = re.match(r'ok\s+(\S+)', line)
+        if m:
+            path = m.group(1)
+            passed.add('.' if path == mod else path[len(mod) + 1:] if path.startswith(mod + '/') else path)
+    failed = {d: r for d, r in pkgs.items() if d not in passed}
+    return failed or dict(pkgs)  # 어느 패키지인지 못 가리면 전부
+
+
 def go_test(ctx, steps, pkgs, pg, tag=''):
-    """pkgs: {패키지 디렉터리: -run 패턴 또는 None}. 같은 -run 이 아니면 패키지별로 나눠 한 번의 컨테이너에서 순서대로 돈다."""
+    """pkgs: {패키지 디렉터리: -run 패턴 또는 None}. 같은 -run 이 아니면 패키지별로 나눠 한 번의 컨테이너에서 순서대로 돈다.
+    실패한 패키지를 {디렉터리: -run} 으로 돌려준다(통과면 빈 dict)."""
     if not pkgs:
-        return True
+        return {}
     cache = Path(os.environ.get('AXM_GO_CACHE') or cache_dir())
     (cache / 'gomod').mkdir(parents=True, exist_ok=True)
     (cache / 'gocache').mkdir(parents=True, exist_ok=True)
@@ -1088,13 +1158,13 @@ def go_test(ctx, steps, pkgs, pg, tag=''):
     pgcpu = pg.usage()
     if pgcpu is not None:
         steps.add('  (Postgres 컨테이너, 지금까지 누적)', 0, pgcpu)
-    if res['rc'] != 0:
-        say('Go 시험 실패. 로그: ' + str(res['log']))
-        return False
+    failed = go_failures(pkgs, res['text'], res['rc'])
+    if failed:
+        say('Go 시험 실패(' + ', '.join(sorted(failed)) + '). 로그: ' + str(res['log']))
     for line in res['text'].splitlines():
         if line.startswith('ok '):
             say('  ' + line)
-    return True
+    return failed
 
 
 # ---------------------------------------------------------------- 브라우저 CPU 분류(스레드 이름)
@@ -1364,10 +1434,18 @@ def select_tests(a, ctx, files, hashes):
     changed, st = resolve_changed(a, ctx, files, hashes)
     res = affected(changed, files)
     if st:
+        tmap = load_map()
         failed = set(st.get('failed_specs') or [])
-        res['specs'] = [x for x in load_map()['ci_specs'] if x in set(res['specs']) | failed]
-        res['go'] = merge_go(res['go'], failed_go_map(st))
+        merged = [x for x in tmap['ci_specs'] if x in set(res['specs']) | set(res['deferred_specs']) | failed]
+        res['specs'], res['deferred_specs'] = local_specs(merged, list(res['own_specs']) + sorted(failed), tmap)
+        res['go'] = merge_go(res['go'], live_failed_go(st, files))
     return changed, res, st
+
+
+def live_failed_go(st, files):
+    """지난번 실패한 Go 패키지 중 지금도 시험 파일이 있는 것만(지운 패키지를 계속 다시 돌리지 않는다)."""
+    tested = {os.path.dirname(f) or '.' for f in files if f.endswith('_test.go')}
+    return {d: r for d, r in failed_go_map(st).items() if d in tested}
 
 
 def cmd_affected(a):
@@ -1406,7 +1484,7 @@ def cmd_go_test(a):
     pg = Pg(ctx)
     try:
         pg.start()
-        ok = go_test(ctx, steps, pkgs, pg)
+        ok = not go_test(ctx, steps, pkgs, pg)
     finally:
         pg.stop()
     say(steps.table())
@@ -1451,6 +1529,7 @@ def cmd_check(a):
     for n in res['notes']:
         say('주의: ' + n)
     failed_specs, failed_go = [], {}
+    go_ran = e2e_ran = False
     ok = True
     pg = Pg(ctx)
     t_all = time.time()
@@ -1464,15 +1543,17 @@ def cmd_check(a):
                 ok = False
         if go_pkgs:
             pg.start()
-            if not go_test(ctx, steps, go_pkgs, pg):
+            failed_go = go_test(ctx, steps, go_pkgs, pg)
+            go_ran = True
+            if failed_go:
                 ok = False
-                failed_go = dict(go_pkgs)
         tag = None
         if specs:
             tag = ensure_test_image(ctx, steps, files, hashes)
             if not pg.up:
                 pg.start()
             good, passed, failed_specs = e2e(ctx, steps, specs, tag, pg, profile=a.profile)
+            e2e_ran = True
             if not good:
                 ok = False
                 if not failed_specs:
@@ -1498,12 +1579,23 @@ def cmd_check(a):
         say('통과 기록을 남겼다. 리뷰 재라운드·수정 뒤에는 `axm check --since-last`.')
     else:
         old = st or dict(ts=int(time.time()), branch=branch_name())
-        old['failed_specs'] = failed_specs
-        old['failed_go'] = failed_go
+        old['failed_specs'], old['failed_go'] = failure_record(st, specs, failed_specs, e2e_ran, go_pkgs, failed_go, go_ran, files)
         save_stamp(ctx, old)
         say('실패 — 통과 기록은 갱신하지 않았다. 지난번에 실패한 시험은 다음 --since-last 에서도 다시 돈다.')
     say('\nCI 에 맡기는 것: 나머지 CI spec 전체와 운영 방식(Dockerfile.axm) 이미지 빌드·smoke(PR 의 axm-image).')
     return 0 if ok else 1
+
+
+def failure_record(st, specs, failed_specs, e2e_ran, go_pkgs, failed_go, go_ran, files):
+    """실패 기록: 이번에 실패한 것 + 지난번 실패했는데 이번에 돌지 못한 것. 이번에 통과한 것과 지워진 패키지는 뺀다."""
+    prev_specs = set((st or {}).get('failed_specs') or [])
+    prev_go = live_failed_go(st or {}, files)
+    out_specs = set(failed_specs) | (prev_specs - set(specs) if e2e_ran else prev_specs)
+    out_go = dict(failed_go)
+    for d, r in prev_go.items():
+        if d not in out_go and not (go_ran and d in go_pkgs):
+            out_go[d] = r
+    return [x for x in load_map()['ci_specs'] if x in out_specs], out_go
 
 
 PARTS_SH = r'''
@@ -1582,7 +1674,7 @@ def cmd_measure(a):
         cold.mkdir(parents=True)
         os.environ['AXM_GO_CACHE'] = str(cold)
         pkgs = {d: None for d, fs in go_packages(tree_files())[0].items() if any(f.endswith('_test.go') for f in fs)}
-        ok = go_test(ctx, steps, pkgs, pg, tag='전체') and ok
+        ok = not go_test(ctx, steps, pkgs, pg, tag='전체') and ok
         say(f'3) CI 의 {len(tmap["ci_specs"])}개 spec')
         good, _, _ = e2e(ctx, steps, tmap['ci_specs'], tag, pg, profile=True)
         ok = good and ok

@@ -317,15 +317,127 @@ class StampFlowTest(unittest.TestCase):
         class A:
             since_last = True
             base = None
-        orig_load, orig_base = axm.load_stamp, axm.changed_since_base
+        # 리뷰 F28: 기준 브랜치(axm/v6.2)가 없는 단일 브랜치 복제본에서도 돌아야 한다 — 기준 참조도 대역으로 바꾼다.
+        orig_load, orig_base, orig_ref = axm.load_stamp, axm.changed_since_base, axm.base_ref
         try:
             axm.load_stamp = lambda ctx: {'ts': 1, 'failed_specs': ['audit.cy.js']}  # 첫 라운드 실패: files 없음
-            axm.changed_since_base = lambda ref: ['frontend/src/views/Audit.vue']
+            axm.changed_since_base = lambda ref: ['frontend/src/views/Audit.vue'] if ref == 'BASE' else ['wrong']
+            axm.base_ref = lambda arg: 'BASE'
             changed, st = axm.resolve_changed(A(), None, ['x'], {'x': 'h'})
             self.assertEqual(changed, ['frontend/src/views/Audit.vue'])
             self.assertEqual(st['failed_specs'], ['audit.cy.js'])
         finally:
-            axm.load_stamp, axm.changed_since_base = orig_load, orig_base
+            axm.load_stamp, axm.changed_since_base, axm.base_ref = orig_load, orig_base, orig_ref
+
+
+class Round6Test(unittest.TestCase):
+    """리뷰 6차 지적(F25~F30) 회귀 시험."""
+
+    def test_config_sample_runs_smoke(self):
+        # F25: config.toml.sample 은 앱 설치(--install)가 읽는다. 시험 0개로 통과하면 안 된다.
+        r = pick('config.toml.sample')
+        self.assertEqual(set(r['specs']), set(TMAP['smoke']))
+
+    def test_no_tracked_file_selects_nothing_silently(self):
+        # F25 일반화: 문서·도구 목록(none)에 없는 파일은 무엇이든 고르거나, 건너뛰는 이유를 적는다.
+        for f in FILES:
+            r = pick(f)
+            if r['docs_only'] or r['specs'] or r['go'] or r['unit'] or r['python'] or r['full_build']:
+                continue
+            self.assertTrue(any('건너뜀' in n for n in r['notes']), f)
+
+    def test_unknown_file_warns_and_runs_smoke(self):
+        r = pick('some-new-root-file.cfg')
+        self.assertEqual(r['unmapped'], ['some-new-root-file.cfg'])
+        self.assertEqual(set(r['specs']), set(TMAP['smoke']))
+
+    def test_fixtures_select_the_specs_that_read_them(self):
+        # F26: 픽스처를 바꾸면 그 데이터를 검증하는 spec 이 걸려야 한다.
+        self.assertIn('reaction-lists.cy.js', pick('frontend/cypress/fixtures/reaction-lists.sql')['specs'])
+        for csv in ('import-map-cp949.csv', 'import-map-utf8-bom.csv', 'import-map-broken.csv'):
+            self.assertIn('import-mapping.cy.js', pick('frontend/cypress/fixtures/' + csv)['specs'], csv)
+        e2e = ROOT / 'frontend/cypress/e2e'
+        for fx in sorted((ROOT / 'frontend/cypress/fixtures').iterdir()):
+            users = [s for s in TMAP['ci_specs'] if fx.name in (e2e / s).read_text()]
+            sel = pick('frontend/cypress/fixtures/' + fx.name)['specs']
+            self.assertLessEqual(set(users), set(sel), fx.name)
+
+    def test_fixture_used_only_by_upstream_specs_is_skipped_with_a_note(self):
+        r = pick('frontend/cypress/fixtures/logo.png')
+        self.assertEqual(r['specs'], [])
+        self.assertTrue(any('건너뜀' in n for n in r['notes']))
+
+    def test_union_of_feature_files_never_runs_the_whole_ci_suite(self):
+        # F27: 기능 파일 셋의 합이 CI 전체가 되어도 로컬은 전체를 돌리지 않는다.
+        r = pick('cmd/campaigns.go', 'cmd/subscribers.go', 'frontend/src/views/ListForm.vue')
+        self.assertNotEqual(set(r['specs']), set(TMAP['ci_specs']))
+        self.assertEqual(set(r['specs']), set(TMAP['smoke']))
+        self.assertEqual(set(r['specs']) | set(r['deferred_specs']), set(TMAP['ci_specs']))
+        # 바뀐 spec 은 로컬에서 돈다.
+        r = pick('cmd/campaigns.go', 'cmd/subscribers.go', 'frontend/src/views/ListForm.vue',
+                 'frontend/cypress/e2e/reaction-lists.cy.js')
+        self.assertIn('reaction-lists.cy.js', r['specs'])
+        self.assertNotEqual(set(r['specs']), set(TMAP['ci_specs']))
+
+    def test_previous_failures_do_not_widen_to_the_whole_suite(self):
+        class A:
+            since_last = True
+            base = None
+        orig = axm.resolve_changed
+        try:
+            axm.resolve_changed = lambda a, ctx, files, hashes: (
+                ['cmd/campaigns.go', 'cmd/subscribers.go'],
+                {'files': {'x': 'h'}, 'failed_specs': ['list-draw.cy.js', 'dynamic-lists.cy.js']})
+            _, res, _ = axm.select_tests(A(), None, FILES, {})
+        finally:
+            axm.resolve_changed = orig
+        self.assertNotEqual(set(res['specs']), set(TMAP['ci_specs']))
+        self.assertLessEqual({'list-draw.cy.js', 'dynamic-lists.cy.js'}, set(res['specs']))
+
+    def test_go_failures_are_only_the_failed_packages(self):
+        # F29: 실패 기록에 통과한 패키지를 넣지 않는다.
+        mod = axm.go_module()
+        text = f'ok  \t{mod}/internal/a\t0.1s\nFAIL\t{mod}/internal/b [setup failed]\nFAIL'
+        self.assertEqual(axm.go_failures({'internal/a': None, 'internal/b': '^(TestX)$'}, text, 1), {'internal/b': '^(TestX)$'})
+        self.assertEqual(axm.go_failures({'internal/a': None}, text, 0), {})
+        self.assertEqual(axm.go_failures({'cmd': None}, 'build failed', 1), {'cmd': None})
+
+    def test_deleted_failed_package_is_not_retried(self):
+        st = {'failed_go': {'internal/gone': None, 'internal/core': None}}
+        self.assertEqual(axm.live_failed_go(st, FILES), {'internal/core': None})
+        specs, go = axm.failure_record(st, [], [], False, {'cmd': None}, {}, True, FILES)
+        self.assertEqual(go, {'internal/core': None})  # 지운 패키지는 빠지고, 돌지 못한 실패는 남는다
+        specs, go = axm.failure_record(st, [], [], False, {'internal/core': None}, {}, True, FILES)
+        self.assertEqual(go, {})  # 이번에 통과했으면 빠진다
+        specs, go = axm.failure_record({'failed_specs': ['audit.cy.js', 'list-draw.cy.js']}, ['audit.cy.js'], [], True, {}, {}, False, FILES)
+        self.assertEqual(specs, ['list-draw.cy.js'])
+
+    def test_runtime_build_cpu_is_unmeasured_not_zero(self):
+        # F30: 단계 줄이 없으면 CPU 는 None('-'), -q 로 단계 줄을 지우지 않는다.
+        text = (HERE / 'axm').read_text()
+        rt = text.split("docker_build(ctx, 'runtime'")[1].split('\n')[0]
+        self.assertNotIn("'-q'", rt)
+        class T:
+            steps, cpu = {}, {}
+        self.assertIsNone(axm.build_result(T(), [], 0, 1.0, None)['cpu'])
+        T.steps = {1: dict(cmd='RUN apk', ids=['abc'], cached=False), 2: dict(cmd='COPY', ids=[], cached=False)}
+        T.cpu = {}
+        self.assertIsNone(axm.build_result(T(), [(1, 'RUN', 1.0, 0.0), (2, 'COPY', 0.1, 0.0)], 0, 1.0, None)['cpu'])
+        T.cpu = {'abc': 2.5}
+        self.assertEqual(axm.build_result(T(), [(1, 'RUN', 1.0, 2.5), (2, 'COPY', 0.1, 0.0)], 0, 1.0, None)['cpu'], 2.5)
+        T.steps = {1: dict(cmd='RUN apk', ids=[], cached=True)}
+        r = axm.build_result(T(), [(1, 'RUN', 0.1, 0.0)], 0, 1.0, None)
+        self.assertEqual((r['cpu'], r['cached']), (0.0, 1))
+
+    def test_build_tracker_reads_cache_lines(self):
+        tr = axm.BuildTracker()
+        for line in ['Step 1/3 : FROM alpine', ' ---> 1234', 'Step 2/3 : RUN apk add x', ' ---> Using cache',
+                     'Step 3/3 : COPY a b', ' ---> Running in 0123456789ab']:
+            tr.feed(line)
+        rows = tr.done()
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(tr.steps[2].get('cached'))
+        self.assertEqual(tr.steps[3]['ids'], ['0123456789ab'])
 
 
 class SpecCoverageTest(unittest.TestCase):
