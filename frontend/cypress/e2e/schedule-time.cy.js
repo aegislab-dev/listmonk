@@ -35,6 +35,10 @@ describe('Scheduled send time zone', () => {
       name: `Schedule zone list ${stamp}`, type: 'private', optin: 'single', no_team: true,
     }).then(({ body }) => {
       listId = body.data.id;
+      // Someone to send to: the pre-send window (LST-48) does not start a campaign that reaches nobody.
+      cy.request('POST', '/api/subscribers', {
+        email: `schedule-zone-${stamp}@example.invalid`, name: 'Schedule zone', status: 'enabled', lists: [listId], preconfirm_subscriptions: true,
+      });
       // 2030-01-15 is a Tuesday. 14:00 UTC is 09:00 in New York (EST) and 23:00 in Korea.
       make('ny', { send_at: '2030-01-15T14:00:00.000Z', attribs: { [KEY]: 'America/New_York' } });
       // An alias of New York: the browser lists it as America/New_York.

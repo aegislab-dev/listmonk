@@ -281,6 +281,12 @@
       @close="closePreview" />
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
       @close="reactionCampaign = null" />
+    <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
+      :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
+      @close="sendAsk = null">
+      <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
+        :campaign-name="sendAsk.name" @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" />
+    </b-modal>
   </section>
 </template>
 
@@ -292,9 +298,9 @@ import reactionStatuses from '../campaign-reaction-list';
 import {
   splitAttribs, TZ_ATTRIB, zoneAbbr, zoneParts,
 } from '../schedule-time';
-import { trackingConfirmLines, warningsCovered } from '../tracking-check';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
+import CampaignSendConfirm from '../components/CampaignSendConfirm.vue';
 import CopyText from '../components/CopyText.vue';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
 
@@ -302,15 +308,16 @@ export default Vue.extend({
   components: {
     CampaignPreview,
     CampaignReactionList,
+    CampaignSendConfirm,
     EmptyPlaceholder,
     CopyText,
   },
 
   data() {
     return {
-      checkingSend: false,
+      // The window every start, resume and schedule goes through (LST-48).
+      isSendVisible: false,
       sendAsk: null,
-      isDestroyed: false,
       previewItem: null,
       reactionCampaign: null,
       queryParams: {
@@ -454,54 +461,21 @@ export default Vue.extend({
       }, 1000);
     },
 
-    // Starting, resuming or scheduling from the list sends the saved campaign as it is:
-    // the same tracking warning as on the campaign page comes first (LST-44). After the
-    // confirmation the campaign is checked once more, as it may have been saved elsewhere
-    // while the dialog was open; a warning that was not confirmed is asked again.
-    async confirmSend(c, status) {
-      if (this.checkingSend) return;
-      this.checkingSend = true;
-      // The status says what templates will read when it is sent (LST-44 review).
-      const check = () => this.$api.checkCampaignTracking(c.id, { status }).catch(() => null)
-        .then((r) => trackingConfirmLines(r));
-      try {
-        let lines = await check();
-        for (;;) {
-          if (this.isDestroyed) return;
-          // eslint-disable-next-line no-await-in-loop
-          if (!await this.askSend(status, lines) || this.isDestroyed) return;
-          // eslint-disable-next-line no-await-in-loop
-          const now = await check();
-          if (this.isDestroyed) return;
-          if (warningsCovered(lines, now)) break;
-          lines = now;
-        }
-        this.changeCampaignStatus(c, status);
-      } finally {
-        this.checkingSend = false;
-      }
+    // Starting, resuming or scheduling from the list sends the saved campaign as it is, and
+    // goes through the same window as the campaign page (LST-48).
+    confirmSend(c, status) {
+      // busy: the status change is on its way; the window cannot be closed then.
+      this.sendAsk = {
+        id: c.id, name: c.name, status, busy: false,
+      };
+      this.isSendVisible = true;
     },
 
-    // Resolves true on confirm, false on cancel or when the page goes away.
-    askSend(status, lines) {
-      return new Promise((resolve) => {
-        const done = (ok) => {
-          if (this.sendAsk && this.sendAsk.resolve === done) this.sendAsk = null;
-          resolve(ok);
-        };
-        const msg = status === 'scheduled' ? this.$t('campaigns.confirmSchedule') : null;
-        const warnings = lines.map(({ key, params }) => this.$t(key, params));
-        const dialog = warnings.length
-          ? this.$utils.confirmWithWarnings(
-            msg,
-            warnings,
-            this.$t(status === 'scheduled' ? 'campaigns.tracking.confirm.schedule' : 'campaigns.tracking.confirm.start'),
-            () => done(true),
-            () => done(false),
-          )
-          : this.$utils.confirm(msg, () => done(true), () => done(false));
-        this.sendAsk = { dialog, resolve: done };
-      });
+    onSendDone(out) {
+      const c = this.sendAsk;
+      this.$utils.toast(this.$t('campaigns.statusChanged', { name: c.name, status: (out && out.status) || c.status }));
+      this.getCampaigns();
+      this.pollStats();
     },
 
     changeCampaignStatus(c, status) {
@@ -645,16 +619,6 @@ export default Vue.extend({
   mounted() {
     this.getCampaigns();
     this.pollStats();
-  },
-
-  beforeDestroy() {
-    // A start that is still being checked or confirmed belongs to this page only (LST-44).
-    this.isDestroyed = true;
-    if (this.sendAsk) {
-      const { dialog, resolve } = this.sendAsk;
-      if (dialog) dialog.close();
-      resolve(false);
-    }
   },
 
   destroyed() {
