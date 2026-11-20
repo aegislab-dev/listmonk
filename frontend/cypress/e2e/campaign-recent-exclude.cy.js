@@ -155,8 +155,8 @@ describe('Recent-send exclusion settings', () => {
         expect(list.type).to.eq('private');
         expect(list.optin).to.eq('single');
         expect(list.tags).to.deep.equal(['제외-적용-리스트']);
-        expect(list.subscriber_count).to.eq(1);
       });
+      cy.request(`/api/subscribers?list_id=${made.id}`).its('body.data.total').should('eq', 1);
     });
   });
 });
