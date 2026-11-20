@@ -15,6 +15,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
+	"github.com/knadh/listmonk/internal/addrcheck"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/bounce"
 	"github.com/knadh/listmonk/internal/buflog"
@@ -43,6 +44,7 @@ type App struct {
 	messengers []manager.Messenger
 	emailMsgr  manager.Messenger
 	importer   *subimporter.Importer
+	addrCheck  *addrcheck.Checker
 	auth       *auth.Auth
 	media      media.Store
 	bounce     *bounce.Manager
@@ -59,6 +61,12 @@ type App struct {
 	// Who started the import that runs now (see axm_import_audit.go).
 	importMu sync.Mutex
 	importBy importActor
+	// The lists the current or last import subscribes people to (nil for a blocklist
+	// import), after the permission filter. The import screen checks their addresses.
+	// importListsMu is held while an import session is created and while the status is
+	// read, so a status answer always has the lists of the import it describes.
+	importListsMu sync.Mutex
+	importLists   []int
 
 	about         about
 	fnOptinNotify func(models.Subscriber, []int) (int, error)
@@ -285,6 +293,7 @@ func main() {
 		messengers: msgrs,
 		emailMsgr:  emailMsgr,
 		importer:   importer,
+		addrCheck:  initAddrCheck(),
 		auth:       auth,
 		media:      media,
 		bounce:     bounce,

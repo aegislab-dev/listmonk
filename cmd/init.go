@@ -35,6 +35,7 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/posflag"
 	"github.com/knadh/koanf/v2"
+	"github.com/knadh/listmonk/internal/addrcheck"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/bounce"
 	"github.com/knadh/listmonk/internal/bounce/mailbox"
@@ -1027,6 +1028,12 @@ func initHTTPServer(cfg *Config, urlCfg *UrlConfig, i *i18n.I18n, fs stuffbin.Fi
 	}()
 
 	return srv
+}
+
+// initAddrCheck initializes the checker that looks e-mail domains up in DNS for the
+// address check screens. Its cache lives in memory and starts empty.
+func initAddrCheck() *addrcheck.Checker {
+	return addrcheck.NewChecker(addrcheck.Options{})
 }
 
 // initCaptcha initializes the captcha service.

@@ -81,10 +81,11 @@ git push origin v6.2.0-axm.1
 | `v6.2.0-axm.4` (2026-11-13 게시) | `80ab1ef9bb7c510ba15b9a5808cdeeeb40c06ee4` (#14 구독자 목록 추가 정보 열, #15 발송 기록, #16 가져오기 표준 항목 이름, #17 발송 중 재시작 결함 수정 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:ef42125fc6fc53dcf6f5573f9e81e832f3b5ddba6e414d1cc1bcabbe3b4cecf0` (linux/amd64) | `v6.2.1-axm.5` (`lists.axm_preset` 열), `v6.2.1-axm.6` (`axm_campaign_sends` 테이블, 시퀀스 없음) | 2026-11-13 11:39 KST, 같은 서비스. upgrade는 `.5`, `.6` 각 1회. 교체 뒤 백업 역할에 새 테이블 SELECT와 기본 권한을 줌(아래) |
 | `v6.2.0-axm.5` (2026-11-16 게시) | `365c1bdfca59f3eb6d874de9cc260b29dbbe4e4c` (#20 동적 리스트에서 N명 뽑기, #21 팀별 리스트 분류, #22 발송 결함 수정 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:ff56035c95afb0b4a46b541cacef325497b58f33a01e8e63cc0b0892b9a306f8` (linux/amd64) | `v6.2.1-axm.7` (뽑기 테이블 2개·시퀀스 1개·함수·트리거), `v6.2.1-axm.8` (`roles` 열 2개·함수·트리거), `v6.2.1-axm.9` (`axm_suppressed_emails` 테이블·트리거, 차단 구독자 주소 해시로 채움) | 2026-11-16 23:56 KST, 같은 서비스. upgrade는 `.7`, `.8`, `.9` 각 1회. 교체 전 백업 1회, 교체 뒤 백업 1회 성공 |
 | `v6.2.0-axm.6` (2026-11-17 게시) | `d492531bc493a62ac6f594eb5d94171432f8c95e` (#24 감사 기록·리스트 휴지통, #25 발송 결함 2건, #26 열 묶음 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:07696836bb3a2c6b04e92fde4c9bdf889567e730fa510cdb20bc2f155c78fd88` (linux/amd64) | `v6.2.1-axm.10` (감사 테이블·시퀀스), `.11` (휴지통 테이블 2개), `.12` (열 묶음 테이블·시퀀스) | 2026-11-17 23:50 KST, 같은 서비스. `.10`·`.11`·`.12` 각 1회. 교체 전 23:48·뒤 23:57 백업 EXITED·Backup committed 확인. 새 객체 6개 SELECT 가능·미열람 객체 0(코디네이터 Query 결과). 별도 GRANT 없음. #55의 11/18 03:00 예약은 승인된 예외로 유지, running·paused 0 확인 |
+| `v6.2.0-axm.7` (2026-11-19 게시) | `708799bcea2033a77c7a8f95ffdb29976019d394` (#29 캠페인 반응으로 리스트 만들기, #30 최근 N일 발송자 제외 미리보기·저장, #32 증빙용 요약 복사 포함) | `ghcr.io/aegislab-dev/listmonk@sha256:8c8edc5f642ae6663d45d8cccefb31e86788d71150dda1c35fc2f666eb523e71` (linux/amd64) | `v6.2.1-axm.13` (테이블 `axm_campaign_recent_rules` 1개·SQL 함수 2개, 시퀀스 없음) | newsletter 레포 운영 기록 참조(`docs/listmonk-production-log.md`) |
 
-이미지 롤백 기준은 직전 운영 이미지다. 지금은 **`v6.2.0-axm.5`**의 digest `ghcr.io/aegislab-dev/listmonk@sha256:ff56035c95afb0b4a46b541cacef325497b58f33a01e8e63cc0b0892b9a306f8`다. 서비스 이미지를 이 digest로 바꾸고 재배포한다. axm.5는 더 높은 migrations 기록(`v6.2.1-axm.12`)을 보고 `no upgrades to run`으로 기동한다(dev에서 axm.6 → axm.5 → axm.6 왕복, health 200·기존 데이터 동일 확인). 기존 시작 명령은 유지하며 옛 이미지로 `--upgrade`를 별도로 실행하지 않는다(이전 이미지는 새 pending 규칙을 모른다).
+이미지 롤백 기준은 직전 운영 이미지다. 지금은 **`v6.2.0-axm.6`**의 digest `ghcr.io/aegislab-dev/listmonk@sha256:07696836bb3a2c6b04e92fde4c9bdf889567e730fa510cdb20bc2f155c78fd88`다. 서비스 이미지를 이 digest로 바꾸고 재배포한다. axm.6은 더 높은 migrations 기록(`v6.2.1-axm.13`)을 보고 `no upgrades to run`으로 기동한다(dev에서 axm.7 → axm.6 → axm.7 왕복, health 200·기존 데이터 수치 동일 확인). 기존 시작 명령은 유지하며 옛 이미지로 `--upgrade`를 별도로 실행하지 않는다.
 
-되돌려도 `axm_audit_log`·`axm_deleted_lists`·`axm_deleted_list_subs`·`axm_column_presets` 테이블 4개와 시퀀스 2개, 그 안의 감사·휴지통·직접 만든 묶음 데이터는 DB에 남는다. axm.5의 리스트 삭제는 휴지통 없이 즉시 삭제되고 감사 기록도 남지 않는다. 휴지통 정리는 멈추며 axm.6으로 다시 올리면 14일 지난 행이 첫 정리에서 삭제된다. `b2b`·`u<id>` 리스트를 axm.5에서 편집 저장하면 400이 될 수 있다. 오래 롤백해 쓸 때 `UPDATE lists SET axm_preset='creator' WHERE axm_preset <> 'creator'`가 필요할 수 있으며, 이는 사람이 실행하는 운영 쓰기다. 교체 전후에는 모든 운영 리스트가 `creator` 23개였다. 데이터 자체를 되돌려야 하면 교체 전 백업 `bundles/2026/11/17/144858-0c4de91b8b554218ad0459cbec6092aa`를 기준으로 한다(복원 시험은 하지 않음). 교체 뒤 백업은 `bundles/2026/11/17/145702-3511a369d75a4384a7cc61b88056ca66`이다.
+되돌려도 테이블 `axm_campaign_recent_rules`와 저장된 규칙, 함수 `axm_campaign_audience`·`axm_recent_exclusion`은 DB에 남고 axm.6은 읽지 않는다. 캠페인 삭제는 `ON DELETE CASCADE`로 규칙 행도 지워 막히지 않는다. 되돌린 동안 반응 리스트·최근 발송 제외·증빙용 요약 복사 화면과 API가 사라지고, 로그인 뒤 이동이 다시 쿼리 문자열을 버린다. 다시 axm.7로 오면 `no upgrades to run`이고 남은 규칙이 다시 보인다. 이전 기준 `v6.2.0-axm.5`(`sha256:ff56035c95afb0b4a46b541cacef325497b58f33a01e8e63cc0b0892b9a306f8`)로 직접 되돌리는 것은 `.13` DB에서 시험하지 않았다. axm.5 이하의 제약(휴지통·감사 기록 없음, `b2b`·`u<id>` 리스트 편집 저장 400 가능 등)은 axm.6 릴리스 때의 설명과 같다. 운영에서의 실제 백업 경로와 수치는 newsletter 레포 운영 기록에 있다.
 
 이전 롤백 기준은 `v6.2.0-axm.4`(`sha256:ef42125fc6fc53dcf6f5573f9e81e832f3b5ddba6e414d1cc1bcabbe3b4cecf0`)였다. 그 이미지의 `.9` DB 기동도 이전 릴리스에서 dev 왕복으로 확인했다. `.7`~`.9` 테이블·열·함수·트리거는 남아 차단 주소 차단·팀 역할 연결이 계속되며, axm.4 화면·API는 팀·뽑기·버전 2 동적 리스트를 다루지 못한다. `v6.2.0-axm.3` 이하로 되돌릴 때는 실행 중인 캠페인을 먼저 일시정지한다(아래 LST-20 절).
 
@@ -984,3 +985,58 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 두 크기의 `EXPLAIN (ANALYZE, BUFFERS)`에서 `idx_axm_sends_sub`가 구독자 ID와 발송 시각을 인덱스 조건으로 사용했다. 두 측정 모두 집계 1초 목표를 넘겼다.
 
 업스트림 v7로 옮길 때 SQL·Go의 미리보기와 저장 로직은 별도 파일에 있다. 새 관리 화면에서 이 API를 호출하도록 다시 연결한다.
+
+## 발송 전 주소 검사 (LST-43)
+
+반송될 가능성이 큰 주소를 보내기 전에 보여 주고 사람이 고치게 한다. 발송을 막지 않고, 발송 루프(`internal/manager`)와 공용 `utils.SanitizeEmail`에는 손대지 않았다. 검사는 화면이 요청할 때만 돈다. DB 변경·마이그레이션이 없고 외부 검증 API와 SMTP 접속 검사도 쓰지 않는다.
+
+### 분류
+
+한 주소가 여러 분류에 들 수 있다. 화면의 "위험"은 확정과 경고를 합쳐 중복 없이 센 수다.
+
+| 분류 (코드) | 판정 | 무게 |
+|---|---|---|
+| 형식 오류 (`format`) | `utils.SanitizeEmail` 실패 | 확정 |
+| 도메인·메일 서버 없음 (`dead`) | MX가 없고 A/AAAA도 없음, 또는 도메인이 없음 | 확정 |
+| 메일을 받지 않는 도메인 (`nullmx`) | MX가 `.` 하나뿐 (RFC 7505) | 확정 |
+| 일회용 주소 (`disposable`) | 내장 목록의 도메인 또는 그 하위 도메인 | 경고 |
+| 역할 주소 (`role`) | 로컬파트(`+태그` 제외)가 `info`, `booking`, `support` 등 (`internal/addrcheck/roles.go`) | 경고 |
+| 미확인 (`unknown`) | DNS 시간 초과·SERVFAIL 등 | 위험에 넣지 않음 |
+
+- Go 표준 리졸버는 NXDOMAIN과 NODATA를 구분해 주지 않아 "도메인 없음"과 "메일 서버 없음"은 한 분류다.
+- MX가 정상이어도 사서함이 실제로 있는지는 모른다.
+- 국제화 도메인은 punycode로 바꿔 조회한다.
+- 주소 리터럴(`qa@[192.0.2.17]`, RFC 5321 §4.1.3)은 DNS를 거치지 않고 그 호스트로 가므로 조회하지 않고 미확인으로 둔다(위험에 넣지 않고 가져오기에서 빼지 않는다).
+
+### DNS 조회 (`internal/addrcheck/dns.go`)
+
+- Go 리졸버(`PreferGo`)로 MX를 묻고, 없다는 답이면 주소 레코드를 묻는다. 이름 끝에 점을 붙여 호스트 `resolv.conf`의 search 도메인을 타지 않는다.
+- 조회 1건 제한 3초, 동시 8개, 같은 도메인은 요청이 겹쳐도 한 번만 조회한다. 대기 중인 도메인은 20,000개까지다.
+- 캐시는 프로세스 메모리에 도메인 단위로 둔다: 정상 7일, 확정 위험 1일, 미확인은 캐시하지 않는다. 최대 50,000개이고 넘으면 오래된 것부터 버린다. 재시작하면 비워진다.
+- 한 요청이 DNS를 기다리는 시간은 8초다. 그 안에 안 끝난 도메인은 `pending`으로 답하고 조회는 뒤에서 계속한다. 화면은 3초마다 최대 10번 다시 묻고, 그래도 남으면 미확인으로 보인다.
+
+### API (읽기 전용, 감사 기록 없음)
+
+- `POST /api/subscribers/address-check` (`subscribers:import`): 본문 `{emails: [...]}` 최대 50,000개. 분류별 건수와 요청 순서 기준 `issues: {index: [분류...]}`를 준다. 주소는 저장하지 않고 답에도 다시 싣지 않는다.
+- `POST /api/lists/address-check`: 본문 `{list_ids: [...]}`. 볼 수 있는 리스트만 남겨 `axm_campaign_audience`(차단·해지 제외, 이중 동의는 확인된 사람, 동적 리스트 포함)의 주소를 검사한다. 다른 리스트 API처럼 라우트 권한 대신 리스트별 권한으로 거른다. `subscribers:get_all` 또는 `subscribers:get`이 있을 때만 분류별 예시 20개와 구독자 ID·주소(분류당 5,000명까지, 넘으면 `truncated`)를 준다. 동적 리스트가 섞이면 그 미리보기와 같은 규칙을 따른다: 바탕 리스트를 볼 수 있어야 하고, 바탕이 전체 구독자면 `subscribers:get_all`이 있어야 한다. 하나라도 어기면 답 전체가 건수만이다. 주소마다 그 주소의 모든 분류(`tags`)와, 관리할 수 있는 일반 리스트(`targets`)에 자기 구독이 있는지(`direct`)를 같이 준다. 뽑기로 이어져 구독 해지가 함께 번지는 다른 리스트(`axm_propagate_draw_unsub`)는 `linked`(이름)와 `linked_hidden`(볼 수 없는 리스트 수)으로 알려 준다. 대상이 500,000명을 넘으면 검사하지 않고 `too_large`로 답한다. `checked_lists`는 검사한 리스트 수, `unchecked_lists`는 요청했지만 볼 수 없어 뺀 리스트 수다. 본문에 `optin: true`를 주면 옵트인 캠페인의 대상, 곧 발송기(`next-campaign-subscribers`·`-dynamic`, 종류 `optin`)와 같이 고른 이중 동의 일반 리스트의 미확인 구독자(차단 제외)를 검사한다. 동적 리스트는 옵트인 메일을 보내지 않는다.
+
+### 화면
+
+- **캠페인 편집**: 리스트 선택 바로 아래에 한 줄 요약(`AddressCheck.vue`). 일반 캠페인과 옵트인 캠페인(위 `optin` 대상) 모두에 보인다. 펼치면 분류별 건수·예시·목록 보기·구독 해지. 구독 해지는 기존 `PUT /api/subscribers/lists`(`unsubscribe`)를 써서 권한 검사와 감사 기록(`subscriber.lists_unsubscribe`)이 그대로 적용되고, 고른 리스트 가운데 사용자가 관리할 수 있는 일반 리스트(응답의 `targets`)에서만 한다. 모두 확인 대화를 거치고, 대화와 패널은 뽑기로 이어져 함께 해지되는 리스트를 밝힌다. 동적 리스트나 읽기 전용 리스트로만 들어온 사람(`direct`가 아님)은 해지 대상에서 빠지고 버튼도 그 수만큼만 센다. 차단 버튼은 없다(이 포크의 차단은 주소 해시 억제라 되돌리기 어렵다).
+- **가져오기 열 맞춤 검토**: 가져올 주소를 검사해 분류별 건수와 원본 행 번호를 보인다. 스위치 「확정 위험 주소는 빼고 올리기」(기본 켬), 「역할·일회용 주소도 빼기」(기본 끔). 새 파일을 고를 때마다(같은 탭에서 앞 가져오기를 끝낸 뒤 포함) 두 스위치는 기본값으로 돌아간다. 뺀 행은 업로드 CSV와 요약 수에서 빠지고, 「빠진 행 CSV 내려받기」(행 번호·주소·이유)는 브라우저에서만 만든다. 검사가 답할 때까지(조회가 남아 다시 묻는 동안 포함) 올리기 버튼은 잠기고, 검사가 실패하면 그대로 올릴 수 있다. 이메일 열을 바꾸면 다시 검사한다. 차단 모드와 원본 그대로 모드(raw·ZIP)에는 이 검사가 없다.
+- **가져오기 끝 상자**: 가져오기 상태 응답(`GET /api/import/subscribers`)이 그 가져오기가 구독시킨 리스트(`axm_lists`, 권한으로 거른 뒤, 차단 모드는 없음)를 같이 준다. 끝나면 그 리스트를 같은 패널로 검사한다. 상태와 리스트는 한 잠금 안에서 같이 읽어, 다음 가져오기가 겹쳐도 한 작업의 건수와 다른 작업의 리스트가 섞이지 않는다. 묻는 사람이 볼 수 있는 리스트만 주므로, 볼 수 없는 사람의 화면에는 검사가 없다. 볼 수 없는 리스트 수는 `axm_lists_hidden`으로 준다. 리스트 검사 응답의 `checked_lists`가 0이면(볼 수 있는 리스트가 없음) 패널은 "위험 없음" 대신 검사하지 않았다고 알린다. 이번 파일이 아니라 리스트 전체 기준이다.
+- **일부 리스트만 볼 수 있을 때** (캠페인·가져오기 끝 공통): 숫자는 검사한 리스트의 대상뿐이므로 "발송 대상" 대신 "검사한 대상"이라고 쓰고, 볼 수 없는 리스트 N개는 검사하지 않아 위험 주소가 더 있을 수 있다고 따로 한 줄로 알린다. 이때 위험이 0이어도 초록(위험 없음) 상태로 보이지 않는다(캠페인은 `unchecked_lists`, 가져오기 끝은 그에 더해 `axm_lists_hidden`).
+
+### 일회용 도메인 목록
+
+`internal/addrcheck/disposable_domains.txt`는 [disposable-email-domains](https://github.com/disposable-email-domains/disposable-email-domains)의 `disposable_email_blocklist.conf`를 커밋 `f4cad16eb9fa2cd9ceb352ff5a8c213a25a10083`(2026-11-18, 10,400개)에 고정해 그대로 넣은 것이다. 라이선스는 CC0 1.0 Universal(퍼블릭 도메인 기증, 그 저장소의 `LICENSE.txt`)이라 AGPL 배포와 함께 쓸 수 있다. 갱신하려면 새 커밋의 파일로 바꾸고 파일 머리와 이 절의 커밋을 고친다.
+
+### 운영에서 알 것
+
+- 컨테이너에서 외부 도메인의 MX 조회가 막혀 있으면 전부 "미확인"으로 보인다. 오류로 막히지는 않는다.
+- 미확인 도메인은 캐시하지 않으므로, 응답 없는 도메인이 섞인 리스트는 검사할 때마다 3초쯤 걸린다.
+- DB 변경이 없어 이전 이미지로 그대로 되돌릴 수 있다. 되돌리면 화면과 API만 사라진다.
+
+### 검증
+
+`go test ./internal/addrcheck/`, `cmd/axm_address_check_db_test.go`(일반·동적·이중 동의·차단 제외·권한·주소 숨김·`too_large`·pending, DNS는 가짜), `frontend/tests/csv-import.test.mjs`, `frontend/cypress/e2e/address-check.cy.js`(두 검사 API는 고정 응답, 구독 해지와 가져오기는 실제 서버).
