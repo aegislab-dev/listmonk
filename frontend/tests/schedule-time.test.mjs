@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  KST, TZ_ATTRIB, allZones, browserDiffers, customZone, browserZoneName, buildIndex, instantToWall, mergeAttribs, offsetLabel, otherZoneLines, searchIndex,
+  KST, KO_CITIES, TZ_ATTRIB, ZONE_COUNTRY, allZones, browserDiffers, customZone, browserZoneName, buildIndex, instantToWall, mergeAttribs, offsetLabel, otherZoneLines, searchIndex,
   splitAttribs, validZone, wallToInstant, zoneAbbr, zoneInfo, zoneParts,
 } from '../src/schedule-time.js';
 
@@ -126,6 +126,24 @@ test('search finds Korean names, cities, IANA names and abbreviations', () => {
   assert.ok(searchZones('뉴').includes('America/St_Johns'));
   assert.deepEqual(searchZones(''), []);
   assert.deepEqual(searchZones('zzzzqq'), []);
+});
+
+test('search finds a city by its country name, in English or Korean', () => {
+  const t = new Date('2026-11-22T00:00:00Z');
+  const index = buildIndex(allZones(), t);
+  const searchZones = (q) => searchIndex(q, index).map((e) => e.tz);
+  assert.ok(searchZones('France').includes('Europe/Paris'));
+  assert.ok(searchZones('프랑스').includes('Europe/Paris'));
+  assert.ok(searchZones('germany').includes('Europe/Berlin'));
+  ['America/New_York', 'America/Los_Angeles', 'America/Chicago'].forEach((z) => {
+    assert.ok(searchZones('united states').includes(z), z);
+    assert.ok(searchZones('미국').includes(z), z);
+  });
+  assert.ok(searchZones('일본').includes('Asia/Tokyo'));
+  // A city name still comes before the zones that only match by country.
+  assert.equal(searchZones('paris')[0], 'Europe/Paris');
+  // Every zone in the country table is one of the named cities.
+  Object.keys(ZONE_COUNTRY).forEach((z) => assert.ok(KO_CITIES[z], z));
 });
 
 test('the line under the input has KST first and leaves the chosen zone out', () => {

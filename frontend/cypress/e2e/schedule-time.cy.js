@@ -133,9 +133,14 @@ describe('Scheduled send time zone', () => {
       expect(r.left).to.be.gte(row.left - 1);
       expect(r.right).to.be.lte(row.right + 1);
       expect(r.top).to.be.gte(input.bottom - 1);
-      // The arrow at the end of the button is on the screen, with no sideways scrolling.
+      // The arrow at the end of the button is on the screen, with no sideways scrolling. Measure against
+      // the page's own width: cy.viewport() does not change Cypress.config('viewportWidth').
+      const pageWidth = $b[0].ownerDocument.documentElement.clientWidth;
+      expect(pageWidth, 'page width').to.be.lte(320);
       const arrow = Cypress.$('[data-cy=send-tz-button] .tzp-caret')[0].getBoundingClientRect();
-      expect(arrow.right).to.be.lte(Cypress.config('viewportWidth'));
+      expect(arrow.width, 'arrow width').to.be.gt(0);
+      expect(arrow.left).to.be.gte(0);
+      expect(arrow.right).to.be.lte(pageWidth);
     });
   });
 
@@ -144,6 +149,15 @@ describe('Scheduled send time zone', () => {
     zoneButton().click();
     cy.get('[data-cy=send-tz-search]').type('뉴욕');
     cy.get('[data-cy=send-tz-panel] [data-tz]').first().should('have.attr', 'data-tz', 'America/New_York');
+  });
+
+  it('searches by country name, in English or Korean', () => {
+    open('kst');
+    zoneButton().click();
+    cy.get('[data-cy=send-tz-search]').type('France');
+    cy.get('[data-cy=send-tz-panel] [data-tz="Europe/Paris"]').should('exist');
+    cy.get('[data-cy=send-tz-search]').clear().type('프랑스');
+    cy.get('[data-cy=send-tz-panel] [data-tz="Europe/Paris"]').should('exist');
   });
 
   it('saves the typed time as the moment in the chosen zone, and the zone in attribs', () => {

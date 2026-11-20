@@ -80,6 +80,69 @@ export const KO_CITIES = {
   UTC: '협정 세계시',
 };
 
+// The country of each city in the table above (ISO 3166 code), so a search for a country name finds
+// it in English or Korean ("France", "프랑스" -> Paris). Intl gives the names; it has no zone-to-country map.
+export const ZONE_COUNTRY = {
+  'Asia/Seoul': 'KR',
+  'Asia/Tokyo': 'JP',
+  'Asia/Shanghai': 'CN',
+  'Asia/Hong_Kong': 'HK',
+  'Asia/Taipei': 'TW',
+  'Asia/Singapore': 'SG',
+  'Asia/Bangkok': 'TH',
+  'Asia/Ho_Chi_Minh': 'VN',
+  'Asia/Jakarta': 'ID',
+  'Asia/Manila': 'PH',
+  'Asia/Kuala_Lumpur': 'MY',
+  'Asia/Kolkata': 'IN',
+  'Asia/Dubai': 'AE',
+  'Asia/Tehran': 'IR',
+  'Asia/Karachi': 'PK',
+  'Asia/Dhaka': 'BD',
+  'Asia/Kathmandu': 'NP',
+  'Asia/Riyadh': 'SA',
+  'Asia/Jerusalem': 'IL',
+  'Asia/Istanbul': 'TR',
+  'Europe/London': 'GB',
+  'Europe/Dublin': 'IE',
+  'Europe/Paris': 'FR',
+  'Europe/Berlin': 'DE',
+  'Europe/Madrid': 'ES',
+  'Europe/Rome': 'IT',
+  'Europe/Amsterdam': 'NL',
+  'Europe/Zurich': 'CH',
+  'Europe/Stockholm': 'SE',
+  'Europe/Warsaw': 'PL',
+  'Europe/Athens': 'GR',
+  'Europe/Istanbul': 'TR',
+  'Europe/Moscow': 'RU',
+  'Europe/Kyiv': 'UA',
+  'Africa/Cairo': 'EG',
+  'Africa/Lagos': 'NG',
+  'Africa/Nairobi': 'KE',
+  'Africa/Johannesburg': 'ZA',
+  'America/New_York': 'US',
+  'America/Toronto': 'CA',
+  'America/Chicago': 'US',
+  'America/Denver': 'US',
+  'America/Phoenix': 'US',
+  'America/Los_Angeles': 'US',
+  'America/Vancouver': 'CA',
+  'America/Anchorage': 'US',
+  'Pacific/Honolulu': 'US',
+  'America/Mexico_City': 'MX',
+  'America/Bogota': 'CO',
+  'America/Lima': 'PE',
+  'America/Santiago': 'CL',
+  'America/Sao_Paulo': 'BR',
+  'America/Argentina/Buenos_Aires': 'AR',
+  'America/St_Johns': 'CA',
+  'Australia/Sydney': 'AU',
+  'Australia/Melbourne': 'AU',
+  'Australia/Perth': 'AU',
+  'Pacific/Auckland': 'NZ',
+};
+
 // Intl's short name for these is "GMT+9"; people say KST and JST.
 const FIXED_ABBR = { 'Asia/Seoul': 'KST', 'Asia/Tokyo': 'JST' };
 
@@ -253,6 +316,21 @@ export function customZone(text) {
   }
 }
 
+const regionNames = new Map();
+// The country names of a zone ("France", "프랑스"), or [] when it is not in the table or Intl cannot name it.
+export function zoneCountryNames(tz) {
+  const code = ZONE_COUNTRY[tz];
+  if (!code) return [];
+  return ['en', 'ko'].map((locale) => {
+    try {
+      if (!regionNames.has(locale)) regionNames.set(locale, new Intl.DisplayNames([locale], { type: 'region' }));
+      return regionNames.get(locale).of(code) || '';
+    } catch (e) {
+      return '';
+    }
+  }).filter((n) => n && n !== code);
+}
+
 const norm = (s) => String(s || '')
   .toLowerCase()
   .replace(/[_/-]+/g, ' ')
@@ -263,11 +341,12 @@ const norm = (s) => String(s || '')
 export function buildIndex(zones, date) {
   return zones.map((tz) => {
     const info = zoneInfo(tz, date);
-    return { ...info, fields: [norm(tz), norm(info.city), norm(info.name), norm(info.abbr), norm(KO_CITIES[tz])] };
+    const fields = [norm(tz), norm(info.city), norm(info.name), norm(info.abbr), norm(KO_CITIES[tz])];
+    return { ...info, fields: [...fields, ...zoneCountryNames(tz).map(norm)] };
   });
 }
 
-// The entries that match a search text (Korean name, city, IANA name, abbreviation), best first.
+// The entries that match a search text (Korean name, city, country, IANA name, abbreviation), best first.
 export function searchIndex(query, index) {
   const q = norm(query);
   if (!q) return [];
