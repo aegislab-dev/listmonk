@@ -99,7 +99,8 @@
               <b-tag type="is-info is-light" data-cy="recent-list-team-fixed">{{ teamName($teamTag()) }}</b-tag>
             </div>
             <b-field :label="$t('campaigns.recent.listName')">
-              <b-input v-model="listName" :maxlength="200" required :disabled="creating" data-cy="recent-list-name" />
+              <b-input v-model="listName" :maxlength="200" :has-counter="false" required :disabled="creating"
+                data-cy="recent-list-name" />
             </b-field>
             <p class="recent-note" data-cy="recent-list-note">
               {{ $t(savedCampaign ? 'campaigns.recent.listNote' : 'campaigns.recent.listNoteNew',
@@ -129,6 +130,8 @@ import { NO_TEAM, teamName } from '../teams';
 
 // The team choice that follows the source lists' teams (sent as no team field).
 const SAME_TEAMS = '__same__';
+// The longest list name the server takes.
+const LIST_NAME_MAX = 200;
 
 export default {
   props: {
@@ -233,7 +236,11 @@ export default {
       if (!names.length) return '';
       const base = names.length > 1
         ? this.$t('lists.recentExclude.moreLists', { name: names[0], count: names.length - 1 }) : names[0];
-      return base + this.$t('lists.recentExclude.nameSuffix', { days: this.value.days, date: dayjs().format('YYYY-MM-DD') });
+      const suffix = this.$t('lists.recentExclude.nameSuffix', { days: this.value.days, date: dayjs().format('YYYY-MM-DD') });
+      // A list name takes at most 200 characters (counted like the server, by code point): a long
+      // source name is cut so that the suffix fits, as the server does for its default name.
+      const room = Math.max(0, LIST_NAME_MAX - Array.from(suffix).length);
+      return Array.from(base).slice(0, room).join('') + suffix;
     },
 
     canCreate() {
@@ -275,8 +282,11 @@ export default {
         this.listError = err.response?.data?.message || this.$t('campaigns.recent.error');
       } finally {
         this.loadingTeams = false;
-        // Follow the source lists' teams unless that is impossible.
-        this.team = this.sourceTeams.length ? SAME_TEAMS : null;
+        // Follow the source lists' teams unless that is impossible, or the person already chose
+        // (the choice without a team can be picked while the teams load).
+        if (this.team === null || (this.team !== NO_TEAM && !this.teams.some((t) => t.tag === this.team))) {
+          this.team = this.sourceTeams.length ? SAME_TEAMS : null;
+        }
       }
     },
 

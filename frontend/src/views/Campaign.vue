@@ -842,7 +842,9 @@ export default Vue.extend({
         // The result line says it is saved; no second notice.
         if (!await this.updateCampaign(undefined, { quiet: true })) throw new Error('not saved');
       } catch (err) {
-        if (!this.isDestroyed && this.madeList && this.madeList.id === id) {
+        // A campaign saved with the made list whose rule alone was not saved has its target: the
+        // rule's own error says what failed.
+        if (!this.isDestroyed && this.madeList && this.madeList.id === id && !this.madeSaved) {
           this.madeList = { id, error: this.$t('campaigns.recent.listSaveError') };
         }
       }
@@ -899,8 +901,9 @@ export default Vue.extend({
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
-        await this.saveRecentRule(d.id);
+        // The target is saved now, whatever happens to the rule below.
         if (this.madeList && this.sentMadeList(data.lists)) this.madeList = { ...this.madeList, error: '' };
+        await this.saveRecentRule(d.id);
         if (!quiet) this.$utils.toast(this.$t(typMsg, { name: d.name }));
         // Saving can change what the check reads beyond the page (the sender of the
         // person who saves, merged headers): check again (LST-44).

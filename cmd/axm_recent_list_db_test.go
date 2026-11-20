@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
@@ -416,6 +417,40 @@ func TestRecentListSameTeamNeedsATeamAndNamesStayUnique(t *testing.T) {
 	for _, want := range []string{"동시 생성", "동시 생성 (2)", "동시 생성 (3)", "동시 생성 (4)"} {
 		if !seen[want] {
 			t.Fatalf("missing %q in %v", want, seen)
+		}
+	}
+}
+
+// Review: the maker held a connection for its lock and asked the pool for another one for the
+// transaction (and resolved teams on the pool while the transaction was open). With
+// db.max_open = 1 a single request then waited for itself.
+func TestRecentListWorksWithOneConnection(t *testing.T) {
+	e := newRecentListEnv(t)
+	e.db.SetMaxOpenConns(1)
+	defer e.db.SetMaxOpenConns(0)
+	for _, team := range []string{`"team":"팀:가"`, `"no_team":true`, ``} {
+		body := fmt.Sprintf(`{"list_ids":[%d],"campaign_id":%d,"days":14,"scope":"all"`, e.aList, e.draft)
+		if team != "" {
+			body += "," + team
+		}
+		body += "}"
+		type reply struct {
+			code int
+			data json.RawMessage
+		}
+		done := make(chan reply, 1)
+		go func() { code, data := e.request(e.admin, body); done <- reply{code, data} }()
+		select {
+		case r := <-done:
+			var out models.RecentListResult
+			if r.code != http.StatusOK || json.Unmarshal(r.data, &out) != nil {
+				t.Fatalf("%s: %d %s", team, r.code, r.data)
+			}
+			if !sameInts(e.members(out.List.ID), []int{e.a2}) {
+				t.Fatalf("%s: members %v", team, e.members(out.List.ID))
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatalf("%s: making the list did not finish with one connection", team)
 		}
 	}
 }

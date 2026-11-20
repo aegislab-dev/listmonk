@@ -240,26 +240,9 @@ func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule mode
 		return out, c.recentBadRequest("selectLists")
 	}
 
-	// Names are made unique by looking at the committed lists, so two makers must not run at
-	// once: the second one starts its snapshot only after the first one committed. The lock is
-	// held on a connection of its own, before the transaction takes its snapshot.
-	lock, err := c.db.Conn(ctx)
-	if err != nil {
-		return out, c.recentError(err)
-	}
-	defer lock.Close()
-	if _, err := lock.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, recentListLockKey); err != nil {
-		return out, c.recentError(err)
-	}
-	defer lock.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, recentListLockKey)
-
-	tx, err := c.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
-	if err != nil {
-		return out, c.recentError(err)
-	}
-	defer tx.Rollback()
-
-	if err := tx.Stmtx(c.q.AxmRecentSourceLists).SelectContext(ctx, &out.SourceLists, ids); err != nil {
+	// The teams are resolved first, on the pool: resolving reads the database, and the request
+	// must not ask the pool for a second connection while it holds one (db.max_open may be 1).
+	if err := c.q.AxmRecentSourceLists.SelectContext(ctx, &out.SourceLists, ids); err != nil {
 		return out, c.recentError(err)
 	}
 	if len(out.SourceLists) != len(ids) {
@@ -286,6 +269,46 @@ func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule mode
 		return out, c.recentBadRequest("noTeam")
 	}
 
+	if out, err = c.makeRecentExcludeList(ctx, ids, rule, selfID, o.Name, teams, out); err != nil {
+		return out, err
+	}
+	// The connection of the transaction is back in the pool here.
+	_ = c.refreshCache(matListSubStats, false)
+	return out, nil
+}
+
+// makeRecentExcludeList does the work of MakeRecentExcludeList on one connection: the lock and
+// the transaction share it, so the request never holds one connection while waiting for another.
+func (c *Core) makeRecentExcludeList(ctx context.Context, ids pq.Int64Array, rule models.RecentRule, selfID int,
+	reqName string, teams []string, out models.RecentListResult) (models.RecentListResult, error) {
+	// Names are made unique by looking at the committed lists, so two makers must not run at
+	// once: the second one starts its snapshot only after the first one committed. The session
+	// lock is taken before the transaction takes its snapshot.
+	conn, err := c.db.Connx(ctx)
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, recentListLockKey); err != nil {
+		return out, c.recentError(err)
+	}
+	defer conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, recentListLockKey)
+
+	tx, err := conn.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	defer tx.Rollback()
+
+	// The lists are read again in the snapshot (a list deleted meanwhile is refused).
+	out.SourceLists = nil
+	if err := tx.Stmtx(c.q.AxmRecentSourceLists).SelectContext(ctx, &out.SourceLists, ids); err != nil {
+		return out, c.recentError(err)
+	}
+	if len(out.SourceLists) != len(ids) {
+		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("globals.messages.invalidID"))
+	}
+
 	var counts models.RecentCounts
 	if err := tx.Stmtx(c.q.AxmRecentExcludeCounts).GetContext(ctx, &counts, ids, rule.Days, rule.Scope, rule.CampaignIDs, selfID); err != nil {
 		return out, c.recentError(err)
@@ -296,7 +319,7 @@ func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule mode
 		return out, c.recentBadRequest("listEmpty")
 	}
 
-	name := strings.TrimSpace(o.Name)
+	name := strings.TrimSpace(reqName)
 	if name == "" {
 		name = c.recentListName(out.SourceLists, rule.Days, out.AsOf)
 	}
@@ -335,6 +358,5 @@ func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule mode
 	if err := tx.Commit(); err != nil {
 		return out, c.recentError(err)
 	}
-	_ = c.refreshCache(matListSubStats, false)
 	return out, nil
 }

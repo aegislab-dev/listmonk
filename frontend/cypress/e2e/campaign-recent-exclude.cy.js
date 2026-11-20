@@ -275,4 +275,74 @@ describe('Recent-send exclusion settings', () => {
       cy.request(`/api/campaigns/${campaignId}`).its('body.data.name').should('eq', title);
     });
   });
+
+  it('says the target changed when only the rule failed to save', () => {
+    cy.intercept('POST', preview).as('recentPreview');
+    cy.intercept('POST', '/api/campaigns/recent-exclude/list').as('makeList');
+    cy.intercept('PUT', `/api/campaigns/${campaignId}`).as('updateCampaign');
+    cy.intercept('PUT', rulePath(), { statusCode: 503, body: { message: 'unavailable' } }).as('ruleRefused');
+    openCampaign(campaignId);
+    cy.get(switchInput).should('be.checked');
+    cy.wait('@recentPreview');
+    // A changed rule is saved after the campaign.
+    cy.get('select[data-cy=recent-days]').select('30');
+    cy.wait('@recentPreview');
+    cy.get('[data-cy=recent-make-list]').click();
+    cy.get('select[data-cy=recent-list-team]').select('__none__');
+    cy.get('[data-cy=recent-list-create]').click();
+    cy.wait('@makeList').its('response.body.data.list').then((list) => {
+      cy.wait('@updateCampaign');
+      cy.wait('@ruleRefused');
+      cy.contains('[role=alert]', 'exclusion rule failed to save').should('be.visible');
+      cy.get('[data-cy=recent-list-save-error]').should('not.exist');
+      cy.get('[data-cy=recent-list-made]').should('contain', 'saved');
+      cy.request(`/api/campaigns/${campaignId}`).its('body.data.lists').then((lists) => {
+        expect(lists.map(({ id }) => id)).to.deep.equal([list.id]);
+      });
+    });
+  });
+
+  it('fits the default name of a long source list in 200 characters', () => {
+    const long = `${'L'.repeat(170)} ${stamp}`;
+    cy.intercept('POST', preview).as('recentPreview');
+    cy.intercept('POST', '/api/campaigns/recent-exclude/list').as('makeList');
+    cy.request('POST', '/api/lists', {
+      name: long, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => {
+      cy.request('POST', '/api/subscribers', {
+        name: 'Long list recipient', email: `long-${stamp}@example.invalid`, status: 'enabled', lists: [body.data.id],
+      });
+      cy.visit(`/admin/campaigns/new?list_id=${body.data.id}`);
+    });
+    cy.get('.list-selector .tags .tag').should('have.length', 1);
+    cy.get(switchControl).click();
+    cy.wait('@recentPreview');
+    cy.get('[data-cy=recent-make-list]').click();
+    cy.get('input[data-cy=recent-list-name]').should(($input) => {
+      expect(Array.from($input.val()).length).to.eq(200);
+      expect($input.val()).to.contain('last 14 days');
+    });
+    // No character counter: the approved dialog has none.
+    cy.get('input[data-cy=recent-list-name]').click();
+    cy.get('[data-cy=recent-list-modal] .counter').should('not.exist');
+    cy.get('select[data-cy=recent-list-team]').select('__none__');
+    cy.get('[data-cy=recent-list-create]').click();
+    cy.wait('@makeList').its('response.statusCode').should('eq', 200);
+  });
+
+  it('keeps a team chosen while the teams are still loading', () => {
+    cy.intercept('POST', preview).as('recentPreview');
+    cy.intercept('GET', '/api/lists/teams', (req) => {
+      req.continue((res) => { res.setDelay(2500); });
+    }).as('teams');
+    openCampaign(campaignId);
+    cy.get(switchInput).should('be.checked');
+    cy.wait('@recentPreview');
+    cy.get('[data-cy=recent-make-list]').click();
+    cy.get('select[data-cy=recent-list-team]').select('__none__', { force: true });
+    cy.wait('@teams');
+    cy.get('select[data-cy=recent-list-team]').should('have.value', '__none__');
+    cy.get('[data-cy=recent-list-create]').should('not.be.disabled');
+  });
 });
+
