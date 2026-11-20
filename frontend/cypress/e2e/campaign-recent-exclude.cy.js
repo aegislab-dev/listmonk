@@ -9,6 +9,7 @@ const switchControl = '[data-cy=recent-enabled] .check';
 
 let campaignId;
 let optinId;
+let sourceListId;
 
 const openCampaign = (id) => cy.visit(`/admin/campaigns/${id}`);
 const rulePath = () => `/api/campaigns/${campaignId}/recent-exclude`;
@@ -19,6 +20,7 @@ describe('Recent-send exclusion settings', () => {
     cy.request('POST', '/api/lists', {
       name: listName, type: 'private', optin: 'single', no_team: true,
     }).then(({ body }) => {
+      sourceListId = body.data.id;
       cy.request('POST', '/api/subscribers', {
         name: 'Synthetic recipient',
         email: `recent-${stamp}@example.invalid`,
@@ -199,5 +201,76 @@ describe('Recent-send exclusion settings', () => {
     cy.get('[data-cy=recent-list-save-error]').should('contain', 'The list was made');
     cy.get('[data-cy=recent-list-made]').should('not.exist');
     cy.get('[data-cy=recent-make-list]').should('not.exist');
+  });
+
+  it('keeps the made list as the target of a new campaign started from a list', () => {
+    const makePath = '/api/campaigns/recent-exclude/list';
+    let made = false;
+    cy.intercept('POST', preview).as('recentPreview');
+    cy.intercept('POST', makePath, (req) => {
+      req.continue(() => { made = true; });
+    }).as('makeList');
+    // The lists are read again after the list is made; that read must not bring the ?list_id list back.
+    cy.intercept('GET', '/api/lists*', (req) => {
+      if (made) req.alias = 'listsAfter';
+    });
+    cy.intercept('POST', '/api/campaigns').as('createCampaign');
+    cy.visit(`/admin/campaigns/new?list_id=${sourceListId}`);
+    cy.get('.list-selector .tags .tag').should('have.length', 1).and('contain', listName);
+    cy.get('input[name=name]').type(`${name} from a list`);
+    cy.get('input[name=subject]').type('From a list');
+    cy.get(switchControl).click();
+    cy.wait('@recentPreview');
+    cy.get('[data-cy=recent-make-list]').click();
+    cy.get('select[data-cy=recent-list-team]').select('__none__');
+    cy.get('[data-cy=recent-list-create]').click();
+    cy.wait('@makeList').its('response.body.data.list').then((list) => {
+      cy.wait('@listsAfter');
+      cy.get('.list-selector .tags .tag').should('have.length', 1).and('contain', list.name);
+      cy.get('button[type=submit]').click();
+      cy.wait('@createCampaign').then(({ request, response }) => {
+        expect(request.body.lists).to.deep.equal([list.id]);
+        cy.request(`/api/campaigns/${response.body.data.id}`).its('body.data.lists').then((lists) => {
+          expect(lists.map(({ id }) => id)).to.deep.equal([list.id]);
+        });
+      });
+    });
+  });
+
+  it('does not save a title discarded while the save of the made list waited for another save', () => {
+    let puts = 0;
+    cy.intercept('POST', preview).as('recentPreview');
+    cy.intercept('POST', '/api/campaigns/recent-exclude/list', (req) => {
+      req.continue((res) => { res.setDelay(1500); });
+    }).as('makeList');
+    cy.intercept('PUT', `/api/campaigns/${campaignId}`, (req) => {
+      puts += 1;
+      // The save pressed while the list is being made answers late.
+      if (puts === 1) req.continue((res) => { res.setDelay(6000); });
+    }).as('updateCampaign');
+    cy.request(`/api/campaigns/${campaignId}`).its('body.data.name').then((title) => {
+      openCampaign(campaignId);
+      cy.get(switchInput).should('be.checked');
+      cy.wait('@recentPreview');
+      cy.get('[data-cy=recent-make-list]').click();
+      cy.get('select[data-cy=recent-list-team]').select('__none__');
+      cy.get('[data-cy=recent-list-create]').click();
+      cy.get('body').trigger('keydown', { key: 's', ctrlKey: true });
+      cy.wait('@makeList');
+      cy.get('input[name=name]').clear().type(`Discarded title ${stamp}`);
+      cy.get('[data-cy=recent-exclude]').then(($el) => {
+        // eslint-disable-next-line no-underscore-dangle
+        $el[0].__vue__.$router.push({ name: 'campaigns' }).catch(() => {});
+      });
+      cy.get('.modal.dialog').should('be.visible');
+
+      // The first save answers while the person is still asked: nothing else is saved.
+      cy.wait('@updateCampaign');
+      cy.wait(1500).then(() => expect(puts).to.eq(1));
+      cy.get('.modal.dialog .modal-card-foot .button.is-primary').click();
+      cy.location('pathname').should('eq', '/admin/campaigns');
+      cy.wait(1500).then(() => expect(puts).to.eq(1));
+      cy.request(`/api/campaigns/${campaignId}`).its('body.data.name').should('eq', title);
+    });
   });
 });

@@ -430,6 +430,8 @@ export default Vue.extend({
       // The list made from the recent-send exclusion result: { id, error }. Whether the server
       // has it as the target is read from the saved campaign (madeSaved), never remembered.
       madeList: null,
+      // A leave confirmation is open: a save waiting for its turn must not run until it is answered.
+      leaveAsked: false,
 
       // The test box (LST-41): the sample for addresses that are not subscribers, and the
       // addresses the server refused last time.
@@ -801,13 +803,15 @@ export default Vue.extend({
       }
     },
 
-    // Resolves when no save is running (or after 30 seconds).
-    whenNotSaving() {
+    // Resolves when no save is running (or after 30 seconds of saving) and no leave confirmation is
+    // open, or once the page is gone. A save run while the person is being asked whether to discard
+    // would store what they then discard.
+    whenFree() {
       return new Promise((resolve) => {
         let ticks = 0;
         const check = () => {
-          ticks += 1;
-          if (!this.savingCampaign || ticks > 300) resolve();
+          if (this.savingCampaign) ticks += 1;
+          if (this.isDestroyed || ((!this.savingCampaign || ticks > 300) && !this.leaveAsked)) resolve();
           else setTimeout(check, 100);
         };
         check();
@@ -831,7 +835,7 @@ export default Vue.extend({
       try {
         // A save that started before the list existed carries the old target: let it finish, then
         // save the new one (a skipped save would leave the old target on the server).
-        await this.whenNotSaving();
+        await this.whenFree();
         // The person may have left (and discarded) or made another list meanwhile.
         if (this.isDestroyed || !this.madeList || this.madeList.id !== id) return;
         if (!this.parseFormJSON()) throw new Error('invalid form');
@@ -1246,7 +1250,10 @@ export default Vue.extend({
 
   beforeRouteLeave(to, from, next) {
     if (this.isUnsaved()) {
-      this.$utils.confirm(this.$t('globals.messages.confirmDiscard'), () => next(true));
+      this.leaveAsked = true;
+      this.$utils.confirm(this.$t('globals.messages.confirmDiscard'), () => next(true), () => {
+        this.leaveAsked = false;
+      });
       return;
     }
     next(true);
@@ -1254,8 +1261,12 @@ export default Vue.extend({
 
   watch: {
     'form.replyTo': function clearReplyError() { this.replyError = ''; },
-    selectedLists() {
-      this.form.lists = this.selectedLists;
+    // The ?list_id lists fill the target once, when the lists are known. A later refresh of the
+    // lists (making a list from the exclusion result reads them again) must not put them back.
+    selectedLists(lists) {
+      if (lists.length === 0) return;
+      this.form.lists = lists;
+      this.selListIDs = [];
     },
 
     // The stored status decides what the check reads besides the page: a draft is sent
