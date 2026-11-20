@@ -87,7 +87,8 @@
     "internal/core/axm_test_address*.go",
     "static/public/templates/test-address-verify.html",
     "cmd/admin.go",
-    "cmd/senders.go"
+    "cmd/senders.go",
+    "internal/manager/message.go"
    ],
    "specs": [
     "campaign-test-send.cy.js"
@@ -95,7 +96,8 @@
   },
   {
    "paths": [
-    "frontend/src/views/Campaign.vue"
+    "frontend/src/views/Campaign.vue",
+    "frontend/src/components/Editor.vue"
    ],
    "specs": [
     "sender-addresses.cy.js",
@@ -368,6 +370,14 @@
    "specs": [
     "reaction-lists.cy.js",
     "analytics-proof.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "cmd/public.go"
+   ],
+   "specs": [
+    "dynamic-lists.cy.js"
    ]
   }
  ],
