@@ -93,6 +93,19 @@ describe('Campaign test send to addresses that are not subscribers', () => {
     tag(ownEmail).should('have.attr', 'data-kind', 'rejected').and('have.class', 'is-rejected');
     tag(internal).should('have.attr', 'data-kind', 'internal');
     box().find('[data-cy=test-rejected]').should('contain', 'not confirmed yet').and('contain', 'confirmation mail');
+
+    // With the own address taken out, what is left is refused for the ordinary reason.
+    addEmail(outside);
+    cy.intercept('POST', `/api/campaigns/${campaignId}/test`, {
+      statusCode: 400, body: { message: 'x', data: { rejected: [ownEmail, outside], own_unverified: true } },
+    }).as('both');
+    box().find('[data-cy=btn-test-send]').click();
+    cy.wait('@both');
+    box().find('[data-cy=test-rejected]').should('contain', 'not confirmed yet');
+    tag(ownEmail).find('.delete').click();
+    tag(outside).should('have.attr', 'data-kind', 'rejected');
+    box().find('[data-cy=test-rejected]').should('contain', 'marked red').and('not.contain', 'not confirmed yet');
+    box().find('[data-cy=test-add-own]').click();
     // Another refusal afterwards shows the ordinary note again.
     cy.intercept('POST', `/api/campaigns/${campaignId}/test`, {
       statusCode: 400, body: { message: 'x', data: { rejected: [ownEmail] } },
@@ -182,6 +195,19 @@ describe('Campaign test send to addresses that are not subscribers', () => {
     box().find('[data-cy=test-sample-toggle]').click();
     box().find('[data-cy=test-sample-subscriber] .check').click();
     box().find('[data-cy=test-sample-preview]').should('be.disabled');
+    // An answer that arrives after the text was cut to one character is not shown.
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    cy.intercept('GET', '/api/subscribers?*', (req) => req.continue((res) => held.then(() => res.send()))).as('slow');
+    box().find('input[data-cy=test-sample-search]').type(`kim-${stamp}`);
+    cy.wait(600);
+    box().find('input[data-cy=test-sample-search]').clear().type('z');
+    cy.then(() => release());
+    cy.wait('@slow');
+    cy.wait(300);
+    box().find('.dropdown-item').should('not.contain', subEmail);
+    box().find('input[data-cy=test-sample-search]').clear();
+    cy.intercept('GET', '/api/subscribers?*', (req) => req.continue());
     box().find('input[data-cy=test-sample-search]').type(`kim-${stamp}`);
     box().contains('.dropdown-item', subEmail).click();
     box().find('[data-cy=test-sample-picked]').should('contain', 'Kim Sample').and('contain', subEmail);

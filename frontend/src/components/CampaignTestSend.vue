@@ -20,7 +20,7 @@
       </b-taginput>
     </b-field>
     <p v-if="rejected.length > 0" class="help is-danger rejected-help" role="alert" data-cy="test-rejected">
-      {{ $t(ownUnverified ? 'campaigns.testSend.ownUnverifiedHelp' : 'campaigns.testSend.rejectedHelp') }}
+      {{ $t(showOwnUnverified ? 'campaigns.testSend.ownUnverifiedHelp' : 'campaigns.testSend.rejectedHelp') }}
     </p>
     <p v-if="canAddOwn" class="own-link">
       <a href="#" role="button" @click.prevent="addOwn" data-cy="test-add-own">
@@ -179,6 +179,10 @@ export default {
 
     canReadSubscribers() { return this.$can('subscribers:get_all', 'subscribers:get'); },
 
+    // The note about the confirmation mail belongs to the own address: once that address is
+    // taken out of the box, what is left is refused for the ordinary reason.
+    showOwnUnverified() { return this.ownUnverified && !!this.ownEmail && this.rejected.includes(this.ownEmail); },
+
     label() { return sampleLabel(this.sample); },
 
     sampleError() { return samplePayload(this.sample).error || ''; },
@@ -245,6 +249,8 @@ export default {
       clearTimeout(this.searchTimer);
       const q = String(text || '').trim();
       if (q.length < 2) {
+        // An answer that is still on its way belongs to an earlier text.
+        this.searchSeq += 1;
         this.found = [];
         this.isSearching = false;
         return;

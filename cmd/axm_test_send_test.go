@@ -33,28 +33,33 @@ func TestClassifyTestRecipients(t *testing.T) {
 		name    string
 		email   string
 		user    string
+		profile string
 		subs    map[string]models.Subscriber
 		domains []string
 		want    want
 	}{
-		{"a subscriber the user may see", "known@partner.example", me, subs, domains, want{kind: testKindSubscriber}},
-		{"the user's own confirmed address", "me@outside.example", me, subs, domains, want{kind: testKindOwn}},
-		{"a user without a confirmed address", "someone@outside.example", noEmail, subs, domains, want{rejected: true}},
-		{"a user without a confirmed address, in a test domain", "anyone@corp.example", noEmail, subs, domains, want{kind: testKindInternal}},
-		{"a test domain", "anyone@corp.example", me, subs, domains, want{kind: testKindInternal}},
-		{"a subdomain of a test domain", "anyone@a.corp.example", me, subs, domains, want{rejected: true}},
-		{"a domain that only ends like a test domain", "anyone@notcorp.example", me, subs, domains, want{rejected: true}},
-		{"an outside address that is no subscriber", "stranger@outside.example", me, subs, domains, want{rejected: true}},
+		{"a subscriber the user may see", "known@partner.example", me, "", subs, domains, want{kind: testKindSubscriber}},
+		{"the user's own confirmed address", "me@outside.example", me, "", subs, domains, want{kind: testKindOwn}},
+		{"a user without a confirmed address", "someone@outside.example", noEmail, "", subs, domains, want{rejected: true}},
+		{"a user without a confirmed address, in a test domain", "anyone@corp.example", noEmail, "", subs, domains, want{kind: testKindInternal}},
+		// The profile address needs no confirmation in a test domain, and is still the user's own.
+		{"the unconfirmed profile address, in a test domain", "staff2@corp.example", noEmail, "staff2@corp.example", subs, domains, want{kind: testKindOwn}},
+		{"the unconfirmed profile address, outside", "me2@outside.example", noEmail, "me2@outside.example", subs, domains, want{rejected: true}},
+		{"another address of the profile's test domain", "other@corp.example", noEmail, "staff2@corp.example", subs, domains, want{kind: testKindInternal}},
+		{"a test domain", "anyone@corp.example", me, "", subs, domains, want{kind: testKindInternal}},
+		{"a subdomain of a test domain", "anyone@a.corp.example", me, "", subs, domains, want{rejected: true}},
+		{"a domain that only ends like a test domain", "anyone@notcorp.example", me, "", subs, domains, want{rejected: true}},
+		{"an outside address that is no subscriber", "stranger@outside.example", me, "", subs, domains, want{rejected: true}},
 		// A subscriber of a list the user may not see is simply not in subs.
-		{"a subscriber the user may not see", "known@partner.example", me, nil, domains, want{rejected: true}},
-		{"no test domains: the own address still works", "me@outside.example", me, subs, nil, want{kind: testKindOwn}},
-		{"no test domains: nothing else does", "anyone@corp.example", me, subs, nil, want{rejected: true}},
-		{"a subscriber in a test domain stays a subscriber", "staff@corp.example", me,
+		{"a subscriber the user may not see", "known@partner.example", me, "", nil, domains, want{rejected: true}},
+		{"no test domains: the own address still works", "me@outside.example", me, "", subs, nil, want{kind: testKindOwn}},
+		{"no test domains: nothing else does", "anyone@corp.example", me, "", subs, nil, want{rejected: true}},
+		{"a subscriber in a test domain stays a subscriber", "staff@corp.example", me, "",
 			map[string]models.Subscriber{staff.Email: staff}, domains, want{kind: testKindSubscriber}},
-		{"an address with a display name", "name <anyone@corp.example>", me, subs, domains, want{rejected: true}},
-		{"not an address", "corp.example", me, subs, domains, want{rejected: true}},
+		{"an address with a display name", "name <anyone@corp.example>", me, "", subs, domains, want{rejected: true}},
+		{"not an address", "corp.example", me, "", subs, domains, want{rejected: true}},
 	} {
-		got, rejected, err := classifyTestRecipients([]string{tc.email}, tc.subs, tc.user, tc.domains)
+		got, rejected, err := classifyTestRecipients([]string{tc.email}, tc.subs, tc.user, tc.profile, tc.domains)
 		if err != nil {
 			t.Errorf("%s: %v", tc.name, err)
 			continue
@@ -75,7 +80,7 @@ func TestClassifyTestRecipients(t *testing.T) {
 
 	// One bad address among good ones is reported, and the order is kept.
 	got, rejected, err := classifyTestRecipients(
-		[]string{"anyone@corp.example", "stranger@outside.example", "known@partner.example", "me@outside.example"}, subs, me, domains)
+		[]string{"anyone@corp.example", "stranger@outside.example", "known@partner.example", "me@outside.example"}, subs, me, "", domains)
 	if err != nil || len(got) != 3 || !reflect.DeepEqual(rejected, []string{"stranger@outside.example"}) ||
 		got[0].Kind != testKindInternal || got[1].Kind != testKindSubscriber || got[2].Kind != testKindOwn {
 		t.Errorf("mixed: got %+v rejected %v err %v", got, rejected, err)
@@ -86,10 +91,10 @@ func TestClassifyTestRecipients(t *testing.T) {
 	for i := 0; i < testMaxRecipients+1; i++ {
 		many = append(many, fmt.Sprintf("u%d@corp.example", i))
 	}
-	if _, _, err := classifyTestRecipients(many, nil, me, domains); err != errTestTooMany {
+	if _, _, err := classifyTestRecipients(many, nil, me, "", domains); err != errTestTooMany {
 		t.Errorf("%d recipients: err %v, want errTestTooMany", len(many), err)
 	}
-	if got, rejected, err := classifyTestRecipients(many[:testMaxRecipients], nil, me, domains); err != nil || len(got) != testMaxRecipients || len(rejected) != 0 {
+	if got, rejected, err := classifyTestRecipients(many[:testMaxRecipients], nil, me, "", domains); err != nil || len(got) != testMaxRecipients || len(rejected) != 0 {
 		t.Errorf("%d recipients: got %d rejected %v err %v", testMaxRecipients, len(got), rejected, err)
 	}
 }

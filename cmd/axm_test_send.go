@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"math"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 )
@@ -147,6 +150,17 @@ func (a *App) requestOwnTestAddress(user auth.User) (bool, error) {
 	if err != nil || !ok {
 		return false, err
 	}
+	// A confirmation mail counts towards the user's limit of test messages, so that changing
+	// the profile address over and over cannot be used to mail many addresses.
+	slot, wait := a.testLimiter.take(user.ID, 1)
+	if slot == 0 {
+		a.core.ForgetTestAddressMail(user.ID)
+		mins := int(math.Ceil(wait.Minutes()))
+		if mins < 1 {
+			mins = 1
+		}
+		return false, echo.NewHTTPError(http.StatusTooManyRequests, a.i18n.Ts("campaigns.testRateLimited", "minutes", strconv.Itoa(mins)))
+	}
 	link := strings.TrimRight(a.urlCfg.RootURL, "/") + "/test-address/verify/" + token
 	body := "<p>" + html.EscapeString(a.i18n.Ts("email.testAddr.request", "name", user.Name, "username", user.Username)) + "</p>" +
 		`<p><a href="` + html.EscapeString(link) + `">` + html.EscapeString(a.i18n.T("email.testAddr.button")) + "</a></p>" +
@@ -156,6 +170,7 @@ func (a *App) requestOwnTestAddress(user auth.User) (bool, error) {
 		a.log.Printf("error sending the test address verification e-mail: %v", err)
 		// No mail went out, so the next try need not wait a minute.
 		a.core.ForgetTestAddressMail(user.ID)
+		a.testLimiter.giveBack(user.ID, slot, 1)
 		return false, echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("campaigns.testAddr.sendFailed"))
 	}
 	return true, nil
@@ -207,7 +222,10 @@ func plainAddress(s string) bool {
 // emails must have gone through cleanTestEmails. subs holds the subscribers the user may see,
 // by address. A subscriber the user may not see is not in subs, so it is handled like any
 // other address and the answer never tells whether it is a subscriber.
-func classifyTestRecipients(emails []string, subs map[string]models.Subscriber, own string, domains []string) ([]testRecipient, []string, error) {
+//
+// profile is the address on the user's profile. In a test domain it needs no confirmation,
+// and it is still the user's own: the default sample is named after the user.
+func classifyTestRecipients(emails []string, subs map[string]models.Subscriber, own, profile string, domains []string) ([]testRecipient, []string, error) {
 	if len(emails) > testMaxRecipients {
 		return nil, nil, errTestTooMany
 	}
@@ -226,7 +244,11 @@ func classifyTestRecipients(emails []string, subs map[string]models.Subscriber, 
 		case own != "" && e == own:
 			out = append(out, testRecipient{Email: e, Kind: testKindOwn})
 		case internalSender(e, domains):
-			out = append(out, testRecipient{Email: e, Kind: testKindInternal})
+			kind := testKindInternal
+			if profile != "" && e == profile {
+				kind = testKindOwn
+			}
+			out = append(out, testRecipient{Email: e, Kind: kind})
 		default:
 			rejected = append(rejected, e)
 		}
@@ -422,7 +444,8 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 	}
 
 	own := a.ownTestAddress(user)
-	recips, rejected, err := classifyTestRecipients(emails, subs, own, a.cfg.TestDomains)
+	profile := profileAddress(user)
+	recips, rejected, err := classifyTestRecipients(emails, subs, own, profile, a.cfg.TestDomains)
 	if err == errTestTooMany {
 		return nil, none, 0, tooMany
 	}
@@ -433,11 +456,13 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 		msg := a.i18n.T("campaigns.testRejected")
 		// The user's own address, not confirmed yet: its mailbox gets the link that
 		// confirms it, and the user is told to try again after that.
-		if profile := profileAddress(user); profile != "" && own == "" {
+		if profile != "" && own == "" {
 			for _, e := range rejected {
 				if e != profile {
 					continue
 				}
+				// A mail goes out now, or one went to this very address within the last
+				// minute: either way the user is told to open the link in it.
 				if _, err := a.requestOwnTestAddress(user); err != nil {
 					return nil, none, 0, err
 				}
@@ -469,7 +494,7 @@ func (a *App) testRecipients(c echo.Context, req *campReq, user auth.User) ([]te
 	// With the default sample a subscriber keeps their own values.
 	for i, r := range recips {
 		if r.Kind != testKindSubscriber || sample.Kind != testSampleDefault {
-			recips[i].Sub = buildTestSample(sample, r.Email, r.Email == own, user)
+			recips[i].Sub = buildTestSample(sample, r.Email, r.Kind == testKindOwn, user)
 		}
 	}
 	return recips, sample, slot, nil
@@ -514,11 +539,40 @@ func (a *App) auditTestSend(c echo.Context, campID int, campName string, sent []
 }
 
 // sampleCampaign returns the campaign a message to a sample subscriber is rendered with: a
-// copy with the dummy UUID, as a preview has, so that nothing in the message points at the
-// real campaign.
+// copy with the dummy UUID, as a preview has, so that nothing in the message is counted
+// against the real campaign.
 func sampleCampaign(camp models.Campaign) *models.Campaign {
 	camp.UUID = dummyUUID
 	return &camp
+}
+
+// sampleBrowserLink points the "view in browser" link of a sample message at the campaign
+// itself (real campaign UUID, dummy subscriber), which ViewCampaignMessage shows with the
+// demo subscriber. With both UUIDs dummy the link would lead nowhere. The tracking pixel
+// has the same path plus "/px.png" and is left alone.
+func (a *App) sampleBrowserLink(msg *manager.CampaignMessage, campUUID string) {
+	var (
+		from = []byte(fmt.Sprintf(a.urlCfg.MessageURL, dummyUUID, dummyUUID))
+		to   = []byte(fmt.Sprintf(a.urlCfg.MessageURL, campUUID, dummyUUID))
+		px   = []byte("/px.png")
+	)
+	msg.RewriteBody(func(b []byte) []byte {
+		out := make([]byte, 0, len(b))
+		for {
+			i := bytes.Index(b, from)
+			if i < 0 {
+				return append(out, b...)
+			}
+			out = append(out, b[:i]...)
+			rest := b[i+len(from):]
+			if bytes.HasPrefix(rest, px) {
+				out = append(out, from...)
+			} else {
+				out = append(out, to...)
+			}
+			b = rest
+		}
+	})
 }
 
 // previewSample reads the "sample" form value of a campaign preview and returns the

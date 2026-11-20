@@ -22,14 +22,15 @@ func (c *Core) TestAddressVerified(userID int, email string) (bool, error) {
 }
 
 // RequestTestAddress stores a new verification token for the user's address. It returns
-// false, and changes nothing, when a mail for this user went out less than a minute ago.
+// false, and changes nothing, when a mail to this same address went out less than a minute
+// ago. A changed address is mailed at once: the earlier mail went somewhere else.
 func (c *Core) RequestTestAddress(userID int, email, tokenHash string) (bool, error) {
 	var id int
 	err := c.db.Get(&id, `INSERT INTO axm_test_addresses AS t (user_id, email, token_hash, token_expires_at)
 		VALUES ($1, $2, $3, NOW() + INTERVAL '24 hours')
 		ON CONFLICT (user_id) DO UPDATE SET email = EXCLUDED.email, token_hash = EXCLUDED.token_hash,
 			token_expires_at = EXCLUDED.token_expires_at, verified_at = NULL, last_sent_at = NOW()
-		WHERE t.last_sent_at <= NOW() - INTERVAL '60 seconds'
+		WHERE t.email <> EXCLUDED.email OR t.last_sent_at <= NOW() - INTERVAL '60 seconds'
 		RETURNING user_id`, userID, strings.ToLower(email), tokenHash)
 	if err == sql.ErrNoRows {
 		return false, nil

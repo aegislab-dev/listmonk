@@ -746,8 +746,9 @@ func TestTestSendOwnAddressNeedsAConfirmedMailbox(t *testing.T) {
 
 	// Another address typed into the profile is not confirmed, and the old one is no longer
 	// the user's own. The confirmation of one user says nothing about another user.
+	// The new address is mailed at once, although the last mail of this user is seconds old:
+	// that one went to the other address.
 	e.db.MustExec(`UPDATE users SET email='victim@outside.invalid' WHERE id=$1`, e.ua)
-	e.db.MustExec(`UPDATE axm_test_addresses SET last_sent_at = NOW() - INTERVAL '2 minutes'`)
 	if code, rejected, pending := send("victim@outside.invalid"); code != 400 || !pending || !reflect.DeepEqual(rejected, []string{"victim@outside.invalid"}) {
 		t.Errorf("a new profile address: %d %v pending %v", code, rejected, pending)
 	}
@@ -756,6 +757,11 @@ func TestTestSendOwnAddressNeedsAConfirmedMailbox(t *testing.T) {
 	}
 	if len(e.sys.to("victim@outside.invalid")) != 1 {
 		t.Errorf("%d confirmation mails to the new address", len(e.sys.to("victim@outside.invalid")))
+	}
+	var pendingFor string
+	e.get(&pendingFor, `SELECT email FROM axm_test_addresses WHERE user_id=$1 AND verified_at IS NULL`, e.ua)
+	if pendingFor != "victim@outside.invalid" {
+		t.Errorf("the pending confirmation is for %q", pendingFor)
 	}
 	e.confirmOwn(e.ub, "victim@outside.invalid")
 	if code, _, _ := send("victim@outside.invalid"); code != 400 {
@@ -785,6 +791,106 @@ func TestTestSendOwnAddressNeedsAConfirmedMailbox(t *testing.T) {
 	// No confirmation mail and no token is on the audit log.
 	if n := e.count(`SELECT COUNT(*) FROM axm_audit_log l WHERE row_to_json(l)::TEXT LIKE '%@%'`); n != 0 {
 		t.Errorf("%d audit rows hold an address", n)
+	}
+}
+
+// The user's own address in a test domain needs no confirmation, and the default sample is
+// still named after the user, as for a confirmed address outside.
+func TestTestSendOwnAddressInATestDomain(t *testing.T) {
+	e := newTestSendEnv(t)
+	e.db.MustExec(`DELETE FROM axm_test_addresses`)
+	own := "tester@" + testSendDomain
+	e.db.MustExec(`UPDATE users SET email=$2, name='시험 담당자' WHERE id=$1`, e.ua, own)
+	if code, rejected := e.send(e.as(e.ua), []string{own, "design@" + testSendDomain}, ""); code != 200 || rejected != nil {
+		t.Fatalf("%d %v", code, rejected)
+	}
+	e.waitSent(2)
+	if m := e.msgr.to(own); len(m) != 1 || m[0].Subject != "시험 담당자 님께" || m[0].Subscriber.UUID != dummyUUID {
+		t.Errorf("own address in a test domain: %+v", m)
+	}
+	if m := e.msgr.to("design@" + testSendDomain); len(m) != 1 || m[0].Subject != "design 님께" {
+		t.Errorf("another address of the domain: %+v", m)
+	}
+	var detail string
+	e.get(&detail, `SELECT detail::TEXT FROM axm_audit_log WHERE action='campaign.test'`)
+	var d map[string]any
+	json.Unmarshal([]byte(detail), &d)
+	if d["own"] != 1.0 || d["internal"] != 1.0 || len(e.sys.all()) != 0 {
+		t.Errorf("audit %s, %d confirmation mails", detail, len(e.sys.all()))
+	}
+}
+
+// Confirmation mails count towards the user's limit of test messages.
+func TestTestSendConfirmationMailsUseTheLimit(t *testing.T) {
+	e := newTestSendEnv(t)
+	e.db.MustExec(`DELETE FROM axm_test_addresses`)
+	for i := 0; i < testRateLimit; i++ {
+		addr := fmt.Sprintf("v%d@outside.invalid", i)
+		e.db.MustExec(`UPDATE users SET email=$2 WHERE id=$1`, e.ua, addr)
+		if code, rejected := e.send(e.as(e.ua), []string{addr}, ""); code != 400 || len(rejected) != 1 {
+			t.Fatalf("address %d: %d %v", i, code, rejected)
+		}
+	}
+	e.db.MustExec(`UPDATE users SET email='one-more@outside.invalid' WHERE id=$1`, e.ua)
+	if code, _ := e.send(e.as(e.ua), []string{"one-more@outside.invalid"}, ""); code != http.StatusTooManyRequests {
+		t.Errorf("confirmation mail %d: %d", testRateLimit+1, code)
+	}
+	if n := len(e.sys.all()); n != testRateLimit {
+		t.Errorf("%d confirmation mails, want %d", n, testRateLimit)
+	}
+	// The refused request left nothing behind that would hold back a later one.
+	e.now = e.now.Add(testRateWindow)
+	if code, _ := e.send(e.as(e.ua), []string{"one-more@outside.invalid"}, ""); code != 400 || len(e.sys.to("one-more@outside.invalid")) != 1 {
+		t.Errorf("after the window: %d, %d mails", code, len(e.sys.to("one-more@outside.invalid")))
+	}
+}
+
+// The "view in browser" link of a sample message opens the campaign, shown as a preview
+// shows it, and counts nothing. The pixel, whose address starts the same, stays as it is.
+func TestSampleMessageBrowserLink(t *testing.T) {
+	e := newTestSendEnv(t)
+	e.a.urlCfg.MessageURL = "https://lists.example.invalid/campaign/%s/%s"
+	e.body = `<p>{{ .Subscriber.Name }}</p><a href="{{ MessageURL }}">view</a>{{ TrackView }}<a href="{{ MessageURL }}">again</a>`
+	internal := "design@" + testSendDomain
+	if code, _ := e.send(e.as(e.ua), []string{internal, e.mineEmail}, ""); code != 200 {
+		t.Fatal(code)
+	}
+	e.waitSent(2)
+	body := string(e.msgr.to(internal)[0].Body)
+	view := "https://lists.example.invalid/campaign/" + e.campUUID + "/" + dummyUUID
+	if strings.Count(body, `href="`+view+`"`) != 2 || !strings.Contains(body, "/campaign/"+dummyUUID+"/"+dummyUUID+"/px.png") ||
+		strings.Count(body, e.campUUID) != 2 {
+		t.Fatalf("sample message: %s", body)
+	}
+	// A subscriber's own message keeps its own link.
+	if b := string(e.msgr.to(e.mineEmail)[0].Body); strings.Count(b, "/campaign/"+e.campUUID+"/"+e.subUUID(e.mine)) != 3 {
+		t.Errorf("subscriber's message: %s", b)
+	}
+	show := func(camp, sub string) (int, string) {
+		req := httptest.NewRequest("GET", "/x", nil)
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(req, rec)
+		c.Echo().Renderer = nopRenderer{}
+		c.SetParamNames("campUUID", "subUUID")
+		c.SetParamValues(camp, sub)
+		if err := e.a.ViewCampaignMessage(c); err != nil {
+			t.Fatal(err)
+		}
+		return rec.Code, rec.Body.String()
+	}
+	e.db.MustExec(`UPDATE campaigns SET body='<p>Hello {{ .Subscriber.Name }}</p>{{ TrackView }}' WHERE id=$1`, e.camp)
+	code, page := show(e.campUUID, dummyUUID)
+	if code != 200 || !strings.HasPrefix(page, "<p>Hello Demo Subscriber</p>") || strings.Contains(page, e.campUUID) {
+		t.Errorf("the sample's browser link: %d %q", code, page)
+	}
+	if code, page := show(e.campUUID, e.subUUID(e.mine)); code != 200 || !strings.HasPrefix(page, "<p>Hello 김하늘</p>") || !strings.Contains(page, e.campUUID) {
+		t.Errorf("a subscriber's browser link: %d %q", code, page)
+	}
+	if code, _ := show(dummyUUID, dummyUUID); code != 404 {
+		t.Errorf("no campaign at all: %d", code)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM campaign_views`); n != 0 {
+		t.Errorf("%d views", n)
 	}
 }
 
