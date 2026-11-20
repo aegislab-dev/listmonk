@@ -321,6 +321,23 @@ export function allZones() {
   return [...set].filter(validZone);
 }
 
+// The name this browser lists for `tz`: an alias ("US/Eastern", or "Asia/Kolkata" where Chrome
+// lists "Asia/Calcutta") becomes the listed zone it stands for, so the picker marks it and the line
+// under the input leaves it out. A name the browser neither lists nor resolves stays as it is.
+let listedZones = null;
+export function canonicalZone(tz) {
+  if (!validZone(tz)) return tz;
+  if (!listedZones) listedZones = new Set(allZones());
+  if (listedZones.has(tz)) return tz;
+  try {
+    const c = new Intl.DateTimeFormat('en', { timeZone: tz }).resolvedOptions().timeZone;
+    if (c && listedZones.has(c)) return c;
+  } catch (e) {
+    // Keep the name as stored.
+  }
+  return tz;
+}
+
 // A zone typed by hand ("europe/paris"): its proper name when this browser knows it, else ''.
 // Lets a person pick a zone even where the browser cannot list zones.
 export function customZone(text) {
@@ -409,7 +426,7 @@ export function splitAttribs(attribs) {
   delete rest[TZ_ATTRIB];
   delete rest[TZ_ATTRIB_CAMEL];
   const stored = validZone(raw);
-  return { tz: stored ? raw : KST, stored, rest };
+  return { tz: stored ? canonicalZone(raw) : KST, stored, rest };
 }
 
 // The attribs to save: the zone is stored only for a scheduled campaign.

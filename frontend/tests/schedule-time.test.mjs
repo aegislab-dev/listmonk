@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  KST, KO_CITIES, TZ_ATTRIB, ZONE_COUNTRY, allZones, browserDiffers, customZone, browserZoneName, buildIndex, instantToWall, mergeAttribs, offsetLabel, otherZoneLines, searchIndex,
+  KST, KO_CITIES, TZ_ATTRIB, ZONE_COUNTRY, allZones, canonicalZone, browserDiffers, customZone, browserZoneName, buildIndex, instantToWall, mergeAttribs, offsetLabel, otherZoneLines, searchIndex,
   splitAttribs, tableKey, validZone, wallToInstant, zoneAbbr, zoneCity, zoneInfo, zoneParts,
 } from '../src/schedule-time.js';
 
@@ -126,6 +126,23 @@ test('search finds Korean names, cities, IANA names and abbreviations', () => {
   assert.ok(searchZones('뉴').includes('America/St_Johns'));
   assert.deepEqual(searchZones(''), []);
   assert.deepEqual(searchZones('zzzzqq'), []);
+});
+
+test('a stored alias becomes the zone the browser lists', () => {
+  assert.equal(canonicalZone('US/Eastern'), 'America/New_York');
+  assert.equal(canonicalZone('US/Pacific'), 'America/Los_Angeles');
+  assert.equal(canonicalZone('Asia/Seoul'), 'Asia/Seoul');
+  assert.equal(canonicalZone('UTC'), 'UTC');
+  // Whatever name this runtime lists for Kolkata, the alias lands on a listed one.
+  assert.ok(allZones().includes(canonicalZone('Asia/Kolkata')));
+  assert.equal(canonicalZone('Not/AZone'), 'Not/AZone');
+  const { tz, stored } = splitAttribs({ axm_send_tz: 'US/Eastern' });
+  assert.equal(tz, 'America/New_York');
+  assert.equal(stored, true);
+  assert.equal(splitAttribs({ axmSendTz: 'US/Pacific' }).tz, 'America/Los_Angeles');
+  // The line under the input then leaves New York out, as for the zone itself.
+  const t = new Date('2030-01-15T14:00:00Z');
+  assert.equal(otherZoneLines(t, tz).some((l) => l.tz === 'America/New_York'), false);
 });
 
 test('cities the browser lists under an older name are found by their names', () => {

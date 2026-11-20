@@ -37,6 +37,9 @@ describe('Scheduled send time zone', () => {
       listId = body.data.id;
       // 2030-01-15 is a Tuesday. 14:00 UTC is 09:00 in New York (EST) and 23:00 in Korea.
       make('ny', { send_at: '2030-01-15T14:00:00.000Z', attribs: { [KEY]: 'America/New_York' } });
+      // An alias of New York: the browser lists it as America/New_York.
+      make('alias', { send_at: '2030-01-15T14:00:00.000Z', attribs: { [KEY]: 'US/Eastern' } });
+      make('ime', { send_at: '2030-01-15T00:00:00.000Z' });
       make('nyattr', { send_at: '2030-01-15T14:00:00.000Z', attribs: { [KEY]: 'America/New_York', note: 'hi' } });
       // No zone stored: KST. 00:00 UTC is 09:00 in Korea.
       make('kst', { send_at: '2030-01-15T00:00:00.000Z' });
@@ -196,6 +199,49 @@ describe('Scheduled send time zone', () => {
     cy.wait('@create').its('request.body').should((b) => {
       expect(b.attribs[KEY]).to.eq('America/New_York');
       expect(new Date(b.send_at).toISOString()).to.eq('2030-02-01T00:00:00.000Z');
+    });
+  });
+
+  it('the Enter that ends a Korean (IME) composition picks nothing; the search follows the composed text', () => {
+    const cdp = (command, params) => Cypress.automation('remote:debugger:protocol', { command, params });
+    open('ime');
+    zoneButton().should('contain', 'KST');
+    zoneButton().click();
+    cy.get('[data-cy=send-tz-search]').focus();
+    // "파" typed, then "리" still being composed: the box shows 파리.
+    cy.then(() => cdp('Input.insertText', { text: '파' }));
+    cy.then(() => cdp('Input.imeSetComposition', { text: '리', selectionStart: 1, selectionEnd: 1 }));
+    cy.get('[data-cy=send-tz-search]').should('have.value', '파리');
+    // The results are for 파리 already, not for 파 (whose first match is Paraguay).
+    cy.get('[data-cy=send-tz-panel] [data-tz]').first().should('have.attr', 'data-tz', 'Europe/Paris');
+    // Enter while composing: nothing is picked.
+    cy.then(() => cdp('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+    }));
+    cy.then(() => cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }));
+    cy.get('[data-cy=send-tz-panel]').should('exist');
+    zoneButton().should('contain', 'KST');
+    // The composition ends with the same text; the next Enter picks Paris.
+    cy.then(() => cdp('Input.insertText', { text: '리' }));
+    cy.get('[data-cy=send-tz-search]').should('have.value', '파리').type('{enter}');
+    cy.get('[data-cy=send-tz-panel]').should('not.exist');
+    zoneButton().should('contain', 'UTC+1');
+    // 09:00 KST is 01:00 in Paris; the moment did not move.
+    pickerValue().should('have.value', '2030-01-15 01:00');
+  });
+
+  it('a stored alias (US/Eastern) is the listed zone: marked in the picker, left out of the line', () => {
+    open('alias');
+    pickerValue().should('have.value', '2030-01-15 09:00');
+    zoneButton().should('contain', 'EST');
+    cy.get('[data-cy=send-at-zones] .zone[data-tz="America/New_York"]').should('not.exist');
+    cy.get('[data-cy=send-at-zones] .zone').first().should('have.attr', 'data-tz', 'Asia/Seoul');
+    zoneButton().click();
+    cy.get('[data-cy=send-tz-panel] .tzp-row.is-selected').should('have.length.gte', 1).each(($r) => {
+      expect($r.attr('data-tz')).to.eq('America/New_York');
+    });
+    cy.get('[data-cy=send-tz-panel] .tzp-row[data-tz="America/New_York"]').each(($r) => {
+      expect($r.hasClass('is-selected'), 'every New York row is marked').to.eq(true);
     });
   });
 

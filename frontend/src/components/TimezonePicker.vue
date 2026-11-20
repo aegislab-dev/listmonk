@@ -12,9 +12,9 @@
     <div v-if="open" class="tzp-panel" role="dialog" :aria-label="$t('campaigns.sendTz.change')" data-cy="send-tz-panel" @keydown.esc.stop="close">
       <div class="tzp-search">
         <b-icon icon="magnify" size="is-small" />
-        <input ref="search" v-model="query" type="text" class="tzp-input" autocomplete="off" spellcheck="false"
+        <input ref="search" :value="query" type="text" class="tzp-input" autocomplete="off" spellcheck="false"
           :aria-label="$t('campaigns.sendTz.search')" :placeholder="$t('campaigns.sendTz.search')" data-cy="send-tz-search"
-          @keydown.enter.prevent.stop="pickFirst">
+          @input="query = $event.target.value" @keydown.enter="onEnter">
       </div>
 
       <div class="tzp-list">
@@ -114,8 +114,15 @@ export default Vue.extend({
     },
 
     // Enter in the search box picks the first match. The picker sits inside the campaign form, and
-    // Enter must never submit that form (it would save a new campaign).
-    pickFirst() {
+    // Enter must never submit that form (it would save a new campaign). The Enter that ends a Korean
+    // (IME) composition only finishes the word: it picks nothing, and the browser does not submit on it.
+    // The search follows the text while it is being composed (`@input`, not v-model, which waits for
+    // the composition to end), so the results always match what the box shows.
+    onEnter(e) {
+      if (e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.query = e.target.value;
       if (this.query.trim() && this.results.length) this.pick(this.results[0].tz);
     },
 
