@@ -70,6 +70,7 @@
               <span class="has-text-grey">
                 · {{ pf.replyTo ? $t('campaigns.sendConfirm.replyTo', { email: pf.replyTo }) : $t('campaigns.sendConfirm.replyOwn') }}
               </span>
+              <div v-if="pf.senderPerSubscriber" class="help" data-cy="send-from-per-subscriber">{{ $t('campaigns.sendConfirm.senderPerSubscriber') }}</div>
               <div v-if="stale" class="send-was" data-cy="send-from-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.from }) }}</div>
             </div>
           </div>
@@ -170,6 +171,17 @@ import dayjs from 'dayjs';
 import { richParts, sendConfirmModel, untilKey } from '../send-confirm';
 import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 
+// What a reading of the checks shows, to tell whether a new reading differs from the one on
+// screen. Not the times of the reading itself, nor the passed send time that the window adds
+// on its own a few seconds early.
+const fingerprint = (pf) => JSON.stringify([
+  pf.mode, pf.sendAt, pf.sendTz, pf.subject, pf.subjectNote, pf.fromEmail, pf.replyTo, pf.senderPerSubscriber,
+  pf.copies, pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.count, l.deleted]),
+  (pf.checks || []).filter((c) => c.key !== 'schedule.past').map((c) => [c.key, c.level, c.params]),
+  pf.tracking ? [pf.tracking.state, pf.tracking.view, pf.tracking.links && pf.tracking.links.untracked] : null,
+  pf.trackingError || '',
+]);
+
 // Seconds before the send time that the window already says it has passed.
 const PAST_MARGIN = 3000;
 
@@ -196,6 +208,7 @@ export default Vue.extend({
       error: '',
       busy: false,
       stale: false,
+      staleWhy: '',
       // What the window showed before the campaign changed under it: the count and each list's.
       prev: null,
       ctl: null,
@@ -260,7 +273,10 @@ export default Vue.extend({
       return {
         subject: pf.subject,
         from: `${pf.fromEmail} · ${reply}`,
-        when: this.model.when ? this.model.when.text : this.$t('campaigns.sendConfirm.now'),
+        // With its zone: the same wall time in another zone is another moment (LST-48 review).
+        when: this.model.when
+          ? `${this.model.when.text} · ${this.model.when.zone} · ${this.model.when.offset}`
+          : this.$t('campaigns.sendConfirm.now'),
       };
     },
 
@@ -297,7 +313,7 @@ export default Vue.extend({
     headSub() {
       if (this.state === 'loading') return this.$t('campaigns.sendConfirm.sub.loading');
       if (this.state === 'error') return this.$t('campaigns.sendConfirm.sub.error');
-      if (this.stale) return this.$t('campaigns.sendConfirm.sub.stale');
+      if (this.stale) return this.$t(this.staleWhy === 'checks' ? 'campaigns.sendConfirm.sub.staleChecks' : 'campaigns.sendConfirm.sub.stale');
       return this.$t(this.model.sub.key, this.model.sub.params);
     },
 
@@ -377,6 +393,28 @@ export default Vue.extend({
       }
     },
 
+    // Keeps what the window shows, to say what changed when it is read again (why: 'campaign'
+    // edited, or 'checks' that came out otherwise).
+    rememberShown(why) {
+      this.prev = {
+        ...this.rowTexts,
+        count: this.model.count,
+        lists: Object.fromEntries(this.pf.lists.map((l) => [`${l.id}`, l.count])),
+      };
+      this.stale = true;
+      this.staleWhy = why;
+    },
+
+    // Shows a reading that differs from the one on screen, as after a change.
+    showChanged(fresh, why) {
+      this.rememberShown(why);
+      this.skew = fresh.now ? new Date(fresh.now).getTime() - Date.now() : this.skew;
+      if (!Number.isFinite(this.skew)) this.skew = 0;
+      this.pf = fresh;
+      this.now = this.serverNow();
+      this.markPast();
+    },
+
     // blind: the checks could not be loaded; go on without them and without the
     // changed-since check (there is nothing that was shown).
     async confirm(blind) {
@@ -386,6 +424,16 @@ export default Vue.extend({
       if (!blind && this.markPast()) return;
       this.busy = true;
       try {
+        // Read the checks again: what they say can change without the campaign changing (a
+        // shared template edited elsewhere, a list that grew), which the server's updated_at
+        // check does not see. Anything shown that differs is shown again first (LST-48 review).
+        if (!blind) {
+          const fresh = await this.$api.getCampaignPreflight(this.campaignId).catch(() => null);
+          if (fresh && fingerprint(fresh) !== fingerprint(this.pf)) {
+            this.showChanged(fresh, fresh.updatedAt !== this.pf.updatedAt ? 'campaign' : 'checks');
+            return;
+          }
+        }
         const out = await this.$api.changeCampaignStatus(
           this.campaignId,
           this.statusToAsk(blind),
@@ -407,12 +455,7 @@ export default Vue.extend({
         }
         if (!blind && err.response && err.response.status === 409) {
           // Edited after it was read: show what is true now and ask again.
-          this.prev = {
-            ...this.rowTexts,
-            count: this.model.count,
-            lists: Object.fromEntries(this.pf.lists.map((l) => [`${l.id}`, l.count])),
-          };
-          this.stale = true;
+          this.rememberShown('campaign');
           this.busy = false;
           await this.load();
           return;

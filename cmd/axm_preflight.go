@@ -40,10 +40,13 @@ type preflightResponse struct {
 	SubjectNote string `json:"subject_note"`
 	// Copies: the addresses that the Cc and Bcc headers add to every mail. Each of them gets
 	// one copy per recipient.
-	Copies    []mailCopy `json:"copies"`
-	FromEmail string     `json:"from_email"`
-	ReplyTo   string     `json:"reply_to"`
-	SendAt    null.Time  `json:"send_at"`
+	Copies []mailCopy `json:"copies"`
+	// SenderPerSubscriber: the From or Reply-To header takes its value from each subscriber;
+	// the From and Reply-To shown are the example subscriber's.
+	SenderPerSubscriber bool      `json:"sender_per_subscriber"`
+	FromEmail           string    `json:"from_email"`
+	ReplyTo             string    `json:"reply_to"`
+	SendAt              null.Time `json:"send_at"`
 	// SendTZ is the time zone the send time was chosen in (LST-50, attribs.axm_send_tz),
 	// empty when none is stored (the screen then uses Korean time, as the picker does).
 	SendTZ string `json:"send_tz"`
@@ -212,14 +215,11 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		})
 	}
 
-	// Cc or Bcc addresses that come from each subscriber: every mail may also go to one more
-	// address of that person's, up to as many as there are recipients.
+	// Cc or Bcc addresses that come from each subscriber: every mail may also go to addresses
+	// of that person's, as many as the header gives for each (none, one or more): no count can
+	// be said (LST-48 review: an upper bound of one per mail was too low).
 	if f.CopiesPerSubscriber {
-		count := f.Total
-		if f.Mode == models.PreflightModeResume {
-			count = f.Remaining
-		}
-		add("mail.copiesPerSubscriber", models.PreflightWarn, map[string]any{"n": count})
+		add("mail.copiesPerSubscriber", models.PreflightWarn, nil)
 	}
 
 	if f.HeadersVary {
@@ -374,12 +374,12 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		env = e
 	}
 	subject, from, replyTo := sendEnvelope(env.Subject, from, camp.ReplyTo, camp.Messenger, server, env.Headers, policy)
-	copies := envelopeCopies(camp.Messenger, server, env.Headers)
-	// Addresses taken from each subscriber are not the example subscriber's to list.
-	perSubscriber := copiesPerSubscriber(a, sendCamp, statuses[0], env, server)
-	if perSubscriber {
-		copies = []mailCopy{}
-	}
+	// Headers taken from each subscriber: their example values are not the ones every mail
+	// gets. Cc and Bcc addresses of that kind are not listed (the fixed ones are).
+	perSub := perSubscriberHeaders(a, sendCamp, statuses[0], env, server)
+	copies := envelopeCopies(camp.Messenger, server, env.Headers, perSub)
+	perSubscriber := perSub["Cc"] || perSub["Bcc"]
+	senderPerSubscriber := perSub["From"] || perSub["Reply-To"]
 	subjectNote := ""
 	switch {
 	case env.Unrendered:
@@ -435,7 +435,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Copies: copies, Messenger: camp.Messenger, Mode: mode,
+		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Copies: copies, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
@@ -579,13 +579,16 @@ func chosenHeader(name string, server map[string]string, headers models.Headers)
 // envelopeCopies is what the Cc and Bcc headers add to every e-mail of a campaign: the
 // campaign's (rendered) headers, the first set that has the header, over the SMTP server's,
 // split on commas as the e-mail messenger does (internal/messenger/email). Each address once.
-func envelopeCopies(messenger string, server map[string]string, headers models.Headers) []mailCopy {
+func envelopeCopies(messenger string, server map[string]string, headers models.Headers, skip ...map[string]bool) []mailCopy {
 	out := []mailCopy{}
 	if messenger != "email" && !strings.HasPrefix(messenger, "email-") {
 		return out
 	}
 	seen := map[string]bool{}
 	for _, name := range []string{"Cc", "Bcc"} {
+		if len(skip) > 0 && skip[0][name] {
+			continue
+		}
 		val, ok := chosenHeader(name, server, headers)
 		if !ok {
 			continue
@@ -661,20 +664,32 @@ var otherSubscriber = models.Subscriber{
 	Attribs: models.JSON{"city": "Seoul"},
 }
 
-// copiesPerSubscriber tells whether the Cc or Bcc header that applies takes its addresses
-// from the subscriber, so that every mail may go to a different extra address that the
-// window cannot list (LST-48 review: Bcc {{ .Subscriber.Attribs.owner }} added one address
-// per person while the window showed none). It does when the value names .Subscriber or
-// renders otherwise for another example subscriber.
-func copiesPerSubscriber(a *App, camp models.Campaign, status string, first manager.Envelope, server map[string]string) bool {
-	for _, name := range []string{"Cc", "Bcc"} {
-		if v, ok := chosenHeader(name, server, camp.Headers); ok && strings.Contains(v, "{{") && strings.Contains(v, "Subscriber") {
-			return true
+// perSubscriberHeaders tells which of the Cc, Bcc, From and Reply-To headers that apply take
+// their value from the subscriber, so that it differs from mail to mail and the example
+// subscriber's value is not the one every recipient gets (LST-48 review: a Bcc of each
+// person's owner was not counted; From and Reply-To of each person's owner were shown as the
+// example's). A header does when its value names .Subscriber or renders otherwise for another
+// example subscriber. Each header is judged on its own: a fixed Cc stays listed beside a Bcc
+// taken from the subscriber.
+func perSubscriberHeaders(a *App, camp models.Campaign, status string, first manager.Envelope, server map[string]string) map[string]bool {
+	out := map[string]bool{}
+	other, err := a.manager.RenderedEnvelope(&camp, otherSubscriber, status)
+	for _, name := range []string{"Cc", "Bcc", "From", "Reply-To"} {
+		raw, ok := chosenHeader(name, server, camp.Headers)
+		if !ok {
+			continue
+		}
+		if strings.Contains(raw, "{{") && strings.Contains(raw, "Subscriber") {
+			out[name] = true
+			continue
+		}
+		if err == nil {
+			v1, _ := chosenHeader(name, server, first.Headers)
+			v2, _ := chosenHeader(name, server, other.Headers)
+			if v1 != v2 {
+				out[name] = true
+			}
 		}
 	}
-	e, err := a.manager.RenderedEnvelope(&camp, otherSubscriber, status)
-	if err != nil {
-		return false
-	}
-	return fmt.Sprint(envelopeCopies(camp.Messenger, server, e.Headers)) != fmt.Sprint(envelopeCopies(camp.Messenger, server, first.Headers))
+	return out
 }

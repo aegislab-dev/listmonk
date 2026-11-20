@@ -205,8 +205,10 @@ describe('Pre-send confirmation window', () => {
       content_type: 'richtext', body: '<p>Hello <a href="{{ UnsubscribeURL }}">leave</a></p>',
     });
     cy.get('[data-cy=send-ok]').click();
-    cy.wait('@status').its('response.statusCode').should('eq', 409);
+    // Read again before anything is sent: the change is shown first.
     ready();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('@status.all').should('have.length', 0);
     // The title says that it changed (approved design A7); the counts say what changed, in place.
     cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
     cy.get('[data-cy=send-sub]').should('contain', 'loaded again');
@@ -223,6 +225,53 @@ describe('Pre-send confirmation window', () => {
     cy.get(win).should('not.exist');
   });
 
+  it('is refused by the server (409) when only the campaign's change time moved, and reads again', () => {
+    cy.then(() => create('touch', { lists: [listX] }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('touch').find('[data-cy=btn-start]').click();
+    ready();
+    // Saved again as it is: nothing the window shows changes, but the campaign's updated_at does.
+    cy.then(() => cy.request(`/api/campaigns/${camp.touch}`).then(({ body }) => {
+      const c = body.data;
+      cy.request('PUT', `/api/campaigns/${camp.touch}`, {
+        name: c.name, subject: c.subject, type: 'regular', messenger: 'email', lists: [listX], content_type: c.content_type, body: c.body,
+      });
+    }));
+    cy.get('[data-cy=send-ok]').click();
+    cy.wait('@status').its('response.statusCode').should('eq', 409);
+    ready();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy=send-ok]').click();
+    cy.wait('@status').its('response.statusCode').should('eq', 200);
+    cy.get(win).should('not.exist');
+  });
+
+  it('shows again when the checks came out otherwise, though the campaign did not change', () => {
+    // A template of its own, with the pixel; it loses it while the window is open.
+    let tpl;
+    cy.request('POST', '/api/templates', {
+      name: `Send shared ${stamp}`, type: 'campaign',
+      body: '<html><body>{{ template "content" . }}<a href="{{ UnsubscribeURL }}">leave</a>{{ TrackView }}</body></html>',
+    }).then(({ body }) => { tpl = body.data.id; });
+    cy.then(() => create('shared', { lists: [listX], content_type: 'html', body: '<p>Hi</p>', template_id: tpl }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('shared').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-check-tracking]').should('have.attr', 'data-level', 'ok');
+    cy.then(() => cy.request('PUT', `/api/templates/${tpl}`, {
+      name: `Send shared ${stamp}`, type: 'campaign',
+      body: '<html><body>{{ template "content" . }}<a href="{{ UnsubscribeURL }}">leave</a></body></html>',
+    }));
+    cy.get('[data-cy=send-ok]').click();
+    ready();
+    cy.get('[data-cy=send-sub]').should('contain', 'The checks came out otherwise');
+    cy.get('[data-cy=send-checks]').should('contain', 'There is no view tracking');
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
   it('asks for what the campaign is now when the schedule was taken off under the window', () => {
     cy.visit('/admin/campaigns');
     cy.intercept('PUT', statusPath).as('status');
@@ -234,8 +283,10 @@ describe('Pre-send confirmation window', () => {
       content_type: 'richtext', body: '<p>Hello <a href="{{ UnsubscribeURL }}">leave</a></p>', send_at: null,
     });
     cy.get('[data-cy=send-ok]').click();
-    cy.wait('@status').its('response.statusCode').should('eq', 409);
+    // Read again before anything is sent: the change is shown first.
     ready();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('@status.all').should('have.length', 0);
     cy.get(`${win}[data-mode=start]`).should('exist');
     // The title says that it changed (A7); the time row and the button say what it does now.
     cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
@@ -410,6 +461,31 @@ describe('Pre-send confirmation window', () => {
     });
   });
 
+  it('shows a schedule moved to another zone at the same wall time as a change', () => {
+    cy.then(() => create('tzmove', {
+      lists: [listX], send_at: '2027-01-15T19:30:00Z', attribs: { axm_send_tz: 'America/New_York' },
+    }));
+    cy.visit('/admin/campaigns');
+    cy.intercept('PUT', statusPath).as('status');
+    row('tzmove').find('[data-cy=btn-schedule]').click();
+    ready();
+    // 14:30 in Los Angeles: the same wall time, three hours later.
+    cy.then(() => cy.request(`/api/campaigns/${camp.tzmove}`).then(({ body }) => {
+      const c = body.data;
+      cy.request('PUT', `/api/campaigns/${camp.tzmove}`, {
+        name: c.name, subject: c.subject, type: 'regular', messenger: 'email', lists: [listX], content_type: c.content_type,
+        body: c.body, send_at: '2027-01-15T22:30:00Z', attribs: { axm_send_tz: 'America/Los_Angeles' },
+      });
+    }));
+    cy.get('[data-cy=send-ok]').click();
+    ready();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy=send-schedule-zone]').should('contain', 'America/Los_Angeles');
+    cy.get('[data-cy=send-when-was]').should('contain', 'America/New_York');
+    cy.get('@status.all').should('have.length', 0);
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
   it('keeps time by the server clock when the browser clock is behind', () => {
     // The server says it is 2 minutes later than this browser thinks: its send time 60 s
     // from the browser's now has passed already.
@@ -499,8 +575,10 @@ describe('Pre-send confirmation window', () => {
       });
     });
     cy.get('[data-cy=send-ok]').click();
-    cy.wait('@status').its('response.statusCode').should('eq', 409);
+    // Read again before anything is sent: the change is shown first.
     ready();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('@status.all').should('have.length', 0);
     cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
     cy.get('[data-cy=send-campaign]').should('be.visible');
     cy.get('[data-cy=send-list-was]').should('contain', 'before: 1');

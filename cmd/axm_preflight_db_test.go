@@ -562,6 +562,30 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 		if json.Unmarshal(data, &o3) != nil || len(o3.Copies) != 0 || level(o3.Checks, "mail.copiesPerSubscriber") != "warn" {
 			t.Fatalf("bcc per subscriber: %s", data)
 		}
+		// A fixed Cc beside a Bcc taken from each subscriber: the Cc is still listed and counted,
+		// the Bcc is said to come from each subscriber (LST-48 review).
+		e.db.MustExec(`UPDATE campaigns SET headers='[{"Cc":"archive@crevasse.ai","Bcc":"{{ with .Subscriber.Attribs.owner }}{{ . }}{{ end }}"}]'::jsonb WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		o3.Copies, o3.Checks = nil, nil
+		if json.Unmarshal(data, &o3) != nil || len(o3.Copies) != 1 || o3.Copies[0].Address != "archive@crevasse.ai" ||
+			level(o3.Checks, "mail.copies") != "warn" || level(o3.Checks, "mail.copiesPerSubscriber") != "warn" {
+			t.Fatalf("fixed cc and bcc per subscriber: %s", data)
+		}
+		// From and Reply-To taken from each subscriber: said to be the example's.
+		var o4 struct {
+			PerSubscriber bool `json:"sender_per_subscriber"`
+		}
+		e.db.MustExec(`UPDATE campaigns SET headers='[{"From":"{{ with .Subscriber.Attribs.owner }}{{ . }}{{ else }}news@crevasse.ai{{ end }}","Reply-To":"desk@crevasse.ai"}]'::jsonb WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if json.Unmarshal(data, &o4) != nil || !o4.PerSubscriber {
+			t.Fatalf("from per subscriber: %s", data)
+		}
+		e.db.MustExec(`UPDATE campaigns SET headers='[{"Reply-To":"desk@crevasse.ai"}]'::jsonb WHERE id=$1`, e.campID)
+		o4.PerSubscriber = false
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		if json.Unmarshal(data, &o4) != nil || o4.PerSubscriber {
+			t.Fatalf("fixed reply-to: %s", data)
+		}
 		e.db.MustExec(`UPDATE campaigns SET subject='Check {{ .Campaign.Name }}', headers='[]'::jsonb WHERE id=$1`, e.campID)
 
 		// A Subject header replaces it: shown as the header, not as rendered.
