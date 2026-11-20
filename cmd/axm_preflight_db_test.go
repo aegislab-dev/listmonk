@@ -1182,6 +1182,11 @@ func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("link under a subscriber condition, present for the sample: %q", got)
 	}
+	// The address in a variable, printed only for the full edition: the same warning.
+	e.db.MustExec(`UPDATE campaigns SET body='{{ $leave := UnsubscribeURL . }}<p>News</p>{{ if not .Subscriber.Attribs.compact }}<a href="{{ $leave }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("address in a variable printed under a subscriber condition: %q", got)
+	}
 	// Printed always: a pass.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID)
 	if got := read(); got != "unsubscribe.missing=ok" {

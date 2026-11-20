@@ -38,6 +38,18 @@ func TestUnsubscribeReach(t *testing.T) {
 		{"in the alternative body", body, `<p>Hi</p>`, `Leave: {{ UnsubscribeURL }}`, true, true},
 		{"cannot be parsed", body, `{{ if }}`, "", false, false},
 		{"none", body, `<p>Hi {{ .Subscriber.Name }}</p>`, "", false, false},
+		// The review's case: the address in a variable, printed only for the full edition.
+		{"variable printed under a condition", body,
+			`{{ $leave := UnsubscribeURL . }}{{ if not .Subscriber.Attribs.compact }}<a href="{{ $leave }}">x</a>{{ end }}`, "", false, true},
+		{"variable printed plainly", body, `{{ $leave := UnsubscribeURL . }}<a href="{{ $leave }}">x</a>`, "", true, true},
+		{"variable never printed", body, `{{ $leave := UnsubscribeURL . }}<p>Hi</p>`, "", false, false},
+		{"given only under a condition, printed plainly", body,
+			`{{ $l := "" }}{{ if not .Subscriber.Attribs.compact }}{{ $l = UnsubscribeURL . }}{{ end }}<a href="{{ $l }}">x</a>`, "", false, true},
+		{"overwritten under a condition, printed plainly", body,
+			`{{ $l := UnsubscribeURL . }}{{ if .Subscriber.Attribs.compact }}{{ $l = "" }}{{ end }}<a href="{{ $l }}">x</a>`, "", false, true},
+		{"overwritten plainly", body, `{{ $l := UnsubscribeURL . }}{{ $l = "" }}<a href="{{ $l }}">x</a>`, "", false, false},
+		{"another function around it", body, `{{ printf "%.0s" UnsubscribeURL }}`, "", false, false},
+		{"in a condition only", body, `{{ if UnsubscribeURL }}<p>Hi</p>{{ end }}`, "", false, false},
 	} {
 		u, f := unsubscribeReach(tc.base, tc.src, tc.alt, funcs)
 		if u != tc.unconditional || f != tc.any {

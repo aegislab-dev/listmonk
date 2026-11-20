@@ -75,7 +75,16 @@ var builtins = func() map[string]any {
 type reachWalker struct {
 	trees       map[string]*parse.Tree
 	found, free bool
+	// holds is the variables that were given the unsubscribe address ($x := UnsubscribeURL .):
+	// holdAlways when on every path, holdSometimes when only under a condition (or overwritten
+	// under one).
+	holds map[string]int
 }
+
+const (
+	holdAlways = 1 + iota
+	holdSometimes
+)
 
 const maxTemplateDepth = 20
 
@@ -92,9 +101,35 @@ func (w *reachWalker) walk(n parse.Node, cond bool, depth int) {
 			w.walk(c, cond, depth)
 		}
 	case *parse.ActionNode:
-		if pipeCalls(x.Pipe, "UnsubscribeURL") {
+		// An assignment prints nothing: it only gives the variable the address (LST-48 review:
+		// {{ $leave := UnsubscribeURL . }} before a link printed only for the full edition).
+		if len(x.Pipe.Decl) > 0 || x.Pipe.IsAssign {
+			gives := w.givesAddress(x.Pipe) > 0
+			whole := w.givesAddress(x.Pipe) == holdAlways
+			if w.holds == nil {
+				w.holds = map[string]int{}
+			}
+			for _, v := range x.Pipe.Decl {
+				name, prev := v.Ident[0], w.holds[v.Ident[0]]
+				switch {
+				case gives && !cond && whole:
+					w.holds[name] = holdAlways
+				case gives && prev == holdAlways && whole:
+					// The address either way.
+				case gives:
+					w.holds[name] = holdSometimes
+				case !cond:
+					delete(w.holds, name)
+				case prev > 0:
+					// Overwritten on some path only.
+					w.holds[name] = holdSometimes
+				}
+			}
+			return
+		}
+		if g := w.givesAddress(x.Pipe); g > 0 {
 			w.found = true
-			w.free = w.free || !cond
+			w.free = w.free || (!cond && g == holdAlways)
 		}
 	case *parse.IfNode:
 		c := cond || dependent(x.Pipe)
@@ -148,14 +183,29 @@ func dependent(p *parse.PipeNode) bool {
 	return dep
 }
 
-func pipeCalls(p *parse.PipeNode, name string) bool {
-	hit := false
-	inspect(p, func(n parse.Node) {
-		if id, ok := n.(*parse.IdentifierNode); ok && id.Ident == name {
-			hit = true
+// givesAddress tells whether a pipeline's value is the unsubscribe address itself: its last
+// command is UnsubscribeURL (holdAlways), or a variable that was given it (that variable's
+// state). Anything else (another function around it, a field of it) gives 0: the check then
+// warns rather than passes.
+func (w *reachWalker) givesAddress(p *parse.PipeNode) int {
+	if p == nil || len(p.Cmds) == 0 {
+		return 0
+	}
+	last := p.Cmds[len(p.Cmds)-1]
+	if len(last.Args) == 0 {
+		return 0
+	}
+	switch a := last.Args[0].(type) {
+	case *parse.IdentifierNode:
+		if a.Ident == "UnsubscribeURL" {
+			return holdAlways
 		}
-	})
-	return hit
+	case *parse.VariableNode:
+		if len(a.Ident) == 1 && len(last.Args) == 1 {
+			return w.holds[a.Ident[0]]
+		}
+	}
+	return 0
 }
 
 func isDot(p *parse.PipeNode) bool {
