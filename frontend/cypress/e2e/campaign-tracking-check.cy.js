@@ -129,7 +129,9 @@ describe('Pre-send tracking check', () => {
     cy.get('[data-cy=tracking-view]').should('have.class', 'is-warn');
   });
 
-  it('warns in the start confirmation and does not start when cancelled', () => {
+  it('warns in the start confirmation; cancel keeps the edits saved and does not start', () => {
+    // 이강주 decision (11/22): the edits are saved before the window, cancel only cancels the send.
+    cy.get('input[name=subject]').clear().type('Tracking warn edited');
     cy.get('[data-cy=btn-start]').click();
     cy.get(warnLines).should('contain', 'There is no view tracking.')
       .and('contain', '2 links do not record clicks.');
@@ -137,7 +139,10 @@ describe('Pre-send tracking check', () => {
     cy.get('[data-cy=send-ok]').should('contain', 'anyway');
     cy.get('[data-cy=send-cancel]').click();
     cy.get('.modal.is-active').should('not.exist');
-    cy.request(`/api/campaigns/${ids.warn}`).its('body.data.status').should('eq', 'draft');
+    cy.request(`/api/campaigns/${ids.warn}`).then(({ body }) => {
+      expect(body.data.status).to.equal('draft');
+      expect(body.data.subject).to.equal('Tracking warn edited');
+    });
   });
 
   it('says "Schedule anyway" for a scheduled start', () => {
