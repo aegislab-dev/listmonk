@@ -156,12 +156,9 @@
           </tr>
         </table>
         <p>
-          <a v-if="serverRejected" :href="`/api/import/subscribers/rejected?id=${status.axmImportId}`" download="rejected-rows.csv"
+          <a :href="`/api/import/subscribers/rejected?id=${status.axmImportId}`" download="rejected-rows.csv"
             data-cy="import-rejected-download">
             {{ $t('import.rejected.download') }}
-          </a>
-          <a v-if="uploadExcluded" href="#" data-cy="import-excluded-download" @click.prevent="downloadUploadExcluded">
-            {{ $t('import.rejected.downloadExcluded') }}
           </a>
         </p>
       </b-message>
@@ -279,9 +276,6 @@ export default Vue.extend({
       addr: addressState(),
       addrExclude: addressExcludeDefaults(),
       sentCount: null,
-      // The rows the column mapping left out because of the address check, as they were when the
-      // upload started: counts by reason and their CSV, for the box that ends the import.
-      uploadExcluded: null,
       isProcessing: false,
       status: { status: '' },
       logs: [],
@@ -298,7 +292,6 @@ export default Vue.extend({
       this.addrExclude = addressExcludeDefaults();
       if (file && /\.csv$/i.test(file.name)) {
         this.sentCount = null;
-        this.uploadExcluded = null;
         this.parseCSV(true);
         this.loadAttributeKeys();
       }
@@ -431,24 +424,19 @@ export default Vue.extend({
     },
 
     // The rows the address check left out, with why: made here and never sent anywhere.
-    // The rows left out by the address check at this moment, counted by their first confirmed reason.
-    snapshotExcluded() {
-      const rows = this.excludedRows();
-      const counts = {};
-      let total = 0;
-      (this.csvExclude || []).forEach((row) => {
-        const code = ADDRESS_CONFIRMED.find((c) => (this.addr.issues[row] || []).includes(c));
-        if (!code) return;
-        counts[code] = (counts[code] || 0) + 1;
-        total += 1;
-      });
-      if (!rows.length) return null;
-      return {
-        counts,
-        total,
-        csv: excludedRowsCSV(rows, [this.$t('import.addr.csvRow'), this.$t('import.addr.csvEmail'), this.$t('import.addr.csvReason'), this.$t('import.rejected.csvSuggest')]),
-        name: `${this.form.file.name.replace(/\.csv$/i, '')}-excluded.csv`,
-      };
+    // The rows the column mapping leaves out for their address, with the reason the box shows:
+    // the address check's confirmed rows and the rows that are not an address at all.
+    excludedForServer() {
+      const out = (this.csvExclude || []).map((row) => ({
+        row,
+        email: this.addr.emails[row] || '',
+        reason: ADDRESS_CONFIRMED.find((c) => (this.addr.issues[row] || []).includes(c)),
+        suggest: (this.addr.suggest || {})[row] || '',
+      })).filter((x) => x.reason);
+      (this.csvInvalidRows || []).forEach(({ row, email }) => out.push({
+        row, email, reason: 'format', suggest: '',
+      }));
+      return out.slice(0, LIMITS.rows);
     },
 
     excludedRows() {
@@ -469,10 +457,6 @@ export default Vue.extend({
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-    },
-
-    downloadUploadExcluded() {
-      if (this.uploadExcluded) this.saveCSV(this.uploadExcluded.csv, this.uploadExcluded.name);
     },
 
     downloadExcluded() {
@@ -550,6 +534,7 @@ export default Vue.extend({
           } else if (data.type === 'convert') {
             this.csvBytes = data.bytes;
             this.csvSourceRows = data.sourceRows;
+            this.csvInvalidRows = data.invalidRows || [];
             Object.assign(this.csv, {
               busy: false,
               ready: !!data.bytes && data.summary.imported > 0,
@@ -783,7 +768,6 @@ export default Vue.extend({
         this.pollStatus();
         this.form.file = null;
         this.sentCount = null;
-        this.uploadExcluded = null;
       });
     },
 
@@ -819,7 +803,6 @@ export default Vue.extend({
       const mapped = this.isCSV && this.csv.mode === 'mapping';
       const file = mapped ? new File([this.csvBytes], `${this.form.file.name.replace(/\.csv$/i, '')}.csv`, { type: 'text/csv' }) : this.form.file;
       this.sentCount = mapped ? this.csv.summary.imported : null;
-      this.uploadExcluded = mapped ? this.snapshotExcluded() : null;
       if (mapped && !this.csv.headerHint) {
         try {
           rememberMapping(window.localStorage, this.csv.columns, this.csv.mapping);
@@ -836,6 +819,8 @@ export default Vue.extend({
         lists: this.form.lists.map((l) => l.id),
         overwrite_userinfo: this.form.overwriteUserInfo,
         overwrite_subscription_status: this.form.overwriteSubStatus,
+        // The rows the column mapping left out: the server counts them with its own refusals.
+        axm_excluded: mapped && this.form.mode === 'subscribe' ? this.excludedForServer() : [],
       }));
       params.set('file', file);
 
@@ -966,16 +951,16 @@ export default Vue.extend({
       };
     },
     // Rows the server refused because of the address rules (LST-53): counted by reason.
-    // The server's refusals and the rows the column mapping left out: one count by reason.
-    serverRejected() {
+    // The server's refusals and the rows the column mapping left out (sent with the upload).
+    rejectedTotal() {
       return (this.status && this.status.axmRejectedTotal) || 0;
     },
-    rejectedTotal() {
-      return this.serverRejected + (this.uploadExcluded ? this.uploadExcluded.total : 0);
+    // Rows the server itself refused: the ones the upload carried count as sent, not as missing.
+    serverRejected() {
+      return this.rejectedTotal - ((this.status && this.status.axmExcluded) || 0);
     },
     rejectedLines() {
-      const counts = { ...((this.status && this.status.axmRejected) || {}) };
-      Object.entries((this.uploadExcluded && this.uploadExcluded.counts) || {}).forEach(([k, v]) => { counts[k] = (counts[k] || 0) + v; });
+      const counts = (this.status && this.status.axmRejected) || {};
       return ['typo', 'provider', 'format', 'dead', 'nullmx', 'domain'].filter((r) => counts[r]).map((r) => ({ reason: r, count: counts[r] }));
     },
     countMismatch() {

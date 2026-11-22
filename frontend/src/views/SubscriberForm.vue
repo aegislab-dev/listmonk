@@ -246,10 +246,13 @@ export default Vue.extend({
 
   methods: {
     // Shows a refusal by the address rules under the address field. Any other error is a toast.
-    saveFailed(err) {
+    // sent is the address that was saved: an answer that arrives after another address was typed
+    // belongs to the address before and is dropped.
+    saveFailed(err, sent) {
       const res = err && err.response;
       const msg = (res && res.data && res.data.message) || String(err);
       if (res && res.headers && res.headers['x-axm-address-rule']) {
+        if (sent !== this.form.email) return;
         this.addrError = msg;
         this.addrSuggest = res.headers['x-axm-suggest'] || '';
         return;
@@ -332,7 +335,7 @@ export default Vue.extend({
         this.$emit('finished');
         this.$parent.close();
         this.$utils.toast(this.$t('globals.messages.created', { name: d.name }));
-      }).catch(this.saveFailed);
+      }).catch((err) => this.saveFailed(err, data.email));
     },
 
     updateSubscriber() {
@@ -374,7 +377,7 @@ export default Vue.extend({
         this.$emit('finished');
         this.$parent.close();
         this.$utils.toast(this.$t('globals.messages.updated', { name: d.name }));
-      }).catch(this.saveFailed);
+      }).catch((err) => this.saveFailed(err, data.email));
     },
 
     sendOptinConfirmation() {

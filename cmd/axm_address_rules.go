@@ -87,15 +87,13 @@ func (a *App) addressChangeError(c echo.Context, id int, email, current string) 
 // the addresses of the file.
 func (a *App) GetImportRejected(c echo.Context) error {
 	user := auth.GetUser(c)
-	a.importMu.Lock()
-	by := a.importBy
-	a.importMu.Unlock()
-	if !(by.ok && by.user.ID == user.ID) && !user.HasPerm(auth.PermSubscribersGetAll) {
-		return echo.NewHTTPError(http.StatusForbidden, a.i18n.Ts("globals.messages.permissionDenied", "name", "import"))
-	}
 	id, _ := strconv.Atoi(c.QueryParam("id"))
-	rows, ok := a.importer.GetRejected(id)
-	if !ok {
+	rows, err := a.importer.GetRejected(id, user.ID, user.HasPerm(auth.PermSubscribersGetAll))
+	switch err {
+	case nil:
+	case subimporter.ErrRejectedDenied:
+		return echo.NewHTTPError(http.StatusForbidden, a.i18n.Ts("globals.messages.permissionDenied", "name", "import"))
+	default:
 		return echo.NewHTTPError(http.StatusGone, a.i18n.T("import.rejected.gone"))
 	}
 

@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/knadh/listmonk/internal/addrcheck"
@@ -71,6 +72,8 @@ type Importer struct {
 	// importSeq numbers the imports of this process, so that a link to the rejected rows
 	// names the import it was shown for.
 	importSeq int
+	// owner is the user who started the import whose rejected rows are kept.
+	owner int
 	sync.RWMutex
 }
 
@@ -104,6 +107,22 @@ type SessionOpt struct {
 	OverwriteSubStatus bool   `json:"overwrite_subscription_status"`
 	Delim              string `json:"delim"`
 	ListIDs            []int  `json:"lists"`
+
+	// OwnerID is the user who starts the import (set by the handler, never read from the
+	// request): only that user, or one who reads every subscriber, gets the rejected rows.
+	OwnerID int `json:"-"`
+	// AxmExcluded are the rows the column mapping screen left out before the upload (a bad
+	// address, a dead domain, a misspelled one). They are counted with the rows the server
+	// refuses, so that the box that ends the import is complete and survives a reload.
+	AxmExcluded []ExcludedRow `json:"axm_excluded"`
+}
+
+// ExcludedRow is a row the column mapping left out. Row is its row in the file the person chose.
+type ExcludedRow struct {
+	Row     int    `json:"row"`
+	Email   string `json:"email"`
+	Reason  string `json:"reason"`
+	Suggest string `json:"suggest"`
 }
 
 // Status represents statistics from an ongoing import session.
@@ -116,6 +135,8 @@ type Status struct {
 	// by reason (the Reject* constants). AxmRejectedTotal is their sum. See FORK.md, LST-53.
 	AxmRejected      map[string]int `json:"axm_rejected,omitempty"`
 	AxmRejectedTotal int            `json:"axm_rejected_total"`
+	// AxmExcluded is how many of those rows the column mapping left out before the upload.
+	AxmExcluded int `json:"axm_excluded"`
 	// AxmImportID is the number of this import; the rejected rows are asked for by it.
 	AxmImportID int `json:"axm_import_id"`
 	logBuf           *bytes.Buffer
@@ -181,6 +202,9 @@ func New(opt Options, db *sql.DB, i *i18n.I18n) *Importer {
 		domainAllowlist: make(map[string]struct{}, len(opt.DomainAllowlist)),
 		status:          Status{Status: StatusNone, logBuf: bytes.NewBuffer(nil)},
 		stop:            make(chan bool, 1),
+		// A number no earlier run of the app has used, so that a link kept from before a
+		// restart cannot name another import.
+		importSeq: int(time.Now().Unix()),
 	}
 
 	// Domain blocklist.
@@ -220,7 +244,11 @@ func (im *Importer) NewSession(opt SessionOpt) (*Session, error) {
 	im.rejected = nil
 	im.importSeq++
 	im.status.AxmImportID = im.importSeq
+	im.owner = opt.OwnerID
 	im.Unlock()
+	for _, r := range opt.AxmExcluded {
+		im.rejectExcluded(r)
+	}
 
 	s := &Session{
 		im:       im,
@@ -252,19 +280,44 @@ func (im *Importer) GetStats() Status {
 		Imported:         im.status.Imported,
 		AxmRejected:      rejected,
 		AxmRejectedTotal: im.status.AxmRejectedTotal,
+		AxmExcluded:      im.status.AxmExcluded,
 		AxmImportID:      im.importSeq,
 	}
 }
 
-// GetRejected returns the rows that import number id refused. ok is false when id is not
-// the last import: a newer one has replaced the rows.
-func (im *Importer) GetRejected(id int) (rows []RejectedRow, ok bool) {
+// Why GetRejected gives no rows.
+var (
+	ErrRejectedGone   = errors.New("the rejected rows belong to a newer import")
+	ErrRejectedDenied = errors.New("the rejected rows belong to another user")
+)
+
+// GetRejected returns the rows that import number id refused. The owner and the number are
+// checked together with the rows, under one lock: a newer import cannot slip in between.
+// all lets a user who reads every subscriber take the rows of another user's import.
+func (im *Importer) GetRejected(id, userID int, all bool) ([]RejectedRow, error) {
 	im.RLock()
 	defer im.RUnlock()
 	if id != im.importSeq {
-		return nil, false
+		return nil, ErrRejectedGone
 	}
-	return append([]RejectedRow(nil), im.rejected...), true
+	if !all && userID != im.owner {
+		return nil, ErrRejectedDenied
+	}
+	return append([]RejectedRow(nil), im.rejected...), nil
+}
+
+// rejectExcluded counts a row that the column mapping left out. Only the reasons the screen
+// gives are taken, and the values are cut to what a download can carry.
+func (im *Importer) rejectExcluded(r ExcludedRow) {
+	switch r.Reason {
+	case RejectFormat, RejectProvider, RejectTypo, addrcheck.ClassDead, addrcheck.ClassNullMX:
+	default:
+		return
+	}
+	im.Lock()
+	im.status.AxmExcluded++
+	im.Unlock()
+	im.reject(RejectedRow{Row: r.Row, Email: clip(r.Email), Reason: r.Reason, Suggest: clip(r.Suggest)})
 }
 
 // reject counts a refused row and keeps it for the download.
@@ -603,6 +656,12 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		}
 
 		cols, err := rd.Read()
+		// The line of the file the row starts on: the reader skips blank lines, so counting
+		// rows would run behind a spreadsheet's numbers.
+		fileLine := 0
+		if err == nil {
+			fileLine, _ = rd.FieldPos(0)
+		}
 		if err == io.EOF {
 			break
 		} else if err != nil {
@@ -643,7 +702,7 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 			if _, ferr := utils.SanitizeEmail(rawEmail); ferr != nil || len(rawEmail) > 1000 {
 				reason = RejectFormat
 			}
-			s.im.reject(RejectedRow{Row: i + 1, Email: clip(rawEmail), Reason: reason})
+			s.im.reject(RejectedRow{Row: fileLine, Email: clip(rawEmail), Reason: reason})
 			continue
 		}
 
@@ -651,8 +710,9 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		// takes any address: the point there is to keep it out.
 		if s.opt.Mode == ModeSubscribe {
 			if reason, suggest := addrcheck.Rules(sub.Email); reason != "" {
-				s.log.Printf("skipping line %d: address refused (%s): %s", i, reason, sub.Email)
-				s.im.reject(RejectedRow{Row: i + 1, Email: sub.Email, Reason: reason, Suggest: suggest})
+				// The log is shown to everyone who may import: the address is not written to it.
+				s.log.Printf("skipping line %d: address refused (%s)", i, reason)
+				s.im.reject(RejectedRow{Row: fileLine, Email: sub.Email, Reason: reason, Suggest: suggest})
 				continue
 			}
 		}

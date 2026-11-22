@@ -68,6 +68,9 @@ func Classify(email string) Result {
 // validDomainLabels reports whether every label of the ASCII domain is 1 to 63 letters,
 // digits or hyphens that neither start nor end with a hyphen.
 func validDomainLabels(domain string) bool {
+	if len(domain) > 253 {
+		return false // RFC 5321 §4.5.3.1.2: 255 octets with the dot and length of a path
+	}
 	for _, label := range strings.Split(domain, ".") {
 		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
 			return false

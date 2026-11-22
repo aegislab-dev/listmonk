@@ -173,6 +173,7 @@ func TestAddressRulesImport(t *testing.T) {
 	e := newRulesEnv(t)
 	csvIn := "email,name\n" +
 		"good.one@example.invalid,Good One\n" +
+		"\n" + // a blank line: the reader skips it, the file line numbers do not
 		"kimlee@gmail.con,Typo One\n" +
 		"kimlee@gmaii.com,Typo Two\n" +
 		"kimlee@gmal.com,Typo Three\n" +
@@ -180,12 +181,12 @@ func TestAddressRulesImport(t *testing.T) {
 		"john_smith77@gmail.com,Underscore\n" +
 		"not-an-address,Broken\n" +
 		"kimlee@gmail.com,Good Two\n"
-	params := `{"mode":"subscribe","subscription_status":"confirmed","delim":",","lists":[` + itoa(e.aList) + `]}`
+	params := `{"mode":"subscribe","subscription_status":"confirmed","delim":",","lists":[` + itoa(e.aList) + `],"axm_excluded":[{"row":50,"email":"x@gone.invalid","reason":"dead"},{"row":51,"email":"y@z","reason":"bogus"}]}`
 	if code := e.importAs(e.as(e.superAdmin), params, csvIn); code != 200 {
 		t.Fatal(code)
 	}
 	st := e.lastImport
-	if st.Imported != 2 || st.AxmRejectedTotal != 6 ||
+	if st.Imported != 2 || st.AxmRejectedTotal != 7 || st.AxmExcluded != 1 || st.AxmRejected["dead"] != 1 ||
 		st.AxmRejected["typo"] != 3 || st.AxmRejected["provider"] != 2 || st.AxmRejected["format"] != 1 {
 		t.Fatalf("stats %+v", st)
 	}
@@ -226,13 +227,16 @@ func TestAddressRulesImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 7 || rows[0][0] != "Line (header = 1)" {
+	if len(rows) != 8 || rows[0][0] != "Line (header = 1)" {
 		t.Fatalf("csv: %v", rows)
 	}
-	if got := strings.Join(rows[1], "|"); got != "3|kimlee@gmail.con|Misspelled domain|kimlee@gmail.com" {
-		t.Fatalf("first refused row: %s", got)
+	if got := strings.Join(rows[1], "|"); got != "50|x@gone.invalid|No domain or mail server|" {
+		t.Fatalf("the row the column mapping left out comes first: %s", got)
 	}
-	if got := strings.Join(rows[6], "|"); got != "8|not-an-address|Malformed address|" {
+	if got := strings.Join(rows[2], "|"); got != "4|kimlee@gmail.con|Misspelled domain|kimlee@gmail.com" {
+		t.Fatalf("first refused row (line 4 of the file, after a blank line): %s", got)
+	}
+	if got := strings.Join(rows[7], "|"); got != "9|not-an-address|Malformed address|" {
 		t.Fatalf("last refused row: %s", got)
 	}
 	e.a.importer.Stop()

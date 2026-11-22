@@ -109,7 +109,7 @@ func TestRealDomainsAndLabelSyntax(t *testing.T) {
 			t.Errorf("%s: want a plain address, got %+v", e, r)
 		}
 	}
-	for _, e := range []string{"a@bad_domain.example", "a@-bad.example", "a@bad-.example", "a@bad..example", "a@" + strings.Repeat("x", 64) + ".example"} {
+	for _, e := range []string{"a@" + strings.Repeat(strings.Repeat("x", 60)+".", 5) + "example", "a@bad_domain.example", "a@-bad.example", "a@bad-.example", "a@bad..example", "a@" + strings.Repeat("x", 64) + ".example"} {
 		if r := Classify(e); !r.Format {
 			t.Errorf("%s: want format, got %+v", e, r)
 		}

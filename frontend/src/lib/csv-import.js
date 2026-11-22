@@ -265,6 +265,9 @@ export function convertCSV(parsed, mapping, existingKeys = [], standard = [], ex
   };
   const checkEmails = [];
   const checkRows = [];
+  // Every row left out for an address that is not one, with its source row (the download and
+  // the box that ends the import count them with the address check's rows).
+  const invalidRows = [];
   const examples = {
     empty: [], invalid: [], duplicate: [], malformed: parsed.issues.slice(0, 5),
   };
@@ -291,6 +294,7 @@ export function convertCSV(parsed, mapping, existingKeys = [], standard = [], ex
     if (issue) {
       summary[issue] += 1;
       if (examples[issue].length < 5) examples[issue].push({ row, email });
+      if (issue === 'invalid' && invalidRows.length < LIMITS.rows) invalidRows.push({ row, email });
       return;
     }
     seen.add(email);
@@ -340,7 +344,7 @@ export function convertCSV(parsed, mapping, existingKeys = [], standard = [], ex
   if (bytes.byteLength > LIMITS.output) throw new ImportError('outputLimit');
   summary.imported = output.length;
   return {
-    bytes, summary, examples, preview, sourceRows, values, checkEmails, checkRows,
+    bytes, summary, examples, preview, sourceRows, values, checkEmails, checkRows, invalidRows,
   };
 }
 
