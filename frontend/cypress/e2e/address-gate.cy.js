@@ -118,6 +118,9 @@ describe('Address rules', () => {
       + `map-dead-${stamp}@example.invalid,Dead\n`;
     cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(csv), fileName: 'mapped.csv', mimeType: 'text/csv' }, { force: true });
     cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    // A file with the standard header starts in as-is mode: ask for the review.
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
     // The preview names the corrected address and says what the Gmail rule is; no switch for these rows.
     cy.get('[data-cy=map-address-typo]').should('contain', `map-typo-${stamp}@gmail.com`);
     cy.get('[data-cy=map-address-provider]').should('contain', '6');
