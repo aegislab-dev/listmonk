@@ -922,6 +922,7 @@ export default Vue.extend({
       const {
         state, result, issues, emails,
       } = this.addr;
+      const suggest = this.addr.suggest || {};
       if (state === 'idle' || this.form.mode !== 'subscribe') return null;
       if (state !== 'done') return { state, busy: this.addressBusy };
       const rows = Object.keys(issues).map(Number).sort((a, b) => a - b);
@@ -929,6 +930,8 @@ export default Vue.extend({
       const confirmed = rows.filter((row) => has(row, ADDRESS_CONFIRMED));
       const confirmedSet = new Set(confirmed);
       const polling = this.addressPolling;
+      // A misspelled domain is shown with the address it should be.
+      const shownAddress = (row) => (suggest[row] ? `${emails[row]} → ${suggest[row]}` : emails[row]);
       const lines = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING, 'unknown'].map((name) => {
         const found = rows.filter((row) => issues[row].includes(name));
         let kind = 'unknown';
@@ -942,7 +945,7 @@ export default Vue.extend({
           kind,
           help,
           count: found.length,
-          examples: `${found.slice(0, 5).map((row) => `${row} (${emails[row]}${name === 'typo' && (this.addr.suggest || {})[row] ? ` → ${this.addr.suggest[row]}` : ''})`).join(', ')}${found.length > 5 ? ' …' : ''}`,
+          examples: `${found.slice(0, 5).map((row) => `${row} (${shownAddress(row)})`).join(', ')}${found.length > 5 ? ' …' : ''}`,
         };
       }).filter(({ count }) => count);
       return {
