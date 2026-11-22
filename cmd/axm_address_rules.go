@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/knadh/listmonk/internal/addrcheck"
+	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/labstack/echo/v4"
 )
@@ -17,32 +18,50 @@ import (
 // domains (gmail.con). DNS, the blocklist and bounce history come in a later step. Blocklisting
 // takes any address. See FORK.md.
 
-// addressRuleError returns the 400 for an address that breaks a rule, or nil. A malformed
-// address is refused by the sanitizing that runs before this.
-//
-// For a misspelled domain the corrected address is also sent in the X-Axm-Suggest header, so
-// that the form can offer a button without reading it out of the message. X-Axm-Address-Rule
-// tells the form that the 400 is an address rule and belongs under the address field.
-func (a *App) addressRuleError(c echo.Context, email string) error {
-	reason, suggest := addrcheck.Rules(email)
-	if reason == addrcheck.ClassProvider || reason == addrcheck.ClassTypo {
-		c.Response().Header().Set("X-Axm-Address-Rule", reason)
-	}
-	switch reason {
+// addressRule checks an address and returns the 400 for one that breaks a rule (nil when it
+// passes), with the rule and the suggested address. The address was sanitized by the caller.
+func (a *App) addressRule(email string) (err error, rule, suggest string) {
+	rule, suggest = addrcheck.Rules(email)
+	switch rule {
+	case addrcheck.ClassFormat:
+		// A domain that breaks the label syntax (an underscore, a hyphen at the end) gets here.
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("subscribers.invalidEmail")), rule, ""
 	case addrcheck.ClassProvider:
-		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("subscribers.addr.provider"))
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("subscribers.addr.provider")), rule, ""
 	case addrcheck.ClassTypo:
-		c.Response().Header().Set("X-Axm-Suggest", suggest)
-		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("subscribers.addr.typo", "suggest", suggest))
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("subscribers.addr.typo", "suggest", suggest)), rule, suggest
 	}
-	return nil
+	return nil, "", ""
+}
+
+// markAddressRule tells the form that a 400 is an address rule and belongs under the address
+// field (X-Axm-Address-Rule), and sends the corrected address of a misspelled domain
+// (X-Axm-Suggest) so that the form can offer a button without reading it out of the message.
+func markAddressRule(c echo.Context, rule, suggest string) {
+	if rule != addrcheck.ClassProvider && rule != addrcheck.ClassTypo {
+		return
+	}
+	c.Response().Header().Set("X-Axm-Address-Rule", rule)
+	if suggest != "" {
+		c.Response().Header().Set("X-Axm-Suggest", suggest)
+	}
+}
+
+// addressRuleError returns the 400 for an address that breaks a rule, or nil.
+func (a *App) addressRuleError(c echo.Context, email string) error {
+	err, rule, suggest := a.addressRule(email)
+	if err != nil {
+		markAddressRule(c, rule, suggest)
+	}
+	return err
 }
 
 // addressChangeError is addressRuleError for a save of the subscriber with the given id:
 // an address the person did not change is not checked, so that an old subscriber can still
-// be edited. current is the address the subscriber has now, or "" to read it.
+// be edited, and an error that has nothing to do with the address carries no address header.
+// current is the address the subscriber has now, or "" to read it.
 func (a *App) addressChangeError(c echo.Context, id int, email, current string) error {
-	err := a.addressRuleError(c, email)
+	err, rule, suggest := a.addressRule(email)
 	if err == nil {
 		return nil
 	}
@@ -56,13 +75,29 @@ func (a *App) addressChangeError(c echo.Context, id int, email, current string) 
 	if strings.EqualFold(strings.TrimSpace(current), strings.TrimSpace(email)) {
 		return nil
 	}
+	markAddressRule(c, rule, suggest)
 	return err
 }
 
 // GetImportRejected sends the rows of the last import that the address rules refused, as
 // CSV, so that a person can correct them and upload them again.
+//
+// The rows are the last import's, asked for by its number (?id=, from the import status),
+// and only the user who started it, or one who reads every subscriber, gets them: they hold
+// the addresses of the file.
 func (a *App) GetImportRejected(c echo.Context) error {
-	rows := a.importer.GetRejected()
+	user := auth.GetUser(c)
+	a.importMu.Lock()
+	by := a.importBy
+	a.importMu.Unlock()
+	if !(by.ok && by.user.ID == user.ID) && !user.HasPerm(auth.PermSubscribersGetAll) {
+		return echo.NewHTTPError(http.StatusForbidden, a.i18n.Ts("globals.messages.permissionDenied", "name", "import"))
+	}
+	id, _ := strconv.Atoi(c.QueryParam("id"))
+	rows, ok := a.importer.GetRejected(id)
+	if !ok {
+		return echo.NewHTTPError(http.StatusGone, a.i18n.T("import.rejected.gone"))
+	}
 
 	c.Response().Header().Set("Content-Type", "text/csv; charset=utf-8")
 	c.Response().Header().Set("Content-Disposition", `attachment; filename="rejected-rows.csv"`)

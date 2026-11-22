@@ -48,6 +48,10 @@ func Classify(email string) Result {
 		return Result{Email: clean, Domain: strings.ToLower(host), Role: isRole(local), Literal: true}
 	}
 	domain := asciiDomain(host)
+	if !validDomainLabels(domain) {
+		// RFC 5321 §4.1.2: labels are letters, digits and hyphens, none starting or ending with one.
+		return Result{Email: clean, Format: true}
+	}
 	r := Result{
 		Email:      clean,
 		Domain:     domain,
@@ -59,6 +63,23 @@ func Classify(email string) Result {
 		r.Typo, r.Suggest = true, s
 	}
 	return r
+}
+
+// validDomainLabels reports whether every label of the ASCII domain is 1 to 63 letters,
+// digits or hyphens that neither start nor end with a hyphen.
+func validDomainLabels(domain string) bool {
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // asciiDomain turns an internationalised domain into the name that is looked up in DNS.

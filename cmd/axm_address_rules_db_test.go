@@ -62,6 +62,7 @@ func (e *boundaryEnv) save(h echo.HandlerFunc, method string, id int, body strin
 	if err := h(c); err != nil {
 		if he, ok := err.(*echo.HTTPError); ok {
 			e.lastSuggest = rec.Header().Get("X-Axm-Suggest")
+			e.lastRule = rec.Header().Get("X-Axm-Address-Rule")
 			msg, _ := he.Message.(string)
 			return he.Code, msg
 		}
@@ -107,6 +108,17 @@ func TestAddressRulesSingleAdd(t *testing.T) {
 		}
 	}
 
+	// A domain that breaks the label syntax is refused as malformed, and a real company's
+	// domain is not taken for a misspelling.
+	for _, email := range []string{"review@bad_domain.example", "review@-bad.example", "review@bad-.example"} {
+		if code, _ := add(email); code != http.StatusBadRequest {
+			t.Errorf("%s: want 400, got %d", email, code)
+		}
+	}
+	if code, msg := add("naber@naber.com"); code != http.StatusOK {
+		t.Errorf("naber.com is a real domain: %d %q", code, msg)
+	}
+
 	// Good addresses go in; a name with a tag and Workspace domains too.
 	for _, email := range []string{"kim.lee@gmail.com", "kimlee+news@gmail.com", "ab@workspace-customer.example", "kim_lee@company.co"} {
 		if code, msg := add(email); code != http.StatusOK {
@@ -140,6 +152,10 @@ func TestAddressRulesEdit(t *testing.T) {
 	}
 	if r := e.row(id); r.Email != "old@gmail.con" {
 		t.Fatalf("the address changed: %+v", r)
+	}
+	// An error that has nothing to do with the address carries no address header.
+	if code, _ := e.save(e.a.PatchSubscriber, "PATCH", id, `{"name":"`+strings.Repeat("x", 2500)+`"}`); code != http.StatusBadRequest || e.lastRule != "" || e.lastSuggest != "" {
+		t.Fatalf("a long name on an old address: %d rule %q suggest %q", code, e.lastRule, e.lastSuggest)
 	}
 	// PATCH: only the name: allowed. A new bad address: refused. A good new address: allowed.
 	if code, msg := e.save(e.a.PatchSubscriber, "PATCH", id, `{"name":"Patched"}`); code != http.StatusOK {
@@ -177,24 +193,46 @@ func TestAddressRulesImport(t *testing.T) {
 		t.Fatal("only the good rows are stored")
 	}
 
-	// The refused rows come back as CSV with the row number, the reason and the suggestion.
-	req := httptest.NewRequest("GET", "/api/import/subscribers/rejected", nil)
-	rec := httptest.NewRecorder()
-	if err := e.a.GetImportRejected(echo.New().NewContext(req, rec)); err != nil {
-		t.Fatal(err)
+	// The refused rows come back as CSV with the file line, the reason and the suggestion.
+	get := func(u auth.User, id int) (int, string) {
+		req := httptest.NewRequest("GET", "/api/import/subscribers/rejected?id="+itoa(id), nil)
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(req, rec)
+		c.Set(auth.UserHTTPCtxKey, u)
+		if err := e.a.GetImportRejected(c); err != nil {
+			he := err.(*echo.HTTPError)
+			return he.Code, ""
+		}
+		return rec.Code, rec.Body.String()
 	}
-	body := strings.TrimPrefix(rec.Body.String(), "\xEF\xBB\xBF")
+	id := st.AxmImportID
+	if id == 0 {
+		t.Fatal("the status carries the import number")
+	}
+	// Only the user who started the import (or one who reads all subscribers) gets the rows;
+	// an import that was replaced is gone.
+	if code, _ := get(e.as(e.ub), id); code != http.StatusForbidden {
+		t.Fatalf("another user: %d", code)
+	}
+	if code, _ := get(e.as(e.superAdmin), id+1); code != http.StatusGone {
+		t.Fatalf("a wrong import number: %d", code)
+	}
+	code, body := get(e.as(e.superAdmin), id)
+	if code != 200 {
+		t.Fatal(code)
+	}
+	body = strings.TrimPrefix(body, "\xEF\xBB\xBF")
 	rows, err := csv.NewReader(strings.NewReader(body)).ReadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 7 || rows[0][0] != "Row" {
+	if len(rows) != 7 || rows[0][0] != "Line (header = 1)" {
 		t.Fatalf("csv: %v", rows)
 	}
-	if got := strings.Join(rows[1], "|"); got != "2|kimlee@gmail.con|Misspelled domain|kimlee@gmail.com" {
+	if got := strings.Join(rows[1], "|"); got != "3|kimlee@gmail.con|Misspelled domain|kimlee@gmail.com" {
 		t.Fatalf("first refused row: %s", got)
 	}
-	if got := strings.Join(rows[6], "|"); got != "7|not-an-address|Malformed address|" {
+	if got := strings.Join(rows[6], "|"); got != "8|not-an-address|Malformed address|" {
 		t.Fatalf("last refused row: %s", got)
 	}
 	e.a.importer.Stop()

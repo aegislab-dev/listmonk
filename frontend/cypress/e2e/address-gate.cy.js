@@ -84,10 +84,54 @@ describe('Address rules', () => {
       expect(d.imported).to.eq(2);
       expect(d.axm_rejected_total).to.eq(4);
     });
-    cy.request('/api/import/subscribers/rejected').then((resp) => {
+    cy.request('/api/import/subscribers').its('body.data.axm_import_id').then((id) => cy.request(`/api/import/subscribers/rejected?id=${id}`)).then((resp) => {
       expect(resp.headers['content-type']).to.contain('text/csv');
       expect(resp.body).to.contain('gate-typo-a@gmail.con').and.contain('gate-typo-a@gmail.com');
     });
-    cy.get('[data-cy=import-rejected-download]').should('have.attr', 'href', '/api/import/subscribers/rejected');
+    cy.get('[data-cy=import-rejected-download]').should('have.attr', 'href').and('match', /^\/api\/import\/subscribers\/rejected\?id=\d+$/);
+  });
+
+  it('shows the rows the column mapping left out in the box that ends the import, and the server rows by the import number', () => {
+    const stamp = Date.now();
+    cy.intercept('POST', '/api/subscribers/address-check', (req) => req.reply({
+      data: {
+        total: req.body.emails.length,
+        risky: 3,
+        confirmed: 3,
+        warning: 0,
+        unknown: 0,
+        pending: 0,
+        classes: {},
+        issues: { 1: ['typo'], 2: ['provider'], 3: ['dead'] },
+        suggest: { 1: `map-typo-${stamp}@gmail.com` },
+      },
+    }));
+    cy.loginAndVisit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('.list-selector input').type(listName);
+    cy.contains('.list-selector .autocomplete a', listName).click();
+    const csv = 'email,name\n'
+      + `map-good-${stamp}@example.invalid,Good\n`
+      + `map-typo-${stamp}@gmail.con,Typo\n`
+      + 'abc@gmail.com,Short\n'
+      + `map-dead-${stamp}@example.invalid,Dead\n`;
+    cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(csv), fileName: 'mapped.csv', mimeType: 'text/csv' }, { force: true });
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    // The preview names the corrected address and says what the Gmail rule is; no switch for these rows.
+    cy.get('[data-cy=map-address-typo]').should('contain', `map-typo-${stamp}@gmail.com`);
+    cy.get('[data-cy=map-address-provider]').should('contain', '6');
+    cy.get('[data-cy=map-address-exclude-confirmed]').should('not.exist');
+    cy.get('[data-cy=map-address-fixed]').should('contain', '3');
+    submit().should('not.be.disabled').click();
+    cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+    // The box counts the three left out rows by reason and keeps their CSV; nothing is refused by the server.
+    cy.get('[data-cy=import-rejected]').should('contain', '3');
+    cy.get('[data-cy=import-rejected-typo]').should('contain', '1');
+    cy.get('[data-cy=import-rejected-provider]').should('contain', '1');
+    cy.get('[data-cy=import-rejected-dead]').should('contain', '1');
+    cy.get('[data-cy=import-excluded-download]').should('exist');
+    cy.get('[data-cy=import-rejected-download]').should('not.exist');
+    cy.get('[data-cy=map-mismatch]').should('not.exist');
   });
 });

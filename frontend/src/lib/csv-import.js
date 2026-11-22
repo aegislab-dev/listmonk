@@ -383,14 +383,12 @@ export function rememberMapping(storage, columns, mapping, old = readMemory(stor
 }
 
 // The address check: which classes mean the mail is certain to bounce, and which only warn.
-export const ADDRESS_CONFIRMED = ['format', 'dead', 'nullmx'];
-// Refused by the server whatever the switch says (LST-53), so the upload always leaves them out.
-export const ADDRESS_RULES = ['provider', 'typo'];
+export const ADDRESS_CONFIRMED = ['format', 'provider', 'typo', 'dead', 'nullmx'];
 export const ADDRESS_WARNING = ['disposable', 'role'];
 
 // The source rows the address check leaves out. rowIssues maps a source row to its classes.
 export function addressExcludedRows(rowIssues, { confirmed = true, warning = false } = {}) {
-  const drop = [...ADDRESS_RULES, ...(confirmed ? ADDRESS_CONFIRMED : []), ...(warning ? ADDRESS_WARNING : [])];
+  const drop = [...(confirmed ? ADDRESS_CONFIRMED : []), ...(warning ? ADDRESS_WARNING : [])];
   return Object.keys(rowIssues).map(Number).filter((row) => rowIssues[row].some((c) => drop.includes(c))).sort((a, b) => a - b);
 }
 

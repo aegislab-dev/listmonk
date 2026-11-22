@@ -37,7 +37,7 @@
         <b-field :label="$t('subscribers.email')" label-position="on-border"
           :type="addrError ? 'is-danger' : ''" :message="addrError">
           <b-input :maxlength="200" v-model="form.email" name="email" :ref="'focus'"
-            :placeholder="$t('subscribers.email')" required :disabled="profileLocked" @input="addrError = ''" />
+            :placeholder="$t('subscribers.email')" required :disabled="profileLocked" @input="clearAddrRefusal" />
         </b-field>
         <p v-if="addrSuggest" class="addr-suggest" data-cy="addr-suggest">
           <b-button size="is-small" type="is-primary" outlined data-cy="addr-suggest-apply" @click="applySuggest">
@@ -255,6 +255,12 @@ export default Vue.extend({
         return;
       }
       this.$utils.toast(msg, 'is-danger');
+    },
+
+    // Typing another address ends the refusal of the one before, with its suggestion.
+    clearAddrRefusal() {
+      this.addrError = '';
+      this.addrSuggest = '';
     },
 
     applySuggest() {

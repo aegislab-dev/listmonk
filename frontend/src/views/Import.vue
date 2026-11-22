@@ -156,8 +156,12 @@
           </tr>
         </table>
         <p>
-          <a href="/api/import/subscribers/rejected" download="rejected-rows.csv" data-cy="import-rejected-download">
+          <a v-if="serverRejected" :href="`/api/import/subscribers/rejected?id=${status.axmImportId}`" download="rejected-rows.csv"
+            data-cy="import-rejected-download">
             {{ $t('import.rejected.download') }}
+          </a>
+          <a v-if="uploadExcluded" href="#" data-cy="import-excluded-download" @click.prevent="downloadUploadExcluded">
+            {{ $t('import.rejected.downloadExcluded') }}
           </a>
         </p>
       </b-message>
@@ -188,7 +192,7 @@ import LogView from '../components/LogView.vue';
 import ImportColumnMapper from '../components/ImportColumnMapper.vue';
 import AddressCheck from '../components/AddressCheck.vue';
 import {
-  LIMITS, readMemory, rememberMapping, ADDRESS_CONFIRMED, ADDRESS_RULES, ADDRESS_WARNING, addressExcludedRows, excludedRowsCSV,
+  LIMITS, readMemory, rememberMapping, ADDRESS_CONFIRMED, ADDRESS_WARNING, addressExcludedRows, excludedRowsCSV,
 } from '../lib/csv-import';
 
 // While DNS lookups are unfinished the address check is asked again, this often and this many times.
@@ -275,6 +279,9 @@ export default Vue.extend({
       addr: addressState(),
       addrExclude: addressExcludeDefaults(),
       sentCount: null,
+      // The rows the column mapping left out because of the address check, as they were when the
+      // upload started: counts by reason and their CSV, for the box that ends the import.
+      uploadExcluded: null,
       isProcessing: false,
       status: { status: '' },
       logs: [],
@@ -291,6 +298,7 @@ export default Vue.extend({
       this.addrExclude = addressExcludeDefaults();
       if (file && /\.csv$/i.test(file.name)) {
         this.sentCount = null;
+        this.uploadExcluded = null;
         this.parseCSV(true);
         this.loadAttributeKeys();
       }
@@ -423,22 +431,55 @@ export default Vue.extend({
     },
 
     // The rows the address check left out, with why: made here and never sent anywhere.
-    downloadExcluded() {
-      const reasons = [...ADDRESS_CONFIRMED, ...ADDRESS_RULES, ...ADDRESS_WARNING];
-      const rows = (this.csvExclude || []).map((row) => ({
+    // The rows left out by the address check at this moment, counted by their first confirmed reason.
+    snapshotExcluded() {
+      const rows = this.excludedRows();
+      const counts = {};
+      let total = 0;
+      (this.csvExclude || []).forEach((row) => {
+        const code = ADDRESS_CONFIRMED.find((c) => (this.addr.issues[row] || []).includes(c));
+        if (!code) return;
+        counts[code] = (counts[code] || 0) + 1;
+        total += 1;
+      });
+      if (!rows.length) return null;
+      return {
+        counts,
+        total,
+        csv: excludedRowsCSV(rows, [this.$t('import.addr.csvRow'), this.$t('import.addr.csvEmail'), this.$t('import.addr.csvReason'), this.$t('import.rejected.csvSuggest')]),
+        name: `${this.form.file.name.replace(/\.csv$/i, '')}-excluded.csv`,
+      };
+    },
+
+    excludedRows() {
+      const reasons = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING];
+      return (this.csvExclude || []).map((row) => ({
         row,
         email: this.addr.emails[row] || '',
         reasons: (this.addr.issues[row] || []).filter((c) => reasons.includes(c)).map((c) => this.$t(`addressCheck.class.${c}`)),
         suggest: (this.addr.suggest || {})[row] || '',
       }));
-      const csv = excludedRowsCSV(rows, [this.$t('import.addr.csvRow'), this.$t('import.addr.csvEmail'), this.$t('import.addr.csvReason'), this.$t('import.rejected.csvSuggest')]);
+    },
+
+    saveCSV(csv, name) {
       const link = document.createElement('a');
       link.href = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' }));
-      link.download = `${this.form.file.name.replace(/\.csv$/i, '')}-excluded.csv`;
+      link.download = name;
       document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    },
+
+    downloadUploadExcluded() {
+      if (this.uploadExcluded) this.saveCSV(this.uploadExcluded.csv, this.uploadExcluded.name);
+    },
+
+    downloadExcluded() {
+      this.saveCSV(
+        excludedRowsCSV(this.excludedRows(), [this.$t('import.addr.csvRow'), this.$t('import.addr.csvEmail'), this.$t('import.addr.csvReason'), this.$t('import.rejected.csvSuggest')]),
+        `${this.form.file.name.replace(/\.csv$/i, '')}-excluded.csv`,
+      );
     },
 
     async parseCSV(initial = false, manualDelimiter = false) {
@@ -742,6 +783,7 @@ export default Vue.extend({
         this.pollStatus();
         this.form.file = null;
         this.sentCount = null;
+        this.uploadExcluded = null;
       });
     },
 
@@ -777,6 +819,7 @@ export default Vue.extend({
       const mapped = this.isCSV && this.csv.mode === 'mapping';
       const file = mapped ? new File([this.csvBytes], `${this.form.file.name.replace(/\.csv$/i, '')}.csv`, { type: 'text/csv' }) : this.form.file;
       this.sentCount = mapped ? this.csv.summary.imported : null;
+      this.uploadExcluded = mapped ? this.snapshotExcluded() : null;
       if (mapped && !this.csv.headerHint) {
         try {
           rememberMapping(window.localStorage, this.csv.columns, this.csv.mapping);
@@ -884,23 +927,22 @@ export default Vue.extend({
       const rows = Object.keys(issues).map(Number).sort((a, b) => a - b);
       const has = (row, classes) => issues[row].some((c) => classes.includes(c));
       const confirmed = rows.filter((row) => has(row, ADDRESS_CONFIRMED));
-      const ruleRows = rows.filter((row) => has(row, ADDRESS_RULES));
-      const confirmedSet = new Set([...confirmed, ...ruleRows]);
+      const confirmedSet = new Set(confirmed);
       const polling = this.addressPolling;
-      const lines = [...ADDRESS_CONFIRMED, ...ADDRESS_RULES, ...ADDRESS_WARNING, 'unknown'].map((name) => {
+      const lines = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING, 'unknown'].map((name) => {
         const found = rows.filter((row) => issues[row].includes(name));
         let kind = 'unknown';
-        if (ADDRESS_CONFIRMED.includes(name) || ADDRESS_RULES.includes(name)) kind = 'confirmed';
+        if (ADDRESS_CONFIRMED.includes(name)) kind = 'confirmed';
         else if (ADDRESS_WARNING.includes(name)) kind = 'warning';
         let help = '';
-        if (name === 'role') help = this.$t('addressCheck.classHelp.role');
+        if (['role', 'provider', 'typo'].includes(name)) help = this.$t(`addressCheck.classHelp.${name}`);
         else if (name === 'unknown') help = this.$t('import.addr.unknownHelp');
         return {
           name,
           kind,
           help,
           count: found.length,
-          examples: `${found.slice(0, 5).map((row) => `${row} (${emails[row]})`).join(', ')}${found.length > 5 ? ' …' : ''}`,
+          examples: `${found.slice(0, 5).map((row) => `${row} (${emails[row]}${name === 'typo' && (this.addr.suggest || {})[row] ? ` → ${this.addr.suggest[row]}` : ''})`).join(', ')}${found.length > 5 ? ' …' : ''}`,
         };
       }).filter(({ count }) => count);
       return {
@@ -913,24 +955,28 @@ export default Vue.extend({
         pending: polling ? result.pending : 0,
         unknown: result.unknown + (polling ? 0 : result.pending),
         busy: this.addressBusy,
-        confirmedRows: confirmed.filter((row) => !has(row, ADDRESS_RULES)).length,
-        ruleRows: ruleRows.length,
+        confirmedRows: confirmed.length,
         // What the second switch adds: with the first one on, rows it already leaves out are not counted again.
-        warningRows: rows.filter((row) => has(row, ADDRESS_WARNING) && !((this.addrExclude.confirmed || has(row, ADDRESS_RULES)) && confirmedSet.has(row))).length,
+        warningRows: rows.filter((row) => has(row, ADDRESS_WARNING) && !(this.addrExclude.confirmed && confirmedSet.has(row))).length,
         excludeConfirmed: this.addrExclude.confirmed,
         excludeWarning: this.addrExclude.warning,
       };
     },
     // Rows the server refused because of the address rules (LST-53): counted by reason.
-    rejectedTotal() {
+    // The server's refusals and the rows the column mapping left out: one count by reason.
+    serverRejected() {
       return (this.status && this.status.axmRejectedTotal) || 0;
     },
+    rejectedTotal() {
+      return this.serverRejected + (this.uploadExcluded ? this.uploadExcluded.total : 0);
+    },
     rejectedLines() {
-      const counts = (this.status && this.status.axmRejected) || {};
-      return ['typo', 'provider', 'format', 'domain'].filter((r) => counts[r]).map((r) => ({ reason: r, count: counts[r] }));
+      const counts = { ...((this.status && this.status.axmRejected) || {}) };
+      Object.entries((this.uploadExcluded && this.uploadExcluded.counts) || {}).forEach(([k, v]) => { counts[k] = (counts[k] || 0) + v; });
+      return ['typo', 'provider', 'format', 'dead', 'nullmx', 'domain'].filter((r) => counts[r]).map((r) => ({ reason: r, count: counts[r] }));
     },
     countMismatch() {
-      return this.sentCount !== null && this.isDone() && this.status.imported + this.rejectedTotal !== this.sentCount;
+      return this.sentCount !== null && this.isDone() && this.status.imported + this.serverRejected !== this.sentCount;
     },
 
     // Import progress bar value.

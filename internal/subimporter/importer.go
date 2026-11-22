@@ -68,6 +68,9 @@ type Importer struct {
 	// rejected are the rows of the last import that the address rules refused (LST-53),
 	// at most MaxRejectedRows of them. The counts in status are complete.
 	rejected []RejectedRow
+	// importSeq numbers the imports of this process, so that a link to the rejected rows
+	// names the import it was shown for.
+	importSeq int
 	sync.RWMutex
 }
 
@@ -113,6 +116,8 @@ type Status struct {
 	// by reason (the Reject* constants). AxmRejectedTotal is their sum. See FORK.md, LST-53.
 	AxmRejected      map[string]int `json:"axm_rejected,omitempty"`
 	AxmRejectedTotal int            `json:"axm_rejected_total"`
+	// AxmImportID is the number of this import; the rejected rows are asked for by it.
+	AxmImportID int `json:"axm_import_id"`
 	logBuf           *bytes.Buffer
 }
 
@@ -127,8 +132,8 @@ const (
 // MaxRejectedRows is how many refused rows an import keeps for the download.
 const MaxRejectedRows = 50000
 
-// RejectedRow is one refused row of the file. Row counts the data rows from 1, the header
-// not included.
+// RejectedRow is one refused row of the file. Row is the line of the uploaded file, the
+// header being line 1, so that a spreadsheet shows the same number.
 type RejectedRow struct {
 	Row     int
 	Email   string
@@ -213,6 +218,8 @@ func (im *Importer) NewSession(opt SessionOpt) (*Session, error) {
 		AxmRejected: map[string]int{},
 		logBuf:      bytes.NewBuffer(nil)}
 	im.rejected = nil
+	im.importSeq++
+	im.status.AxmImportID = im.importSeq
 	im.Unlock()
 
 	s := &Session{
@@ -245,14 +252,19 @@ func (im *Importer) GetStats() Status {
 		Imported:         im.status.Imported,
 		AxmRejected:      rejected,
 		AxmRejectedTotal: im.status.AxmRejectedTotal,
+		AxmImportID:      im.importSeq,
 	}
 }
 
-// GetRejected returns the rows of the last import that were refused.
-func (im *Importer) GetRejected() []RejectedRow {
+// GetRejected returns the rows that import number id refused. ok is false when id is not
+// the last import: a newer one has replaced the rows.
+func (im *Importer) GetRejected(id int) (rows []RejectedRow, ok bool) {
 	im.RLock()
 	defer im.RUnlock()
-	return append([]RejectedRow(nil), im.rejected...)
+	if id != im.importSeq {
+		return nil, false
+	}
+	return append([]RejectedRow(nil), im.rejected...), true
 }
 
 // reject counts a refused row and keeps it for the download.
@@ -631,7 +643,7 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 			if _, ferr := utils.SanitizeEmail(rawEmail); ferr != nil || len(rawEmail) > 1000 {
 				reason = RejectFormat
 			}
-			s.im.reject(RejectedRow{Row: i, Email: clip(rawEmail), Reason: reason})
+			s.im.reject(RejectedRow{Row: i + 1, Email: clip(rawEmail), Reason: reason})
 			continue
 		}
 
@@ -640,7 +652,7 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		if s.opt.Mode == ModeSubscribe {
 			if reason, suggest := addrcheck.Rules(sub.Email); reason != "" {
 				s.log.Printf("skipping line %d: address refused (%s): %s", i, reason, sub.Email)
-				s.im.reject(RejectedRow{Row: i, Email: sub.Email, Reason: reason, Suggest: suggest})
+				s.im.reject(RejectedRow{Row: i + 1, Email: sub.Email, Reason: reason, Suggest: suggest})
 				continue
 			}
 		}

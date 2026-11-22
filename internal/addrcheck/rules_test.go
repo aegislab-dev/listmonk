@@ -100,3 +100,23 @@ func TestRuleClasses(t *testing.T) {
 		t.Fatalf("got confirmed %d, provider %d, typo %d", s.Confirmed, s.Classes[ClassProvider].Count, s.Classes[ClassTypo].Count)
 	}
 }
+
+// Real company domains next to a misspelling are not misspellings, and a domain that breaks
+// the label syntax is malformed (found in review).
+func TestRealDomainsAndLabelSyntax(t *testing.T) {
+	for _, e := range []string{"naber@naber.com", "kim@nave.com", "kim@hotmal.com"} {
+		if r := Classify(e); r.Typo || r.Format {
+			t.Errorf("%s: want a plain address, got %+v", e, r)
+		}
+	}
+	for _, e := range []string{"a@bad_domain.example", "a@-bad.example", "a@bad-.example", "a@bad..example", "a@" + strings.Repeat("x", 64) + ".example"} {
+		if r := Classify(e); !r.Format {
+			t.Errorf("%s: want format, got %+v", e, r)
+		}
+	}
+	for _, e := range []string{"a@xn--bj0bj06e.kr", "a@한글.kr", "a@sub-domain.example.com", "a@1.example"} {
+		if r := Classify(e); r.Format {
+			t.Errorf("%s: want valid, got %+v", e, r)
+		}
+	}
+}

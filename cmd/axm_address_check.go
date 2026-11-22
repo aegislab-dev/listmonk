@@ -187,6 +187,12 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 		emails[i], ids[i], direct[i] = r.Email, r.ID, r.Direct
 	}
 	verdicts := a.addrCheck.Check(ctx, emails, addrCheckBudget)
+	// The campaign and list panels show what they showed before LST-53: the address rules
+	// (Gmail names, misspelled domains) are for the places a subscriber is added, and their
+	// screens come in a later step.
+	for i := range verdicts {
+		verdicts[i].Provider, verdicts[i].Typo, verdicts[i].Suggest = false, false, ""
+	}
 	out.Summary = addrcheck.Summarize(verdicts, ids, direct, out.Detail)
 	return c.JSON(http.StatusOK, okResp{out})
 }

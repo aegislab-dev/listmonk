@@ -402,8 +402,8 @@ test('address exclusion follows the two switches and the excluded-rows file is s
   assert.deepEqual(addressExcludedRows(issues, { confirmed: true, warning: true }), [3, 5, 7, 9, 13]);
   assert.deepEqual(addressExcludedRows(issues, { confirmed: false, warning: true }), [3, 5, 7]);
   assert.deepEqual(addressExcludedRows(issues, { confirmed: false }), []);
-  // The rows the server refuses by rule are always left out, whatever the switch says.
-  assert.deepEqual(addressExcludedRows({ 2: ['typo'], 4: ['provider', 'role'], 6: ['role'] }, { confirmed: false }), [2, 4]);
+  // The rules of LST-53 (a misspelled domain, a Gmail name that cannot exist) are confirmed risks too.
+  assert.deepEqual(addressExcludedRows({ 2: ['typo'], 4: ['provider', 'role'], 6: ['role'] }), [2, 4]);
 
   const csv = excludedRowsCSV([
     { row: 3, email: 'info@gone.invalid', reasons: ['No mail server', 'Role address'] },

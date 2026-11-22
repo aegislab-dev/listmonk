@@ -124,7 +124,7 @@
 <script>
 // Shows the addresses of the chosen lists that are likely to bounce, and lets people
 // unsubscribe them from those lists. It never blocks a send. See FORK.md (LST-43).
-const CONFIRMED = ['format', 'provider', 'typo', 'dead', 'nullmx'];
+const CONFIRMED = ['format', 'dead', 'nullmx'];
 const WARNING = ['disposable', 'role'];
 // While DNS lookups are unfinished the check is asked again, this often and this many times.
 const POLL_MS = 3000;

@@ -28,6 +28,7 @@ type teamsEnv struct {
 
 	// lastImport is the importer's status when the last importAs import had finished.
 	lastImport  subimporter.Status
+	lastRule    string
 	lastSuggest string // the X-Axm-Suggest header of the last refused save
 }
 
