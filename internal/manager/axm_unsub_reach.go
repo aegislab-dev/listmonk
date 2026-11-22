@@ -213,26 +213,13 @@ func valueVaries(p *parse.PipeNode, varying map[string]bool) bool {
 	inspect(p, func(n parse.Node) {
 		switch x := n.(type) {
 		case *parse.VariableNode:
-			if varying[x.Ident[0]] {
+			if varying[x.Ident[0]] || (len(x.Ident) > 1 && x.Ident[0] == "$" && varyingFields(x.Ident[1:])) {
 				dep = true
 			}
-			for _, id := range x.Ident[1:] {
-				if id == "Subscriber" || id == "UpdatedAt" || id == "StartedAt" {
-					dep = true
-				}
-			}
 		case *parse.FieldNode:
-			for _, id := range x.Ident {
-				if id == "Subscriber" || id == "UpdatedAt" || id == "StartedAt" || id == "Sent" || id == "ToSend" {
-					dep = true
-				}
-			}
+			dep = dep || varyingFields(x.Ident)
 		case *parse.ChainNode:
-			for _, id := range x.Field {
-				if id == "Subscriber" || id == "UpdatedAt" || id == "StartedAt" {
-					dep = true
-				}
-			}
+			dep = dep || varyingFields(x.Field)
 		case *parse.IdentifierNode:
 			if x.Ident == "Date" || x.Ident == "now" {
 				dep = true
@@ -251,17 +238,9 @@ func dependent(p *parse.PipeNode) bool {
 		case *parse.VariableNode:
 			dep = true
 		case *parse.FieldNode:
-			for _, id := range x.Ident {
-				if id == "Subscriber" || id == "UpdatedAt" || id == "StartedAt" || id == "Sent" || id == "ToSend" {
-					dep = true
-				}
-			}
+			dep = dep || varyingFields(x.Ident)
 		case *parse.ChainNode:
-			for _, id := range x.Field {
-				if id == "Subscriber" || id == "UpdatedAt" || id == "StartedAt" {
-					dep = true
-				}
-			}
+			dep = dep || varyingFields(x.Field)
 		case *parse.IdentifierNode:
 			if x.Ident == "Date" || x.Ident == "now" {
 				dep = true
@@ -269,6 +248,21 @@ func dependent(p *parse.PipeNode) bool {
 		}
 	})
 	return dep
+}
+
+// varyingFields tells whether a field path can read something that differs from mail to mail:
+// the subscriber, the campaign's times, or what the message renders for each recipient — the
+// rendered subject, body and alternative body (LST-48 review: a body that chose its footer by the
+// subject, which a template made per recipient). A name that is also a campaign field
+// (.Campaign.Subject) is taken as varying too: that only makes the check warn, never pass.
+func varyingFields(ids []string) bool {
+	for _, id := range ids {
+		switch id {
+		case "Subscriber", "UpdatedAt", "StartedAt", "Sent", "ToSend", "Subject", "Body", "AltBody":
+			return true
+		}
+	}
+	return false
 }
 
 func isDot(p *parse.PipeNode) bool {

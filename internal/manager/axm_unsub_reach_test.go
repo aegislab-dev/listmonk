@@ -67,6 +67,10 @@ func TestUnsubscribeOnEveryPath(t *testing.T) {
 			`{{ $f := dict "url" (UnsubscribeURL .) }}{{ with .Subscriber.Attribs.footer_url }}{{ $_ := set $f "url" . }}{{ end }}<a href="{{ $f.url }}">x</a>`,
 			"", nil, false},
 		{"a map changed in place anywhere", body, `{{ $f := dict "url" "x" }}{{ $_ := set $f "url" "y" }}` + link, "", nil, false},
+		// The review's case: the body chooses its footer by the rendered subject.
+		{"footer chosen by the rendered subject", body,
+			`{{ if eq .Subject "Digest" }}<a href="https://example.org/archive">archive</a>{{ else }}` + link + `{{ end }}`, "", nil, false},
+		{"rendered subject read through $", body, `{{ with $.Subject }}` + link + `{{ end }}`, "", nil, false},
 		{"in the alternative body", body, `<p>Hi</p>`, `Leave: {{ UnsubscribeURL }}`, nil, true},
 		{"none", body, `<p>Hi {{ .Subscriber.Name }}</p>`, "", nil, false},
 	} {

@@ -1202,6 +1202,12 @@ func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("footer map changed in place for some subscribers: %q", got)
 	}
+	// The subject is made per recipient, and the body chooses its footer by it (LST-48 review).
+	e.db.MustExec(`UPDATE campaigns SET subject='{{ if .Subscriber.Attribs.digest }}Digest{{ else }}Full{{ end }}', body='<p>News</p>{{ if eq .Subject "Digest" }}<a href="https://example.org/archive">archive</a>{{ else }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("footer chosen by a subject made per recipient: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET subject='News' WHERE id=$1`, e.campID)
 	// Printed always: a pass.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID)
 	if got := read(); got != "unsubscribe.missing=ok" {
