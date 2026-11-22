@@ -1179,6 +1179,8 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     counts             JSONB NOT NULL DEFAULT '{}',
     recheck            JSONB NOT NULL DEFAULT '{}',
     rechecked_at       TIMESTAMP WITH TIME ZONE NULL,
+    -- The campaign version (last change of it and its lists) the last check was made for.
+    checked_for        TEXT NULL,
     created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CHECK (campaign_id <> parent_campaign_id)

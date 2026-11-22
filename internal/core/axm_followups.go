@@ -168,6 +168,7 @@ type followupDue struct {
 	ParentID   int             `db:"parent_campaign_id"`
 	Condition  json.RawMessage `db:"condition"`
 	ListIDs    pq.Int64Array   `db:"list_ids"`
+	Version    string          `db:"version"`
 }
 
 // RecheckFollowups runs the check before follow-up campaigns start: the people on a follow-up
@@ -183,6 +184,16 @@ func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) (checke
 		return nil, nil, err
 	}
 	return c.recheck(ctx, due)
+}
+
+// FollowupsToCheck returns the follow-ups among the given campaigns whose last check was not made
+// for the campaign as it is now. The sender gives none of them back before they are checked.
+func (c *Core) FollowupsToCheck(ctx context.Context, ids []int) ([]int, error) {
+	out := []int{}
+	if err := c.q.AxmFollowupUnchecked.SelectContext(ctx, &out, pq.Array(ids)); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // RecheckFollowupsByID checks the follow-ups among the given campaigns, whatever their state.
@@ -244,19 +255,23 @@ func (c *Core) recheckOne(ctx context.Context, f followupDue, s models.ReactionS
 		}
 		held = len(reasons)
 	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID); err != nil {
+	if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID, f.Version); err != nil {
 		return 0, false, err
 	}
-	// Last, with the campaign locked: if a later time was saved while this ran, the check was made
-	// for a time that no longer applies and is dropped (the next check is made at the new time). A
-	// save that comes after this lock waits for the check; core.UpdateCampaign then reads the status
-	// again and refuses the save if the campaign has started meanwhile.
-	var locked int
-	if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &locked, f.CampaignID); err != nil {
+	// Last, with the campaign locked: if it changed since its row was read (a later time saved, its
+	// lists changed), the check was made for a campaign that no longer is and is dropped; the
+	// sender checks it again (FollowupsToCheck). A save that comes after this lock waits for the
+	// check; core.UpdateCampaign then reads the status again and refuses the save if the campaign
+	// has started meanwhile.
+	var version string
+	if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &version, f.CampaignID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, false, nil
 		}
 		return 0, false, err
+	}
+	if version != f.Version {
+		return 0, false, nil
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, false, err

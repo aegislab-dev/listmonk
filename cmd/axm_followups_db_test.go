@@ -1003,7 +1003,7 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 			t.Fatal(err)
 		}
 		link.Rollback()
-		waitFor(t, "the check to wait for the campaign", waiting(e, "SELECT id FROM campaigns%FOR UPDATE%"))
+		waitFor(t, "the check to wait for the campaign", waiting(e, "%AS version FROM campaigns c%FOR UPDATE OF c%"))
 		type result struct {
 			cm  models.Campaign
 			err error
@@ -1124,7 +1124,7 @@ func TestFollowupSkippedThenDueAgainIsChecked(t *testing.T) {
 		}
 		done <- r
 	}()
-	waitFor(t, "the first check to wait for the save", waiting("SELECT id FROM campaigns%FOR UPDATE%"))
+	waitFor(t, "the first check to wait for the save", waiting("%AS version FROM campaigns c%FOR UPDATE OF c%"))
 	if err := edit.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -1218,4 +1218,140 @@ func TestFollowupRetryAfterEveryoneReactedPointsAtTheFollowup(t *testing.T) {
 	if code, _ := e.sendRequest(true, e.admin, e.campID, `{"open":"no","no_team":true}`); code != http.StatusBadRequest {
 		t.Fatalf("list only: %d", code)
 	}
+}
+
+// twoFollowups makes follow-ups of two parents; the first has the lower id, so it is checked first.
+func (e *followupEnv) twoFollowups() (a, b models.ReactionResult, otherParent int) {
+	e.t.Helper()
+	a = e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	otherParent = e.addParent()
+	code, data := e.sendRequest(true, e.admin, otherParent, `{"open":"no","no_team":true,"followup":true}`)
+	if code != http.StatusOK || json.Unmarshal(data, &b) != nil || b.Followup == nil {
+		e.t.Fatalf("second follow-up: %d %s", code, data)
+	}
+	if a.Followup.ID > b.Followup.ID {
+		e.t.Fatal("the first follow-up must have the lower id")
+	}
+	return a, b, otherParent
+}
+
+// saveCampaign saves a campaign the way the editor does, with new lists and a send time.
+func (e *followupEnv) saveCampaign(camp int, lists []int, at time.Time) {
+	e.t.Helper()
+	cm, err := e.a.core.GetCampaign(camp, "", "")
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	cm.SendAt.Time, cm.SendAt.Valid = at, true
+	if _, err := e.a.core.UpdateCampaign(camp, cm, lists, nil); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func (e *followupEnv) lockWaiting(like string) func() bool {
+	return func() bool {
+		return e.count(`SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1`, like) > 0
+	}
+}
+
+// Review 10 (1): the first follow-up was checked, then a later time was saved while the second
+// one's check waits, and its people opened the parent meanwhile. When the later time has come, the
+// earlier check does not count: it is checked again and they are held back.
+func TestFollowupCheckedThenPostponedIsCheckedAgain(t *testing.T) {
+	e := newFollowupEnv(t)
+	a, b, _ := e.twoFollowups()
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::INT[])`, pq.Array([]int{a.Followup.ID, b.Followup.ID}))
+	link, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer link.Rollback()
+	if _, err := link.Exec(`SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1 FOR NO KEY UPDATE`, b.Followup.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []int, 1)
+	go func() {
+		camps, err := e.store.NextCampaigns([]int64{})
+		if err != nil {
+			t.Error(err)
+		}
+		var ids []int
+		for _, c := range camps {
+			ids = append(ids, c.ID)
+		}
+		done <- ids
+	}()
+	waitFor(t, "the second check to wait", e.lockWaiting("%rechecked_at = NOW()%"))
+	if e.count(`SELECT COALESCE((recheck->>'runs')::INT, 0) FROM axm_campaign_followups WHERE campaign_id = $1`, a.Followup.ID) != 1 {
+		t.Fatal("the first follow-up was not checked first")
+	}
+	people := []int{e.ids[2], e.ids[3]}
+	e.saveCampaign(a.Followup.ID, []int{a.List.ID}, time.Now().Add(time.Second))
+	for _, id := range people {
+		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	link.Rollback()
+	ids := <-done
+	picked := false
+	for _, id := range ids {
+		picked = picked || id == a.Followup.ID
+	}
+	if !picked {
+		t.Fatalf("the first follow-up, due at its later time, was not picked up: %v", ids)
+	}
+	wantSame(t, "held from the first one", e.held(a.Followup.ID), people)
+}
+
+// Review 10 (2): the second follow-up's list had been replaced, and is put back (with a new time)
+// while the sender waits on the first one. The check made with the replaced lists is dropped and
+// the people of the restored list who opened the parent are held back.
+func TestFollowupListPutBackDuringAnotherCheckIsChecked(t *testing.T) {
+	e := newFollowupEnv(t)
+	a, b, otherParent := e.twoFollowups()
+	var other int
+	e.get(&other, `INSERT INTO lists (uuid, name, type) VALUES (gen_random_uuid(), 'Replacement', 'private') RETURNING id`)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, e.ids[0], other)
+	e.saveCampaign(b.Followup.ID, []int{other}, time.Now().Add(-time.Second))
+	people := e.members(b.List.ID)
+	for _, id := range people {
+		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, otherParent, id)
+	}
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::INT[])`, pq.Array([]int{a.Followup.ID, b.Followup.ID}))
+	link, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer link.Rollback()
+	if _, err := link.Exec(`SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1 FOR NO KEY UPDATE`, a.Followup.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []int, 1)
+	go func() {
+		camps, err := e.store.NextCampaigns([]int64{})
+		if err != nil {
+			t.Error(err)
+		}
+		var ids []int
+		for _, c := range camps {
+			ids = append(ids, c.ID)
+		}
+		done <- ids
+	}()
+	waitFor(t, "the first check to wait", e.lockWaiting("%rechecked_at = NOW()%"))
+	// The sender has read both rows; now the original list is put back, due at once.
+	e.saveCampaign(b.Followup.ID, []int{b.List.ID}, time.Now().Add(-time.Second))
+	link.Rollback()
+	ids := <-done
+	for _, id := range ids {
+		if id == b.Followup.ID {
+			wantSame(t, "held from the second one", e.held(b.Followup.ID), people)
+			return
+		}
+	}
+	// Not given back in this call: the next one checks it with the restored list.
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held from the second one", e.held(b.Followup.ID), people)
 }

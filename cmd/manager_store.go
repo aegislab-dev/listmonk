@@ -71,55 +71,45 @@ func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
 	// back. If a check fails nothing is picked up in this round: it is tried again in the next
 	// one, and a follow-up never starts unchecked.
 	ctx := context.Background()
-	checked := map[int]bool{}
-	ids, _, err := s.core.RecheckFollowups(ctx, currentIDs)
-	if err != nil {
+	if _, _, err := s.core.RecheckFollowups(ctx, currentIDs); err != nil {
 		return nil, err
-	}
-	for _, id := range ids {
-		checked[id] = true
 	}
 	for round := 0; ; round++ {
 		var out []*models.Campaign
 		if err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs)); err != nil {
 			return out, err
 		}
-		var unchecked []int
+		// A follow-up is given back only when its last check was made for the campaign as it is
+		// now. A check made before a later time was saved or the lists were changed does not count,
+		// whenever in this call it was made. Once next-campaigns has started a campaign, the editor
+		// cannot change it any more (core.UpdateCampaign), so what is checked here is what is sent.
+		ids := make([]int, 0, len(out))
 		for _, camp := range out {
-			if !checked[camp.ID] {
-				unchecked = append(unchecked, camp.ID)
-			}
+			ids = append(ids, camp.ID)
 		}
-		if len(unchecked) == 0 {
-			return out, nil
-		}
-		followups, skipped, err := s.core.RecheckFollowupsByID(ctx, unchecked)
+		stale, err := s.core.FollowupsToCheck(ctx, ids)
 		if err != nil {
 			return nil, err
 		}
-		// A follow-up skipped because it was not due when its turn came stays unchecked: it is
-		// looked at again in the next round and is never given back without a check.
-		notDue := map[int]bool{}
-		for _, id := range skipped {
-			notDue[id] = true
-		}
-		for _, id := range unchecked {
-			if !notDue[id] {
-				checked[id] = true
-			}
-		}
-		if len(followups) == 0 && len(skipped) == 0 {
+		if len(stale) == 0 {
 			return out, nil
 		}
 		if round >= 3 {
-			// Still changing: give back what was checked, the rest comes in the next round.
+			// Still changing: give back what is checked, the rest comes in the next round.
+			skip := map[int]bool{}
+			for _, id := range stale {
+				skip[id] = true
+			}
 			kept := out[:0]
 			for _, camp := range out {
-				if checked[camp.ID] {
+				if !skip[camp.ID] {
 					kept = append(kept, camp)
 				}
 			}
 			return kept, nil
+		}
+		if _, _, err := s.core.RecheckFollowupsByID(ctx, stale); err != nil {
+			return nil, err
 		}
 	}
 }
