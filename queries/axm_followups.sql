@@ -42,7 +42,7 @@ SELECT f.campaign_id, f.parent_campaign_id, f.condition,
     CASE WHEN l.id IS NOT NULL AND l.axm_filter IS NULL AND EXISTS (
         SELECT 1 FROM campaign_lists x WHERE x.campaign_id = f.campaign_id AND x.list_id = l.id
     ) THEN ARRAY[l.id] ELSE '{}'::INT[] END AS list_ids,
-    c.updated_at::TEXT || '/' || COALESCE((SELECT string_agg(x.list_id::TEXT, ',' ORDER BY x.list_id) FROM campaign_lists x WHERE x.campaign_id = c.id), '') AS version
+    f.version
 FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
 LEFT JOIN lists l ON l.uuid = f.list_uuid
 WHERE (c.status = 'running' OR (c.status = 'scheduled' AND NOW() >= c.send_at))
@@ -55,27 +55,35 @@ SELECT f.campaign_id, f.parent_campaign_id, f.condition,
     CASE WHEN l.id IS NOT NULL AND l.axm_filter IS NULL AND EXISTS (
         SELECT 1 FROM campaign_lists x WHERE x.campaign_id = f.campaign_id AND x.list_id = l.id
     ) THEN ARRAY[l.id] ELSE '{}'::INT[] END AS list_ids,
-    c.updated_at::TEXT || '/' || COALESCE((SELECT string_agg(x.list_id::TEXT, ',' ORDER BY x.list_id) FROM campaign_lists x WHERE x.campaign_id = c.id), '') AS version
+    f.version
 FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
 LEFT JOIN lists l ON l.uuid = f.list_uuid
 WHERE f.campaign_id = ANY($1::INT[]);
 
 -- name: axm-followup-lock-due
--- Locks the follow-up campaign while it is still due and gives its version (the last change of
--- the campaign and its lists), so that a check made for an earlier version (a schedule moved to a
--- later time, lists changed) is dropped. No row means drop the check.
-SELECT c.updated_at::TEXT || '/' || COALESCE((SELECT string_agg(x.list_id::TEXT, ',' ORDER BY x.list_id) FROM campaign_lists x WHERE x.campaign_id = c.id), '') AS version FROM campaigns c
+-- Locks the follow-up campaign while it is still due. No row means drop the check.
+SELECT c.id FROM campaigns c
 WHERE c.id = $1 AND (c.status = 'running' OR (c.status = 'scheduled' AND NOW() >= c.send_at))
 FOR UPDATE OF c;
+
+-- name: axm-followup-version
+-- The follow-up's version, read in its own statement once the campaign is locked: a statement
+-- that waited for the lock still reads the other tables as they were when it began, and would
+-- miss a change committed while it waited.
+SELECT version FROM axm_campaign_followups WHERE campaign_id = $1;
 
 -- name: axm-followup-unchecked
 -- The follow-ups among the given campaigns whose last check was not made for the campaign as it is
 -- now: never checked, or changed since (a later time saved, lists changed, paused and resumed).
 -- The sender must not get them until they are checked again.
-SELECT f.campaign_id FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
-WHERE f.campaign_id = ANY($1::INT[])
-    AND f.checked_for IS DISTINCT FROM (c.updated_at::TEXT || '/' || COALESCE((SELECT string_agg(x.list_id::TEXT, ',' ORDER BY x.list_id) FROM campaign_lists x WHERE x.campaign_id = c.id), ''))
+SELECT f.campaign_id FROM axm_campaign_followups f
+WHERE f.campaign_id = ANY($1::INT[]) AND f.checked_version IS DISTINCT FROM f.version
 ORDER BY f.campaign_id;
+
+-- name: axm-followup-stale
+-- TRUE when the campaign is a follow-up whose last check was not made for its version now. The
+-- sender reads no recipients for it then (a pause and resume while the pipe was being set up).
+SELECT COALESCE((SELECT f.checked_version IS DISTINCT FROM f.version FROM axm_campaign_followups f WHERE f.campaign_id = $1), FALSE);
 
 -- name: axm-followup-unhold
 -- A check starts over. Who is held back is decided again each time, so a person held for an
@@ -145,7 +153,7 @@ SELECT status FROM campaigns WHERE id = $1 FOR UPDATE;
 
 -- name: axm-followup-record
 -- Records the check. The counts are those of the people held back now.
-UPDATE axm_campaign_followups f SET rechecked_at = NOW(), checked_for = $2, recheck = jsonb_build_object(
+UPDATE axm_campaign_followups f SET rechecked_at = NOW(), checked_version = $2, recheck = jsonb_build_object(
     'reacted', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason = -1),
     'opted_out', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason IN (2, 3)),
     'blocked', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason = 1),

@@ -155,8 +155,23 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	camps[0].LastSubscriberID = lastSubID
 
 	var out []models.Subscriber
-	err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, camps[0].LastSubscriberID, camps[0].MaxSubscriberID, pq.Array(listIDs), limit)
-	return out, err
+	if err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, camps[0].LastSubscriberID, camps[0].MaxSubscriberID, pq.Array(listIDs), limit); err != nil {
+		return out, err
+	}
+
+	// AXM (LST-47): a follow-up is sent only while its last check is for the campaign as it is now.
+	// After a pause and resume (or another change) that the sender has not checked yet, for example
+	// while the pipe was being set up, the batch is dropped and the pipe stops without finishing:
+	// the next scan checks the campaign again and starts it anew. Asked after the batch is read,
+	// so a change made while it was read is caught too.
+	stale, err := s.core.FollowupStale(campID)
+	if err != nil {
+		return nil, err
+	}
+	if stale {
+		return nil, manager.ErrCampaignNotRunning
+	}
+	return out, nil
 }
 
 // GetCampaign fetches a campaign from the database.

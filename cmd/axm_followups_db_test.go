@@ -948,8 +948,8 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 		return st
 	}
 
-	// The save comes while the check reads: it is saved at once, and the check, made for the
-	// earlier time, is dropped. At the later time both are sent to.
+	// The save comes while the check reads (before it locks the campaign): it is saved, and the
+	// check, made for the earlier time, is dropped. At the later time both are sent to.
 	t.Run("saved while the check reads", func(t *testing.T) {
 		e, camp, people := setup(t)
 		tx, err := e.db.Begin()
@@ -957,12 +957,14 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		// The holds' foreign key only needs a key share lock: the check holds both, then waits here.
-		if _, err := tx.Exec(`SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1 FOR NO KEY UPDATE`, camp); err != nil {
+		// The check waits to write who it holds back, before it locks the campaign (the holds'
+		// foreign key needs the subscriber row).
+		if _, err := tx.Exec(`SELECT 1 FROM subscribers WHERE id = $1 FOR UPDATE`, people[0]); err != nil {
 			t.Fatal(err)
 		}
 		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
-		waitFor(t, "the check to wait", waiting(e, "%rechecked_at = NOW()%"))
+		waitFor(t, "the check to wait", waiting(e, "WITH reaction_candidates%"))
+		// The check has not locked the campaign yet, so the save does not wait for it.
 		cm, err := save(e, camp, time.Now().Add(3*time.Second))
 		if err != nil || cm.Status != models.CampaignStatusScheduled {
 			t.Fatalf("save: %v %s", err, cm.Status)
@@ -988,11 +990,11 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer link.Rollback()
-		if _, err := link.Exec(`SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1 FOR NO KEY UPDATE`, camp); err != nil {
+		if _, err := link.Exec(`SELECT 1 FROM subscribers WHERE id = $1 FOR UPDATE`, people[0]); err != nil {
 			t.Fatal(err)
 		}
 		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
-		waitFor(t, "the check to hold both", waiting(e, "%rechecked_at = NOW()%"))
+		waitFor(t, "the check to hold both", waiting(e, "WITH reaction_candidates%"))
 		// Someone else has the campaign row, so the check, with both held, waits for it last.
 		row, err := e.db.Begin()
 		if err != nil {
@@ -1003,7 +1005,7 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 			t.Fatal(err)
 		}
 		link.Rollback()
-		waitFor(t, "the check to wait for the campaign", waiting(e, "%AS version FROM campaigns c%FOR UPDATE OF c%"))
+		waitFor(t, "the check to wait for the campaign", waiting(e, "SELECT c.id FROM campaigns c%FOR UPDATE OF c%"))
 		type result struct {
 			cm  models.Campaign
 			err error
@@ -1124,7 +1126,7 @@ func TestFollowupSkippedThenDueAgainIsChecked(t *testing.T) {
 		}
 		done <- r
 	}()
-	waitFor(t, "the first check to wait for the save", waiting("%AS version FROM campaigns c%FOR UPDATE OF c%"))
+	waitFor(t, "the first check to wait for the save", waiting("SELECT c.id FROM campaigns c%FOR UPDATE OF c%"))
 	if err := edit.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -1354,4 +1356,68 @@ func TestFollowupListPutBackDuringAnotherCheckIsChecked(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSame(t, "held from the second one", e.held(b.Followup.ID), people)
+}
+
+// Review 11: the sender has checked the follow-up and is setting up its pipe (reading
+// attachments) when it is paused and at once resumed; meanwhile its people open the parent. The
+// pipe's first read must not send to them: the batch is dropped, the pipe stops without finishing,
+// and the next scan checks the campaign again.
+func TestFollowupPausedAndResumedBeforeTheFirstReadIsCheckedAgain(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	people := []int{e.ids[2], e.ids[3]}
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
+	camps, err := e.store.NextCampaigns([]int64{})
+	if err != nil || len(camps) != 1 || camps[0].ID != camp {
+		t.Fatalf("picked up %v: %v", camps, err)
+	}
+	// The pipe reads now: the check stands.
+	if subs, err := e.store.NextSubscribers(camp, 0, 100); err != nil || len(subs) != 2 {
+		t.Fatalf("first read: %d %v", len(subs), err)
+	}
+	// Paused and resumed (the status API), and both open the parent meanwhile.
+	if _, err := e.a.core.UpdateCampaignStatus(camp, models.CampaignStatusPaused, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range people {
+		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
+	}
+	e.db.MustExec(`UPDATE campaigns SET send_at = NULL WHERE id = $1`, camp)
+	if _, err := e.a.core.UpdateCampaignStatus(camp, models.CampaignStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The pipe that was being set up reads its batch: refused, not "no subscribers left".
+	if subs, err := e.store.NextSubscribers(camp, 0, 100); !errors.Is(err, manager.ErrCampaignNotRunning) {
+		t.Fatalf("read after the resume: %d %v", len(subs), err)
+	}
+	// The next scan checks it again; then both are held and the read gives nobody.
+	camps, err = e.store.NextCampaigns([]int64{})
+	if err != nil || len(camps) != 1 {
+		t.Fatalf("picked up again %v: %v", camps, err)
+	}
+	wantSame(t, "held", e.held(camp), people)
+	if subs, err := e.store.NextSubscribers(camp, 0, 100); err != nil || len(subs) != 0 {
+		t.Fatalf("read after the new check: %d %v", len(subs), err)
+	}
+}
+
+// Saving progress while sending, and the sender starting a due schedule, do not make the check stale.
+func TestFollowupProgressDoesNotMakeTheCheckStale(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.UpdateCampaignCounts(camp, 2, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if subs, err := e.store.NextSubscribers(camp, 0, 100); err != nil || len(subs) != 2 {
+		t.Fatalf("read: %d %v", len(subs), err)
+	}
+	if runs := e.count(`SELECT (recheck->>'runs')::INT FROM axm_campaign_followups WHERE campaign_id = $1`, camp); runs != 1 {
+		t.Fatalf("checked %d times", runs)
+	}
 }

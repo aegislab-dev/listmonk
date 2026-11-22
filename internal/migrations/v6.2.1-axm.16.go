@@ -21,8 +21,9 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     counts             JSONB NOT NULL DEFAULT '{}',
     recheck            JSONB NOT NULL DEFAULT '{}',
     rechecked_at       TIMESTAMP WITH TIME ZONE NULL,
-    -- The campaign version (last change of it and its lists) the last check was made for.
-    checked_for        TEXT NULL,
+    -- The follow-up's version (see axm_followup_touch) and the version its last check was made for.
+    version            INTEGER NOT NULL DEFAULT 0,
+    checked_version    INTEGER NULL,
     created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CHECK (campaign_id <> parent_campaign_id)
@@ -35,6 +36,32 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followup_holds (
     reason        SMALLINT NOT NULL,
     PRIMARY KEY (campaign_id, subscriber_id)
 );
+-- A follow-up's version counts the changes that make an earlier check before sending stale.
+-- Those are a status change other than the sender starting a due schedule (a pause and resume, a
+-- schedule saved or taken back), a new send time, and a list added to or taken off the campaign.
+-- The sender only gives a follow-up back, and only reads recipients for it, while its last check
+-- was made for the version it has now.
+CREATE OR REPLACE FUNCTION axm_followup_touch()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = OLD.campaign_id;
+    ELSIF TG_TABLE_NAME = 'campaigns' THEN
+        UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = NEW.id;
+    ELSE
+        UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = NEW.campaign_id;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_followup_touch_campaign ON campaigns;
+CREATE TRIGGER axm_followup_touch_campaign AFTER UPDATE OF status, send_at ON campaigns
+    FOR EACH ROW WHEN (OLD.send_at IS DISTINCT FROM NEW.send_at OR (OLD.status IS DISTINCT FROM NEW.status
+        AND NOT (OLD.status = 'scheduled' AND NEW.status = 'running')))
+    EXECUTE FUNCTION axm_followup_touch();
+DROP TRIGGER IF EXISTS axm_followup_touch_lists ON campaign_lists;
+CREATE TRIGGER axm_followup_touch_lists AFTER INSERT OR DELETE ON campaign_lists
+    FOR EACH ROW EXECUTE FUNCTION axm_followup_touch();
 -- End of AXM campaign follow-ups.`)
 	return err
 }

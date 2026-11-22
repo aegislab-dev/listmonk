@@ -168,7 +168,7 @@ type followupDue struct {
 	ParentID   int             `db:"parent_campaign_id"`
 	Condition  json.RawMessage `db:"condition"`
 	ListIDs    pq.Int64Array   `db:"list_ids"`
-	Version    string          `db:"version"`
+	Version    int             `db:"version"`
 }
 
 // RecheckFollowups runs the check before follow-up campaigns start: the people on a follow-up
@@ -194,6 +194,14 @@ func (c *Core) FollowupsToCheck(ctx context.Context, ids []int) ([]int, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// FollowupStale says whether the campaign is a follow-up whose last check is not for the campaign
+// as it is now; the sender must read no recipients for it then.
+func (c *Core) FollowupStale(id int) (bool, error) {
+	var stale bool
+	err := c.q.AxmFollowupStale.Get(&stale, id)
+	return stale, err
 }
 
 // RecheckFollowupsByID checks the follow-ups among the given campaigns, whatever their state.
@@ -255,23 +263,28 @@ func (c *Core) recheckOne(ctx context.Context, f followupDue, s models.ReactionS
 		}
 		held = len(reasons)
 	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID, f.Version); err != nil {
-		return 0, false, err
-	}
-	// Last, with the campaign locked: if it changed since its row was read (a later time saved, its
-	// lists changed), the check was made for a campaign that no longer is and is dropped; the
-	// sender checks it again (FollowupsToCheck). A save that comes after this lock waits for the
+	// Then, with the campaign locked: if it changed since its row was read (a later time saved, its
+	// lists changed, a pause), the check was made for a campaign that no longer is and is dropped;
+	// the sender checks it again (FollowupsToCheck). A save that comes after this lock waits for the
 	// check; core.UpdateCampaign then reads the status again and refuses the save if the campaign
-	// has started meanwhile.
-	var version string
-	if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &version, f.CampaignID); err != nil {
+	// has started meanwhile. The campaign row is locked before the link row is written, the order a
+	// save takes them in (its trigger axm_followup_touch writes the link row), so the two never
+	// wait for each other.
+	var locked, version int
+	if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &locked, f.CampaignID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, false, nil
 		}
 		return 0, false, err
 	}
+	if err := tx.Stmtx(c.q.AxmFollowupVersion).GetContext(ctx, &version, f.CampaignID); err != nil {
+		return 0, false, err
+	}
 	if version != f.Version {
 		return 0, false, nil
+	}
+	if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID, f.Version); err != nil {
+		return 0, false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, false, err
