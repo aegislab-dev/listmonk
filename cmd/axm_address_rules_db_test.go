@@ -61,6 +61,7 @@ func (e *boundaryEnv) save(h echo.HandlerFunc, method string, id int, body strin
 	}
 	if err := h(c); err != nil {
 		if he, ok := err.(*echo.HTTPError); ok {
+			e.lastSuggest = rec.Header().Get("X-Axm-Suggest")
 			msg, _ := he.Message.(string)
 			return he.Code, msg
 		}
@@ -88,6 +89,9 @@ func TestAddressRulesSingleAdd(t *testing.T) {
 		code, msg := add(email)
 		if code != http.StatusBadRequest || !strings.Contains(msg, "Did you mean "+want+"?") {
 			t.Errorf("%s: want 400 with the suggestion %s, got %d %q", email, want, code, msg)
+		}
+		if e.lastSuggest != want {
+			t.Errorf("%s: header suggestion %q, want %q", email, e.lastSuggest, want)
 		}
 		if e.count(strings.ToLower(email)) != 0 {
 			t.Errorf("%s: must not be stored", email)

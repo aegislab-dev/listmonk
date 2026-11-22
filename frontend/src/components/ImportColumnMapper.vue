@@ -190,6 +190,9 @@
                 </span>
               </p>
             </div>
+            <p v-if="address.ruleRows" class="map-address-fixed" data-cy="map-address-rules">
+              {{ $t('import.addr.fixedRules', { count: address.ruleRows }) }}
+            </p>
             <div v-if="address.confirmedRows || address.warningRows" class="map-address-switches">
               <b-switch :value="address.excludeConfirmed" :disabled="!address.confirmedRows" data-cy="map-address-exclude-confirmed"
                 @input="$emit('address-exclude', { confirmed: $event })">
@@ -200,7 +203,7 @@
                 {{ $t('import.addr.excludeWarning', { count: address.warningRows }) }}
               </b-switch>
             </div>
-            <p v-if="address.confirmedRows || address.warningRows" class="map-address-result" data-cy="map-address-result">
+            <p v-if="address.confirmedRows || address.warningRows || address.ruleRows" class="map-address-result" data-cy="map-address-result">
               <span v-if="summary.address">{{ $t('import.addr.result', { count: summary.imported, excluded: summary.address }) }}</span>
               <span v-else>{{ $t('import.addr.resultAll', { count: summary.imported }) }}</span>
               <a v-if="summary.address" href="#" data-cy="map-address-download" @click.prevent="$emit('address-download')">

@@ -384,21 +384,26 @@ export function rememberMapping(storage, columns, mapping, old = readMemory(stor
 
 // The address check: which classes mean the mail is certain to bounce, and which only warn.
 export const ADDRESS_CONFIRMED = ['format', 'dead', 'nullmx'];
+// Refused by the server whatever the switch says (LST-53), so the upload always leaves them out.
+export const ADDRESS_RULES = ['provider', 'typo'];
 export const ADDRESS_WARNING = ['disposable', 'role'];
 
 // The source rows the address check leaves out. rowIssues maps a source row to its classes.
 export function addressExcludedRows(rowIssues, { confirmed = true, warning = false } = {}) {
-  const drop = [...(confirmed ? ADDRESS_CONFIRMED : []), ...(warning ? ADDRESS_WARNING : [])];
+  const drop = [...ADDRESS_RULES, ...(confirmed ? ADDRESS_CONFIRMED : []), ...(warning ? ADDRESS_WARNING : [])];
   return Object.keys(rowIssues).map(Number).filter((row) => rowIssues[row].some((c) => drop.includes(c))).sort((a, b) => a - b);
 }
 
-// A CSV of the rows the address check left out (source row, address, reasons), for fixing
-// them by hand. Cells that a spreadsheet would run as a formula get a leading apostrophe.
+// A CSV of the rows the address check left out (source row, address, reasons, and the
+// suggested address when a row has one), for fixing them by hand. Cells that a spreadsheet would run as a formula get a leading apostrophe.
 export function excludedRowsCSV(rows, header) {
   const cell = (value) => {
     const text = /^[=+\-@\t\r]/.test(String(value)) ? `'${value}` : String(value);
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  return [header, ...rows.map(({ row, email, reasons }) => [row, email, reasons.join('; ')])]
+  const withSuggest = rows.some((r) => r.suggest);
+  return [withSuggest ? header : header.slice(0, 3), ...rows.map(({
+    row, email, reasons, suggest = '',
+  }) => (withSuggest ? [row, email, reasons.join('; '), suggest] : [row, email, reasons.join('; ')]))]
     .map((line) => line.map(cell).join(',')).join('\r\n');
 }

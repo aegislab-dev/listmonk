@@ -402,10 +402,20 @@ test('address exclusion follows the two switches and the excluded-rows file is s
   assert.deepEqual(addressExcludedRows(issues, { confirmed: true, warning: true }), [3, 5, 7, 9, 13]);
   assert.deepEqual(addressExcludedRows(issues, { confirmed: false, warning: true }), [3, 5, 7]);
   assert.deepEqual(addressExcludedRows(issues, { confirmed: false }), []);
+  // The rows the server refuses by rule are always left out, whatever the switch says.
+  assert.deepEqual(addressExcludedRows({ 2: ['typo'], 4: ['provider', 'role'], 6: ['role'] }, { confirmed: false }), [2, 4]);
 
   const csv = excludedRowsCSV([
     { row: 3, email: 'info@gone.invalid', reasons: ['No mail server', 'Role address'] },
     { row: 9, email: '=cmd@x.invalid', reasons: ['a, "b"'] },
   ], ['Row', 'E-mail', 'Reason']);
   assert.equal(csv, 'Row,E-mail,Reason\r\n3,info@gone.invalid,No mail server; Role address\r\n9,\'=cmd@x.invalid,"a, ""b"""');
+});
+
+test('the excluded rows CSV adds the suggestion column only when a row has a suggestion', () => {
+  const csv = excludedRowsCSV([
+    { row: 2, email: 'kim@gmail.con', reasons: ['Misspelled domain'], suggest: 'kim@gmail.com' },
+    { row: 5, email: 'a@gone.invalid', reasons: ['No mail server'] },
+  ], ['Row', 'E-mail', 'Reason', 'Suggested']);
+  assert.equal(csv, 'Row,E-mail,Reason,Suggested\r\n2,kim@gmail.con,Misspelled domain,kim@gmail.com\r\n5,a@gone.invalid,No mail server,');
 });

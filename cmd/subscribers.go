@@ -278,7 +278,7 @@ func (a *App) CreateSubscriber(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 	// An address that cannot receive mail is not added (LST-53).
-	if err := a.addressRuleError(req.Email); err != nil {
+	if err := a.addressRuleError(c, req.Email); err != nil {
 		return err
 	}
 
@@ -341,7 +341,7 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 		return err
 	}
 	// A new address is held to the address rules; one that was not changed is not (LST-53).
-	if err := a.addressChangeError(id, req.Email, ""); err != nil {
+	if err := a.addressChangeError(c, id, req.Email, ""); err != nil {
 		return err
 	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {
@@ -410,7 +410,7 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 		req.Email = em
 	}
 	// A new address is held to the address rules; one that was not changed is not (LST-53).
-	if err := a.addressChangeError(id, req.Email, sub.Email); err != nil {
+	if err := a.addressChangeError(c, id, req.Email, sub.Email); err != nil {
 		return err
 	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {

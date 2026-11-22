@@ -27,7 +27,8 @@ type teamsEnv struct {
 	admin, ua, ub, plain, superAdmin  int // user IDs
 
 	// lastImport is the importer's status when the last importAs import had finished.
-	lastImport subimporter.Status
+	lastImport  subimporter.Status
+	lastSuggest string // the X-Axm-Suggest header of the last refused save
 }
 
 func newTeamsEnv(t *testing.T) *teamsEnv {

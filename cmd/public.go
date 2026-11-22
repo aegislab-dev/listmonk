@@ -772,7 +772,7 @@ func (a *App) processSubForm(c echo.Context) (bool, error) {
 	}
 	req.Email = em
 	// An address that cannot receive mail is not added, and the person is told why (LST-53).
-	if err := a.addressRuleError(req.Email); err != nil {
+	if err := a.addressRuleError(c, req.Email); err != nil {
 		return false, err
 	}
 

@@ -42,6 +42,9 @@ type addrCheckImportResp struct {
 	// Issues maps the position of an address in the request to its classes. Addresses
 	// with nothing to report are left out. "pending" marks a lookup that has not finished.
 	Issues map[int][]string `json:"issues"`
+	// Suggest maps the position of an address with a misspelled domain to the corrected
+	// address. It is a suggestion only; the import refuses the row and does not change it.
+	Suggest map[int]string `json:"suggest"`
 }
 
 type addrCheckListReq struct {
@@ -86,7 +89,7 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 	}
 
 	verdicts := a.addrCheck.Check(c.Request().Context(), req.Emails, addrCheckBudget)
-	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}}
+	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}, Suggest: map[int]string{}}
 	for i, v := range verdicts {
 		classes := v.Classes()
 		if v.Status == addrcheck.StatusPending {
@@ -94,6 +97,9 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 		}
 		if len(classes) > 0 {
 			out.Issues[i] = classes
+		}
+		if v.Typo {
+			out.Suggest[i] = v.Suggest
 		}
 	}
 	return c.JSON(http.StatusOK, okResp{out})

@@ -19,12 +19,20 @@ import (
 
 // addressRuleError returns the 400 for an address that breaks a rule, or nil. A malformed
 // address is refused by the sanitizing that runs before this.
-func (a *App) addressRuleError(email string) error {
+//
+// For a misspelled domain the corrected address is also sent in the X-Axm-Suggest header, so
+// that the form can offer a button without reading it out of the message. X-Axm-Address-Rule
+// tells the form that the 400 is an address rule and belongs under the address field.
+func (a *App) addressRuleError(c echo.Context, email string) error {
 	reason, suggest := addrcheck.Rules(email)
+	if reason == addrcheck.ClassProvider || reason == addrcheck.ClassTypo {
+		c.Response().Header().Set("X-Axm-Address-Rule", reason)
+	}
 	switch reason {
 	case addrcheck.ClassProvider:
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("subscribers.addr.provider"))
 	case addrcheck.ClassTypo:
+		c.Response().Header().Set("X-Axm-Suggest", suggest)
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("subscribers.addr.typo", "suggest", suggest))
 	}
 	return nil
@@ -33,8 +41,8 @@ func (a *App) addressRuleError(email string) error {
 // addressChangeError is addressRuleError for a save of the subscriber with the given id:
 // an address the person did not change is not checked, so that an old subscriber can still
 // be edited. current is the address the subscriber has now, or "" to read it.
-func (a *App) addressChangeError(id int, email, current string) error {
-	err := a.addressRuleError(email)
+func (a *App) addressChangeError(c echo.Context, id int, email, current string) error {
+	err := a.addressRuleError(c, email)
 	if err == nil {
 		return nil
 	}
