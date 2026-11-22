@@ -1,6 +1,8 @@
 package manager
 
 import (
+	"html/template"
+	"strings"
 	"text/template/parse"
 
 	"github.com/knadh/listmonk/models"
@@ -298,5 +300,66 @@ func inspect(n parse.Node, f func(parse.Node)) {
 		}
 	case *parse.ChainNode:
 		inspect(x.Node, f)
+	}
+}
+
+// ReadsVarying tells whether a template text (a header, the subject) reads something that
+// differs from mail to mail: the subscriber, the campaign's times, or what the message renders
+// for each recipient (.Subject, .Body, .AltBody), directly or through a variable that holds the
+// message (LST-48 review: From and Bcc chosen by a subject a template made per recipient were
+// shown as fixed). A text that cannot be parsed is taken as varying.
+func (m *Manager) ReadsVarying(c *models.Campaign, text string) bool {
+	if !strings.Contains(text, "{{") {
+		return false
+	}
+	t, err := template.New("").Funcs(m.TemplateFuncs(c)).Parse(text)
+	if err != nil {
+		return true
+	}
+	dep := false
+	for _, tt := range t.Templates() {
+		if tt.Tree == nil {
+			continue
+		}
+		walkNodes(tt.Tree.Root, func(n parse.Node) {
+			switch x := n.(type) {
+			case *parse.VariableNode:
+				dep = dep || varyingFields(x.Ident[1:])
+			case *parse.FieldNode:
+				dep = dep || varyingFields(x.Ident)
+			case *parse.ChainNode:
+				dep = dep || varyingFields(x.Field)
+			}
+		})
+	}
+	return dep
+}
+
+// walkNodes calls f on every node of a template tree, in conditions, loops and actions.
+func walkNodes(n parse.Node, f func(parse.Node)) {
+	switch x := n.(type) {
+	case *parse.ListNode:
+		if x == nil {
+			return
+		}
+		for _, c := range x.Nodes {
+			walkNodes(c, f)
+		}
+	case *parse.ActionNode:
+		inspect(x.Pipe, f)
+	case *parse.IfNode:
+		inspect(x.Pipe, f)
+		walkNodes(x.List, f)
+		walkNodes(x.ElseList, f)
+	case *parse.WithNode:
+		inspect(x.Pipe, f)
+		walkNodes(x.List, f)
+		walkNodes(x.ElseList, f)
+	case *parse.RangeNode:
+		inspect(x.Pipe, f)
+		walkNodes(x.List, f)
+		walkNodes(x.ElseList, f)
+	case *parse.TemplateNode:
+		inspect(x.Pipe, f)
 	}
 }

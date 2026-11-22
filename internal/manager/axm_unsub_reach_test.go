@@ -92,3 +92,26 @@ func TestUnsubscribeOnEveryPath(t *testing.T) {
 		}
 	}
 }
+
+func TestReadsVarying(t *testing.T) {
+	m, _ := trackingManager()
+	m.tplFuncs = m.makeGnericFuncMap()
+	c := &models.Campaign{}
+	for _, tc := range []struct {
+		text string
+		want bool
+	}{
+		{"desk@crevasse.ai", false},
+		{`{{ "desk@crevasse.ai" }}`, false},
+		{`{{ if .Campaign.Attribs.x }}a{{ end }}`, false},
+		{`{{ .Subscriber.Attribs.owner }}`, true},
+		{`{{ if eq .Subject "Regional" }}regional@crevasse.ai{{ end }}`, true},
+		{`{{ $m := . }}{{ if eq $m.Subject "R" }}r{{ end }}`, true},
+		{`{{ with .Subscriber }}{{ .Email }}{{ end }}`, true},
+		{`{{ if }}`, true},
+	} {
+		if got := m.ReadsVarying(c, tc.text); got != tc.want {
+			t.Errorf("%q: %v, want %v", tc.text, got, tc.want)
+		}
+	}
+}

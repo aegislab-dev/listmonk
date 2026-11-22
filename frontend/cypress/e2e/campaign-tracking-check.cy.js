@@ -279,12 +279,17 @@ describe('Pre-send tracking check', () => {
     });
     open('ok');
     cy.get('.b-tabs nav a').eq(2).click();
-    cy.intercept('GET', preflight, (req) => { req.on('response', (res) => { res.setDelay(1500); }); }).as('slowCheck');
+    // The check is held until the loading state has been seen, then let through: a fixed delay
+    // raced a slow run (LST-48 review: the answer came before the assertion and it failed).
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    cy.intercept('GET', preflight, (req) => held.then(() => req.continue())).as('slowCheck');
     cy.intercept('PUT', `/api/campaigns/${ids.ok}/status`, { statusCode: 200, body: { data: {} } }).as('start');
     cy.get('[data-cy=btn-start]').click();
     // The checks are on their way and the page cannot be edited under the window.
     cy.get('[data-cy=send-loading]').should('be.visible');
     cy.get('[data-cy=send-ok]').should('be.disabled');
+    cy.then(() => release());
     // The question is about the campaign as it was saved: no pixel.
     cy.get(warnLines, { timeout: 10000 }).should('contain', 'There is no view tracking.');
     cy.request(`/api/campaigns/${ids.ok}`).its('body.data.attribs.track').should('eq', false);

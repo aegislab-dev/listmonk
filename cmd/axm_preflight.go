@@ -406,7 +406,8 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	subject, from, replyTo := sendEnvelope(env.Subject, from, camp.ReplyTo, camp.Messenger, server, env.Headers, policy)
 	// Headers taken from each subscriber: their example values are not the ones every mail
 	// gets. Cc and Bcc addresses of that kind are not listed (the fixed ones are).
-	perSub := perSubscriberHeaders(a, sendCamp, statuses[0], env, server)
+	sample := a.core.GetPreflightSample(ctx, id, 10, afterID, mode == models.PreflightModeResume)
+	perSub := perSubscriberHeaders(a, sendCamp, statuses[0], env, server, sample)
 	copies := envelopeCopies(camp.Messenger, server, env.Headers, perSub)
 	perSubscriber := perSub["Cc"] || perSub["Bcc"]
 	senderPerSubscriber := perSub["From"] || perSub["Reply-To"]
@@ -437,7 +438,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	// Whether the e-mail that is rendered has the link to leave, as every recipient gets it:
 	// in every status, for the example subscriber, for one with no attributes at all, and for
 	// a few of the real recipients (a link that depends on the subscriber's fields).
-	subs := append([]models.Subscriber{dummySubscriber, bareSubscriber}, a.core.GetPreflightSample(ctx, id, 10, afterID, mode == models.PreflightModeResume)...)
+	subs := append([]models.Subscriber{dummySubscriber, bareSubscriber}, sample...)
 	var renders []string
 	for _, st := range statuses {
 		for i := range subs {
@@ -751,24 +752,32 @@ var otherSubscriber = models.Subscriber{
 // person's owner was not counted; From and Reply-To of each person's owner were shown as the
 // example's). A header does when its value names .Subscriber or renders otherwise for another
 // example subscriber. Each header is judged on its own: a fixed Cc stays listed beside a Bcc
-// taken from the subscriber.
-func perSubscriberHeaders(a *App, camp models.Campaign, status string, first manager.Envelope, server map[string]string) map[string]bool {
+// taken from the subscriber. A header also does when its template reads anything else that
+// differs per mail — the subject a template makes per recipient, say, read as .Subject or
+// through a variable (LST-48 review: From and Bcc chosen by such a subject were shown as
+// fixed) — or when it renders otherwise for one of the real recipients in sample.
+func perSubscriberHeaders(a *App, camp models.Campaign, status string, first manager.Envelope, server map[string]string, sample []models.Subscriber) map[string]bool {
 	out := map[string]bool{}
-	other, err := a.manager.RenderedEnvelope(&camp, otherSubscriber, status)
+	var others []manager.Envelope
+	for _, sub := range append([]models.Subscriber{otherSubscriber}, sample...) {
+		if e, err := a.manager.RenderedEnvelope(&camp, sub, status); err == nil {
+			others = append(others, e)
+		}
+	}
 	for _, name := range []string{"Cc", "Bcc", "From", "Reply-To"} {
 		raw, ok := chosenHeader(name, server, camp.Headers)
 		if !ok {
 			continue
 		}
-		if strings.Contains(raw, "{{") && strings.Contains(raw, "Subscriber") {
+		if a.manager.ReadsVarying(&camp, raw) {
 			out[name] = true
 			continue
 		}
-		if err == nil {
-			v1, _ := chosenHeader(name, server, first.Headers)
-			v2, _ := chosenHeader(name, server, other.Headers)
-			if v1 != v2 {
+		v1, _ := chosenHeader(name, server, first.Headers)
+		for _, o := range others {
+			if v2, _ := chosenHeader(name, server, o.Headers); v2 != v1 {
 				out[name] = true
+				break
 			}
 		}
 	}

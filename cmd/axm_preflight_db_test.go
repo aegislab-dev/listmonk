@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
@@ -330,6 +332,33 @@ func newPreflightApp(t *testing.T) *teamsEnv {
 	return e
 }
 
+// pfRead reads the confirmation and fails with the status and the error the handler gave when
+// it is not 200 (the shared call helper keeps only the code).
+func pfRead(t *testing.T, e *teamsEnv, user auth.User, target, id string) json.RawMessage {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(req, rec)
+	c.Set(auth.UserHTTPCtxKey, user)
+	c.Set("id", atoi(id))
+	if err := e.a.GetCampaignPreflight(c); err != nil {
+		if he, ok := err.(*echo.HTTPError); ok {
+			t.Fatalf("preflight: HTTP %d: %v", he.Code, he.Message)
+		}
+		t.Fatalf("preflight: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preflight: HTTP %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("preflight: %v: %s", err, rec.Body.String())
+	}
+	return out.Data
+}
+
 func TestCampaignPreflightHandler(t *testing.T) {
 	e := newPreflightApp(t)
 	member, other := e.as(e.ua), e.as(e.ub)
@@ -394,16 +423,19 @@ func TestCampaignPreflightHandler(t *testing.T) {
 		t.Fatalf("%d campaigns are not drafts", running)
 	}
 
-	// A campaign that cannot be started has no confirmation.
-	e.db.MustExec(`UPDATE campaigns SET status='running' WHERE id=$1`, e.campID)
+	// A campaign that cannot be started has no confirmation. Finished, not running: the sender
+	// this fixture runs scans every 20ms and would start (and then finish) a running campaign
+	// after the status is put back, so later reads would be refused (LST-48 review: CI failed
+	// on "recent rule:" with no body).
+	e.db.MustExec(`UPDATE campaigns SET status='finished' WHERE id=$1`, e.campID)
 	if code, _ := e.call(e.a.GetCampaignPreflight, member, http.MethodGet, target, id, ""); code != http.StatusBadRequest {
-		t.Fatalf("running: %d", code)
+		t.Fatalf("finished: %d", code)
 	}
 	e.db.MustExec(`UPDATE campaigns SET status='draft' WHERE id=$1`, e.campID)
 
 	// With a send time the status change schedules it, so the confirmation says schedule.
 	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() - INTERVAL '1 hour' WHERE id=$1`, e.campID)
-	_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, target, id, "")
+	data = pfRead(t, e, member, target, id)
 	json.Unmarshal(data, &out)
 	level = map[string]string{}
 	for _, c := range out.Checks {
@@ -416,7 +448,7 @@ func TestCampaignPreflightHandler(t *testing.T) {
 	// A saved recent-send rule is only recorded: the line says so, with who it would exclude.
 	e.db.MustExec(`UPDATE campaigns SET send_at=NULL WHERE id=$1`, e.campID)
 	e.db.MustExec(`INSERT INTO axm_campaign_recent_rules(campaign_id,days,scope) VALUES($1,14,'all')`, e.campID)
-	_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, target, id, "")
+	data = pfRead(t, e, member, target, id)
 	json.Unmarshal(data, &out)
 	var recent *models.PreflightCheck
 	for i, c := range out.Checks {
@@ -613,6 +645,18 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 		if json.Unmarshal(data, &o4) != nil || o4.PerSubscriber {
 			t.Fatalf("fixed reply-to: %s", data)
 		}
+		// From and Bcc chosen by a subject a template makes per recipient (LST-48 review): the
+		// sender is said to be per subscriber, the Bcc is not listed as going with every mail.
+		e.db.MustExec(`UPDATE campaigns SET subject='{{ if .Subscriber.Attribs.regional }}Regional{{ else }}Weekly{{ end }}',
+			headers='[{"From":"{{ if eq .Subject \"Regional\" }}Regional Desk <regional@crevasse.ai>{{ else }}Weekly Desk <weekly@crevasse.ai>{{ end }}","Bcc":"{{ if eq .Subject \"Regional\" }}regional-archive@crevasse.ai{{ end }}"}]'::jsonb WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		o4.PerSubscriber = false
+		o3.Copies, o3.Checks = nil, nil
+		if json.Unmarshal(data, &o4) != nil || !o4.PerSubscriber || json.Unmarshal(data, &o3) != nil ||
+			len(o3.Copies) != 0 || level(o3.Checks, "mail.copiesPerSubscriber") != "warn" {
+			t.Fatalf("from and bcc chosen by a subject made per recipient: %s", data)
+		}
+		e.db.MustExec(`UPDATE campaigns SET subject='Stored subject', headers='[{"Reply-To":"desk@crevasse.ai"}]'::jsonb WHERE id=$1`, e.campID)
 		e.db.MustExec(`UPDATE campaigns SET subject='Check {{ .Campaign.Name }}', headers='[]'::jsonb WHERE id=$1`, e.campID)
 
 		// A Subject header replaces it: shown as the header, not as rendered.
