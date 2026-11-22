@@ -38,7 +38,8 @@ type ReactionFollowup struct {
 	DefaultName string       `json:"default_name"`
 }
 
-// FollowupRecheck is what the checks before a send removed from the follow-up list so far.
+// FollowupRecheck is who the last check before a send holds back from the follow-up campaign, by
+// reason, and how many checks ran.
 type FollowupRecheck struct {
 	Reacted  int `json:"reacted"`
 	OptedOut int `json:"opted_out"`
@@ -46,7 +47,7 @@ type FollowupRecheck struct {
 	Runs     int `json:"runs"`
 }
 
-// FollowupPending is who would leave the follow-up list if the check ran now.
+// FollowupPending is who a check made now would hold back from the follow-up campaign.
 type FollowupPending struct {
 	Reacted  int `db:"reacted" json:"reacted"`
 	OptedOut int `db:"opted_out" json:"opted_out"`

@@ -2,6 +2,7 @@ package core
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"time"
 
@@ -232,7 +233,28 @@ func (c *Core) CreateCampaign(o models.Campaign, listIDs []int, mediaIDs []int) 
 
 // UpdateCampaign updates a campaign.
 func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs []int) (models.Campaign, error) {
-	_, err := c.q.UpdateCampaign.Exec(id,
+	// AXM (LST-47): the caller checked the status before this. The sender can start the campaign
+	// in between (a schedule that falls due, a save that waited for the check before a follow-up
+	// starts), and a save of a started campaign must fail instead of reporting a new time that
+	// no longer applies. Lock the row and check the status again.
+	tx, err := c.db.Beginx()
+	if err != nil {
+		return models.Campaign{}, err
+	}
+	defer tx.Rollback()
+	var status string
+	if err := tx.Stmtx(c.q.AxmLockCampaignStatus).Get(&status, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest,
+				c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
+		}
+		return models.Campaign{}, err
+	}
+	if !models.CanEditCampaign(status) {
+		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
+	}
+
+	_, err = tx.Stmtx(c.q.UpdateCampaign).Exec(id,
 		o.Name,
 		o.Subject,
 		o.FromEmail,
@@ -256,6 +278,9 @@ func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs
 		c.log.Printf("error updating campaign: %v", err)
 		return models.Campaign{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
+	}
+	if err := tx.Commit(); err != nil {
+		return models.Campaign{}, err
 	}
 
 	out, err := c.GetCampaign(id, "", "")

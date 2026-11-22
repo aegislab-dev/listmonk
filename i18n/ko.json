@@ -524,7 +524,7 @@
     "campaigns.followup.name": "초안 캠페인 이름",
     "campaigns.followup.warn": "마지막 발송 뒤 {days}일이 지나지 않았습니다. 아직 메일을 열지 않았을 뿐인 사람이 많을 수 있습니다. (막지는 않습니다)",
     "campaigns.followup.recheckTitle": "예약한 뒤 발송이 시작될 때 다시 확인합니다.",
-    "campaigns.followup.recheckBody": "그 사이 원본 캠페인을 열람·클릭했거나 구독을 해지한 사람은 후속 리스트에서 빠집니다. 후속 메일의 수신거부는 원본 캠페인의 리스트에도 적용됩니다. 자동으로 예약·발송되지 않고, 만들어진 초안을 열어 직접 예약합니다.",
+    "campaigns.followup.recheckBody": "그 사이 원본 캠페인을 열람·클릭했거나 구독을 해지한 사람은 후속 발송에서 빠집니다(리스트 구독은 그대로). 후속 메일의 수신거부는 원본 캠페인의 리스트에도 적용됩니다. 자동으로 예약·발송되지 않고, 만들어진 초안을 열어 직접 예약합니다.",
     "campaigns.followup.existing": "후속 캠페인:",
     "campaigns.followup.open": "후속 #{id} 열기",
     "campaigns.followup.existsHint": "이 캠페인의 후속 초안이 이미 있어 새로 만들 수 없습니다. 리스트만 따로 만들 수는 있습니다.",

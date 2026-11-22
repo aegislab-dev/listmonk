@@ -831,11 +831,6 @@ func (m *Manager) trackLink(url, campUUID, subUUID string) string {
 	return fmt.Sprintf(m.cfg.LinkTrackURL, uu, campUUID, subUUID)
 }
 
-// NotifyCampaign sends the admin notification of a campaign that ended outside the sender.
-func (m *Manager) NotifyCampaign(c *models.Campaign, status string) {
-	_ = m.sendNotif(c, status, "")
-}
-
 // sendNotif sends a notification to registered admin e-mails.
 func (m *Manager) sendNotif(c *models.Campaign, status, reason string) error {
 	var (

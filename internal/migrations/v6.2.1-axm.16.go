@@ -20,12 +20,18 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     condition          JSONB NOT NULL,
     counts             JSONB NOT NULL DEFAULT '{}',
     recheck            JSONB NOT NULL DEFAULT '{}',
-    -- People the check before sending holds back (subscriber, status before, updated_at after, reason).
-    held               JSONB NOT NULL DEFAULT '[]',
     rechecked_at       TIMESTAMP WITH TIME ZONE NULL,
     created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CHECK (campaign_id <> parent_campaign_id)
+);
+-- People the check before sending holds back from a follow-up campaign. The sender skips them;
+-- their subscriptions are not changed. Each check replaces the rows of its campaign.
+CREATE TABLE IF NOT EXISTS axm_campaign_followup_holds (
+    campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    reason        SMALLINT NOT NULL,
+    PRIMARY KEY (campaign_id, subscriber_id)
 );
 -- End of AXM campaign follow-ups.`)
 	return err

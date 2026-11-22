@@ -50,100 +50,84 @@ FROM axm_campaign_followups f
 LEFT JOIN lists l ON l.uuid = f.list_uuid
 WHERE f.campaign_id = ANY($1::INT[]);
 
--- name: axm-followup-finish-empty
--- A follow-up with nobody left to send to ends here. The sender does not finish a campaign
--- that has no recipients at all (it stays scheduled), and someone added to the list later
--- would then get the mail without being scheduled again. Only a campaign that is still due is
--- ended: a schedule moved to a later time while the check ran stays as it is. The counts are not
--- touched (a resumed campaign keeps its to_send). Who is left is counted as next-campaigns counts
--- it: confirmed only on a double opt-in list, anyone not unsubscribed on the others, and never a
--- blocklisted subscriber.
-UPDATE campaigns SET status = 'finished', started_at = COALESCE(started_at, NOW()), updated_at = NOW()
-WHERE id = $1 AND (status = 'running' OR (status = 'scheduled' AND NOW() >= send_at))
-    AND NOT EXISTS (SELECT 1 FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
-        WHERE cl.campaign_id = $1 AND l.axm_filter IS NOT NULL)
-    AND NOT EXISTS (SELECT 1 FROM campaign_lists cl
-        JOIN lists l ON l.id = cl.list_id
-        JOIN subscriber_lists sl ON sl.list_id = l.id
-        JOIN subscribers s ON s.id = sl.subscriber_id
-        WHERE cl.campaign_id = $1 AND s.status != 'blocklisted'
-            AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END)
-RETURNING id;
-
--- name: axm-followup-recheck
--- Holds back from the follow-up list the people who got the original campaign and no longer meet
--- its condition, and gives back the people held by an earlier check who meet it again. A person is
--- held by setting the subscription to unsubscribed; nothing is deleted, so the check can be undone
--- by the next one (a schedule that moved, a subscription that came back) and a record of the person
--- is never lost. The held rows are remembered in held (subscriber, status before, updated_at after):
--- a row that changed since, for example an unsubscribe by the person, is no longer ours and is left
--- alone. People added by hand who never got the original, and people who already got the follow-up,
--- are not judged. This text continues the shared candidate CTE put in front of it at startup.
-, held AS (
-    SELECT (h->>'s')::INT AS sid, h->>'st' AS st, (h->>'u')::TIMESTAMPTZ AS u
-    FROM jsonb_array_elements((SELECT held FROM axm_campaign_followups WHERE campaign_id = $7)) h
-),
-verdict AS (
-    SELECT sl.list_id, sl.subscriber_id, sl.status AS cur, hd.st AS held_st, hd.u AS held_u, COALESCE(rc.reason, -1) AS reason
-    FROM subscriber_lists sl
-    JOIN axm_campaign_sends cs ON cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id
-    LEFT JOIN held hd ON hd.sid = sl.subscriber_id AND sl.status = 'unsubscribed' AND sl.updated_at = hd.u
-    LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
-    WHERE sl.list_id = ANY($6::INT[]) AND (sl.status != 'unsubscribed' OR hd.sid IS NOT NULL)
-        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $7 AND sent.subscriber_id = sl.subscriber_id)
-)
-UPDATE subscriber_lists sl
-SET status = (CASE WHEN v.reason <> 0 THEN 'unsubscribed' ELSE v.held_st END)::subscription_status, updated_at = NOW()
-FROM verdict v
-WHERE sl.list_id = v.list_id AND sl.subscriber_id = v.subscriber_id
-    AND ((v.reason <> 0 AND v.held_st IS NULL AND sl.status != 'unsubscribed')
-        OR (v.reason = 0 AND v.held_st IS NOT NULL AND sl.status = 'unsubscribed' AND sl.updated_at = v.held_u))
-RETURNING sl.subscriber_id AS subscriber_id, sl.status::TEXT AS new_status, v.cur::TEXT AS before_status,
-    v.reason AS reason, sl.updated_at AS updated_at;
-
--- name: axm-followup-pending
--- The same judgement, read only: how many people still on the list would be held back if the check
--- ran now. This text continues the shared candidate CTE, which is put in front of it at startup.
-, held AS (
-    SELECT (h->>'s')::INT AS sid, (h->>'u')::TIMESTAMPTZ AS u
-    FROM jsonb_array_elements((SELECT held FROM axm_campaign_followups WHERE campaign_id = $7)) h
-),
-verdict AS (
-    SELECT COALESCE(rc.reason, -1) AS reason
-    FROM subscriber_lists sl
-    JOIN axm_campaign_sends cs ON cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id
-    LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
-    WHERE sl.list_id = ANY($6::INT[]) AND sl.status != 'unsubscribed'
-        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $7 AND sent.subscriber_id = sl.subscriber_id)
-)
-SELECT COUNT(*) FILTER (WHERE reason = -1) AS reacted,
-    COUNT(*) FILTER (WHERE reason IN (2, 3)) AS opted_out,
-    COUNT(*) FILTER (WHERE reason = 1) AS blocked
-FROM verdict;
-
 -- name: axm-followup-lock-due
 -- Locks the follow-up campaign while it is still due, so that a schedule moved to a later time
--- cannot be overtaken by a check made for the earlier one: no row means do not check.
+-- cannot be overtaken by a check made for the earlier one. No row means drop the check.
 SELECT id FROM campaigns
 WHERE id = $1 AND (status = 'running' OR (status = 'scheduled' AND NOW() >= send_at))
 FOR UPDATE;
 
--- name: axm-followup-hold
--- Remembers who the check holds back: the earlier ones that are still held (their row has not
--- changed since) and the new ones ($3), and sets the counts to those held now.
-WITH kept AS (
-    SELECT e FROM axm_campaign_followups f, jsonb_array_elements(f.held) e
-    WHERE f.campaign_id = $1 AND EXISTS (
-        SELECT 1 FROM subscriber_lists sl
-        WHERE sl.list_id = ANY($2::INT[]) AND sl.subscriber_id = (e->>'s')::INT
-            AND sl.status = 'unsubscribed' AND sl.updated_at = (e->>'u')::TIMESTAMPTZ)
-), merged AS (
-    SELECT COALESCE(jsonb_agg(x.e), '[]'::JSONB) AS h
-    FROM (SELECT e FROM kept UNION ALL SELECT jsonb_array_elements($3::JSONB) AS e) x
+-- name: axm-followup-unhold
+-- A check starts over. Who is held back is decided again each time, so a person held for an
+-- earlier time who meets the condition again (a schedule that moved, a subscription that came
+-- back) is sent to.
+DELETE FROM axm_campaign_followup_holds WHERE campaign_id = $1;
+
+-- name: axm-followup-recheck
+-- Holds back from the follow-up campaign the people on its list who got the original campaign and
+-- no longer meet the condition, because they reacted to it (-1), opted out of it (2, 3) or were blocked (1).
+-- Subscriptions are not changed. The sender skips the people held here (next-campaign-subscribers,
+-- next-campaign-subscribers-dynamic). Not judged are people added by hand who never got the original,
+-- people who already got the follow-up, people not subscribed to the list, and people the campaign
+-- also reaches through another of its lists (a list added by hand stays as it is).
+-- Keep the judged part identical to axm-followup-pending. This text continues the shared candidate
+-- CTE put in front of it at startup.
+, judged AS (
+    SELECT sl.subscriber_id, COALESCE(rc.reason, -1) AS reason
+    FROM subscriber_lists sl
+    LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
+    WHERE sl.list_id = ANY($6::INT[]) AND sl.status != 'unsubscribed'
+        AND EXISTS (SELECT 1 FROM axm_campaign_sends cs WHERE cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id)
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $7 AND sent.subscriber_id = sl.subscriber_id)
+        AND NOT EXISTS (
+            SELECT 1 FROM campaign_lists cl JOIN lists ol ON ol.id = cl.list_id
+            WHERE cl.campaign_id = $7 AND NOT (cl.list_id = ANY($6::INT[])) AND (
+                (ol.axm_filter IS NULL AND EXISTS (
+                    SELECT 1 FROM subscriber_lists o WHERE o.list_id = ol.id AND o.subscriber_id = sl.subscriber_id
+                        AND CASE WHEN ol.optin = 'double' THEN o.status = 'confirmed' ELSE o.status != 'unsubscribed' END))
+                OR (ol.axm_filter IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM axm_dynamic_list_members(ol.id, sl.subscriber_id - 1, sl.subscriber_id, 1))))
+        )
 )
-UPDATE axm_campaign_followups f SET held = m.h, rechecked_at = NOW(), recheck = jsonb_build_object(
-    'reacted', (SELECT COUNT(*) FROM jsonb_array_elements(m.h) e WHERE e->>'r' = '-1'),
-    'opted_out', (SELECT COUNT(*) FROM jsonb_array_elements(m.h) e WHERE e->>'r' IN ('2', '3')),
-    'blocked', (SELECT COUNT(*) FROM jsonb_array_elements(m.h) e WHERE e->>'r' = '1'),
+INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
+SELECT $7, subscriber_id, reason FROM judged WHERE reason <> 0
+RETURNING reason;
+
+-- name: axm-followup-pending
+-- The same judgement, read only. How many people a check made now would hold back.
+-- Keep the judged part identical to axm-followup-recheck. This text continues the shared candidate
+-- CTE, which is put in front of it at startup.
+, judged AS (
+    SELECT sl.subscriber_id, COALESCE(rc.reason, -1) AS reason
+    FROM subscriber_lists sl
+    LEFT JOIN reaction_candidates rc ON rc.id = sl.subscriber_id
+    WHERE sl.list_id = ANY($6::INT[]) AND sl.status != 'unsubscribed'
+        AND EXISTS (SELECT 1 FROM axm_campaign_sends cs WHERE cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id)
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $7 AND sent.subscriber_id = sl.subscriber_id)
+        AND NOT EXISTS (
+            SELECT 1 FROM campaign_lists cl JOIN lists ol ON ol.id = cl.list_id
+            WHERE cl.campaign_id = $7 AND NOT (cl.list_id = ANY($6::INT[])) AND (
+                (ol.axm_filter IS NULL AND EXISTS (
+                    SELECT 1 FROM subscriber_lists o WHERE o.list_id = ol.id AND o.subscriber_id = sl.subscriber_id
+                        AND CASE WHEN ol.optin = 'double' THEN o.status = 'confirmed' ELSE o.status != 'unsubscribed' END))
+                OR (ol.axm_filter IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM axm_dynamic_list_members(ol.id, sl.subscriber_id - 1, sl.subscriber_id, 1))))
+        )
+)
+SELECT COUNT(*) FILTER (WHERE reason = -1) AS reacted,
+    COUNT(*) FILTER (WHERE reason IN (2, 3)) AS opted_out,
+    COUNT(*) FILTER (WHERE reason = 1) AS blocked
+FROM judged;
+
+-- name: axm-lock-campaign-status
+-- The status of a campaign, locked until the end of the transaction (core.UpdateCampaign).
+SELECT status FROM campaigns WHERE id = $1 FOR UPDATE;
+
+-- name: axm-followup-record
+-- Records the check. The counts are those of the people held back now.
+UPDATE axm_campaign_followups f SET rechecked_at = NOW(), recheck = jsonb_build_object(
+    'reacted', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason = -1),
+    'opted_out', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason IN (2, 3)),
+    'blocked', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason = 1),
     'runs', COALESCE((f.recheck->>'runs')::INT, 0) + 1)
-FROM merged m WHERE f.campaign_id = $1;
+WHERE f.campaign_id = $1;

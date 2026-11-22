@@ -201,7 +201,8 @@ campMedia AS (
     GROUP BY campaign_id
 ),
 counts AS (
-    SELECT camps.id AS campaign_id, COUNT(DISTINCT sl.subscriber_id) AS to_send, COALESCE(MAX(sl.subscriber_id), 0) AS max_subscriber_id
+    -- AXM (LST-47) people held back from a follow-up campaign are not counted to send.
+    SELECT camps.id AS campaign_id, COUNT(DISTINCT sl.subscriber_id) FILTER (WHERE h.subscriber_id IS NULL) AS to_send, COALESCE(MAX(sl.subscriber_id), 0) AS max_subscriber_id
     FROM camps
     JOIN campLists cl ON cl.campaign_id = camps.id
     JOIN subscriber_lists sl ON sl.list_id = cl.list_id
@@ -213,10 +214,11 @@ counts AS (
             END
         )
     JOIN subscribers s ON (s.id = sl.subscriber_id AND s.status != 'blocklisted')
+    LEFT JOIN axm_campaign_followup_holds h ON (h.campaign_id = camps.id AND h.subscriber_id = sl.subscriber_id)
     GROUP BY camps.id
 ),
 dynCounts AS (
-    SELECT ca.id AS campaign_id, COUNT(DISTINCT members.id) AS to_send,
+    SELECT ca.id AS campaign_id, COUNT(DISTINCT members.id) FILTER (WHERE h.subscriber_id IS NULL) AS to_send,
         COALESCE(MAX(members.id), 0) AS max_subscriber_id
     FROM camps ca
     LEFT JOIN LATERAL (
@@ -232,6 +234,7 @@ dynCounts AS (
         CROSS JOIN LATERAL axm_dynamic_list_members(cl.list_id) m
         WHERE cl.campaign_id = ca.id AND cl.is_dynamic AND ca.type != 'optin'
     ) members ON TRUE
+    LEFT JOIN axm_campaign_followup_holds h ON (h.campaign_id = ca.id AND h.subscriber_id = members.id)
     WHERE EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = ca.id AND cl.is_dynamic)
     GROUP BY ca.id
 ),
@@ -249,6 +252,8 @@ u AS (
         UNION ALL SELECT * FROM dynCounts
     ) co
     WHERE ca.id = co.campaign_id
+        -- AXM (LST-47) a schedule moved to a later time while this ran is not started.
+        AND (ca.status = 'running' OR (ca.status = 'scheduled' AND NOW() >= ca.send_at))
 )
 SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);
 
@@ -380,6 +385,8 @@ subs AS (
             AND s.id <= $4
              -- Subscriber should not be blacklisted.
             AND s.status != 'blocklisted'
+            -- AXM (LST-47) not held back from this follow-up campaign by the check before sending.
+            AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.subscriber_id = s.id)
             AND (
                 -- If it's an optin campaign and the list is double-optin, only pick unconfirmed subscribers.
                 ($2 = 'optin' AND sl.status = 'unconfirmed' AND campLists.optin = 'double')

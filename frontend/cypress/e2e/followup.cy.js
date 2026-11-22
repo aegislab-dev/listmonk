@@ -102,7 +102,7 @@ describe('follow-up campaign draft', () => {
       .and('contain', 'checked again when sending starts');
     cy.get('[data-cy=followup-banner]').should('contain', '1 people').and('not.contain', 'lists of this campaign were changed');
     // Nobody has left since it was made, and the banner still says so.
-    cy.get('[data-cy=followup-pending]').should('contain', '0 would leave');
+    cy.get('[data-cy=followup-pending]').should('contain', '0 would be left out');
     // The note about the recent-send exclusion is under that panel, not in the banner.
     cy.get('[data-cy=followup-banner]').should('not.contain', 'recent-send exclusion');
     cy.get('[data-cy=followup-exclude-note]').should('be.visible').and('contain', 'recent-send exclusion');

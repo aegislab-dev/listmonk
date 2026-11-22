@@ -57,10 +57,11 @@ type Queries struct {
 	AxmFollowupDue                 *sqlx.Stmt `query:"axm-followup-due"`
 	AxmFollowupByIDs               *sqlx.Stmt `query:"axm-followup-by-ids"`
 	AxmFollowupLockDue             *sqlx.Stmt `query:"axm-followup-lock-due"`
-	AxmFollowupFinishEmpty         *sqlx.Stmt `query:"axm-followup-finish-empty"`
+	AxmFollowupUnhold              *sqlx.Stmt `query:"axm-followup-unhold"`
 	AxmFollowupRecheck             *sqlx.Stmt `query:"axm-followup-recheck"`
 	AxmFollowupPending             *sqlx.Stmt `query:"axm-followup-pending"`
-	AxmFollowupHold                *sqlx.Stmt `query:"axm-followup-hold"`
+	AxmFollowupRecord              *sqlx.Stmt `query:"axm-followup-record"`
+	AxmLockCampaignStatus          *sqlx.Stmt `query:"axm-lock-campaign-status"`
 	AxmGetColumnPresets            *sqlx.Stmt `query:"axm-get-column-presets"`
 	AxmGetColumnPreset             *sqlx.Stmt `query:"axm-get-column-preset"`
 	AxmColumnPresetExists          *sqlx.Stmt `query:"axm-column-preset-exists"`

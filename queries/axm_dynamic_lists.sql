@@ -74,6 +74,9 @@ regular AS (
     JOIN subscribers s ON s.id = sl.subscriber_id
     WHERE sl.list_id = ANY($5::INT[]) AND s.id > $3 AND s.id <= $4
         AND s.status != 'blocklisted'
+        -- AXM (LST-47) held back from this follow-up campaign. The check never holds a member
+        -- of a dynamic list of the campaign, so the dynamic part needs no such test.
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.subscriber_id = s.id)
         AND CASE WHEN $2 = 'optin' THEN sl.status = 'unconfirmed' AND cl.optin = 'double'
             WHEN cl.optin = 'double' THEN sl.status = 'confirmed'
             ELSE sl.status != 'unsubscribed' END

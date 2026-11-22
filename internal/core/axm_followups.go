@@ -152,15 +152,6 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 	return nil
 }
 
-// followupChange is a subscription the check held back or gave back.
-type followupChange struct {
-	SubscriberID int       `db:"subscriber_id"`
-	NewStatus    string    `db:"new_status"`
-	Before       string    `db:"before_status"`
-	Reason       int       `db:"reason"`
-	UpdatedAt    time.Time `db:"updated_at"`
-}
-
 type followupDue struct {
 	CampaignID int             `db:"campaign_id"`
 	ParentID   int             `db:"parent_campaign_id"`
@@ -170,14 +161,15 @@ type followupDue struct {
 
 // RecheckFollowups runs the check before follow-up campaigns start: the people on a follow-up
 // list who reacted to the original campaign since the list was made, opted out of it, or got
-// blocked are taken off the list. This covers the follow-ups the sender is about to pick up (a
+// blocked are held back, and the sender skips them. Subscriptions are not changed, and who is held
+// is decided again at every check. This covers the follow-ups the sender is about to pick up (a
 // start, a due schedule, a resume, a restart); it does nothing when there are none. It returns
 // the campaigns it checked. An error means the check did not happen, and the caller must not
 // start those campaigns.
-func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) (done, finished []int, err error) {
+func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) ([]int, error) {
 	var due []followupDue
 	if err := c.q.AxmFollowupDue.SelectContext(ctx, &due, pq.Array(currentIDs)); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	return c.recheck(ctx, due)
 }
@@ -185,80 +177,72 @@ func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) (done, 
 // RecheckFollowupsByID checks the follow-ups among the given campaigns, whatever their state.
 // The sender uses it for a campaign it found after the first check (a schedule that fell due
 // while another check ran). It returns the campaigns that were follow-ups.
-func (c *Core) RecheckFollowupsByID(ctx context.Context, ids []int) (done, finished []int, err error) {
+func (c *Core) RecheckFollowupsByID(ctx context.Context, ids []int) ([]int, error) {
 	var rows []followupDue
 	if err := c.q.AxmFollowupByIDs.SelectContext(ctx, &rows, pq.Array(ids)); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	return c.recheck(ctx, rows)
 }
 
-func (c *Core) recheck(ctx context.Context, rows []followupDue) (done, finished []int, err error) {
-	done = []int{}
+func (c *Core) recheck(ctx context.Context, rows []followupDue) ([]int, error) {
+	done := []int{}
 	for _, f := range rows {
 		var s models.ReactionSettings
 		if err := json.Unmarshal(f.Condition, &s); err != nil || s.Validate() != nil {
-			return done, finished, errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
+			return done, errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
 		}
-		tx, err := c.db.BeginTxx(ctx, nil)
+		held, checked, err := c.recheckOne(ctx, f, s)
 		if err != nil {
-			return done, finished, err
+			return done, err
 		}
-		var changed []followupChange
-		if len(f.ListIDs) > 0 {
-			args := []any{f.ParentID, s.Open, s.Click, pq.Array([]int(nil)), true, f.ListIDs, f.CampaignID}
-			if err := tx.Stmtx(c.q.AxmFollowupRecheck).SelectContext(ctx, &changed, args...); err != nil {
-				tx.Rollback()
-				return done, finished, err
-			}
-			held := make([]map[string]any, 0, len(changed))
-			for _, ch := range changed {
-				if ch.NewStatus == "unsubscribed" {
-					held = append(held, map[string]any{"s": ch.SubscriberID, "st": ch.Before, "r": ch.Reason, "u": ch.UpdatedAt.Format(time.RFC3339Nano)})
-				}
-			}
-			raw, err := json.Marshal(held)
-			if err != nil {
-				tx.Rollback()
-				return done, finished, err
-			}
-			if _, err := tx.Stmtx(c.q.AxmFollowupHold).ExecContext(ctx, f.CampaignID, f.ListIDs, string(raw)); err != nil {
-				tx.Rollback()
-				return done, finished, err
-			}
-		}
-		// Last, with the campaign locked: if the schedule was moved to a later time while this
-		// ran, the check was made for a time that no longer applies. Undo all of it.
-		var locked int
-		if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &locked, f.CampaignID); err != nil {
-			tx.Rollback()
-			if errors.Is(err, sql.ErrNoRows) {
-				done = append(done, f.CampaignID)
-				continue
-			}
-			return done, finished, err
-		}
-		// Nobody left: the campaign ends here instead of waiting for someone to be added.
-		var ended int
-		if err := tx.Stmtx(c.q.AxmFollowupFinishEmpty).GetContext(ctx, &ended, f.CampaignID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			tx.Rollback()
-			return done, finished, err
-		}
-		if err := tx.Commit(); err != nil {
-			return done, finished, err
-		}
-		if len(f.ListIDs) > 0 {
-			c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, %d people changed (held back or given back)",
-				f.CampaignID, f.ParentID, len(changed))
-			_ = c.refreshCache(matListSubStats, false)
-		}
-		if ended != 0 {
-			finished = append(finished, f.CampaignID)
-			c.log.Printf("follow-up campaign %d: nobody is left to send to after the check, finished without sending", f.CampaignID)
+		if checked && len(f.ListIDs) > 0 {
+			c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, %d people held back",
+				f.CampaignID, f.ParentID, held)
 		}
 		done = append(done, f.CampaignID)
 	}
-	return done, finished, nil
+	return done, nil
+}
+
+// recheckOne decides who is held back from one follow-up campaign, in one transaction. checked is
+// false when the campaign was no longer due (its schedule was moved): nothing changes then.
+func (c *Core) recheckOne(ctx context.Context, f followupDue, s models.ReactionSettings) (held int, checked bool, err error) {
+	tx, err := c.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Stmtx(c.q.AxmFollowupUnhold).ExecContext(ctx, f.CampaignID); err != nil {
+		return 0, false, err
+	}
+	if len(f.ListIDs) > 0 {
+		var reasons []int
+		args := []any{f.ParentID, s.Open, s.Click, pq.Array([]int(nil)), true, f.ListIDs, f.CampaignID}
+		if err := tx.Stmtx(c.q.AxmFollowupRecheck).SelectContext(ctx, &reasons, args...); err != nil {
+			return 0, false, err
+		}
+		held = len(reasons)
+	}
+	if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID); err != nil {
+		return 0, false, err
+	}
+	// Last, with the campaign locked: if a later time was saved while this ran, the check was made
+	// for a time that no longer applies and is dropped (the next check is made at the new time). A
+	// save that comes after this lock waits for the check; core.UpdateCampaign then reads the status
+	// again and refuses the save if the campaign has started meanwhile.
+	var locked int
+	if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &locked, f.CampaignID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	return held, true, nil
 }
 
 // GetFollowupInfo describes the follow-up link of a campaign, if it has one. withPending adds

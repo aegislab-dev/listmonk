@@ -626,7 +626,6 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 		Email:          i.T("email.businessFooter.email"),
 	})
 
-	st := newManagerStore(q, co, md, db)
 	mgr := manager.New(manager.Config{
 		SenderPolicyEnabled:   len(ko.Strings("axm.sender_domains")) > 0,
 		BusinessFooterHTML:    footerHTML,
@@ -652,8 +651,7 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 		SlidingWindowRate:     ko.Int("app.message_sliding_window_rate"),
 		ScanInterval:          time.Second * 5,
 		ScanCampaigns:         !ko.Bool("passive"),
-	}, st, i, lo)
-	st.notify = mgr.NotifyCampaign
+	}, newManagerStore(q, co, md, db), i, lo)
 
 	// Attach all messengers to the campaign manager.
 	for _, m := range msgrs {

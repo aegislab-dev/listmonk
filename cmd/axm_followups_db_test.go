@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/internal/migrations"
 	"github.com/knadh/listmonk/models"
+	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 )
 
@@ -238,7 +240,21 @@ func (e *followupEnv) followupWithManualMember(body string) (models.ReactionResu
 	return got, manual
 }
 
-func TestFollowupRecheckRemovesWhoReactedOrOptedOut(t *testing.T) {
+// held is who the check holds back from a follow-up campaign now.
+func (e *followupEnv) held(camp int) []int {
+	return e.sendsEnv.ids(`SELECT subscriber_id FROM axm_campaign_followup_holds WHERE campaign_id = $1 ORDER BY subscriber_id`, camp)
+}
+
+// subscriptions is every subscription row with its status and last change, to show that the
+// check does not write to them.
+func (e *followupEnv) subscriptions() string {
+	e.t.Helper()
+	var s string
+	e.get(&s, `SELECT COALESCE(string_agg(list_id || ':' || subscriber_id || ':' || status || ':' || updated_at, ',' ORDER BY list_id, subscriber_id), '') FROM subscriber_lists`)
+	return s
+}
+
+func TestFollowupRecheckHoldsWhoReactedOrOptedOut(t *testing.T) {
 	e := newFollowupEnv(t)
 	got, manual := e.followupWithManualMember(`{"open":"no","no_team":true,"followup":true}`)
 	camp, list := got.Followup.ID, got.List.ID
@@ -251,7 +267,7 @@ func TestFollowupRecheckRemovesWhoReactedOrOptedOut(t *testing.T) {
 
 	run := func() {
 		t.Helper()
-		if _, err := e.store.NextCampaigns(nil); err != nil {
+		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -267,68 +283,87 @@ func TestFollowupRecheckRemovesWhoReactedOrOptedOut(t *testing.T) {
 	run()
 	state("paused", "NULL")
 	run()
-	wantSame(t, "untouched", e.members(list), []int{charlie, daniel, manual})
+	wantSame(t, "nobody held yet", e.held(camp), nil)
 	state("running", "NULL")
 	if _, err := e.store.NextCampaigns([]int64{int64(camp)}); err != nil {
 		t.Fatal(err)
 	}
-	wantSame(t, "held", e.members(list), []int{charlie, daniel, manual})
+	wantSame(t, "nobody held by a sender that holds the campaign", e.held(camp), nil)
 	state("draft", "NULL")
 	if code, info := e.callGet(e.admin, camp); code != 200 || info.Pending == nil || info.Pending.Reacted != 1 || info.Pending.OptedOut != 1 || info.Pending.Blocked != 0 {
 		t.Fatalf("pending: %d %+v", code, info.Pending)
 	}
-	wantSame(t, "reading does not remove", e.members(list), []int{charlie, daniel, manual})
+	wantSame(t, "reading holds nobody", e.held(camp), nil)
 
-	// A schedule that is due runs it, once.
+	// A schedule that is due runs it, once. The list stays as it is.
+	subs := e.subscriptions()
 	state("scheduled", "NOW() - INTERVAL '1 second'")
 	run()
-	wantSame(t, "after the due schedule", e.members(list), []int{manual})
+	wantSame(t, "held after the due schedule", e.held(camp), []int{charlie, daniel})
+	wantSame(t, "the list is unchanged", e.members(list), []int{charlie, daniel, manual})
+	if e.subscriptions() != subs {
+		t.Fatal("the check changed subscriptions")
+	}
+	var toSend int
+	e.get(&toSend, `SELECT to_send FROM campaigns WHERE id = $1`, camp)
+	if toSend != 1 {
+		t.Fatalf("to_send %d, want 1 (the held are not counted)", toSend)
+	}
 	code, info := e.callGet(e.admin, camp)
 	if code != 200 || info.Recheck == nil || info.Recheck.Reacted != 1 || info.Recheck.OptedOut != 1 || info.Recheck.Blocked != 0 || info.Recheck.Runs != 1 || info.RecheckedAt == nil {
 		t.Fatalf("recorded: %d %+v", code, info.Recheck)
 	}
-	// Charlie is blocked before a resume: he stays held, and the counts are those of the people held now.
+	// Charlie is blocked before a resume: he is judged again, and the counts are those of the people held now.
 	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, charlie)
 	state("running", "NULL")
 	run()
-	wantSame(t, "after the resume", e.members(list), []int{manual})
-	if _, info := e.callGet(e.admin, camp); info.Recheck.Reacted != 1 || info.Recheck.OptedOut != 1 || info.Recheck.Runs != 2 {
+	wantSame(t, "held after the resume", e.held(camp), []int{charlie, daniel})
+	if _, info := e.callGet(e.admin, camp); info.Recheck.Reacted != 1 || info.Recheck.OptedOut != 0 || info.Recheck.Blocked != 1 || info.Recheck.Runs != 2 {
 		t.Fatalf("second run: %+v", info.Recheck)
 	}
 }
 
-// The check holds people back instead of deleting them, so a later check gives them back when they
-// qualify again (a schedule that moved, a subscription that came back), and a person who unsubscribes
-// from the follow-up list himself is never given back.
+// The check holds people back without touching their subscriptions, and decides again each time:
+// a later check gives them back when they qualify again (a schedule that moved, a subscription
+// that came back), whatever was done to their rows meanwhile (an import that rewrote a row with the
+// same status), and never sends to someone who unsubscribed from the follow-up list meanwhile,
+// whether the row changed or not (a bulk change that sets the status it already had).
 func TestFollowupHeldPeopleAreGivenBackOrKept(t *testing.T) {
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp, list := got.Followup.ID, got.List.ID
 	charlie, daniel := e.ids[2], e.ids[3]
 	run := func() {
 		t.Helper()
-		e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+		e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
 		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
 			t.Fatal(err)
 		}
-		e.db.MustExec(`UPDATE campaigns SET status = 'draft' WHERE id = $1`, got.Followup.ID)
+		e.db.MustExec(`UPDATE campaigns SET status = 'draft' WHERE id = $1`, camp)
 	}
-	// Both leave the original's list and are held; their rows stay.
+	// Both leave the original's list and are held; their follow-up subscriptions stay as they were.
 	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = ANY($1::INT[]) AND list_id = $2`, pq.Array([]int{charlie, daniel}), e.aList)
+	subs := e.subscriptions()
 	run()
-	wantSame(t, "held", e.members(got.List.ID), []int{})
-	if e.count(`SELECT COUNT(*) FROM subscriber_lists WHERE list_id = $1`, got.List.ID) != 2 {
-		t.Fatal("a row was deleted")
+	wantSame(t, "held", e.held(camp), []int{charlie, daniel})
+	if e.subscriptions() != subs {
+		t.Fatal("the check changed subscriptions")
 	}
-	// Daniel unsubscribes from the follow-up list himself; Charlie's subscription to the original comes back.
-	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed', updated_at = NOW() + INTERVAL '1 second' WHERE subscriber_id = $1 AND list_id = $2`, daniel, got.List.ID)
+	wantSame(t, "still subscribed", e.members(list), []int{charlie, daniel})
+
+	// Daniel unsubscribes from the follow-up list, with the row's last change left as it was; an
+	// import rewrites Charlie's row with the status it had. Both come back to the original's list.
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, daniel, list)
+	e.db.MustExec(`UPDATE subscriber_lists SET updated_at = NOW() + INTERVAL '1 minute' WHERE subscriber_id = $1 AND list_id = $2`, charlie, list)
 	e.db.MustExec(`UPDATE subscriber_lists SET status = 'confirmed' WHERE subscriber_id = ANY($1::INT[]) AND list_id = $2`, pq.Array([]int{charlie, daniel}), e.aList)
 	run()
-	wantSame(t, "Charlie is given back, Daniel stays unsubscribed", e.members(got.List.ID), []int{charlie})
-	var h int
-	e.get(&h, `SELECT jsonb_array_length(held) FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
-	if h != 0 {
-		t.Fatalf("%d held entries remain", h)
+	wantSame(t, "nobody is held", e.held(camp), nil)
+	var st string
+	e.get(&st, `SELECT status::TEXT FROM subscriber_lists WHERE subscriber_id = $1 AND list_id = $2`, daniel, list)
+	if st != "unsubscribed" {
+		t.Fatalf("Daniel's unsubscribe became %s", st)
 	}
+	wantSame(t, "who the campaign sends to", e.members(list), []int{charlie})
 }
 
 func TestFollowupConditionsStayTrue(t *testing.T) {
@@ -340,7 +375,7 @@ func TestFollowupConditionsStayTrue(t *testing.T) {
 	if _, err := e.store.NextCampaigns(nil); err != nil {
 		t.Fatal(err)
 	}
-	wantSame(t, "still matching", e.members(got.List.ID), []int{e.ids[0]})
+	wantSame(t, "still matching", e.held(got.Followup.ID), nil)
 	// She clicks: the condition no longer holds.
 	var link int
 	e.get(&link, `SELECT id FROM links LIMIT 1`)
@@ -350,7 +385,7 @@ func TestFollowupConditionsStayTrue(t *testing.T) {
 	if _, err := e.store.NextCampaigns(nil); err != nil {
 		t.Fatal(err)
 	}
-	wantSame(t, "after the click", e.members(got.List.ID), []int{})
+	wantSame(t, "after the click", e.held(got.Followup.ID), []int{e.ids[0]})
 }
 
 func TestFollowupCheckFailureStartsNothing(t *testing.T) {
@@ -535,13 +570,13 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	if !ok || !endOK || !strings.Contains(string(mig), "`"+start+block+end+"`") {
 		t.Fatal("schema and migration SQL of axm_campaign_followups differ")
 	}
-	e.db.MustExec(`DROP TABLE axm_campaign_followups`)
+	e.db.MustExec(`DROP TABLE axm_campaign_followup_holds, axm_campaign_followups`)
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if e.count(`SELECT COUNT(*) FROM axm_campaign_followups`) != 0 {
+	if e.count(`SELECT COUNT(*) FROM axm_campaign_followups`)+e.count(`SELECT COUNT(*) FROM axm_campaign_followup_holds`) != 0 {
 		t.Fatal("rows after the migration")
 	}
 	if e.count(`SELECT COUNT(*) FROM pg_depend d JOIN pg_class s ON s.oid = d.objid AND s.relkind = 'S' WHERE d.refobjid = 'axm_campaign_followups'::regclass`) != 0 {
@@ -612,12 +647,12 @@ func TestFollowupScheduleDueDuringAnotherCheckIsStillChecked(t *testing.T) {
 	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, slow.Followup.ID)
 	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() + INTERVAL '2 seconds' WHERE id = $1`, late.Followup.ID)
 
-	// Hold the row the first check has to delete.
+	// Hold the link row the first check has to record its result in.
 	tx, err := e.db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`SELECT 1 FROM subscriber_lists WHERE subscriber_id = $1 AND list_id = $2 FOR UPDATE`, charlie, slow.List.ID); err != nil {
+	if _, err := tx.Exec(`SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1 FOR UPDATE`, slow.Followup.ID); err != nil {
 		t.Fatal(err)
 	}
 	type result struct {
@@ -640,7 +675,7 @@ func TestFollowupScheduleDueDuringAnotherCheckIsStillChecked(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	t.Logf("picked up %v, slow %d late %d", r.ids, slow.Followup.ID, late.Followup.ID)
-	wantSame(t, "members of the one that fell due meanwhile", e.members(late.List.ID), []int{e.ids[1], e.ids[3]})
+	wantSame(t, "held from the one that fell due meanwhile", e.held(late.Followup.ID), []int{charlie})
 	var runs int
 	e.get(&runs, `SELECT COALESCE((recheck->>'runs')::INT, 0) FROM axm_campaign_followups WHERE campaign_id = $1`, late.Followup.ID)
 	if runs != 1 {
@@ -654,7 +689,7 @@ func TestFollowupScheduleDueDuringAnotherCheckIsStillChecked(t *testing.T) {
 }
 
 // A follow-up list that went to the trash and came back is still checked, and only that list is:
-// a newsletter someone added to the campaign by hand keeps its subscriptions.
+// someone the campaign also reaches through a newsletter added to it by hand is not held back.
 func TestFollowupListRestoredFromTrashIsStillChecked(t *testing.T) {
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
@@ -662,9 +697,7 @@ func TestFollowupListRestoredFromTrashIsStillChecked(t *testing.T) {
 	e.get(&newsletter, `INSERT INTO lists (uuid, name, type) VALUES (gen_random_uuid(), 'Independent newsletter', 'private') RETURNING id`)
 	e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name) VALUES ($1, $2, 'Independent newsletter')`, got.Followup.ID, newsletter)
 	eli, charlie := e.ids[3], e.ids[2]
-	for _, id := range []int{charlie, eli} {
-		e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, id, newsletter)
-	}
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, eli, newsletter)
 	if code, _ := e.trash(got.List.ID, e.superAdmin); code != 200 {
 		t.Fatalf("trash: %d", code)
 	}
@@ -678,11 +711,11 @@ func TestFollowupListRestoredFromTrashIsStillChecked(t *testing.T) {
 	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
 		t.Fatal(err)
 	}
-	wantSame(t, "the follow-up list after the check", e.members(got.List.ID), []int{})
-	wantSame(t, "the newsletter is untouched", e.members(newsletter), []int{charlie, eli})
+	wantSame(t, "held after the check", e.held(got.Followup.ID), []int{charlie})
+	wantSame(t, "the newsletter is untouched", e.members(newsletter), []int{eli})
 	var gone int
 	e.get(&gone, `SELECT COALESCE((recheck->>'opted_out')::INT, 0) FROM axm_campaign_followups WHERE campaign_id = $1`, got.Followup.ID)
-	if gone != 2 {
+	if gone != 1 {
 		t.Fatalf("counted %d who opted out", gone)
 	}
 	// The banner reads the restored list again.
@@ -691,8 +724,9 @@ func TestFollowupListRestoredFromTrashIsStillChecked(t *testing.T) {
 	}
 }
 
-// When the check leaves nobody to send to, the campaign ends instead of staying scheduled: a person
-// added to the list later must not get the mail without a new schedule.
+// When the check holds everyone back, the sender finds nobody to send to and finishes the campaign
+// the way it finishes any other: it does not stay scheduled, and a person added to the list later
+// does not get the mail without a new schedule.
 func TestFollowupWithNobodyLeftEnds(t *testing.T) {
 	status := func(e *followupEnv, id int) (st struct {
 		Status string
@@ -702,75 +736,54 @@ func TestFollowupWithNobodyLeftEnds(t *testing.T) {
 		e.get(&st, `SELECT status, sent, to_send FROM campaigns WHERE id = $1`, id)
 		return
 	}
-	t.Run("everyone left", func(t *testing.T) {
-		e := newFollowupEnv(t)
+	finished := func(e *followupEnv, id int) func() bool {
+		return func() bool { return status(e, id).Status == "finished" }
+	}
+	t.Run("everyone held", func(t *testing.T) {
+		e := newScanningFollowupEnv(t, true)
 		got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 		for _, id := range []int{e.ids[2], e.ids[3]} {
 			e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
 		}
 		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
-		var told []int
-		e.store.notify = func(c *models.Campaign, st string) {
-			if st == "finished" {
-				told = append(told, c.ID)
-			}
-		}
-		for i := 0; i < 3; i++ {
-			if _, err := e.store.NextCampaigns([]int64{}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if st := status(e, got.Followup.ID); st.Status != "finished" || st.Sent != 0 {
+		waitFor(t, "the follow-up to finish", finished(e, got.Followup.ID))
+		if st := status(e, got.Followup.ID); st.Sent != 0 || st.ToSend != 0 {
 			t.Fatalf("campaign: %+v", st)
 		}
-		// The admins are told once, as they are for any campaign that finishes.
-		wantSame(t, "admin notifications", told, []int{got.Followup.ID})
 		// Someone added afterwards is not sent to: the campaign is over.
 		e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, e.ids[1], got.List.ID)
-		if camps, err := e.store.NextCampaigns([]int64{}); err != nil || len(camps) != 0 {
-			t.Fatalf("picked up %d after it ended: %v", len(camps), err)
-		}
-		if st := status(e, got.Followup.ID); st.Status != "finished" {
-			t.Fatalf("campaign: %+v", st)
+		time.Sleep(200 * time.Millisecond)
+		if st := status(e, got.Followup.ID); st.Status != "finished" || len(e.gate.sentIDs()) != 0 {
+			t.Fatalf("campaign: %+v, sent to %v", st, e.gate.sentIDs())
 		}
 	})
 
 	// On a double opt-in list only the confirmed are sent to, so someone waiting for confirmation
 	// does not keep the campaign open.
 	t.Run("only people waiting for confirmation are left", func(t *testing.T) {
-		e := newFollowupEnv(t)
+		e := newScanningFollowupEnv(t, true)
 		got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 		e.db.MustExec(`UPDATE lists SET optin = 'double' WHERE id = $1`, got.List.ID)
 		e.db.MustExec(`UPDATE subscriber_lists SET status = 'unconfirmed' WHERE list_id = $1 AND subscriber_id = $2`, got.List.ID, e.ids[3])
 		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[2])
 		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
-		for i := 0; i < 3; i++ {
-			if _, err := e.store.NextCampaigns([]int64{}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if st := status(e, got.Followup.ID); st.Status != "finished" {
-			t.Fatalf("campaign: %+v", st)
-		}
-		e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, e.ids[1], got.List.ID)
-		if camps, err := e.store.NextCampaigns([]int64{}); err != nil || len(camps) != 0 {
-			t.Fatalf("picked up %d after it ended: %v", len(camps), err)
+		waitFor(t, "the follow-up to finish", finished(e, got.Followup.ID))
+		if len(e.gate.sentIDs()) != 0 {
+			t.Fatalf("sent to %v", e.gate.sentIDs())
 		}
 	})
 
-	// A campaign paused after a partial send keeps its counts when it resumes with nobody left.
-	t.Run("resumed with nobody left keeps its counts", func(t *testing.T) {
-		e := newFollowupEnv(t)
+	// A campaign paused after a partial send keeps what it sent when it resumes with nobody left.
+	t.Run("resumed with nobody left keeps its sent count", func(t *testing.T) {
+		e := newScanningFollowupEnv(t, true)
 		got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 		for _, id := range []int{e.ids[2], e.ids[3]} {
 			e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
 		}
 		e.db.MustExec(`UPDATE campaigns SET status = 'running', sent = 1, to_send = 11 WHERE id = $1`, got.Followup.ID)
-		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
-			t.Fatal(err)
-		}
-		if st := status(e, got.Followup.ID); st.Status != "finished" || st.Sent != 1 || st.ToSend != 11 {
-			t.Fatalf("campaign: %+v", st)
+		waitFor(t, "the follow-up to finish", finished(e, got.Followup.ID))
+		if st := status(e, got.Followup.ID); st.Sent != 1 || len(e.gate.sentIDs()) != 0 {
+			t.Fatalf("campaign: %+v, sent to %v", st, e.gate.sentIDs())
 		}
 	})
 }
@@ -893,7 +906,7 @@ func TestFollowupPostponedWhileCheckWaitsKeepsItsList(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	wantSame(t, "members", e.members(got.List.ID), []int{e.ids[2], e.ids[3]})
+	wantSame(t, "held", e.held(got.Followup.ID), nil)
 	var st string
 	e.get(&st, `SELECT status FROM campaigns WHERE id = $1`, got.Followup.ID)
 	if st != "scheduled" {
@@ -901,28 +914,126 @@ func TestFollowupPostponedWhileCheckWaitsKeepsItsList(t *testing.T) {
 	}
 }
 
-// The same, when the sender waits on a list row and the new schedule is saved in the meantime.
-func TestFollowupPostponedWhileCheckDeletesKeepsItsList(t *testing.T) {
-	e := newFollowupEnv(t)
-	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
-	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[2])
-	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
-	tx, err := e.db.Begin()
-	if err != nil {
-		t.Fatal(err)
+// The check holds everyone back, and the editor saves a later time while the check runs; meanwhile
+// the people come back to the original's list. The outcome is never a save that succeeds with a
+// campaign that has already finished with nobody sent to.
+func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
+	setup := func(t *testing.T) (*followupEnv, int, []int) {
+		e := newScanningFollowupEnv(t, true)
+		got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+		people := []int{e.ids[2], e.ids[3]}
+		e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = ANY($1::INT[]) AND list_id = $2`, pq.Array(people), e.aList)
+		return e, got.Followup.ID, people
 	}
-	if _, err := tx.Exec(`SELECT 1 FROM subscriber_lists WHERE subscriber_id = $1 AND list_id = $2 FOR UPDATE`, e.ids[2], got.List.ID); err != nil {
-		t.Fatal(err)
+	waiting := func(e *followupEnv, like string) func() bool {
+		return func() bool {
+			return e.count(`SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1`, like) > 0
+		}
 	}
-	done := make(chan error, 1)
-	go func() { _, err := e.store.NextCampaigns([]int64{}); done <- err }()
-	time.Sleep(time.Second)
-	e.db.MustExec(`UPDATE campaigns SET send_at = NOW() + INTERVAL '1 hour' WHERE id = $1`, got.Followup.ID)
-	tx.Rollback()
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	// save saves a later time the way the campaign editor does.
+	save := func(e *followupEnv, camp int, at time.Time) (models.Campaign, error) {
+		cm, err := e.a.core.GetCampaign(camp, "", "")
+		if err != nil {
+			return cm, err
+		}
+		cm.SendAt.Time, cm.SendAt.Valid = at, true
+		lists := e.sendsEnv.ids(`SELECT list_id FROM campaign_lists WHERE campaign_id = $1`, camp)
+		return e.a.core.UpdateCampaign(camp, cm, lists, nil)
 	}
-	wantSame(t, "members", e.members(got.List.ID), []int{e.ids[2], e.ids[3]})
+	status := func(e *followupEnv, camp int) string {
+		var st string
+		e.get(&st, `SELECT status FROM campaigns WHERE id = $1`, camp)
+		return st
+	}
+
+	// The save comes while the check reads: it is saved at once, and the check, made for the
+	// earlier time, is dropped. At the later time both are sent to.
+	t.Run("saved while the check reads", func(t *testing.T) {
+		e, camp, people := setup(t)
+		tx, err := e.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		// The holds' foreign key only needs a key share lock: the check holds both, then waits here.
+		if _, err := tx.Exec(`SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1 FOR NO KEY UPDATE`, camp); err != nil {
+			t.Fatal(err)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
+		waitFor(t, "the check to wait", waiting(e, "%rechecked_at = NOW()%"))
+		cm, err := save(e, camp, time.Now().Add(3*time.Second))
+		if err != nil || cm.Status != models.CampaignStatusScheduled {
+			t.Fatalf("save: %v %s", err, cm.Status)
+		}
+		e.db.MustExec(`UPDATE subscriber_lists SET status = 'confirmed' WHERE subscriber_id = ANY($1::INT[]) AND list_id = $2`, pq.Array(people), e.aList)
+		tx.Rollback()
+		time.Sleep(300 * time.Millisecond)
+		if st := status(e, camp); st != "scheduled" {
+			t.Fatalf("after the dropped check the campaign is %s", st)
+		}
+		wantSame(t, "held after the dropped check", e.held(camp), nil)
+		waitFor(t, "the follow-up to finish at the later time", func() bool { return status(e, camp) == "finished" })
+		wantSame(t, "sent to", e.gate.sentIDs(), people)
+	})
+
+	// The check has the campaign locked when the save comes, so the save waits for it. Whichever
+	// goes first afterwards, the save and the send agree: the later time is saved and both are sent
+	// to then, or the campaign started at the earlier time and the save is refused.
+	t.Run("saved after the check locked the campaign", func(t *testing.T) {
+		e, camp, people := setup(t)
+		link, err := e.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer link.Rollback()
+		if _, err := link.Exec(`SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1 FOR NO KEY UPDATE`, camp); err != nil {
+			t.Fatal(err)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
+		waitFor(t, "the check to hold both", waiting(e, "%rechecked_at = NOW()%"))
+		// Someone else has the campaign row, so the check, with both held, waits for it last.
+		row, err := e.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer row.Rollback()
+		if _, err := row.Exec(`SELECT 1 FROM campaigns WHERE id = $1 FOR UPDATE`, camp); err != nil {
+			t.Fatal(err)
+		}
+		link.Rollback()
+		waitFor(t, "the check to wait for the campaign", waiting(e, "SELECT id FROM campaigns%FOR UPDATE%"))
+		type result struct {
+			cm  models.Campaign
+			err error
+		}
+		saved := make(chan result, 1)
+		go func() {
+			cm, err := save(e, camp, time.Now().Add(3*time.Second))
+			saved <- result{cm, err}
+		}()
+		waitFor(t, "the save to wait", waiting(e, "SELECT status FROM campaigns%FOR UPDATE%"))
+		e.db.MustExec(`UPDATE subscriber_lists SET status = 'confirmed' WHERE subscriber_id = ANY($1::INT[]) AND list_id = $2`, pq.Array(people), e.aList)
+		row.Rollback()
+		r := <-saved
+		if r.err == nil {
+			// The save went first: the later time stands and both get the follow-up then.
+			if r.cm.Status != models.CampaignStatusScheduled {
+				t.Fatalf("saved, but the campaign is %s", r.cm.Status)
+			}
+			waitFor(t, "the follow-up to finish at the later time", func() bool { return status(e, camp) == "finished" })
+			wantSame(t, "sent to", e.gate.sentIDs(), people)
+			t.Log("the save went first")
+			return
+		}
+		// The send went first, with the check made for its time: the save is refused, not reported done.
+		var he *echo.HTTPError
+		if !errors.As(r.err, &he) || he.Code != http.StatusBadRequest {
+			t.Fatalf("save refused with %v", r.err)
+		}
+		waitFor(t, "the follow-up to finish", func() bool { return status(e, camp) == "finished" })
+		wantSame(t, "sent to", e.gate.sentIDs(), nil)
+		t.Log("the send went first and the save was refused")
+	})
 }
 
 // A person who unsubscribes from the follow-up list while the check waits for that row keeps

@@ -25,11 +25,8 @@ type store struct {
 	media   media.Store
 
 	// AXM (LST-20): the connection that holds the campaign sending lock.
-	db      *sqlx.DB
-	lockMut sync.Mutex
-
-	// notify sends the admin notification of a campaign that ended without the sender (LST-47).
-	notify   func(c *models.Campaign, status string)
+	db       *sqlx.DB
+	lockMut  sync.Mutex
 	lockConn *sql.Conn
 }
 
@@ -75,8 +72,7 @@ func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
 	// one, and a follow-up never starts unchecked.
 	ctx := context.Background()
 	checked := map[int]bool{}
-	ids, ended, err := s.core.RecheckFollowups(ctx, currentIDs)
-	s.notifyEnded(ended)
+	ids, err := s.core.RecheckFollowups(ctx, currentIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -97,8 +93,7 @@ func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
 		if len(unchecked) == 0 {
 			return out, nil
 		}
-		followups, ended, err := s.core.RecheckFollowupsByID(ctx, unchecked)
-		s.notifyEnded(ended)
+		followups, err := s.core.RecheckFollowupsByID(ctx, unchecked)
 		if err != nil {
 			return nil, err
 		}
@@ -117,19 +112,6 @@ func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
 				}
 			}
 			return kept, nil
-		}
-	}
-}
-
-// notifyEnded tells the admins about follow-ups that the check ended with nobody to send to:
-// the sender never saw them, so it sends no notification of its own.
-func (s *store) notifyEnded(ids []int) {
-	if s.notify == nil {
-		return
-	}
-	for _, id := range ids {
-		if c, err := s.GetCampaign(id); err == nil {
-			s.notify(c, models.CampaignStatusFinished)
 		}
 	}
 }
