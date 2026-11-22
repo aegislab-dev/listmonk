@@ -209,6 +209,13 @@ func (c *Core) MakeReactionList(ctx context.Context, id int, s models.ReactionSe
 		return out, err
 	}
 
+	// AXM (LST-47): a follow-up that cannot be made is refused before the count, so the answer
+	// to a second request is the existing follow-up even when nobody is left to send to.
+	if o.Followup != nil {
+		if err := c.followupRefusal(ctx, tx, out.Campaign); err != nil {
+			return out, err
+		}
+	}
 	args := reactionArgs(id, s, o.Scope)
 	if err := tx.Stmtx(c.q.AxmReactionCounts).GetContext(ctx, &out.Counts, args...); err != nil {
 		return out, err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/internal/migrations"
 	"github.com/knadh/listmonk/models"
@@ -1064,5 +1066,156 @@ func TestFollowupUnsubscribeDuringCheckIsKept(t *testing.T) {
 	e.get(&st, `SELECT COALESCE((SELECT status::TEXT FROM subscriber_lists WHERE subscriber_id = $1 AND list_id = $2), 'gone')`, charlie, got.List.ID)
 	if st != "unsubscribed" {
 		t.Fatalf("the unsubscribe record is %s", st)
+	}
+}
+
+// Review 9 (1): a follow-up skipped by the check because a later time was being saved falls due
+// again while another follow-up's check runs. The sender must check it before it gives it back.
+func TestFollowupSkippedThenDueAgainIsChecked(t *testing.T) {
+	e := newFollowupEnv(t)
+	first := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	other := e.addParent()
+	code, data := e.sendRequest(true, e.admin, other, `{"open":"no","no_team":true,"followup":true}`)
+	var second models.ReactionResult
+	if code != http.StatusOK || json.Unmarshal(data, &second) != nil || second.Followup == nil {
+		t.Fatalf("second follow-up: %d %s", code, data)
+	}
+	a, b := first.Followup.ID, second.Followup.ID
+	if a > b {
+		t.Fatalf("the test needs %d to be checked first", a)
+	}
+	// Charlie opens the first parent after the follow-up was made.
+	charlie := e.ids[2]
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::INT[])`, pq.Array([]int{a, b}))
+	waiting := func(like string) func() bool {
+		return func() bool {
+			return e.count(`SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1`, like) > 0
+		}
+	}
+
+	// The editor is saving a later time for the first one; the second one's check will wait.
+	edit, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer edit.Rollback()
+	if _, err := edit.Exec(`UPDATE campaigns SET send_at = NOW() + INTERVAL '1 hour' WHERE id = $1`, a); err != nil {
+		t.Fatal(err)
+	}
+	link, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer link.Rollback()
+	if _, err := link.Exec(`SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1 FOR NO KEY UPDATE`, b); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		ids []int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		camps, err := e.store.NextCampaigns([]int64{})
+		r := result{err: err}
+		for _, c := range camps {
+			r.ids = append(r.ids, c.ID)
+		}
+		done <- r
+	}()
+	waitFor(t, "the first check to wait for the save", waiting("SELECT id FROM campaigns%FOR UPDATE%"))
+	if err := edit.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the second check to wait", waiting("%rechecked_at = NOW()%"))
+	// The first one falls due again before the second check is done.
+	e.db.MustExec(`UPDATE campaigns SET send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, a)
+	link.Rollback()
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	picked := false
+	for _, id := range r.ids {
+		picked = picked || id == a
+	}
+	if !picked {
+		t.Fatalf("the first follow-up, due again, was not picked up: %v", r.ids)
+	}
+	// It was checked before it was given back: Charlie, who opened the parent, is held.
+	wantSame(t, "held from the first one", e.held(a), []int{charlie})
+	if runs := e.count(`SELECT COALESCE((recheck->>'runs')::INT, 0) FROM axm_campaign_followups WHERE campaign_id = $1`, a); runs != 1 {
+		t.Fatalf("the first follow-up was checked %d times", runs)
+	}
+	t.Logf("picked up %v", r.ids)
+}
+
+// Review 9 (2): everyone on the follow-up list unsubscribed from it by the time it is due. The
+// campaign ends with nothing sent and someone who subscribes again later does not get it.
+func TestFollowupWithEmptyListEnds(t *testing.T) {
+	e := newScanningFollowupEnv(t, true)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE list_id = $1`, got.List.ID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
+	waitFor(t, "the follow-up to finish", func() bool {
+		var st string
+		e.get(&st, `SELECT status FROM campaigns WHERE id = $1`, got.Followup.ID)
+		return st == "finished"
+	})
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'confirmed' WHERE list_id = $1 AND subscriber_id = $2`, got.List.ID, e.ids[2])
+	time.Sleep(300 * time.Millisecond)
+	if len(e.gate.sentIDs()) != 0 {
+		t.Fatalf("sent to %v", e.gate.sentIDs())
+	}
+}
+
+// Review 9 (3): the follow-up list was replaced by another list. The check holds nobody back and
+// nothing is reported as left out.
+func TestFollowupReplacedListIsNotChecked(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[2])
+	var other int
+	e.get(&other, `INSERT INTO lists (uuid, name, type) VALUES (gen_random_uuid(), 'Replacement', 'private') RETURNING id`)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, e.ids[1], other)
+	e.db.MustExec(`DELETE FROM campaign_lists WHERE campaign_id = $1`, camp)
+	e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name) VALUES ($1, $2, 'Replacement')`, camp, other)
+	if c, info := e.callGet(e.admin, camp); c != 200 || !info.ListsChanged || info.Pending != nil {
+		t.Fatalf("info: %d changed %v pending %+v", c, info.ListsChanged, info.Pending)
+	}
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(camp), nil)
+	if _, info := e.callGet(e.admin, camp); info.Recheck == nil || info.Recheck.Reacted != 0 || info.Recheck.OptedOut != 0 {
+		t.Fatalf("recorded: %+v", info.Recheck)
+	}
+}
+
+// Review 9 (4): after everyone on the follow-up reacted, asking again still answers with the
+// existing follow-up (409), not "nobody matches".
+func TestFollowupRetryAfterEveryoneReactedPointsAtTheFollowup(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	for _, id := range []int{e.ids[2], e.ids[3]} {
+		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
+	}
+	code, data := e.sendRequest(true, e.admin, e.campID, `{"open":"no","no_team":true,"followup":true}`)
+	if code != http.StatusConflict {
+		t.Fatalf("retry: %d %s", code, data)
+	}
+	// The answer names the existing follow-up.
+	_, err := e.a.core.MakeReactionList(context.Background(), e.campID, models.ReactionSettings{Open: "no", Click: "any"},
+		core.ReactionListOptions{Scope: core.ReactionScope{AllSubscribers: true, IndividualTracking: true}, Followup: &core.FollowupDraft{},
+			ResolveTeams: func([]string) ([]string, error) { return nil, nil }})
+	if err == nil || !strings.Contains(err.Error(), "#"+fmt.Sprint(got.Followup.ID)) {
+		t.Fatalf("core answer: %v", err)
+	}
+	// Without the follow-up the answer is the old one.
+	if code, _ := e.sendRequest(true, e.admin, e.campID, `{"open":"no","no_team":true}`); code != http.StatusBadRequest {
+		t.Fatalf("list only: %d", code)
 	}
 }

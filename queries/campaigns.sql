@@ -250,6 +250,13 @@ u AS (
             SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
         )
         UNION ALL SELECT * FROM dynCounts
+        -- AXM (LST-47) a follow-up campaign with nobody to send to at all still starts, so that the
+        -- sender finishes it with nothing sent. Left scheduled, it would go to anyone who subscribed
+        -- to its list later, without a new schedule.
+        UNION ALL SELECT camps.id, 0, 0 FROM camps
+        WHERE camps.id IN (SELECT campaign_id FROM axm_campaign_followups)
+            AND NOT EXISTS (SELECT 1 FROM counts WHERE counts.campaign_id = camps.id)
+            AND NOT EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = camps.id AND cl.is_dynamic)
     ) co
     WHERE ca.id = co.campaign_id
         -- AXM (LST-47) a schedule moved to a later time while this ran is not started.

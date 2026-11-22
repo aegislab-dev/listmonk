@@ -88,27 +88,38 @@ func (c *Core) followupBadRequest(code int, key string, params ...string) error 
 	return echo.NewHTTPError(code, c.i18n.T("campaigns.followup."+key))
 }
 
-// makeFollowupTx creates the draft campaign that sends to the new list and links it to the
-// original, in the transaction that made the list. A second follow-up of the same campaign
-// fails on the unique key and rolls the whole transaction back.
-func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.ReactionResult, s models.ReactionSettings, d *FollowupDraft) error {
-	if out.Campaign.Status != models.CampaignStatusFinished {
+// followupRefusal says why no follow-up can be made from the campaign: it is not finished, not a
+// regular campaign, a follow-up itself, or already has one (409 with its id). It is asked before
+// the list is counted, so a retry after everyone reacted still points at the existing follow-up.
+func (c *Core) followupRefusal(ctx context.Context, tx *sqlx.Tx, camp models.ReactionCampaign) error {
+	if camp.Status != models.CampaignStatusFinished {
 		return c.followupBadRequest(http.StatusBadRequest, "notFinished")
 	}
-	if out.Campaign.Type != models.CampaignTypeRegular {
+	if camp.Type != models.CampaignTypeRegular {
 		return c.followupBadRequest(http.StatusBadRequest, "notRegular")
 	}
 	var isFollowup bool
-	if err := tx.Stmtx(c.q.AxmFollowupIsFollowup).GetContext(ctx, &isFollowup, out.Campaign.ID); err != nil {
+	if err := tx.Stmtx(c.q.AxmFollowupIsFollowup).GetContext(ctx, &isFollowup, camp.ID); err != nil {
 		return err
 	}
 	if isFollowup {
 		return c.followupBadRequest(http.StatusBadRequest, "isFollowup")
 	}
 	var existing models.FollowupRef
-	if err := tx.Stmtx(c.q.AxmFollowupExisting).GetContext(ctx, &existing, out.Campaign.ID); err == nil {
+	if err := tx.Stmtx(c.q.AxmFollowupExisting).GetContext(ctx, &existing, camp.ID); err == nil {
 		return c.followupBadRequest(http.StatusConflict, "exists", "id", strconv.Itoa(existing.ID))
 	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	return nil
+}
+
+// makeFollowupTx creates the draft campaign that sends to the new list and links it to the
+// original, in the transaction that made the list. A second follow-up of the same campaign
+// fails on the unique key and rolls the whole transaction back.
+func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.ReactionResult, s models.ReactionSettings, d *FollowupDraft) error {
+	if err := c.followupRefusal(ctx, tx, out.Campaign); err != nil {
 		return err
 	}
 
@@ -166,43 +177,51 @@ type followupDue struct {
 // start, a due schedule, a resume, a restart); it does nothing when there are none. It returns
 // the campaigns it checked. An error means the check did not happen, and the caller must not
 // start those campaigns.
-func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) ([]int, error) {
+func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) (checked, skipped []int, err error) {
 	var due []followupDue
 	if err := c.q.AxmFollowupDue.SelectContext(ctx, &due, pq.Array(currentIDs)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return c.recheck(ctx, due)
 }
 
 // RecheckFollowupsByID checks the follow-ups among the given campaigns, whatever their state.
 // The sender uses it for a campaign it found after the first check (a schedule that fell due
-// while another check ran). It returns the campaigns that were follow-ups.
-func (c *Core) RecheckFollowupsByID(ctx context.Context, ids []int) ([]int, error) {
+// while another check ran). It returns the follow-ups it checked and the follow-ups it skipped
+// because they were not due when it came to them: those are not checked and must not start.
+func (c *Core) RecheckFollowupsByID(ctx context.Context, ids []int) (checked, skipped []int, err error) {
 	var rows []followupDue
 	if err := c.q.AxmFollowupByIDs.SelectContext(ctx, &rows, pq.Array(ids)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return c.recheck(ctx, rows)
 }
 
-func (c *Core) recheck(ctx context.Context, rows []followupDue) ([]int, error) {
-	done := []int{}
+// recheck checks each follow-up. A follow-up that was not due any more (a later time was saved
+// meanwhile) is skipped, not checked: it can fall due again before the sender's query runs, and
+// then it must be checked again first.
+func (c *Core) recheck(ctx context.Context, rows []followupDue) (done, skipped []int, err error) {
+	done = []int{}
 	for _, f := range rows {
 		var s models.ReactionSettings
 		if err := json.Unmarshal(f.Condition, &s); err != nil || s.Validate() != nil {
-			return done, errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
+			return done, skipped, errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
 		}
 		held, checked, err := c.recheckOne(ctx, f, s)
 		if err != nil {
-			return done, err
+			return done, skipped, err
 		}
-		if checked && len(f.ListIDs) > 0 {
+		if !checked {
+			skipped = append(skipped, f.CampaignID)
+			continue
+		}
+		if len(f.ListIDs) > 0 {
 			c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, %d people held back",
 				f.CampaignID, f.ParentID, held)
 		}
 		done = append(done, f.CampaignID)
 	}
-	return done, nil
+	return done, skipped, nil
 }
 
 // recheckOne decides who is held back from one follow-up campaign, in one transaction. checked is

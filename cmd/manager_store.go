@@ -72,7 +72,7 @@ func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
 	// one, and a follow-up never starts unchecked.
 	ctx := context.Background()
 	checked := map[int]bool{}
-	ids, err := s.core.RecheckFollowups(ctx, currentIDs)
+	ids, _, err := s.core.RecheckFollowups(ctx, currentIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -93,14 +93,22 @@ func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
 		if len(unchecked) == 0 {
 			return out, nil
 		}
-		followups, err := s.core.RecheckFollowupsByID(ctx, unchecked)
+		followups, skipped, err := s.core.RecheckFollowupsByID(ctx, unchecked)
 		if err != nil {
 			return nil, err
 		}
-		for _, id := range unchecked {
-			checked[id] = true
+		// A follow-up skipped because it was not due when its turn came stays unchecked: it is
+		// looked at again in the next round and is never given back without a check.
+		notDue := map[int]bool{}
+		for _, id := range skipped {
+			notDue[id] = true
 		}
-		if len(followups) == 0 {
+		for _, id := range unchecked {
+			if !notDue[id] {
+				checked[id] = true
+			}
+		}
+		if len(followups) == 0 && len(skipped) == 0 {
 			return out, nil
 		}
 		if round >= 3 {
