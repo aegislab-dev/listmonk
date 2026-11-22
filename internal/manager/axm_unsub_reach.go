@@ -213,7 +213,9 @@ func valueVaries(p *parse.PipeNode, varying map[string]bool) bool {
 	inspect(p, func(n parse.Node) {
 		switch x := n.(type) {
 		case *parse.VariableNode:
-			if varying[x.Ident[0]] || (len(x.Ident) > 1 && x.Ident[0] == "$" && varyingFields(x.Ident[1:])) {
+			// A field path through any variable: $ or one that holds the message ($mail := .),
+			// whose .Subject or .Subscriber differ as the message's do (LST-48 review).
+			if varying[x.Ident[0]] || varyingFields(x.Ident[1:]) {
 				dep = true
 			}
 		case *parse.FieldNode:

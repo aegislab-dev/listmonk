@@ -1207,6 +1207,11 @@ func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("footer chosen by a subject made per recipient: %q", got)
 	}
+	// The same through a variable that holds the message ({{ $mail := . }}).
+	e.db.MustExec(`UPDATE campaigns SET body='{{ $mail := . }}<p>News</p><a href="{{ if eq $mail.Subject "Digest" }}https://example.org/archive{{ else }}{{ UnsubscribeURL . }}{{ end }}">leave</a>' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("footer chosen by the subject read through $mail: %q", got)
+	}
 	e.db.MustExec(`UPDATE campaigns SET subject='News' WHERE id=$1`, e.campID)
 	// Printed always: a pass.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID)

@@ -71,6 +71,13 @@ func TestUnsubscribeOnEveryPath(t *testing.T) {
 		{"footer chosen by the rendered subject", body,
 			`{{ if eq .Subject "Digest" }}<a href="https://example.org/archive">archive</a>{{ else }}` + link + `{{ end }}`, "", nil, false},
 		{"rendered subject read through $", body, `{{ with $.Subject }}` + link + `{{ end }}`, "", nil, false},
+		// The review's cases: the message in a variable.
+		{"rendered subject read through a variable holding the message", body,
+			`{{ $mail := . }}{{ $u := UnsubscribeURL . }}{{ if eq $mail.Subject "Digest" }}{{ $u = "https://example.org/archive" }}{{ end }}<a href="{{ $u }}">x</a>`, "", nil, false},
+		{"footer address chosen by the rendered subject through a variable", body,
+			`{{ $mail := . }}<a href="{{ if eq $mail.Subject "Digest" }}https://example.org/archive{{ else }}{{ UnsubscribeURL . }}{{ end }}">x</a>`, "", nil, false},
+		{"printed value read through a variable holding the message", body,
+			`{{ $mail := . }}<a href="{{ or $mail.Subscriber.Attribs.footer_url (UnsubscribeURL .) }}">x</a>`, "", nil, false},
 		{"in the alternative body", body, `<p>Hi</p>`, `Leave: {{ UnsubscribeURL }}`, nil, true},
 		{"none", body, `<p>Hi {{ .Subscriber.Name }}</p>`, "", nil, false},
 	} {
