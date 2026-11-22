@@ -173,7 +173,7 @@ func TestAddressCheckListAudienceAndClasses(t *testing.T) {
 	if strings.Contains(raw, `"checked_lists":0`) || !strings.Contains(raw, `"checked_lists":1`) {
 		t.Fatalf("checked lists: %s", raw)
 	}
-	if none, raw := e.check(member, e.bList); none.Total != 0 || none.Risky != 0 || len(none.Classes) != 6 || !strings.Contains(raw, `"checked_lists":0`) || none.Unchecked != 1 {
+	if none, raw := e.check(member, e.bList); none.Total != 0 || none.Risky != 0 || len(none.Classes) != len(addrcheck.Classes) || !strings.Contains(raw, `"checked_lists":0`) || none.Unchecked != 1 {
 		t.Fatalf("no access: %s", raw)
 	}
 	if none, raw := e.check(member); none.Total != 0 || none.Risky != 0 {

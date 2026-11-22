@@ -9,6 +9,7 @@ import (
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/i18n"
+	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/paginator"
 	"github.com/labstack/echo/v4"
@@ -24,6 +25,9 @@ type teamsEnv struct {
 	aList, bList, bothList, plainList int
 	memberRole                        int
 	admin, ua, ub, plain, superAdmin  int // user IDs
+
+	// lastImport is the importer's status when the last importAs import had finished.
+	lastImport subimporter.Status
 }
 
 func newTeamsEnv(t *testing.T) *teamsEnv {

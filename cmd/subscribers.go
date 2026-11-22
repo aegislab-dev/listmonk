@@ -277,6 +277,10 @@ func (a *App) CreateSubscriber(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
+	// An address that cannot receive mail is not added (LST-53).
+	if err := a.addressRuleError(req.Email); err != nil {
+		return err
+	}
 
 	// Filter lists against the current user's permitted lists.
 	listIDs := user.FilterListsByPerm(auth.PermTypeManage, req.Lists)
@@ -334,6 +338,10 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 
 	// Check if the user has access to at least one of the lists on the target subscriber.
 	if err := a.hasSubPerm(user, []int{id}); err != nil {
+		return err
+	}
+	// A new address is held to the address rules; one that was not changed is not (LST-53).
+	if err := a.addressChangeError(id, req.Email, ""); err != nil {
 		return err
 	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {
@@ -400,6 +408,10 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
 		req.Email = em
+	}
+	// A new address is held to the address rules; one that was not changed is not (LST-53).
+	if err := a.addressChangeError(id, req.Email, sub.Email); err != nil {
+		return err
 	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {
 		return err

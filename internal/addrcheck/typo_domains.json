@@ -1,0 +1,20 @@
+{
+  "_comment": "Exact misspellings of well-known mail domains and what they should be. Only entries on this list are suggested; nothing is guessed by edit distance, so a real domain such as gmail.co is never misjudged by a rule that does not know it. Changing this file or provider.go means RulesVersion in rules.go goes up. The BASIS crawler can read this same file (FORK.md, LST-53).",
+  "domains": {
+    "gmail.con": "gmail.com", "gmail.co": "gmail.com", "gmail.cm": "gmail.com", "gmail.om": "gmail.com",
+    "gmail.comm": "gmail.com", "gmail.cmo": "gmail.com", "gmail.coom": "gmail.com", "gmail.ocm": "gmail.com",
+    "gmai.com": "gmail.com", "gmal.com": "gmail.com", "gmial.com": "gmail.com", "gmaii.com": "gmail.com",
+    "gmali.com": "gmail.com", "gamil.com": "gmail.com", "gnail.com": "gmail.com", "gmaill.com": "gmail.com",
+    "gmil.com": "gmail.com", "gmail.vom": "gmail.com", "gmail.xom": "gmail.com", "gmeil.com": "gmail.com",
+    "hotmail.con": "hotmail.com", "hotmial.com": "hotmail.com", "hotmai.com": "hotmail.com", "hotmal.com": "hotmail.com",
+    "outlook.con": "outlook.com", "outlok.com": "outlook.com", "outloo.com": "outlook.com",
+    "yahoo.con": "yahoo.com", "yaho.com": "yahoo.com", "yahooo.com": "yahoo.com", "yhoo.com": "yahoo.com",
+    "naver.con": "naver.com", "naver.co": "naver.com", "nave.com": "naver.com", "naber.com": "naver.com",
+    "icloud.con": "icloud.com", "iclould.com": "icloud.com", "icoud.com": "icloud.com", "iclod.com": "icloud.com"
+  },
+  "tld": {
+    "_comment": "Top-level labels that are not real and are one slip from com. The domain keeps its name and gets .com.",
+    "labels": ["con", "cmo", "comm", "coom", "ocm", "vom", "xom"],
+    "to": "com"
+  }
+}

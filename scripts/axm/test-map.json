@@ -60,6 +60,7 @@
    "paths": [
     "frontend/src/components/AddressCheck.vue",
     "cmd/axm_address_check.go",
+    "cmd/axm_address_rules.go",
     "internal/addrcheck/**"
    ],
    "specs": [

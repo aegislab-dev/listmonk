@@ -100,7 +100,7 @@ func TestClassify(t *testing.T) {
 		{"a@Sub.Mailinator.com", "a@sub.mailinator.com", "sub.mailinator.com", false, false, true},
 		{"support@mailinator.com", "support@mailinator.com", "mailinator.com", false, true, true},
 		{"a@mailinator.com.example.org", "a@mailinator.com.example.org", "mailinator.com.example.org", false, false, false},
-		{"a@gmail.com", "a@gmail.com", "gmail.com", false, false, false},
+		{"a@googlemail.example", "a@googlemail.example", "googlemail.example", false, false, false},
 		{"a@한글.kr", "a@한글.kr", "xn--bj0bj06e.kr", false, false, false},
 		{"kim", "kim", "", true, false, false},
 		{"kim@", "kim@", "", true, false, false},
@@ -396,7 +396,7 @@ func TestCheckAndSummarize(t *testing.T) {
 	for name, cs := range s.Classes {
 		counts[name] = cs.Count
 	}
-	want := map[string]int{ClassFormat: 1, ClassDead: 2, ClassNullMX: 1, ClassDisposable: 1, ClassRole: 3, ClassUnknown: 2}
+	want := map[string]int{ClassFormat: 1, ClassProvider: 0, ClassTypo: 0, ClassDead: 2, ClassNullMX: 1, ClassDisposable: 1, ClassRole: 3, ClassUnknown: 2}
 	if !reflect.DeepEqual(counts, want) {
 		t.Fatalf("class counts %v, want %v", counts, want)
 	}
