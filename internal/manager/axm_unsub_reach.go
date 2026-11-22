@@ -23,6 +23,22 @@ func (m *Manager) UnsubscribeOnEveryPath(c *models.Campaign, sub models.Subscrib
 	if err != nil {
 		return false, err
 	}
+	// A function that changes data in place (set on a dict, say) can carry a value of one
+	// recipient out of any part, taken out or kept, into what is printed later: then nothing is
+	// vouched for (LST-48 review: a footer map whose url a with-block set from a subscriber
+	// attribute).
+	for _, t := range msg.Campaign.Tpl.Templates() {
+		if t.Tree != nil && callsMutator(t.Tree.Root) {
+			return false, nil
+		}
+	}
+	if msg.Campaign.AltBodyTpl != nil {
+		for _, t := range msg.Campaign.AltBodyTpl.Templates() {
+			if t.Tree != nil && callsMutator(t.Tree.Root) {
+				return false, nil
+			}
+		}
+	}
 	for _, t := range msg.Campaign.Tpl.Templates() {
 		if t.Tree != nil && !pruneVarying(t.Tree.Root, map[string]bool{}) {
 			return false, nil
@@ -97,6 +113,60 @@ func pruneVarying(l *parse.ListNode, varying map[string]bool) bool {
 	}
 	l.Nodes = keep
 	return true
+}
+
+// mutators are the template functions that change their arguments in place (sprig's dict
+// functions) or call anything (call).
+var mutators = map[string]bool{
+	"set": true, "unset": true, "merge": true, "mergeOverwrite": true, "mustMerge": true,
+	"mustMergeOverwrite": true, "call": true,
+}
+
+// callsMutator tells whether a template calls one of the mutators anywhere.
+func callsMutator(root parse.Node) bool {
+	found := false
+	var walk func(parse.Node)
+	walk = func(n parse.Node) {
+		if n == nil || found {
+			return
+		}
+		switch x := n.(type) {
+		case *parse.ListNode:
+			if x == nil {
+				return
+			}
+			for _, c := range x.Nodes {
+				walk(c)
+			}
+		case *parse.ActionNode:
+			walk(x.Pipe)
+		case *parse.IfNode:
+			walk(x.Pipe)
+			walk(x.List)
+			walk(x.ElseList)
+		case *parse.WithNode:
+			walk(x.Pipe)
+			walk(x.List)
+			walk(x.ElseList)
+		case *parse.RangeNode:
+			walk(x.Pipe)
+			walk(x.List)
+			walk(x.ElseList)
+		case *parse.TemplateNode:
+			walk(x.Pipe)
+		case *parse.PipeNode:
+			if x == nil {
+				return
+			}
+			inspect(x, func(m parse.Node) {
+				if id, ok := m.(*parse.IdentifierNode); ok && mutators[id.Ident] {
+					found = true
+				}
+			})
+		}
+	}
+	walk(root)
+	return found
 }
 
 // assigns tells whether a part sets a variable that may live outside it ($x = …).

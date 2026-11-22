@@ -62,6 +62,11 @@ func TestUnsubscribeOnEveryPath(t *testing.T) {
 		{"variable given an address chosen by a subscriber attribute", body,
 			`{{ $u := or .Subscriber.Attribs.footer_url (UnsubscribeURL .) }}<a href="{{ $u }}">x</a>`, "", nil, false},
 		{"subscriber fields printed beside a plain link", body, `<p>Hi {{ .Subscriber.Name }}</p>` + link, "", nil, true},
+		// The review's case: a footer map whose url a with-block sets from a subscriber attribute.
+		{"map changed in place under a subscriber condition", body,
+			`{{ $f := dict "url" (UnsubscribeURL .) }}{{ with .Subscriber.Attribs.footer_url }}{{ $_ := set $f "url" . }}{{ end }}<a href="{{ $f.url }}">x</a>`,
+			"", nil, false},
+		{"a map changed in place anywhere", body, `{{ $f := dict "url" "x" }}{{ $_ := set $f "url" "y" }}` + link, "", nil, false},
 		{"in the alternative body", body, `<p>Hi</p>`, `Leave: {{ UnsubscribeURL }}`, nil, true},
 		{"none", body, `<p>Hi {{ .Subscriber.Name }}</p>`, "", nil, false},
 	} {

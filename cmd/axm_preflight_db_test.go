@@ -1197,6 +1197,11 @@ func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("address chosen by a subscriber attribute: %q", got)
 	}
+	// A footer map whose url a with-block sets from a subscriber attribute (LST-48 review).
+	e.db.MustExec(`UPDATE campaigns SET body='{{ $f := dict "url" (UnsubscribeURL .) }}{{ with .Subscriber.Attribs.footer_url }}{{ $_ := set $f "url" . }}{{ end }}<p>News</p><a href="{{ $f.url }}">leave</a>' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("footer map changed in place for some subscribers: %q", got)
+	}
 	// Printed always: a pass.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID)
 	if got := read(); got != "unsubscribe.missing=ok" {
