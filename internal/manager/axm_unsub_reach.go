@@ -24,13 +24,13 @@ func (m *Manager) UnsubscribeOnEveryPath(c *models.Campaign, sub models.Subscrib
 		return false, err
 	}
 	for _, t := range msg.Campaign.Tpl.Templates() {
-		if t.Tree != nil && !pruneVarying(t.Tree.Root) {
+		if t.Tree != nil && !pruneVarying(t.Tree.Root, map[string]bool{}) {
 			return false, nil
 		}
 	}
 	if msg.Campaign.AltBodyTpl != nil {
 		for _, t := range msg.Campaign.AltBodyTpl.Templates() {
-			if t.Tree != nil && !pruneVarying(t.Tree.Root) {
+			if t.Tree != nil && !pruneVarying(t.Tree.Root, map[string]bool{}) {
 				return false, nil
 			}
 		}
@@ -42,8 +42,12 @@ func (m *Manager) UnsubscribeOnEveryPath(c *models.Campaign, sub models.Subscrib
 }
 
 // pruneVarying takes out of a list the parts that can differ between mails (see
-// UnsubscribeOnEveryPath), in place. false: a part taken out assigns to a variable.
-func pruneVarying(l *parse.ListNode) bool {
+// UnsubscribeOnEveryPath), in place: also what prints a value that reads the subscriber or the
+// time, or a variable given such a value (LST-48 review: {{ or .Subscriber.Attribs.footer_url
+// (UnsubscribeURL .) }} printed the address for the example and another one for some people).
+// varying is the variables of this template given such a value. false: a part taken out
+// assigns to a variable.
+func pruneVarying(l *parse.ListNode, varying map[string]bool) bool {
 	if l == nil {
 		return true
 	}
@@ -51,16 +55,31 @@ func pruneVarying(l *parse.ListNode) bool {
 	for _, n := range l.Nodes {
 		drop := false
 		switch x := n.(type) {
+		case *parse.ActionNode:
+			if valueVaries(x.Pipe, varying) {
+				if len(x.Pipe.Decl) > 0 {
+					// A declaration prints nothing: it is kept, and its variables vary.
+					for _, v := range x.Pipe.Decl {
+						varying[v.Ident[0]] = true
+					}
+				} else {
+					drop = true
+				}
+			} else if len(x.Pipe.Decl) > 0 && !x.Pipe.IsAssign {
+				for _, v := range x.Pipe.Decl {
+					delete(varying, v.Ident[0])
+				}
+			}
 		case *parse.IfNode:
 			if dependent(x.Pipe) {
 				drop = true
-			} else if !pruneVarying(x.List) || !pruneVarying(x.ElseList) {
+			} else if !pruneVarying(x.List, varying) || !pruneVarying(x.ElseList, varying) {
 				return false
 			}
 		case *parse.WithNode:
 			if dependent(x.Pipe) {
 				drop = true
-			} else if !pruneVarying(x.List) || !pruneVarying(x.ElseList) {
+			} else if !pruneVarying(x.List, varying) || !pruneVarying(x.ElseList, varying) {
 				return false
 			}
 		case *parse.RangeNode:
@@ -114,6 +133,43 @@ func assigns(n parse.Node) bool {
 	}
 	walk(n)
 	return found
+}
+
+// valueVaries tells whether a printed or assigned value can differ from mail to mail: it reads
+// the subscriber or the time, or a variable that does. Unlike a condition, a plain variable is
+// not enough ({{ $leave }} after {{ $leave := UnsubscribeURL . }} is the same for everyone).
+func valueVaries(p *parse.PipeNode, varying map[string]bool) bool {
+	dep := false
+	inspect(p, func(n parse.Node) {
+		switch x := n.(type) {
+		case *parse.VariableNode:
+			if varying[x.Ident[0]] {
+				dep = true
+			}
+			for _, id := range x.Ident[1:] {
+				if id == "Subscriber" || id == "UpdatedAt" || id == "StartedAt" {
+					dep = true
+				}
+			}
+		case *parse.FieldNode:
+			for _, id := range x.Ident {
+				if id == "Subscriber" || id == "UpdatedAt" || id == "StartedAt" || id == "Sent" || id == "ToSend" {
+					dep = true
+				}
+			}
+		case *parse.ChainNode:
+			for _, id := range x.Field {
+				if id == "Subscriber" || id == "UpdatedAt" || id == "StartedAt" {
+					dep = true
+				}
+			}
+		case *parse.IdentifierNode:
+			if x.Ident == "Date" || x.Ident == "now" {
+				dep = true
+			}
+		}
+	})
+	return dep
 }
 
 // dependent tells whether a condition can differ from mail to mail: it reads the subscriber, a

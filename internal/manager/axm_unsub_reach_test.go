@@ -56,6 +56,12 @@ func TestUnsubscribeOnEveryPath(t *testing.T) {
 		{"footer switched on by a campaign setting",
 			`{{ template "content" . }}{{ if .Campaign.Attribs.shared_footer }}` + link + `{{ end }}`,
 			`<p>Hi</p>`, "", models.JSON{"shared_footer": true}, true},
+		// The review's case: the footer address chosen by a subscriber attribute.
+		{"address chosen by a subscriber attribute", body,
+			`<a href="{{ or .Subscriber.Attribs.footer_url (UnsubscribeURL .) }}">x</a>`, "", nil, false},
+		{"variable given an address chosen by a subscriber attribute", body,
+			`{{ $u := or .Subscriber.Attribs.footer_url (UnsubscribeURL .) }}<a href="{{ $u }}">x</a>`, "", nil, false},
+		{"subscriber fields printed beside a plain link", body, `<p>Hi {{ .Subscriber.Name }}</p>` + link, "", nil, true},
 		{"in the alternative body", body, `<p>Hi</p>`, `Leave: {{ UnsubscribeURL }}`, nil, true},
 		{"none", body, `<p>Hi {{ .Subscriber.Name }}</p>`, "", nil, false},
 	} {

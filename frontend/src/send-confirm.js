@@ -137,8 +137,10 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   const n = resume ? pf.remaining : pf.recipients;
   const all = checkLines(pf);
   const blocked = all.some((c) => c.level === 'block');
-  // Nothing to send: the reason is the only line.
-  const checks = blocked ? all.filter((c) => c.level === 'block') : all;
+  // Nobody to send to (approved design A5): the reason is the only line. Otherwise (a From the
+  // send refuses) every line stays, the blocking one first: the rest is to be fixed too (A2).
+  const nobody = all.some((c) => c.level === 'block' && (c.name === 'recipients.zero' || c.name === 'lists.none'));
+  const checks = nobody ? all.filter((c) => c.level === 'block') : all;
   const warnings = all.filter((c) => c.level === 'warn').length;
   // A paused campaign with a send time is scheduled by the status change, not sent at once.
   const timed = (schedule || resume) && pf.sendAt;

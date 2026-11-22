@@ -1192,6 +1192,11 @@ func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("printf around the address under a subscriber condition: %q", got)
 	}
+	// The footer address chosen by a subscriber attribute: never a pass (LST-48 review).
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p><a href="{{ or .Subscriber.Attribs.footer_url (UnsubscribeURL .) }}">leave</a>' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("address chosen by a subscriber attribute: %q", got)
+	}
 	// Printed always: a pass.
 	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p><a href="{{ UnsubscribeURL }}">leave</a>' WHERE id=$1`, e.campID)
 	if got := read(); got != "unsubscribe.missing=ok" {

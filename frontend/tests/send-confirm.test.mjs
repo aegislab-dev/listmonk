@@ -234,3 +234,21 @@ test('every i18n key the window can use exists in Korean and English, with the s
   });
   used.forEach((k) => assert.ok(ko[k] && en[k], `${k} is not in the language files`));
 });
+
+test('a refused From blocks but keeps every other line: the rest is to be fixed too (LST-48 review)', () => {
+  const m = model({
+    recipients: 11,
+    checks: [
+      { key: 'unsubscribe.missing', level: 'warn' },
+      { key: 'recent.notApplied', level: 'warn', params: { days: 14 } },
+      { key: 'from.refused', level: 'block', params: { message: 'x' } },
+      { key: 'from.placeholder', level: 'warn' },
+    ],
+  });
+  assert.equal(m.disabled, true);
+  assert.equal(m.title.key, 'campaigns.sendConfirm.title.fromRefused');
+  assert.deepEqual(m.checks.map((c) => `${c.level}:${c.name}`).slice(0, 1), ['block:from.refused'], 'the blocking line first');
+  for (const name of ['unsubscribe.missing', 'recent.notApplied', 'from.placeholder']) {
+    assert.ok(m.checks.some((c) => c.name === name), `${name} is kept`);
+  }
+});
