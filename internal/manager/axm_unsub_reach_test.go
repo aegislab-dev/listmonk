@@ -81,7 +81,9 @@ func TestUnsubscribeOnEveryPath(t *testing.T) {
 		{"in the alternative body", body, `<p>Hi</p>`, `Leave: {{ UnsubscribeURL }}`, nil, true},
 		{"none", body, `<p>Hi {{ .Subscriber.Name }}</p>`, "", nil, false},
 	} {
-		c := models.Campaign{ContentType: models.CampaignContentTypeHTML, Messenger: "email", TemplateBody: tc.base, Body: tc.src, Attribs: tc.attribs}
+		// A subject made per recipient, so that a body reading .Subject reads something that varies.
+		c := models.Campaign{ContentType: models.CampaignContentTypeHTML, Messenger: "email", TemplateBody: tc.base, Body: tc.src, Attribs: tc.attribs,
+			Subject: `{{ if .Subscriber.Attribs.digest }}Digest{{ else }}Full{{ end }}`}
 		c.UUID = "11111111-2222-3333-4444-555555555555"
 		if tc.alt != "" {
 			c.AltBody = null.StringFrom(tc.alt)
@@ -93,10 +95,35 @@ func TestUnsubscribeOnEveryPath(t *testing.T) {
 	}
 }
 
+// A subject the same for everyone: a body that chooses by it follows the branch it takes
+// (LST-48 review: a fixed subject read by the body or headers was taken as varying).
+func TestUnsubscribeFixedSubject(t *testing.T) {
+	m, _ := trackingManager()
+	m.tplFuncs = m.makeGnericFuncMap()
+	sub := models.Subscriber{Email: "demo@listmonk.app", Name: "Demo", UUID: dummyUUID}
+	src := `{{ if eq .Subject "Digest" }}<a href="https://example.org/archive">archive</a>{{ else }}<a href="{{ UnsubscribeURL }}">x</a>{{ end }}`
+	for _, tc := range []struct {
+		subject string
+		want    bool
+	}{
+		{"Full", true},
+		{"Digest", false},
+		{`{{ "Full" }}`, true},
+		{`{{ if .Subscriber.Attribs.digest }}Digest{{ else }}Full{{ end }}`, false},
+		{`{{ if eq (Date "15") "09" }}Digest{{ else }}Full{{ end }}`, false},
+	} {
+		c := models.Campaign{ContentType: models.CampaignContentTypeHTML, Messenger: "email", TemplateBody: `{{ template "content" . }}`, Body: src, Subject: tc.subject}
+		c.UUID = "11111111-2222-3333-4444-555555555555"
+		if got, err := m.UnsubscribeOnEveryPath(&c, sub, "running"); err != nil || got != tc.want {
+			t.Errorf("subject %q: got %v %v", tc.subject, got, err)
+		}
+	}
+}
+
 func TestReadsVarying(t *testing.T) {
 	m, _ := trackingManager()
 	m.tplFuncs = m.makeGnericFuncMap()
-	c := &models.Campaign{}
+	c := &models.Campaign{Subject: `{{ if .Subscriber.Attribs.regional }}Regional{{ else }}Weekly{{ end }}`}
 	for _, tc := range []struct {
 		text string
 		want bool
@@ -112,6 +139,22 @@ func TestReadsVarying(t *testing.T) {
 	} {
 		if got := m.ReadsVarying(c, tc.text); got != tc.want {
 			t.Errorf("%q: %v, want %v", tc.text, got, tc.want)
+		}
+	}
+	// The same headers with a subject the same for everyone (LST-48 review): .Subject is fixed.
+	for _, subject := range []string{"Regional edition", `{{ "Regional" }} edition`, `{{ .Campaign.Name }}`, `{{ Date "2006" }}`} {
+		c := &models.Campaign{Subject: subject}
+		for _, text := range []string{`{{ if eq .Subject "Regional edition" }}regional@crevasse.ai{{ end }}`, `{{ $m := . }}{{ if eq $m.Subject "R" }}r{{ end }}`} {
+			if m.ReadsVarying(c, text) {
+				t.Errorf("subject %q, %q: varying", subject, text)
+			}
+		}
+	}
+	// A subject that passes the message on, or reads the subscriber through a variable.
+	for _, subject := range []string{`{{ UnsubscribeURL . }}`, `{{ $s := .Subscriber }}{{ $s.Name }}`, `{{ $m := . }}{{ $m.Subscriber.Name }}`} {
+		c := &models.Campaign{Subject: subject}
+		if !m.ReadsVarying(c, `{{ if eq .Subject "R" }}r{{ end }}`) {
+			t.Errorf("subject %q: not varying", subject)
 		}
 	}
 }

@@ -656,6 +656,18 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 			len(o3.Copies) != 0 || level(o3.Checks, "mail.copiesPerSubscriber") != "warn" {
 			t.Fatalf("from and bcc chosen by a subject made per recipient: %s", data)
 		}
+		// The same headers with a subject the same for everyone (LST-48 review): the sender is
+		// the same for all and the Bcc is listed and counted.
+		e.db.MustExec(`UPDATE campaigns SET subject='Regional edition' WHERE id=$1`, e.campID)
+		e.db.MustExec(`UPDATE campaigns SET headers=replace(headers::text, '\"Regional\"', '\"Regional edition\"')::jsonb WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		o4.PerSubscriber = true
+		o3.Copies, o3.Checks = nil, nil
+		if json.Unmarshal(data, &o4) != nil || o4.PerSubscriber || json.Unmarshal(data, &o3) != nil ||
+			len(o3.Copies) != 1 || o3.Copies[0].Address != "regional-archive@crevasse.ai" ||
+			level(o3.Checks, "mail.copies") != "warn" || level(o3.Checks, "mail.copiesPerSubscriber") != "" {
+			t.Fatalf("from and bcc chosen by a fixed subject: %s", data)
+		}
 		e.db.MustExec(`UPDATE campaigns SET subject='Stored subject', headers='[{"Reply-To":"desk@crevasse.ai"}]'::jsonb WHERE id=$1`, e.campID)
 		e.db.MustExec(`UPDATE campaigns SET subject='Check {{ .Campaign.Name }}', headers='[]'::jsonb WHERE id=$1`, e.campID)
 

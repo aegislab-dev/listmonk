@@ -41,14 +41,16 @@ func (m *Manager) UnsubscribeOnEveryPath(c *models.Campaign, sub models.Subscrib
 			}
 		}
 	}
+	// The rendered subject (.Subject) differs only when the subject template does.
+	subj := m.subjectVaries(c, true)
 	for _, t := range msg.Campaign.Tpl.Templates() {
-		if t.Tree != nil && !pruneVarying(t.Tree.Root, map[string]bool{}) {
+		if t.Tree != nil && !pruneVarying(t.Tree.Root, map[string]bool{}, subj) {
 			return false, nil
 		}
 	}
 	if msg.Campaign.AltBodyTpl != nil {
 		for _, t := range msg.Campaign.AltBodyTpl.Templates() {
-			if t.Tree != nil && !pruneVarying(t.Tree.Root, map[string]bool{}) {
+			if t.Tree != nil && !pruneVarying(t.Tree.Root, map[string]bool{}, subj) {
 				return false, nil
 			}
 		}
@@ -65,7 +67,7 @@ func (m *Manager) UnsubscribeOnEveryPath(c *models.Campaign, sub models.Subscrib
 // (UnsubscribeURL .) }} printed the address for the example and another one for some people).
 // varying is the variables of this template given such a value. false: a part taken out
 // assigns to a variable.
-func pruneVarying(l *parse.ListNode, varying map[string]bool) bool {
+func pruneVarying(l *parse.ListNode, varying map[string]bool, subj bool) bool {
 	if l == nil {
 		return true
 	}
@@ -74,7 +76,7 @@ func pruneVarying(l *parse.ListNode, varying map[string]bool) bool {
 		drop := false
 		switch x := n.(type) {
 		case *parse.ActionNode:
-			if valueVaries(x.Pipe, varying) {
+			if valueVaries(x.Pipe, varying, subj) {
 				if len(x.Pipe.Decl) > 0 {
 					// A declaration prints nothing: it is kept, and its variables vary.
 					for _, v := range x.Pipe.Decl {
@@ -89,15 +91,15 @@ func pruneVarying(l *parse.ListNode, varying map[string]bool) bool {
 				}
 			}
 		case *parse.IfNode:
-			if dependent(x.Pipe) {
+			if dependent(x.Pipe, subj) {
 				drop = true
-			} else if !pruneVarying(x.List, varying) || !pruneVarying(x.ElseList, varying) {
+			} else if !pruneVarying(x.List, varying, subj) || !pruneVarying(x.ElseList, varying, subj) {
 				return false
 			}
 		case *parse.WithNode:
-			if dependent(x.Pipe) {
+			if dependent(x.Pipe, subj) {
 				drop = true
-			} else if !pruneVarying(x.List, varying) || !pruneVarying(x.ElseList, varying) {
+			} else if !pruneVarying(x.List, varying, subj) || !pruneVarying(x.ElseList, varying, subj) {
 				return false
 			}
 		case *parse.RangeNode:
@@ -210,20 +212,20 @@ func assigns(n parse.Node) bool {
 // valueVaries tells whether a printed or assigned value can differ from mail to mail: it reads
 // the subscriber or the time, or a variable that does. Unlike a condition, a plain variable is
 // not enough ({{ $leave }} after {{ $leave := UnsubscribeURL . }} is the same for everyone).
-func valueVaries(p *parse.PipeNode, varying map[string]bool) bool {
+func valueVaries(p *parse.PipeNode, varying map[string]bool, subj bool) bool {
 	dep := false
 	inspect(p, func(n parse.Node) {
 		switch x := n.(type) {
 		case *parse.VariableNode:
 			// A field path through any variable: $ or one that holds the message ($mail := .),
 			// whose .Subject or .Subscriber differ as the message's do (LST-48 review).
-			if varying[x.Ident[0]] || varyingFields(x.Ident[1:]) {
+			if varying[x.Ident[0]] || varyingFields(x.Ident[1:], subj) {
 				dep = true
 			}
 		case *parse.FieldNode:
-			dep = dep || varyingFields(x.Ident)
+			dep = dep || varyingFields(x.Ident, subj)
 		case *parse.ChainNode:
-			dep = dep || varyingFields(x.Field)
+			dep = dep || varyingFields(x.Field, subj)
 		case *parse.IdentifierNode:
 			if x.Ident == "Date" || x.Ident == "now" {
 				dep = true
@@ -235,16 +237,16 @@ func valueVaries(p *parse.PipeNode, varying map[string]bool) bool {
 
 // dependent tells whether a condition can differ from mail to mail: it reads the subscriber, a
 // variable (which may hold anything), or the time (Date, now, the campaign's times).
-func dependent(p *parse.PipeNode) bool {
+func dependent(p *parse.PipeNode, subj bool) bool {
 	dep := false
 	inspect(p, func(n parse.Node) {
 		switch x := n.(type) {
 		case *parse.VariableNode:
 			dep = true
 		case *parse.FieldNode:
-			dep = dep || varyingFields(x.Ident)
+			dep = dep || varyingFields(x.Ident, subj)
 		case *parse.ChainNode:
-			dep = dep || varyingFields(x.Field)
+			dep = dep || varyingFields(x.Field, subj)
 		case *parse.IdentifierNode:
 			if x.Ident == "Date" || x.Ident == "now" {
 				dep = true
@@ -256,17 +258,60 @@ func dependent(p *parse.PipeNode) bool {
 
 // varyingFields tells whether a field path can read something that differs from mail to mail:
 // the subscriber, the campaign's times, or what the message renders for each recipient — the
-// rendered subject, body and alternative body (LST-48 review: a body that chose its footer by the
-// subject, which a template made per recipient). A name that is also a campaign field
-// (.Campaign.Subject) is taken as varying too: that only makes the check warn, never pass.
-func varyingFields(ids []string) bool {
+// body and alternative body, and the rendered subject when subj (the subject template differs
+// per mail: LST-48 reviews, a body or header that chose by a subject made per recipient, and one
+// that chose by a subject the same for everyone, which was then shown as varying). A name that
+// is also a campaign field (.Campaign.Subject) is taken the same way: that only makes the check
+// warn, never pass.
+func varyingFields(ids []string, subj bool) bool {
 	for _, id := range ids {
 		switch id {
-		case "Subscriber", "UpdatedAt", "StartedAt", "Sent", "ToSend", "Subject", "Body", "AltBody":
+		case "Subscriber", "UpdatedAt", "StartedAt", "Sent", "ToSend", "Body", "AltBody":
 			return true
+		case "Subject":
+			if subj {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// subjectVaries tells whether the campaign's subject template can render otherwise from mail to
+// mail: it reads a field that differs (varyingFields), passes the message itself on (a bare . or
+// variable, to a function such as UnsubscribeURL), or, with withTime, reads the time. A subject
+// that cannot be parsed is taken as varying.
+func (m *Manager) subjectVaries(c *models.Campaign, withTime bool) bool {
+	if !strings.Contains(c.Subject, "{{") {
+		return false
+	}
+	t, err := template.New("").Funcs(m.TemplateFuncs(c)).Parse(c.Subject)
+	if err != nil {
+		return true
+	}
+	dep := false
+	for _, tt := range t.Templates() {
+		if tt.Tree == nil {
+			continue
+		}
+		walkNodes(tt.Tree.Root, func(n parse.Node) {
+			switch x := n.(type) {
+			case *parse.DotNode:
+				dep = true
+			case *parse.VariableNode:
+				dep = dep || len(x.Ident) == 1 || varyingFields(x.Ident[1:], false)
+			case *parse.FieldNode:
+				dep = dep || varyingFields(x.Ident, false)
+			case *parse.ChainNode:
+				dep = dep || varyingFields(x.Field, false)
+			case *parse.IdentifierNode:
+				if withTime && (x.Ident == "Date" || x.Ident == "now") {
+					dep = true
+				}
+			}
+		})
+	}
+	return dep
 }
 
 func isDot(p *parse.PipeNode) bool {
@@ -305,8 +350,8 @@ func inspect(n parse.Node, f func(parse.Node)) {
 
 // ReadsVarying tells whether a template text (a header, the subject) reads something that
 // differs from mail to mail: the subscriber, the campaign's times, or what the message renders
-// for each recipient (.Subject, .Body, .AltBody), directly or through a variable that holds the
-// message (LST-48 review: From and Bcc chosen by a subject a template made per recipient were
+// for each recipient (.Body, .AltBody, and .Subject when the subject template differs per mail),
+// directly or through a variable that holds the message (LST-48 review: From and Bcc chosen by a subject a template made per recipient were
 // shown as fixed). A text that cannot be parsed is taken as varying.
 func (m *Manager) ReadsVarying(c *models.Campaign, text string) bool {
 	if !strings.Contains(text, "{{") {
@@ -316,6 +361,8 @@ func (m *Manager) ReadsVarying(c *models.Campaign, text string) bool {
 	if err != nil {
 		return true
 	}
+	// Time is not counted here: the window renders the envelope at two clocks for that.
+	subj := m.subjectVaries(c, false)
 	dep := false
 	for _, tt := range t.Templates() {
 		if tt.Tree == nil {
@@ -324,11 +371,11 @@ func (m *Manager) ReadsVarying(c *models.Campaign, text string) bool {
 		walkNodes(tt.Tree.Root, func(n parse.Node) {
 			switch x := n.(type) {
 			case *parse.VariableNode:
-				dep = dep || varyingFields(x.Ident[1:])
+				dep = dep || varyingFields(x.Ident[1:], subj)
 			case *parse.FieldNode:
-				dep = dep || varyingFields(x.Ident)
+				dep = dep || varyingFields(x.Ident, subj)
 			case *parse.ChainNode:
-				dep = dep || varyingFields(x.Field)
+				dep = dep || varyingFields(x.Field, subj)
 			}
 		})
 	}
