@@ -832,6 +832,8 @@ export default Vue.extend({
         axm_excluded: mapped && this.form.mode === 'subscribe' ? this.excludedForServer() : [],
         // The row of the chosen file each uploaded row came from, for the numbers in the rejected rows.
         axm_source_rows: mapped ? (this.csvSourceRows || []) : [],
+        // The records of the chosen file, for the total the end of the import shows.
+        axm_file_rows: mapped ? (this.csv.total || 0) : 0,
       }));
       params.set('file', file);
 

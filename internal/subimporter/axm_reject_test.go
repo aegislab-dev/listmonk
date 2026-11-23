@@ -78,24 +78,38 @@ func TestRowNumbersFollowTheChosenFile(t *testing.T) {
 	}
 }
 
-// The total of a mapped upload counts the rows the column mapping left out, as the raw upload
-// of the same file counts them: the box of refusals and the total are on one footing.
-func TestMappedTotalCountsExcludedRows(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "mapped.csv")
-	if err := os.WriteFile(path, []byte("email,name\ngood@example.org,A\nbad@gmail.con,B\n"), 0o600); err != nil {
-		t.Fatal(err)
+// The total of an import is the records of the file, not its lines, and a mapped upload counts
+// the rows the column mapping left out, as the raw upload of the same file counts them.
+func TestImportTotalIsTheFileRecords(t *testing.T) {
+	load := func(body string, opt SessionOpt) Status {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "in.csv")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		im := &Importer{status: Status{Status: StatusNone}, importSeq: 1}
+		opt.Mode = ModeSubscribe
+		s, err := im.NewSession(opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.LoadCSV(path, ','); err != nil {
+			t.Fatal(err)
+		}
+		return im.GetStats()
 	}
-	im := &Importer{status: Status{Status: StatusNone}, importSeq: 1}
-	s, err := im.NewSession(SessionOpt{
-		Mode: ModeSubscribe, AxmExcluded: []ExcludedRow{{Row: 3, Email: "not-an-address", Reason: RejectFormat}},
-	})
-	if err != nil {
-		t.Fatal(err)
+	excluded := []ExcludedRow{{Row: 3, Email: "not-an-address", Reason: RejectFormat}}
+
+	// Raw: three records over six lines, and a blank line.
+	if st := load("email,name\ngood@example.org,\"a\nb\"\n\nbad@gmail.con,\"c\nd\"\nabc@gmail.com,\"e\nf\"\n", SessionOpt{}); st.Total != 3 || st.AxmRejectedTotal != 2 {
+		t.Fatalf("raw: total %d, refused %d", st.Total, st.AxmRejectedTotal)
 	}
-	if err := s.LoadCSV(path, ','); err != nil {
-		t.Fatal(err)
+	// Mapped: two records uploaded and one left out.
+	if st := load("email,name\ngood@example.org,\"a\nb\"\nbad@gmail.con,B\n", SessionOpt{AxmExcluded: excluded}); st.Total != 3 || st.AxmRejectedTotal != 2 || st.AxmExcluded != 1 {
+		t.Fatalf("mapped: total %d, refused %d, left out %d", st.Total, st.AxmRejectedTotal, st.AxmExcluded)
 	}
-	if st := im.GetStats(); st.Total != 3 || st.AxmRejectedTotal != 2 || st.AxmExcluded != 1 {
-		t.Fatalf("total %d, refused %d, left out %d", st.Total, st.AxmRejectedTotal, st.AxmExcluded)
+	// Mapped, with the records of the chosen file (a row of the wrong width was not uploaded).
+	if st := load("email,name\ngood@example.org,A\nbad@gmail.con,B\n", SessionOpt{AxmExcluded: excluded, AxmFileRows: 4}); st.Total != 4 {
+		t.Fatalf("mapped with file rows: total %d", st.Total)
 	}
 }

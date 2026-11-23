@@ -122,6 +122,10 @@ type SessionOpt struct {
 	// row it came from in the file the person chose. The rows the server refuses are then
 	// numbered by the file the person knows.
 	AxmSourceRows []int `json:"axm_source_rows"`
+	// AxmFileRows is the number of records of the file the person chose, when the column
+	// mapping uploads a converted file: the total of the import, as the raw upload of the
+	// same file would count it (rows of the wrong width and repeated rows included).
+	AxmFileRows int `json:"axm_file_rows"`
 }
 
 // ExcludedRow is a row the column mapping left out. Row is its row in the file the person chose.
@@ -683,6 +687,20 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		rec++
 		fileLine := rows.next(rd, cols, err)
 		if err == io.EOF {
+			// The line count above is only a first guess: a cell with line breaks is one
+			// record over several lines. Once every record is read, the total is the records
+			// of the file (rows of the wrong width included, blank lines not). For the column
+			// mapping it is the records of the file the person chose, so that both uploads of
+			// one file give the same total; never less than what this import has counted.
+			s.im.Lock()
+			if s.id == s.im.importSeq {
+				total := rec - 1 + s.im.status.AxmExcluded
+				if s.opt.AxmFileRows > total {
+					total = s.opt.AxmFileRows
+				}
+				s.im.status.Total = total
+			}
+			s.im.Unlock()
 			break
 		} else if err != nil {
 			if err, ok := err.(*csv.ParseError); ok && err.Err == csv.ErrFieldCount {

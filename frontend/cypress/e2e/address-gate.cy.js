@@ -246,4 +246,37 @@ describe('Address rules', () => {
     refusedRows(csv, 'raw').should('deep.equal', [4]);
     refusedRows(csv, 'mapping').should('deep.equal', [4]);
   });
+
+  it('gives the same total in both upload modes when cells hold line breaks', () => {
+    const stamp = Date.now();
+    const csv = `email,name\nlb-good-${stamp}@example.invalid,"Good\nOne"\nlb-typo-${stamp}@gmail.con,"Typo\nTwo"\nabc@gmail.com,Short\n`;
+    ['raw', 'mapping'].forEach((mode) => {
+      refusedRows(csv, mode).should('deep.equal', [3, 4]);
+      cy.request('/api/import/subscribers').its('body.data').should((d) => {
+        expect(d.total).to.eq(3);
+        expect(d.axm_rejected_total).to.eq(2);
+      });
+      cy.get('section.status').should('contain', '1 / 3');
+    });
+  });
+
+  it('offers the left out rows when only malformed and empty addresses are left out', () => {
+    cy.loginAndVisit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('.list-selector input').type(listName);
+    cy.contains('.list-selector .autocomplete a', listName).click();
+    const csv = 'email,name\nnot-an-address,Broken\n,Nameonly\n';
+    cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(csv), fileName: 'onlybad.csv', mimeType: 'text/csv' }, { force: true });
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    submit().should('be.disabled');
+    cy.get('[data-cy=map-address-download]').should('not.exist');
+    cy.get('[data-cy=map-issues-download]').click();
+    cy.readFile('cypress/downloads/onlybad-excluded.csv', 'utf8').then((text) => {
+      const lines = text.replace(/^﻿/, '').split('\r\n').filter(Boolean);
+      expect(lines.slice(1).map((line) => Number(line.split(',')[0]))).to.deep.equal([2, 3]);
+    });
+  });
 });
