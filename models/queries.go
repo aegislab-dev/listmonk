@@ -108,6 +108,7 @@ type Queries struct {
 	AxmDeleteAudit *sqlx.Stmt `query:"axm-delete-audit"`
 	AxmQueryAudit  string     `query:"axm-query-audit"`
 
+	AxmLockCampaignsToDelete  *sqlx.Stmt `query:"axm-lock-campaigns-to-delete"`
 	AxmDeleteCampaignsGuarded *sqlx.Stmt `query:"axm-delete-campaigns-guarded"`
 
 	AxmTrashResolveLists *sqlx.Stmt `query:"axm-trash-resolve-lists"`

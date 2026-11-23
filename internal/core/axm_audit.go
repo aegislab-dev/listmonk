@@ -130,17 +130,41 @@ const (
 // nothing is deleted (409). Deleting it would drop its send records (the "recent sends"
 // exclusion and the reaction counts read them) and the mail already queued would go out
 // without a record. It returns the campaigns that were reached with the values they had.
-func (c *Core) DeleteCampaignsGuarded(ids []int, query string, hasAllPerm bool, permittedLists []int) ([]DeletedCampaign, error) {
+// bulk is true for a delete of several campaigns at once (IDs or search): the refusal then
+// counts and names them even when only one was reached.
+//
+// Two statements in one transaction: the first locks the campaigns (and waits for a
+// transaction that is recording their send records), the second reads what is committed by
+// then and deletes. One statement would decide on the send records of the moment it started.
+func (c *Core) DeleteCampaignsGuarded(ids []int, query string, bulk bool, hasAllPerm bool, permittedLists []int) ([]DeletedCampaign, error) {
 	queryStr := ""
 	if len(ids) == 0 {
 		queryStr = makeSearchString(query)
 	}
-	out := []DeletedCampaign{}
-	err := c.q.AxmDeleteCampaignsGuarded.Select(&out, pq.Array(ids), queryStr, hasAllPerm, pq.Array(permittedLists), SendRetentionMonths)
-	if err != nil {
+	fail := func(err error) ([]DeletedCampaign, error) {
 		c.log.Printf("error deleting campaigns: %v", err)
 		return nil, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.campaigns}", "error", pqErrMsg(err)))
+	}
+
+	tx, err := c.db.Beginx()
+	if err != nil {
+		return fail(err)
+	}
+	defer tx.Rollback()
+
+	locked := []int{}
+	if err := tx.Stmtx(c.q.AxmLockCampaignsToDelete).Select(&locked, pq.Array(ids), queryStr, hasAllPerm, pq.Array(permittedLists)); err != nil {
+		return fail(err)
+	}
+	out := []DeletedCampaign{}
+	if len(locked) > 0 {
+		if err := tx.Stmtx(c.q.AxmDeleteCampaignsGuarded).Select(&out, pq.Array(locked), SendRetentionMonths); err != nil {
+			return fail(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fail(err)
 	}
 
 	blocked := []DeletedCampaign{}
@@ -153,8 +177,9 @@ func (c *Core) DeleteCampaignsGuarded(ids []int, query string, hasAllPerm bool, 
 		return out, nil
 	}
 
-	// A single campaign says why. Several name the first three.
-	if len(out) == 1 {
+	// A single delete says why. A delete of several names the first three, even when it
+	// reached one.
+	if !bulk {
 		d := blocked[0]
 		key := "campaigns.axmDeleteSent"
 		if d.Block == campaignBlockSending {

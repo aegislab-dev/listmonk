@@ -553,7 +553,7 @@ func (a *App) DeleteCampaign(c echo.Context) error {
 	}
 
 	// Delete the campaign from the DB.
-	camps, err := a.core.DeleteCampaignsGuarded([]int{id}, "", true, nil)
+	camps, err := a.core.DeleteCampaignsGuarded([]int{id}, "", false, true, nil)
 	if err != nil {
 		return err
 	}
@@ -610,7 +610,7 @@ func (a *App) DeleteCampaigns(c echo.Context) error {
 	}
 
 	// Delete the campaigns from the DB.
-	camps, err := a.core.DeleteCampaignsGuarded(ids, query, hasAllPerm, permittedLists)
+	camps, err := a.core.DeleteCampaignsGuarded(ids, query, true, hasAllPerm, permittedLists)
 	if err != nil {
 		return err
 	}

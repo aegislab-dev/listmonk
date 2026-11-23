@@ -35,28 +35,40 @@ WITH d AS (
 )
 SELECT COUNT(*) FROM d;
 
+-- name: axm-lock-campaigns-to-delete
+-- LST-55. Step 1 of a guarded delete: the IDs of the campaigns a delete by IDs ($1) or by
+-- search ($2) reaches (the conditions of delete-campaigns), locked FOR UPDATE. A transaction
+-- that is recording send records for one of them holds a share lock on it (the foreign key),
+-- so this waits for it to commit.
+SELECT c.id FROM campaigns c
+WHERE (
+    CASE
+        WHEN CARDINALITY($1::INT[]) > 0 THEN c.id = ANY($1)
+        ELSE $2 = '' OR TO_TSVECTOR(CONCAT(c.name, ' ', c.subject)) @@ TO_TSQUERY($2) OR CONCAT(c.name, ' ', c.subject) ILIKE $2
+    END
+)
+AND (
+    $3 OR EXISTS (
+        SELECT 1 FROM campaign_lists WHERE campaign_id = c.id AND list_id = ANY($4::INT[])
+    )
+)
+ORDER BY c.id
+FOR UPDATE OF c;
+
 -- name: axm-delete-campaigns-guarded
--- LST-55. Deletes the campaigns a delete by IDs ($1) or by search ($2) reaches (the conditions
--- of delete-campaigns), unless one of them is a campaign that is sending or has sent. In that
--- case nothing is deleted. The rows are locked and checked in the same statement that deletes,
--- so the status, sent and to_send that come back are the values the campaign had when it was
--- deleted (or refused). $5 is the number of months the send records are kept.
+-- LST-55. Step 2, in the same transaction as axm-lock-campaigns-to-delete and run after it:
+-- the statement takes its snapshot after the locks were granted, so it sees send records that
+-- were committed while step 1 waited (one statement would read the snapshot from before the
+-- wait and delete them). Deletes the campaigns $1 unless one of them is a campaign that is
+-- sending or has sent. In that case nothing is deleted. The status, sent and to_send that come
+-- back are the values the campaign had when it was deleted (or refused). $2 is the number of
+-- months the send records are kept.
 -- block: 'sending' (running or paused), 'sent' (it has send records, or sent mail within the
 -- retention period and its records may not be written yet), '' (may be deleted).
 WITH target AS (
     SELECT c.id, c.name, c.status, c.sent, c.to_send, COALESCE(c.started_at, c.created_at) AS began
     FROM campaigns c
-    WHERE (
-        CASE
-            WHEN CARDINALITY($1::INT[]) > 0 THEN c.id = ANY($1)
-            ELSE $2 = '' OR TO_TSVECTOR(CONCAT(c.name, ' ', c.subject)) @@ TO_TSQUERY($2) OR CONCAT(c.name, ' ', c.subject) ILIKE $2
-        END
-    )
-    AND (
-        $3 OR EXISTS (
-            SELECT 1 FROM campaign_lists WHERE campaign_id = c.id AND list_id = ANY($4::INT[])
-        )
-    )
+    WHERE c.id = ANY($1::INT[])
     ORDER BY c.id
     FOR UPDATE OF c
 ),
@@ -65,7 +77,7 @@ checked AS (
         CASE
             WHEN t.status IN ('running', 'paused') THEN 'sending'
             WHEN EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = t.id) THEN 'sent'
-            WHEN t.sent > 0 AND t.began > NOW() - MAKE_INTERVAL(months => $5::INT) THEN 'sent'
+            WHEN t.sent > 0 AND t.began > NOW() - MAKE_INTERVAL(months => $2::INT) THEN 'sent'
         END AS block
     FROM target t
 ),

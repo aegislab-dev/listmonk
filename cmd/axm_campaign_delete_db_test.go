@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/labstack/echo/v4"
@@ -61,19 +62,23 @@ func (e *teamsEnv) deleteMany(ids ...int) int {
 	return code
 }
 
+// Each campaign here is refused by exactly one of the three conditions, so a test fails when
+// any one of them is dropped.
 func TestDeleteRefusedForCampaignsThatSendOrSent(t *testing.T) {
 	e := newAuditEnv(t)
 	refused := map[string]int{
-		"running":                    e.campaignWith("running", 30, 0),
-		"paused":                     e.campaignWith("paused", 30, 0),
-		"finished with records":      e.campaignWith("finished", 100, 1),
-		"cancelled with records":     e.campaignWith("cancelled", 40, 1),
+		// Status only: nothing sent, started long ago, no records.
+		"running": e.campaignWith("running", 0, 14),
+		"paused":  e.campaignWith("paused", 0, 14),
+		// Send records only: nothing counted as sent, started long ago.
+		"finished, records only":  e.campaignWith("finished", 0, 14),
+		"cancelled, records only": e.campaignWith("cancelled", 0, 14),
+		// Recent sent count only: no records yet (just cancelled).
 		"cancelled, records pending": e.campaignWith("cancelled", 40, 0),
 		"finished within a year":     e.campaignWith("finished", 100, 11),
 	}
-	for _, name := range []string{"finished with records", "cancelled with records"} {
-		e.withRecords(refused[name])
-	}
+	e.withRecords(refused["finished, records only"])
+	e.withRecords(refused["cancelled, records only"])
 	for name, id := range refused {
 		if code := e.deleteOne(id); code != http.StatusConflict {
 			t.Errorf("%s: deleting answered %d, want 409", name, code)
@@ -82,11 +87,45 @@ func TestDeleteRefusedForCampaignsThatSendOrSent(t *testing.T) {
 			t.Errorf("%s: the campaign is gone", name)
 		}
 	}
-	if n := e.sendRecords(refused["finished with records"]); n != 1 {
+	if n := e.sendRecords(refused["finished, records only"]); n != 1 {
 		t.Fatalf("send records kept: %d", n)
 	}
 	if rows := e.audits("action = $1", auditCampaignDelete); len(rows) != 0 {
 		t.Fatalf("a refused delete is in the audit log: %+v", rows)
+	}
+}
+
+// A send record that is committed while the delete waits for the campaign lock counts: the
+// delete decides on what is committed when it has the lock, not on what was there before.
+func TestDeleteSeesSendRecordsCommittedWhileItWaits(t *testing.T) {
+	e := newAuditEnv(t)
+	// Old and counted nothing as sent, so only the send records can refuse it.
+	id := e.campaignWith("cancelled", 0, 14)
+	sub := e.addSub("enabled", "confirmed")
+
+	// The recorder: its insert holds a share lock on the campaign (the foreign key) until it commits.
+	tx, err := e.db.Beginx()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	tx.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, id, sub)
+
+	done := make(chan int, 1)
+	go func() { done <- e.deleteOne(id) }()
+	select {
+	case code := <-done:
+		t.Fatalf("the delete did not wait for the recorder (answered %d)", code)
+	case <-time.After(700 * time.Millisecond):
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-done; code != http.StatusConflict {
+		t.Fatalf("delete after the record was committed: %d, want 409", code)
+	}
+	if !e.campaignExists(id) || e.sendRecords(id) != 1 {
+		t.Fatal("the campaign or its send record is gone")
 	}
 }
 
@@ -115,17 +154,20 @@ func TestBulkDeleteRefusedAsAWhole(t *testing.T) {
 	e := newAuditEnv(t)
 	draft := e.campaignWith("draft", 0, -1)
 	scheduled := e.campaignWith("scheduled", 0, -1)
-	sent := e.campaignWith("finished", 100, 1)
-	e.withRecords(sent)
-	running := e.campaignWith("running", 10, 0)
+	recorded := e.campaignWith("finished", 0, 14) // refused by its send records alone
+	e.withRecords(recorded)
 
-	if code := e.deleteMany(draft, scheduled, sent, running); code != http.StatusConflict {
-		t.Fatalf("bulk with a sent and a running campaign: %d, want 409", code)
+	if code := e.deleteMany(draft, scheduled, recorded); code != http.StatusConflict {
+		t.Fatalf("bulk with a recorded campaign: %d, want 409", code)
 	}
-	for name, id := range map[string]int{"draft": draft, "scheduled": scheduled, "sent": sent, "running": running} {
+	for name, id := range map[string]int{"draft": draft, "scheduled": scheduled, "recorded": recorded} {
 		if !e.campaignExists(id) {
 			t.Errorf("%s was deleted although the request was refused", name)
 		}
+	}
+	running := e.campaignWith("running", 0, 14) // refused by its status alone
+	if code := e.deleteMany(draft, running); code != http.StatusConflict || !e.campaignExists(draft) {
+		t.Fatalf("bulk with a running campaign: %d", code)
 	}
 	if rows := e.audits("action = $1", auditCampaignDelete); len(rows) != 0 {
 		t.Fatalf("audit rows after a refusal: %+v", rows)
@@ -141,6 +183,24 @@ func TestBulkDeleteRefusedAsAWhole(t *testing.T) {
 	}
 }
 
+// A delete of several that reached one campaign is still a bulk refusal (the count and the
+// names, "take it out of the selection"), not the text of a single delete.
+func TestBulkRefusalOfOneCampaignUsesTheBulkText(t *testing.T) {
+	e := newAuditEnv(t)
+	id := e.campaignWith("finished", 0, 14)
+	e.withRecords(id)
+	_, err := e.core.DeleteCampaignsGuarded([]int{id}, "", true, true, nil)
+	he, ok := err.(*echo.HTTPError)
+	if !ok || he.Code != http.StatusConflict || !strings.Contains(fmt.Sprint(he.Message), "campaigns.axmDeleteBlockedMany") {
+		t.Fatalf("bulk of one: %#v", err)
+	}
+	_, err = e.core.DeleteCampaignsGuarded([]int{id}, "", false, true, nil)
+	he, ok = err.(*echo.HTTPError)
+	if !ok || !strings.Contains(fmt.Sprint(he.Message), "campaigns.axmDeleteSent") {
+		t.Fatalf("single: %#v", err)
+	}
+}
+
 // Several refused campaigns are one 409 that counts them (the message names the first three).
 func TestBulkRefusalIsOne409(t *testing.T) {
 	e := newAuditEnv(t)
@@ -148,7 +208,7 @@ func TestBulkRefusalIsOne409(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		ids = append(ids, e.campaignWith("paused", 5, 0))
 	}
-	_, err := e.core.DeleteCampaignsGuarded(ids, "", true, nil)
+	_, err := e.core.DeleteCampaignsGuarded(ids, "", true, true, nil)
 	he, ok := err.(*echo.HTTPError)
 	if !ok || he.Code != http.StatusConflict || !strings.Contains(fmt.Sprint(he.Message), "campaigns.axmDeleteBlockedMany") {
 		t.Fatalf("refusal: %#v", err)
@@ -164,7 +224,7 @@ func TestDeleteGuardRespectsListPermission(t *testing.T) {
 	e.db.MustExec(`UPDATE campaign_lists SET list_id = $2 WHERE campaign_id = $1`, mine, e.aList)
 	e.db.MustExec(`UPDATE campaign_lists SET list_id = $2 WHERE campaign_id = $1`, foreign, e.bList)
 
-	got, err := e.core.DeleteCampaignsGuarded([]int{mine, foreign}, "", false, []int{e.aList})
+	got, err := e.core.DeleteCampaignsGuarded([]int{mine, foreign}, "", true, false, []int{e.aList})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +282,7 @@ func TestDeleteAuditRecordsStatusAndCounts(t *testing.T) {
 func TestGuardedDeleteReturnsValuesAtDeletion(t *testing.T) {
 	e := newAuditEnv(t)
 	id := e.campaignWith("draft", 0, -1)
-	got, err := e.core.DeleteCampaignsGuarded([]int{id}, "", true, nil)
+	got, err := e.core.DeleteCampaignsGuarded([]int{id}, "", false, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

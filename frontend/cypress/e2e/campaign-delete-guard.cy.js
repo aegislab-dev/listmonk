@@ -46,9 +46,19 @@ describe('Campaign delete guard', () => {
     rowOf(keep).find('[data-cy=btn-delete]').should('not.exist');
     rowOf(keep).find('[data-cy=btn-delete-blocked]').should('have.attr', 'aria-disabled', 'true')
       .and('have.css', 'cursor', 'not-allowed');
-    // Hover shows the reason; a click does nothing (no dialog, no request).
-    rowOf(keep).find('[data-cy=btn-delete-blocked]').trigger('mouseenter', { force: true });
-    cy.get('.b-tooltip .tooltip-content').should('contain', 'cannot be deleted');
+    // The reason is in the tooltip only while the icon is hovered or focused (the node is in the
+    // DOM all the time, so visibility is what is checked), and a click does nothing.
+    const reason = () => cy.contains('.tooltip-content', 'cannot be deleted');
+    reason().should('not.be.visible');
+    const trigger = () => rowOf(keep).find('[data-cy=btn-delete-blocked]').closest('.tooltip-trigger');
+    trigger().trigger('mouseenter', { force: true });
+    reason().should('be.visible');
+    trigger().trigger('mouseleave', { force: true });
+    reason().should('not.be.visible');
+    rowOf(keep).find('[data-cy=btn-delete-blocked]').focus();
+    reason().should('be.visible');
+    rowOf(keep).find('[data-cy=btn-delete-blocked]').blur();
+    reason().should('not.be.visible');
     rowOf(keep).find('[data-cy=btn-delete-blocked]').click({ force: true });
     cy.get('.modal').should('not.exist');
     cy.get('@deleteCall.all').should('have.length', 0);
