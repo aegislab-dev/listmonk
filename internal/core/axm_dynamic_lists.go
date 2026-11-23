@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/jmoiron/sqlx/types"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
@@ -355,28 +357,33 @@ func (c *Core) PreviewDynamicFilter(f DynamicFilter, listID, sampleSize int) (Dy
 	if err != nil {
 		return out, err
 	}
-	jobs := []func() error{
-		func() error { return c.q.AxmPreviewDynamicFilter.Get(&out.Count, string(raw), id) },
-		func() error { return c.q.AxmPreviewDynamicExcluded.Get(&out.Excluded, string(raw), id) },
+	type previewJob func(ctx context.Context, use func(*sqlx.Stmt) *sqlx.Stmt) error
+	jobs := []previewJob{
+		func(ctx context.Context, use func(*sqlx.Stmt) *sqlx.Stmt) error {
+			return use(c.q.AxmPreviewDynamicFilter).GetContext(ctx, &out.Count, string(raw), id)
+		},
+		func(ctx context.Context, use func(*sqlx.Stmt) *sqlx.Stmt) error {
+			return use(c.q.AxmPreviewDynamicExcluded).GetContext(ctx, &out.Excluded, string(raw), id)
+		},
 	}
 	if nf := f.notNumberFilter(); nf != nil {
-		jobs = append(jobs, func() error {
+		jobs = append(jobs, func(ctx context.Context, use func(*sqlx.Stmt) *sqlx.Stmt) error {
 			raw, err := json.Marshal(nf)
 			if err != nil {
 				return err
 			}
-			return c.q.AxmPreviewDynamicFilter.Get(&out.NotNumber, string(raw), id)
+			return use(c.q.AxmPreviewDynamicFilter).GetContext(ctx, &out.NotNumber, string(raw), id)
 		})
 	}
 	if sampleSize > 0 {
-		jobs = append(jobs, func() error {
+		jobs = append(jobs, func(ctx context.Context, use func(*sqlx.Stmt) *sqlx.Stmt) error {
 			var rows []struct {
 				ID      int            `db:"id"`
 				Email   string         `db:"email"`
 				Name    string         `db:"name"`
 				Attribs types.JSONText `db:"attribs"`
 			}
-			if err := c.q.AxmPreviewDynamicSample.Select(&rows, string(raw), id, sampleSize); err != nil {
+			if err := use(c.q.AxmPreviewDynamicSample).SelectContext(ctx, &rows, string(raw), id, sampleSize); err != nil {
 				return err
 			}
 			out.Sample = make([]DynamicSample, 0, len(rows))
@@ -398,12 +405,15 @@ func (c *Core) PreviewDynamicFilter(f DynamicFilter, listID, sampleSize int) (Dy
 	// The queries are independent reads; each job writes its own field.
 	errs := make(chan error, len(jobs))
 	for _, job := range jobs {
-		go func() { errs <- job() }()
+		go func() { errs <- c.runPreviewJob(job) }()
 	}
 	for range jobs {
 		if e := <-errs; e != nil && err == nil {
 			err = e
 		}
+	}
+	if err != nil {
+		err = &DynamicPreviewError{Reason: classifyPreviewError(err), Err: err}
 	}
 	return out, err
 }
