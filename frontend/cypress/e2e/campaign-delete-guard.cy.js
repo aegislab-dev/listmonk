@@ -8,6 +8,8 @@ const gone = `Delete guard gone ${stamp}`;
 let listId;
 let keepId;
 
+const ok = () => cy.get('.modal.is-active button.is-primary').last().click();
+const closed = () => cy.get('.modal.is-active').should('not.exist');
 const rowOf = (name) => cy.contains('tbody tr', name);
 const search = (name) => {
   cy.get('input[name=query]').clear().type(`${name}{enter}`);
@@ -29,7 +31,7 @@ describe('Campaign delete guard', () => {
 
   beforeEach(() => {
     cy.viewport(1440, 1000);
-    cy.intercept('DELETE', '/api/campaigns*', cy.spy().as('deleteSpy')).as('deleteCall');
+    cy.intercept('DELETE', '/api/campaigns*').as('deleteCall');
   });
 
   it('dims the trash icon of a running campaign and gives the reason in a tooltip', () => {
@@ -49,7 +51,7 @@ describe('Campaign delete guard', () => {
     cy.get('.b-tooltip .tooltip-content').should('contain', 'cannot be deleted');
     rowOf(keep).find('[data-cy=btn-delete-blocked]').click({ force: true });
     cy.get('.modal').should('not.exist');
-    cy.get('@deleteSpy').should('not.have.been.called');
+    cy.get('@deleteCall.all').should('have.length', 0);
   });
 
   it('shows the server reason when a delete is refused (single and bulk)', () => {
@@ -58,22 +60,24 @@ describe('Campaign delete guard', () => {
     cy.visit('/admin/campaigns');
     search(keep);
     rowOf(keep).find('[data-cy=btn-delete]').click();
-    cy.get('.modal button.is-primary').click(); // the usual confirmation
+    ok(); // the usual confirmation
     cy.wait('@refuseOne');
     cy.get('.modal [data-cy=warn-box]').should('contain', reason);
     cy.get('.modal-card-title').should('contain', 'cannot be deleted');
-    cy.get('.modal button.is-primary').click();
+    ok();
+    closed();
 
     const many = 'Server says: 2 of the selected campaigns have sent mail.';
     cy.intercept('DELETE', '/api/campaigns?*', { statusCode: 409, body: { message: many } }).as('refuseMany');
     search(keep);
     cy.get('thead input[type="checkbox"]').click({ force: true });
     cy.get('a[data-cy=btn-delete-campaigns]').click();
-    cy.get('.modal button.is-primary').click();
+    ok();
     cy.wait('@refuseMany');
     cy.get('.modal [data-cy=warn-box]').should('contain', many);
     cy.get('.modal-card-title').should('contain', 'Some campaigns cannot be deleted');
-    cy.get('.modal button.is-primary').click();
+    ok();
+    closed();
     // The selection is kept and nothing was removed.
     cy.get('a[data-cy=btn-delete-campaigns]').should('exist');
     rowOf(keep).should('exist');
@@ -83,7 +87,7 @@ describe('Campaign delete guard', () => {
     cy.visit('/admin/campaigns');
     search(gone);
     rowOf(gone).find('[data-cy=btn-delete]').click();
-    cy.get('.modal button.is-primary').click();
+    ok();
     cy.wait('@deleteCall').its('response.statusCode').should('eq', 200);
     cy.contains('tbody tr', gone).should('not.exist');
 
