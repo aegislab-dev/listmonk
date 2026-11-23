@@ -458,46 +458,65 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 	//      holds also when some records of a batch delivered twice were deleted, which leaves as
 	//      many records as events but not in their order.
 	//   3. The event in the record's place, when the batch left one record per bounce event, for
-	//      different subscribers: the bounces were recorded one after another from one queue, in
-	//      the order of the batch. Addresses that changed hands since do not matter here.
+	//      different subscribers (the bounces were recorded one after another from one queue, in
+	//      the order of the batch; addresses that changed hands since do not matter here), and
+	//      only when that order agrees with every record that 1 or 2 placed: a record 2 placed
+	//      elsewhere than its place shows that what is left is not in the order of the batch.
 	//   4. The subscriber's own address now, when it is one of the matching events. (Before this
 	//      migration an edit of the name only is not told apart from a change of address.)
 	// Else nothing is linked to the record, and the matching addresses are left to the pass for
 	// the bounces no record is left for, below.
+	type placed struct {
+		match []string
+		seen  map[string]bool
+		addr  string
+	}
+	places := make([]placed, len(rows))
 	distinct := map[int]bool{}
 	for _, b := range rows {
 		distinct[b.SubID] = true
 	}
 	aligned := len(rows) == len(events) && len(distinct) == len(rows)
+	for i, b := range rows {
+		p := placed{seen: map[string]bool{}}
+		for _, e := range events {
+			if a := axm16Clean(e.Email); e.matches(b) && !p.seen[a] {
+				p.seen[a] = true
+				p.match = append(p.match, a)
+			}
+		}
+		own := strings.ToLower(strings.TrimSpace(b.Own.String))
+		switch {
+		case len(p.match) == 1:
+			p.addr = p.match[0]
+		case b.Own.Valid && p.seen[own]:
+			p.addr = own
+		}
+		if aligned && (!events[i].matches(b) || (p.addr != "" && p.addr != axm16Clean(events[i].Email))) {
+			aligned = false
+		}
+		places[i] = p
+	}
 	accounted := map[string]bool{}
 	for i, b := range rows {
 		if !axm16Permanent(b.Type) {
 			continue
 		}
-		var match []string
-		seen := map[string]bool{}
-		for _, e := range events {
-			if a := axm16Clean(e.Email); e.matches(b) && !seen[a] {
-				seen[a] = true
-				match = append(match, a)
-			}
-		}
-		if len(match) == 0 {
+		p := places[i]
+		if len(p.match) == 0 {
 			if _, err := db.Exec(axm16Mailed, b.Type, b.ID, b.SubID, b.CampaignID); err != nil {
 				return err
 			}
 			continue
 		}
-		addr := ""
-		switch cur := strings.ToLower(strings.TrimSpace(b.Cur)); {
-		case len(match) == 1:
-			addr = match[0]
-		case b.Own.Valid && seen[strings.ToLower(strings.TrimSpace(b.Own.String))]:
-			addr = strings.ToLower(strings.TrimSpace(b.Own.String))
-		case aligned && events[i].matches(b):
-			addr = axm16Clean(events[i].Email)
-		case seen[cur]:
-			addr = cur
+		addr := p.addr
+		if addr == "" {
+			switch cur := strings.ToLower(strings.TrimSpace(b.Cur)); {
+			case aligned:
+				addr = axm16Clean(events[i].Email)
+			case p.seen[cur]:
+				addr = cur
+			}
 		}
 		if addr == "" {
 			continue

@@ -915,6 +915,22 @@ func TestGateMigrationTwice(t *testing.T) {
 		retryIDs = append(retryIDs, rid)
 	}
 	e.db.MustExec(`DELETE FROM bounces WHERE id = ANY($1)`, pq.Array([]int{retryIDs[0], retryIDs[3]}))
+	// The same, and B's name was edited before the upgrade (an edit then is not told apart from a
+	// change of address): A's record left is A's by its unchanged address, which shows that the
+	// records left are not in the order of the batch; B's record is B's by B's address now.
+	var editedA, editedB int
+	e.get(&editedA, `INSERT INTO subscribers (uuid, email, name, status, created_at, updated_at) VALUES (gen_random_uuid(), 'edited-a@ok.test', 'P', 'enabled', to_timestamp(1700012900), to_timestamp(1700012900)) RETURNING id`)
+	e.get(&editedB, `INSERT INTO subscribers (uuid, email, name, status, created_at, updated_at) VALUES (gen_random_uuid(), 'edited-b@ok.test', 'P', 'enabled', to_timestamp(1700012900), to_timestamp(1700012900)) RETURNING id`)
+	editedBatch := `[{"email":"edited-a@ok.test","event":"bounce","timestamp":1700013000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"edited-b@ok.test","event":"bounce","timestamp":1700013000,"XListmonkCampaign":"` + uuidA + `"}]`
+	var editedIDs []int
+	for _, sub := range []int{editedA, editedB, editedA, editedB} {
+		var rid int
+		e.get(&rid, `INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700013000)) RETURNING id`, sub, campA, editedBatch)
+		editedIDs = append(editedIDs, rid)
+	}
+	e.db.MustExec(`DELETE FROM bounces WHERE id = ANY($1)`, pq.Array([]int{editedIDs[0], editedIDs[3]}))
+	e.db.MustExec(`UPDATE subscribers SET name = 'Edited', updated_at = NOW() WHERE id = $1`, editedB)
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -930,7 +946,7 @@ func TestGateMigrationTwice(t *testing.T) {
 			"later", "sg.other", "deleted", "kept", "failed", "twice-bad",
 			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other", "cleared-old",
 			"replayed-kept", "replayed-gone", "current-peer", "control-peer", "deleted-edited-peer", "dep-holder",
-			"swap-a", "swap-b", "retry-a", "retry-b"} {
+			"swap-a", "swap-b", "retry-a", "retry-b", "edited-a", "edited-b"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
@@ -983,6 +999,13 @@ func TestGateMigrationTwice(t *testing.T) {
 	}
 	if e.isBounced("retry-a@ok.test") || !e.isBounced("retry-b@ok.test") {
 		t.Fatalf("retry: a %v, b %v", e.isBounced("retry-a@ok.test"), e.isBounced("retry-b@ok.test"))
+	}
+	// B's record keeps B's address: deleting A's record lets A's go, not B's.
+	if err := e.a.core.DeleteBounces([]int{editedIDs[2]}, false); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("edited-a@ok.test") || !e.isBounced("edited-b@ok.test") {
+		t.Fatalf("edited: a %v, b %v", e.isBounced("edited-a@ok.test"), e.isBounced("edited-b@ok.test"))
 	}
 	// Deleting A's record lets A's old address go; B's address stays with B's record.
 	if err := e.a.core.DeleteBounces([]int{swapARecord}, false); err != nil {
