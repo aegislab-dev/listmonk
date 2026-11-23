@@ -223,6 +223,7 @@ func (c *Core) ClaimFollowupBatch(ctx context.Context, id int, subs []int) (left
 		SubscriberID int  `db:"subscriber_id"`
 		Reason       int  `db:"reason"`
 		Inserted     bool `db:"inserted"`
+		GivenBack    bool `db:"given_back"`
 	}
 	if err := tx.Stmtx(c.q.AxmFollowupClaim).SelectContext(ctx, &rows, id, pq.Array(subs), c.tracking()); err != nil {
 		return nil, true, err
@@ -231,10 +232,13 @@ func (c *Core) ClaimFollowupBatch(ctx context.Context, id int, subs []int) (left
 	// meanwhile) is left out too.
 	send := make(map[int]bool, len(rows))
 	reasons := map[int]int{}
-	newly := 0
+	newly, givenBack := 0, 0
 	for _, r := range rows {
 		if r.Reason == 0 {
 			send[r.SubscriberID] = true
+			if r.GivenBack {
+				givenBack++
+			}
 			continue
 		}
 		if r.Inserted {
@@ -248,7 +252,7 @@ func (c *Core) ClaimFollowupBatch(ctx context.Context, id int, subs []int) (left
 			left[sid] = true
 		}
 	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupToSend).ExecContext(ctx, id, newly); err != nil {
+	if _, err := tx.Stmtx(c.q.AxmFollowupToSend).ExecContext(ctx, id, newly, givenBack); err != nil {
 		return nil, true, err
 	}
 	var recorded json.RawMessage

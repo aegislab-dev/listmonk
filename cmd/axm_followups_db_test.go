@@ -1579,9 +1579,9 @@ func TestFollowupUnsubscribedWhileTheBatchIsJudgedIsNotSent(t *testing.T) {
 	}
 }
 
-// Review 26 (3, 4): the follow-up's to_send is what it really sends (the people left out come off,
-// also after a pause and resume counts again), and someone left out at the end of a batch, read
-// again by the sender, is counted and audited once.
+// Review 26 (3, 4), 27, 28: the follow-up's to_send is what it means to send (the people left out
+// come off, also at every start of a run, and a refused message still counts as one to send), and
+// someone left out at the end of a batch, read again by the sender, is counted and audited once.
 func TestFollowupToSendAndAuditCountEachLeftOutPersonOnce(t *testing.T) {
 	e := newFollowupEnv(t)
 	got, manual := e.followupWithManualMember(`{"open":"no","no_team":true,"followup":true}`)
@@ -1611,30 +1611,37 @@ func TestFollowupToSendAndAuditCountEachLeftOutPersonOnce(t *testing.T) {
 	if audited != 1 {
 		t.Fatalf("audited %d people left out, want 1", audited)
 	}
-	// Paused, Charlie unsubscribes meanwhile, resumed: the start counts again. When it finishes,
-	// to_send is what it sent.
-	e.db.MustExec(`UPDATE campaigns SET status = 'paused', sent = 1 WHERE id = $1`, camp)
-	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, charlie, got.List.ID)
-	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
-	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
-		t.Fatal(err)
+	// Paused and resumed with no change: the start counts again and the people left out come off.
+	resume := func() {
+		t.Helper()
+		e.db.MustExec(`UPDATE campaigns SET status = 'paused' WHERE id = $1`, camp)
+		e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resume()
+	if n := toSend(); n != 2 {
+		t.Fatalf("to_send after a resume %d, want 2", n)
 	}
 	if _, err := e.store.NextSubscribers(camp, charlie, 2); err != nil {
 		t.Fatal(err)
 	}
+	if n := toSend(); n != 2 {
+		t.Fatalf("to_send after reading on %d, want 2", n)
+	}
+	// Charlie unsubscribes while it is paused: the next start counts one fewer.
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, charlie, got.List.ID)
+	resume()
+	if n := toSend(); n != 1 {
+		t.Fatalf("to_send after an unsubscribe and a resume %d, want 1", n)
+	}
+	// It finishes with a message refused by the mail server (nothing sent): to_send stays what it
+	// meant to send, as for any campaign.
 	if err := e.store.UpdateCampaignStatus(camp, models.CampaignStatusFinished); err != nil {
 		t.Fatal(err)
 	}
 	if n := toSend(); n != 1 {
-		t.Fatalf("to_send when finished %d, want 1 (what it sent)", n)
-	}
-	// An ordinary campaign keeps its to_send when it finishes.
-	other := e.addRunning()
-	e.db.MustExec(`UPDATE campaigns SET to_send = 5, sent = 3 WHERE id = $1`, other)
-	if err := e.store.UpdateCampaignStatus(other, models.CampaignStatusFinished); err != nil {
-		t.Fatal(err)
-	}
-	if n := e.count(`SELECT to_send FROM campaigns WHERE id = $1`, other); n != 5 {
-		t.Fatalf("an ordinary campaign's to_send became %d", n)
+		t.Fatalf("to_send when finished %d, want 1", n)
 	}
 }

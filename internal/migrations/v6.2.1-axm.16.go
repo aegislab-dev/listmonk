@@ -197,21 +197,32 @@ DROP TRIGGER IF EXISTS axm_followup_reaction_send ON axm_campaign_sends;
 CREATE TRIGGER axm_followup_reaction_send AFTER UPDATE OF opened_at, clicked_at ON axm_campaign_sends
     FOR EACH ROW WHEN ((OLD.opened_at IS NULL AND NEW.opened_at IS NOT NULL) OR (OLD.clicked_at IS NULL AND NEW.clicked_at IS NOT NULL))
     EXECUTE FUNCTION axm_followup_reaction();
--- A follow-up campaign that finishes counts as to send what it sent: the people it left out
--- (axm_campaign_followup_holds) are not to be sent, however the start of a run counted them.
-CREATE OR REPLACE FUNCTION axm_followup_finished()
+-- The start of a follow-up's run (next-campaigns sets to_send and max_subscriber_id together, and
+-- is the only statement that sets max_subscriber_id) counts everyone on its lists. The people the
+-- sender has left out and who are still counted there come off, so to_send is what the follow-up
+-- means to send. Ordinary campaigns are left as they are.
+CREATE OR REPLACE FUNCTION axm_followup_recount()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
     IF EXISTS (SELECT 1 FROM axm_campaign_followups WHERE campaign_id = NEW.id) THEN
-        NEW.to_send := NEW.sent;
+        NEW.to_send := GREATEST(0, NEW.to_send - (
+            SELECT COUNT(*) FROM axm_campaign_followup_holds h
+            JOIN subscribers s ON s.id = h.subscriber_id AND s.status != 'blocklisted'
+            WHERE h.campaign_id = NEW.id AND EXISTS (
+                SELECT 1 FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+                WHERE cl.campaign_id = NEW.id AND (
+                    (l.axm_filter IS NULL AND EXISTS (
+                        SELECT 1 FROM subscriber_lists sl WHERE sl.list_id = l.id AND sl.subscriber_id = h.subscriber_id
+                            AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END))
+                    OR (l.axm_filter IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM axm_dynamic_list_members(l.id, h.subscriber_id - 1, h.subscriber_id, 1)))))));
     END IF;
     RETURN NEW;
 END;
 $$;
-DROP TRIGGER IF EXISTS axm_followup_finished ON campaigns;
-CREATE TRIGGER axm_followup_finished BEFORE UPDATE OF status ON campaigns
-    FOR EACH ROW WHEN (NEW.status = 'finished' AND OLD.status IS DISTINCT FROM 'finished')
-    EXECUTE FUNCTION axm_followup_finished();
+DROP TRIGGER IF EXISTS axm_followup_recount ON campaigns;
+CREATE TRIGGER axm_followup_recount BEFORE UPDATE OF max_subscriber_id ON campaigns
+    FOR EACH ROW EXECUTE FUNCTION axm_followup_recount();
 -- End of AXM campaign follow-ups.`)
 	return err
 }

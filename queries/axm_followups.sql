@@ -66,7 +66,7 @@ ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
 -- of the batch who still exists, with the reason to leave them out: 0 none (send), 1 blocked, 5 no
 -- longer subscribed through the campaign's lists, or the reason axm_followup_judge gives. Someone
 -- with no row is not sent to. The outcome is recorded in the holds (inserted tells a person left
--- out now who was not before).
+-- out now who was not before, given_back one sent now who was left out before).
 WITH j AS MATERIALIZED (
     SELECT subscriber_id, reason FROM axm_followup_judge($1, $2::INT[], $3)
 ),
@@ -90,6 +90,7 @@ cleared AS (
     DELETE FROM axm_campaign_followup_holds h
     WHERE h.campaign_id = $1 AND h.subscriber_id = ANY($2::INT[])
         AND EXISTS (SELECT 1 FROM verdict v WHERE v.sid = h.subscriber_id AND v.reason = 0)
+    RETURNING h.subscriber_id
 ),
 held AS (
     INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
@@ -97,14 +98,15 @@ held AS (
     ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET reason = EXCLUDED.reason
     RETURNING subscriber_id, (xmax = 0) AS inserted
 )
-SELECT v.sid AS subscriber_id, v.reason, COALESCE(h.inserted, FALSE) AS inserted
+SELECT v.sid AS subscriber_id, v.reason, COALESCE(h.inserted, FALSE) AS inserted,
+    EXISTS (SELECT 1 FROM cleared c WHERE c.subscriber_id = v.sid) AS given_back
 FROM verdict v LEFT JOIN held h ON h.subscriber_id = v.sid;
 
 -- name: axm-followup-to-send
--- Takes the $2 people the sender newly left out of follow-up $1 off its to_send while it sends, so
--- its progress shows what it really sends (never below what was sent). When it finishes, to_send is
--- set to what it sent (axm_followup_finished), however the start of a run counted.
-UPDATE campaigns SET to_send = GREATEST(sent, to_send - $2) WHERE id = $1;
+-- Keeps follow-up $1's to_send what it means to send while it sends: $2 people newly left out come
+-- off, $3 people left out before and sent now come back on. (The start of a run takes the people
+-- left out off what it counts: axm_followup_recount.)
+UPDATE campaigns SET to_send = GREATEST(0, to_send - $2 + $3) WHERE id = $1;
 
 -- name: axm-followup-finish-empty
 -- A follow-up that is due with nobody at all on its lists is ended here (the sender does not start
