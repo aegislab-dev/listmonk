@@ -96,17 +96,30 @@ export function validEmail(value) {
 export function parseCSV(text, { delimiter = '', header = true } = {}) {
   if (text.includes('\0')) throw new ImportError('nul');
   if (delimiter && (delimiter.length !== 1 || /["\r\n\0]/.test(delimiter))) throw new ImportError('delimiter');
-  const result = Papa.parse(text.replace(/^\uFEFF/, ''), {
+  const source = text.replace(/^\uFEFF/, '');
+  // Only a line with nothing on it is skipped, as the server's reader does: a quoted empty
+  // field ("") or a line of spaces is a record, so in a one-column file it is an empty address.
+  // Papa gives both as [''], so each record's own text tells them apart.
+  const result = { data: [], blank: [], errors: [], meta: {} };
+  let cursor = 0;
+  Papa.parse(source, {
     header: false,
     delimiter,
     delimitersToGuess: [',', ';', '\t', '|'],
     skipEmptyLines: false,
+    step: ({ data, errors, meta }) => {
+      result.data.push(data);
+      result.blank.push(source.slice(cursor, meta.cursor).replace(/(\r\n|\n|\r)$/, '') === '');
+      result.errors.push(...errors);
+      result.meta = meta;
+      cursor = meta.cursor;
+    },
   });
   // A quote error can consume all later physical lines as one logical record.
   // Their boundaries/count cannot be recovered safely; reject the whole file.
   if (result.errors.some((error) => error.type === 'Quotes')) throw new ImportError('quotes');
   const nonempty = result.data.map((cells, index) => ({ cells, row: index + 1 }))
-    .filter(({ cells }) => !(cells.length === 1 && cells[0].trim() === ''));
+    .filter((_, index) => !result.blank[index]);
   const first = nonempty[0];
   if (!first) throw new ImportError('empty');
   const columns = first.cells.map((cell, index) => (header ? cell.trim() : `Column ${index + 1}`));

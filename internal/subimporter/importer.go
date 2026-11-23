@@ -644,9 +644,8 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		s.log.Printf("error reading header from '%s': '%v'", srcPath, err)
 		return err
 	}
-	// Line breaks inside quoted cells so far: a record's row is its starting line less these,
-	// which is how a spreadsheet numbers rows (blank lines count, a cell with line breaks is one).
-	embedded := countLineBreaks(csvHdr)
+	rows := sheetRows{}
+	rows.next(rd, csvHdr, nil)
 
 	hdrKeys := s.mapCSVHeaders(csvHdr, csvHeaders)
 	// email is a required header.
@@ -677,12 +676,7 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		// The line of the file the row starts on: the reader skips blank lines, so counting
 		// rows would run behind a spreadsheet's numbers.
 		rec++
-		fileLine := 0
-		if err == nil {
-			fileLine, _ = rd.FieldPos(0)
-			fileLine -= embedded
-			embedded += countLineBreaks(cols)
-		}
+		fileLine := rows.next(rd, cols, err)
 		if err == io.EOF {
 			break
 		} else if err != nil {
@@ -759,6 +753,24 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 	failed = false
 
 	return nil
+}
+
+// sheetRows numbers the records a csv.Reader returns as a spreadsheet numbers rows: blank
+// lines count, and a cell with line breaks in it is one row. A record's row is the line it
+// starts on less the line breaks inside the cells read before it.
+type sheetRows struct{ embedded int }
+
+// next gives the row of the record Read just returned, or 0 when it returned none. A record
+// of the wrong width comes back with ErrFieldCount and is skipped, but its line breaks are
+// counted too, or every later row would be numbered too high.
+func (r *sheetRows) next(rd *csv.Reader, cols []string, err error) int {
+	if err != nil && !errors.Is(err, csv.ErrFieldCount) {
+		return 0
+	}
+	line, _ := rd.FieldPos(0)
+	row := line - r.embedded
+	r.embedded += countLineBreaks(cols)
+	return row
 }
 
 // countLineBreaks counts the line breaks inside the cells of a record.

@@ -1,6 +1,9 @@
 package subimporter
 
 import (
+	"encoding/csv"
+	"io"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -39,6 +42,27 @@ func TestLongAddressesAreKeptWhole(t *testing.T) {
 	im.rejectExcluded(1, ExcludedRow{Row: 4, Email: long, Reason: RejectTypo, Suggest: strings.TrimSuffix(long, "n")})
 	if got := im.rejected[0]; got.Email != long || got.Suggest != strings.TrimSuffix(long, "n") {
 		t.Fatalf("cut: %d %d", len(got.Email), len(got.Suggest))
+	}
+}
+
+func TestRowNumbersAreSpreadsheetRows(t *testing.T) {
+	// 1 header, 2 address, 3 a name with a line break and an extra column (wrong width),
+	// 4 blank line, 5 a name with a line break, 6 address.
+	in := "email,name\na@x.example,A\nb@x.example,\"two\nlines\",extra\n\nc@x.example,\"also\ntwo\"\nd@gmail.con,D\n"
+	rd := csv.NewReader(strings.NewReader(in))
+	rows := sheetRows{}
+	hdr, _ := rd.Read()
+	rows.next(rd, hdr, nil)
+	var got []int
+	for {
+		cols, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		got = append(got, rows.next(rd, cols, err))
+	}
+	if want := []int{2, 3, 5, 6}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rows %v, want %v", got, want)
 	}
 }
 

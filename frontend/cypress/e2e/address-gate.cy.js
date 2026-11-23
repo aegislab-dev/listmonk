@@ -149,4 +149,46 @@ describe('Address rules', () => {
     cy.request('/api/import/subscribers').its('body.data.axm_import_id').then((id) => cy.request(`/api/import/subscribers/rejected?id=${id}`))
       .its('body').should('contain', '\n3,').and('contain', '\n4,').and('contain', '\n5,').and('contain', '\n6,not-an-address').and('contain', '\n7,');
   });
+
+  // The same file gives the same refused rows, numbered alike, whether it goes as it is or
+  // through the column mapping.
+  const refusedRows = (csv, mode) => {
+    cy.intercept('POST', '/api/subscribers/address-check', (req) => req.reply({
+      data: {
+        total: req.body.emails.length, risky: 0, confirmed: 0, warning: 0, unknown: 0, pending: 0, classes: {}, issues: {}, suggest: {},
+      },
+    }));
+    cy.loginAndVisit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('.list-selector input').type(listName);
+    cy.contains('.list-selector .autocomplete a', listName).click();
+    cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(csv), fileName: `${mode}.csv`, mimeType: 'text/csv' }, { force: true });
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get(`[data-cy=map-mode-${mode}]`).click();
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    submit().should('not.be.disabled').click();
+    cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+    return cy.request('/api/import/subscribers').its('body.data.axm_import_id')
+      .then((id) => cy.request(`/api/import/subscribers/rejected?id=${id}`))
+      .then(({ body }) => body.split(/\r?\n/).slice(1).filter(Boolean).map((line) => Number(line.split(',')[0])).sort((a, b) => a - b));
+  };
+
+  it('counts a quoted empty address in a one-column file in both upload modes', () => {
+    const stamp = Date.now();
+    // 2 address, 3 "" (an empty address), 4 blank line, 5 misspelled domain.
+    const csv = `email\none-col-${stamp}@example.invalid\n""\n\none-col-${stamp}@gmail.con\n`;
+    refusedRows(csv, 'raw').should('deep.equal', [3, 5]);
+    cy.get('[data-cy=import-rejected]').should('contain', '2');
+    refusedRows(csv, 'mapping').should('deep.equal', [3, 5]);
+    cy.get('[data-cy=import-rejected]').should('contain', '2');
+  });
+
+  it('numbers the rows after a wrong-width row with a line break alike in both upload modes', () => {
+    const stamp = Date.now();
+    // 2 address, 3 a two-line name and an extra column (skipped), 4 misspelled domain.
+    const csv = `email,name\nwide-${stamp}@example.invalid,A\nwide-b-${stamp}@example.invalid,"two\nlines",extra\nwide-${stamp}@gmail.con,D\n`;
+    refusedRows(csv, 'raw').should('deep.equal', [4]);
+    refusedRows(csv, 'mapping').should('deep.equal', [4]);
+  });
 });
