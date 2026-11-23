@@ -53,6 +53,7 @@ type sesMail struct {
 		BounceType        string `json:"bounceType"`
 		BouncedRecipients []struct {
 			EmailAddress string `json:"emailAddress"`
+			Action       string `json:"action"`
 			Status       string `json:"status"`
 		} `json:"bouncedRecipients"`
 	} `json:"bounce"`
@@ -140,20 +141,6 @@ func (s *SES) ProcessBounce(b []byte) ([]models.Bounce, error) {
 		return bounce, errors.New("no destination e-mails found in SES notification")
 	}
 
-	typ := models.BounceTypeSoft
-	if m.Bounce.BounceType == "Permanent" {
-		typ = models.BounceTypeHard
-	}
-	if m.Bounce.BounceType == "Transient" && len(m.Bounce.BouncedRecipients) > 0 {
-		// "Invalid domain" bounce.
-		if m.Bounce.BouncedRecipients[0].Status == "5.4.4" {
-			typ = models.BounceTypeHard
-		}
-	}
-	if m.NotifType == "Complaint" {
-		typ = models.BounceTypeComplaint
-	}
-
 	// Look for the campaign ID in headers.
 	campUUID := ""
 	if !m.Mail.HeadersTruncated {
@@ -172,11 +159,11 @@ func (s *SES) ProcessBounce(b []byte) ([]models.Bounce, error) {
 	}
 
 	out := make([]models.Bounce, 0, 1)
-	for _, email := range sesRecipients(m) {
+	for _, r := range sesRecipients(m) {
 		out = append(out, models.Bounce{
-			Email:        email,
+			Email:        r.Email,
 			CampaignUUID: campUUID,
-			Type:         typ,
+			Type:         r.Type,
 			Source:       "ses",
 			Meta:         json.RawMessage(n.Message),
 			CreatedAt:    time.Time(m.Mail.Timestamp),
@@ -293,28 +280,80 @@ func (st *sesTimestamp) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// sesRecipients are the addresses the notification is about: each recipient SES names as bounced
-// (or as complaining), else the first of the mail's recipients. A mail sent to several recipients
-// bounces for some of them only, and the address of a hard bounce is refused for good where
-// subscribers are added (LST-56). Keep in step with the migration V6_2_1_axm_16.
-func sesRecipients(m sesMail) []string {
-	var out []string
+// sesRecipient is one address an SES notification is about, and its bounce type.
+type sesRecipient struct {
+	Email string
+	Type  string
+}
+
+// sesRecipients are the addresses the notification is about, each with its own type (LST-56).
+// Upstream recorded one bounce, for the mail's first recipient, typed by the notification. A mail
+// sent to several recipients bounces for some of them only, and the address of a hard bounce is
+// refused for good where subscribers are added, so:
+//
+//   - A bounce: each recipient SES names as bounced. In a Permanent bounce a recipient that was
+//     only delayed (action delayed or a 4.x.x status) is a soft bounce; in a Transient one, the
+//     "invalid domain" status 5.4.4 is hard, as upstream had it. With none named, the mail's
+//     first recipient, typed by the notification as upstream.
+//   - A complaint: the one recipient SES names as complaining. When it names several, the ISP did
+//     not say who complained and these are only the ones who may have: nobody is recorded. With
+//     none named, the mail's recipient if it had only one.
+//
+// Keep in step with the migration V6_2_1_axm_16 (axm16SESRecipients).
+func sesRecipients(m sesMail) []sesRecipient {
+	clean := func(e string) string { return strings.ToLower(strings.TrimSpace(e)) }
+	if m.NotifType == "Complaint" {
+		var named []string
+		seen := map[string]bool{}
+		for _, r := range m.Complaint.ComplainedRecipients {
+			if e := clean(r.EmailAddress); e != "" && !seen[e] {
+				seen[e] = true
+				named = append(named, e)
+			}
+		}
+		switch {
+		case len(named) == 1:
+			return []sesRecipient{{named[0], models.BounceTypeComplaint}}
+		case len(named) == 0 && len(m.Mail.Destination) == 1:
+			return []sesRecipient{{clean(m.Mail.Destination[0]), models.BounceTypeComplaint}}
+		}
+		return nil
+	}
+
+	var out []sesRecipient
 	seen := map[string]bool{}
-	add := func(e string) {
-		e = strings.ToLower(strings.TrimSpace(e))
-		if e != "" && !seen[e] {
-			seen[e] = true
-			out = append(out, e)
+	for _, r := range m.Bounce.BouncedRecipients {
+		e := clean(r.EmailAddress)
+		if e == "" || seen[e] {
+			continue
+		}
+		seen[e] = true
+		out = append(out, sesRecipient{e, sesBounceType(m.Bounce.BounceType, r.Action, r.Status)})
+	}
+	if len(out) > 0 {
+		return out
+	}
+	typ := models.BounceTypeSoft
+	if m.Bounce.BounceType == "Permanent" {
+		typ = models.BounceTypeHard
+	}
+	return []sesRecipient{{clean(m.Mail.Destination[0]), typ}}
+}
+
+// sesBounceType is the type of one bounced recipient.
+func sesBounceType(bounceType, action, status string) string {
+	status = strings.TrimSpace(status)
+	switch bounceType {
+	case "Permanent":
+		if strings.EqualFold(strings.TrimSpace(action), "delayed") || strings.HasPrefix(status, "4") {
+			return models.BounceTypeSoft
+		}
+		return models.BounceTypeHard
+	case "Transient":
+		// "Invalid domain" bounce.
+		if status == "5.4.4" {
+			return models.BounceTypeHard
 		}
 	}
-	for _, r := range m.Bounce.BouncedRecipients {
-		add(r.EmailAddress)
-	}
-	for _, r := range m.Complaint.ComplainedRecipients {
-		add(r.EmailAddress)
-	}
-	if len(out) == 0 {
-		add(m.Mail.Destination[0])
-	}
-	return out
+	return models.BounceTypeSoft
 }

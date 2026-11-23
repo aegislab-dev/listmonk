@@ -770,6 +770,31 @@ func TestGateMigrationTwice(t *testing.T) {
 	}
 	e.db.MustExec(`UPDATE subscribers SET email = 'same1.now@ok.test' WHERE id = $1`, same1)
 	e.db.MustExec(`UPDATE subscribers SET email = 'same2.now@ok.test' WHERE id = $1`, same2)
+	// SES: a Permanent bounce with a failed and a delayed recipient: only the failed one is hard.
+	bounce(id, "hard", "ses", `{"bounce":{"bounceType":"Permanent","bouncedRecipients":[{"emailAddress":"failed@ok.test","action":"failed","status":"5.0.0"},{"emailAddress":"delayed@ok.test","action":"delayed","status":"4.0.0"}]},"mail":{"destination":["failed@ok.test","delayed@ok.test"]}}`, "NOW()")
+	// SES: a complaint that names two recipients who may have complained: nobody is accused.
+	var maybe1 int
+	e.get(&maybe1, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'maybe1@ok.test', 'P', 'enabled') RETURNING id`)
+	e.db.MustExec(`INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'maybe2@ok.test', 'P', 'enabled')`)
+	bounce(maybe1, "complaint", "ses", `{"notificationType":"Complaint","complaint":{"complainedRecipients":[{"emailAddress":"maybe1@ok.test"},{"emailAddress":"maybe2@ok.test"}]},"mail":{"destination":["maybe1@ok.test","maybe2@ok.test"]}}`, "NOW()")
+	// SES: two different bounces of the same recipient sent at the same moment: two records of its own.
+	var twiceFirst, twiceBad int
+	e.get(&twiceFirst, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'twice-first@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&twiceBad, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'twice-bad@ok.test', 'P', 'enabled') RETURNING id`)
+	for _, f := range []string{"feedback-1", "feedback-2"} {
+		bounce(twiceFirst, "hard", "ses", `{"bounce":{"feedbackId":"`+f+`","bounceType":"Permanent","bouncedRecipients":[{"emailAddress":"twice-bad@ok.test","action":"failed","status":"5.1.1"}]},"mail":{"messageId":"`+f+`","timestamp":"2026-11-01T00:00:00.123Z","destination":["twice-first@ok.test","twice-bad@ok.test"]}}`, "'2026-11-01 00:00:00.123+00'")
+	}
+	// SendGrid: of two hard bounces of one batch, the subscriber of one was deleted before.
+	var keptSub, gone int
+	e.get(&keptSub, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'kept@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&gone, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'deleted@ok.test', 'P', 'enabled') RETURNING id`)
+	keptBatch := `[{"email":"kept.delivered@ok.test","event":"delivered","timestamp":1700004000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"kept@ok.test","event":"bounce","timestamp":1700004000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"deleted@ok.test","event":"bounce","timestamp":1700004000,"XListmonkCampaign":"` + uuidA + `"}]`
+	for _, sub := range []int{keptSub, gone} {
+		e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700004000))`, sub, campA, keptBatch)
+	}
+	e.db.MustExec(`DELETE FROM subscribers WHERE id = $1`, gone)
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -781,13 +806,14 @@ func TestGateMigrationTwice(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address", "ses-bad", "sg1", "sg2", "sg.own",
-			"multi-bad1", "multi-bad2", "single-bad", "same1", "same2", "either.one", "either.two"} {
+			"multi-bad1", "multi-bad2", "single-bad", "same1", "same2", "either.one", "either.two",
+			"later", "sg.other", "deleted", "kept", "failed", "twice-bad"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
 		}
-		for _, a := range []string{"delivered", "later", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered", "sg.other",
-			"multi-fine", "single-first", "same.delivered", "same1.now", "same2.now"} {
+		for _, a := range []string{"delivered", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered",
+			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "single-first", "same.delivered", "same1.now", "same2.now"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}
@@ -813,6 +839,25 @@ func TestGateMigrationTwice(t *testing.T) {
 	e.get(&badRecords, `SELECT COUNT(*) FROM bounces WHERE subscriber_id = $1`, singleBad)
 	if badRecords != 1 {
 		t.Fatalf("%d records of the bounced recipient", badRecords)
+	}
+	// Two bounces, two records of its own: deleting one leaves the address refused.
+	var twiceIDs []int
+	if err := e.db.Select(&twiceIDs, `SELECT id FROM bounces WHERE subscriber_id = $1 ORDER BY id`, twiceBad); err != nil {
+		t.Fatal(err)
+	}
+	if len(twiceIDs) != 2 {
+		t.Fatalf("%d records of the recipient bounced twice", len(twiceIDs))
+	}
+	if err := e.a.core.DeleteBounces(twiceIDs[:1], false); err != nil {
+		t.Fatal(err)
+	}
+	if !e.isBounced("twice-bad@ok.test") {
+		t.Fatal("deleting one of two bounces let the address go")
+	}
+	var maybeRecords int
+	e.get(&maybeRecords, `SELECT COUNT(*) FROM bounces b JOIN subscribers s ON s.id = b.subscriber_id WHERE s.email = 'maybe2@ok.test'`)
+	if maybeRecords != 0 {
+		t.Fatal("a complaint record was made for a recipient who may have complained")
 	}
 	if err := e.a.core.DeleteSubscriberBounces(singleBad, ""); err != nil {
 		t.Fatal(err)
