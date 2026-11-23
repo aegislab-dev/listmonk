@@ -581,7 +581,7 @@
     "campaigns.followup.listCount": "{count} people on the list",
     "campaigns.followup.bannerRecheck": "The list is checked again when sending starts.",
     "campaigns.followup.pending": "If checked now, {count} would be left out (opened, clicked or unsubscribed since)",
-    "campaigns.followup.removed": "Left out by the check before sending: {count} ({reacted} opened or clicked, {optedOut} unsubscribed, {blocked} blocked)",
+    "campaigns.followup.removed": "Left out by the check before sending: {count} ({reacted} opened or clicked, {optedOut} unsubscribed, {blocked} blocked, {unknown} while individual tracking was off)",
     "campaigns.followup.madeAt": "As of {time} when made · {matched} of {received} recipients: {condition}",
     "campaigns.followup.listsChanged": "The lists of this campaign were changed. The check before sending covers only the follow-up list.",
     "campaigns.followup.hasFollowup": "Follow-up of this campaign:",

@@ -1923,3 +1923,50 @@ func TestFollowupSendRecordWrittenAfterTheDraftCounts(t *testing.T) {
 	}
 	wantSame(t, "held", e.held(got.Followup.ID), []int{daniel})
 }
+
+// Review 20 (1): Charlie's open reaches the original's send record only after the draft was made,
+// and its view row was cleared before that. Writing the open time on the send record keeps the
+// reaction, so he stays held back once that record expires.
+func TestFollowupOpenWrittenLateOnTheSendRecordIsKept(t *testing.T) {
+	t.Parallel()
+	e := newFollowupEnv(t)
+	charlie := e.ids[2]
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NOW() WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
+	wantSame(t, "held at once", e.held(got.Followup.ID), []int{charlie})
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(got.Followup.ID), []int{charlie})
+}
+
+// Review 20 (2): Daniel was added by hand and opened the original, but his send record is written
+// only after a check has run (during it, in the review). Writing the record holds him back at
+// once, without waiting for another check.
+func TestFollowupSendRecordWrittenAfterACheckHoldsAtOnce(t *testing.T) {
+	t.Parallel()
+	e := newFollowupEnv(t)
+	daniel := e.ids[3]
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, daniel)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, daniel, got.List.ID)
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "not judged yet", e.held(got.Followup.ID), nil)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+	wantSame(t, "held at once", e.held(got.Followup.ID), []int{daniel})
+	subs, err := e.store.NextSubscribers(got.Followup.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range subs {
+		if s.ID == daniel {
+			t.Fatal("the follow-up reads Daniel")
+		}
+	}
+}

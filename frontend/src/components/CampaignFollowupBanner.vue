@@ -70,6 +70,7 @@ export default Vue.extend({
       const r = this.info.recheck;
       return {
         count: this.num(this.removedTotal), reacted: this.num(r.reacted), optedOut: this.num(r.optedOut), blocked: this.num(r.blocked),
+        unknown: this.num(r.unknown || 0),
       };
     },
     madeAt() {

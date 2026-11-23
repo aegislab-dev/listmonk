@@ -108,43 +108,72 @@ RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
                 SELECT 1 FROM axm_dynamic_list_members(ol.id, p_sub - 1, p_sub, 1))))
     );
 $$;
--- Keeps an open or click of an original campaign for its follow-up as it is recorded. On a "did
--- not" condition it also holds the person back at once (the sender skips held people on every
--- batch), so a reaction after the check before sending still keeps the mail from going out.
-CREATE OR REPLACE FUNCTION axm_followup_reaction()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+-- Holds person p_sub back from follow-up p_campaign at once when what is kept of their reactions
+-- breaks its condition: a reaction on a "did not" condition, or, for someone the draft was not
+-- made for, no reaction on a "did" condition. Called when a reaction is recorded and when a
+-- recipient of the original is kept late, so neither waits for the next check before sending.
+CREATE OR REPLACE FUNCTION axm_followup_hold_reacted(p_campaign INT, p_sub INT)
+RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
     f RECORD;
     lid INT;
 BEGIN
+    SELECT * INTO f FROM axm_campaign_followups WHERE campaign_id = p_campaign;
+    IF NOT FOUND THEN
+        RETURN;
+    END IF;
+    SELECT l.id INTO lid FROM lists l JOIN campaign_lists cl ON cl.list_id = l.id AND cl.campaign_id = p_campaign
+    WHERE l.uuid = f.list_uuid AND l.axm_filter IS NULL;
+    IF lid IS NULL THEN
+        RETURN;
+    END IF;
+    INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
+    SELECT p_campaign, p_sub, -1
+    FROM axm_campaign_followup_members m
+    LEFT JOIN axm_campaign_followup_reactions r ON r.campaign_id = p_campaign AND r.subscriber_id = p_sub
+    WHERE m.campaign_id = p_campaign AND m.subscriber_id = p_sub
+        AND ((f.condition->>'open' = 'no' AND COALESCE(r.opened, FALSE))
+            OR (f.condition->>'click' = 'no' AND COALESCE(r.clicked, FALSE))
+            OR (NOT m.made_for AND ((f.condition->>'open' = 'yes' AND NOT COALESCE(r.opened, FALSE))
+                OR (f.condition->>'click' = 'yes' AND NOT COALESCE(r.clicked, FALSE)))))
+        AND EXISTS (SELECT 1 FROM subscriber_lists sl WHERE sl.list_id = lid AND sl.subscriber_id = p_sub AND sl.status != 'unsubscribed')
+        AND NOT EXISTS (SELECT 1 FROM subscribers s WHERE s.id = p_sub AND s.status = 'blocklisted')
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = p_campaign AND x.subscriber_id = p_sub)
+        AND NOT axm_followup_reaches_otherwise(p_campaign, p_sub, ARRAY[lid])
+    ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
+END;
+$$;
+-- Keeps an open or click of an original campaign for its follow-up as it is recorded: a view or
+-- click row, or the open or click time written on the send record (that can come later than the
+-- row, and the row can be cleared meanwhile). It also holds the person back at once if the
+-- reaction breaks the condition (axm_followup_hold_reacted).
+CREATE OR REPLACE FUNCTION axm_followup_reaction()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    f RECORD;
+    o BOOLEAN;
+    k BOOLEAN;
+BEGIN
+    IF TG_TABLE_NAME = 'axm_campaign_sends' THEN
+        o := NEW.opened_at IS NOT NULL;
+        k := NEW.clicked_at IS NOT NULL;
+    ELSE
+        o := TG_TABLE_NAME = 'campaign_views';
+        k := TG_TABLE_NAME = 'link_clicks';
+    END IF;
     -- A follow-up being made of this campaign takes this lock exclusively just before it commits,
     -- so it waits for this reaction to be committed (and keeps it afterwards), and a reaction
     -- recorded meanwhile waits for it and then sees it below.
     PERFORM pg_advisory_xact_lock_shared(4747, NEW.campaign_id);
-    FOR f IN SELECT fu.* FROM axm_campaign_followups fu JOIN campaigns c ON c.id = fu.campaign_id
+    FOR f IN SELECT fu.campaign_id FROM axm_campaign_followups fu JOIN campaigns c ON c.id = fu.campaign_id
         WHERE fu.parent_campaign_id = NEW.campaign_id AND c.status NOT IN ('finished', 'cancelled')
     LOOP
         INSERT INTO axm_campaign_followup_reactions (campaign_id, subscriber_id, opened, clicked)
-        VALUES (f.campaign_id, NEW.subscriber_id, TG_TABLE_NAME = 'campaign_views', TG_TABLE_NAME = 'link_clicks')
+        VALUES (f.campaign_id, NEW.subscriber_id, o, k)
         ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
             opened = axm_campaign_followup_reactions.opened OR EXCLUDED.opened,
             clicked = axm_campaign_followup_reactions.clicked OR EXCLUDED.clicked;
-        IF (TG_TABLE_NAME = 'campaign_views' AND f.condition->>'open' = 'no')
-            OR (TG_TABLE_NAME = 'link_clicks' AND f.condition->>'click' = 'no') THEN
-            SELECT l.id INTO lid FROM lists l JOIN campaign_lists cl ON cl.list_id = l.id AND cl.campaign_id = f.campaign_id
-            WHERE l.uuid = f.list_uuid AND l.axm_filter IS NULL;
-            IF lid IS NOT NULL THEN
-                INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
-                SELECT f.campaign_id, NEW.subscriber_id, -1
-                WHERE EXISTS (SELECT 1 FROM subscriber_lists sl WHERE sl.list_id = lid
-                        AND sl.subscriber_id = NEW.subscriber_id AND sl.status != 'unsubscribed')
-                    AND NOT EXISTS (SELECT 1 FROM subscribers s WHERE s.id = NEW.subscriber_id AND s.status = 'blocklisted')
-                    AND EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = f.campaign_id AND m.subscriber_id = NEW.subscriber_id)
-                    AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.campaign_id AND x.subscriber_id = NEW.subscriber_id)
-                    AND NOT axm_followup_reaches_otherwise(f.campaign_id, NEW.subscriber_id, ARRAY[lid])
-                ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
-            END IF;
-        END IF;
+        PERFORM axm_followup_hold_reacted(f.campaign_id, NEW.subscriber_id);
     END LOOP;
     RETURN NULL;
 END;
@@ -156,7 +185,8 @@ DROP TRIGGER IF EXISTS axm_followup_reaction_click ON link_clicks;
 CREATE TRIGGER axm_followup_reaction_click AFTER INSERT ON link_clicks
     FOR EACH ROW WHEN (NEW.subscriber_id IS NOT NULL) EXECUTE FUNCTION axm_followup_reaction();
 -- Send records of an original campaign written after a follow-up of it was made (they are saved
--- shortly after the messages went out): the people are kept for the follow-up as well.
+-- shortly after the messages went out): the people are kept for the follow-up as well, and held
+-- back at once if what is kept of their reactions breaks its condition.
 CREATE OR REPLACE FUNCTION axm_followup_recipients()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -165,12 +195,18 @@ BEGIN
     SELECT f.campaign_id, n.subscriber_id, FALSE
     FROM axm_new_sends n JOIN axm_campaign_followups f ON f.parent_campaign_id = n.campaign_id
     ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
+    PERFORM axm_followup_hold_reacted(f.campaign_id, n.subscriber_id)
+    FROM axm_new_sends n JOIN axm_campaign_followups f ON f.parent_campaign_id = n.campaign_id;
     RETURN NULL;
 END;
 $$;
 DROP TRIGGER IF EXISTS axm_followup_recipients ON axm_campaign_sends;
 CREATE TRIGGER axm_followup_recipients AFTER INSERT ON axm_campaign_sends
     REFERENCING NEW TABLE AS axm_new_sends FOR EACH STATEMENT EXECUTE FUNCTION axm_followup_recipients();
+DROP TRIGGER IF EXISTS axm_followup_reaction_send ON axm_campaign_sends;
+CREATE TRIGGER axm_followup_reaction_send AFTER UPDATE OF opened_at, clicked_at ON axm_campaign_sends
+    FOR EACH ROW WHEN ((OLD.opened_at IS NULL AND NEW.opened_at IS NOT NULL) OR (OLD.clicked_at IS NULL AND NEW.clicked_at IS NOT NULL))
+    EXECUTE FUNCTION axm_followup_reaction();
 -- End of AXM campaign follow-ups.`)
 	return err
 }
