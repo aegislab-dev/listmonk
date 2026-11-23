@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
@@ -21,21 +22,26 @@ import (
 //	docker run --shm-size=4m ... postgres:17.7-alpine
 //	docker exec <pg> dd if=/dev/zero of=/dev/shm/fill bs=1k count=3900
 //
-// The test forces parallel plans on its connection, once with a custom plan and once with a
-// cached generic plan (the prepared statements keep the plan they first used). On an ordinary
-// database it only checks that the counts are right.
+// With AXM_TEST_SHM_FULL=1 the test seeds enough rows for the planner to choose the production
+// plan (a parallel hash join) and runs it once with a custom plan and once with a cached
+// generic plan (the prepared statements keep the plan they first used). Without it, the test
+// only checks that the counts are right on a small table.
 func TestDynamicDBPreviewWithoutSharedMemory(t *testing.T) {
 	db, q, _ := dynamicTestDB(t)
 	// One connection, so the session settings below apply to every preview query.
 	db.SetMaxOpenConns(1)
 	c := testCore(t, db, q)
 	base := testList(db, nil, "single")
+	rows := 20000
+	if os.Getenv("AXM_TEST_SHM_FULL") != "" {
+		rows = 300000
+	}
 	db.MustExec(`WITH s AS (
 		INSERT INTO subscribers(uuid,email,name,status,attribs)
 		SELECT gen_random_uuid(), 'u'||g||'@example.invalid', 'Synthetic', 'enabled',
 			jsonb_build_object('country', CASE WHEN g % 2 = 0 THEN 'US' ELSE 'KR' END, 'follower', g)
-		FROM generate_series(1, 20000) g RETURNING id)
-		INSERT INTO subscriber_lists(subscriber_id,list_id,status) SELECT id, $1, 'confirmed' FROM s`, base)
+		FROM generate_series(1, $2::int) g RETURNING id)
+		INSERT INTO subscriber_lists(subscriber_id,list_id,status) SELECT id, $1, 'confirmed' FROM s`, base, rows)
 	db.MustExec(`ANALYZE subscribers; ANALYZE subscriber_lists`)
 	str := func(s string) *string { return &s }
 	raw, _ := json.Marshal(DynamicFilter{Version: 1, Base: DynamicBase{Type: "all"}, Match: "all", Conditions: []DynamicCondition{
@@ -49,7 +55,7 @@ func TestDynamicDBPreviewWithoutSharedMemory(t *testing.T) {
 	}
 	// US is every even g; the follower range is 10,000 <= g < 100,000.
 	want := 0
-	for g := 10000; g <= 20000; g++ {
+	for g := 10000; g < 100000 && g <= rows; g++ {
 		if g%2 == 0 {
 			want++
 		}
