@@ -440,7 +440,7 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 
 ### 운영 반영 때
 - 마이그레이션 `v6.2.1-axm.16`가 테이블 `axm_campaign_followups`(11열, 인덱스: PK, 유일 키)와 `axm_campaign_followup_holds`(PK)를 만든다(**새 테이블 5개**: 연결, 보류 `axm_campaign_followup_holds`, 원본 수신자·대상 `axm_campaign_followup_members`, 반응 `axm_campaign_followup_reactions`, 추적이 꺼진 때 `axm_tracking_off`. 함수 `axm_followup_touch`·`axm_followup_reaction`과 함수 `axm_followup_reaches_otherwise`(다른 리스트로도 받는지, 판정과 트리거가 같이 쓴다)·`axm_followup_recipients`, 트리거 5개(아래 4개와 `axm_followup_recipients` — axm_campaign_sends 문장 단위) `axm_followup_touch_campaign`(campaigns)·`axm_followup_touch_lists`(campaign_lists의 추가·삭제·`list_id` 변경 — 휴지통 복원 포함)·`axm_followup_reaction_view`(campaign_views)·`axm_followup_reaction_click`(link_clicks), 시퀀스 없음. 열람·클릭 트리거는 모든 캠페인의 기록마다 유일 키 조회 한 번을 더한다). 운영 백업 역할은 기본 권한으로 읽지만, 교체 뒤 못 읽는 테이블·시퀀스 0개를 확인하고 백업을 1회 돌린다.
-- **이전 이미지(axm.7)로 되돌리기 전에 예약된 후속 캠페인이 있으면 초안으로 내린다.** 이전 이미지는 테이블을 읽지 않으므로 그 동안 발송 직전 다시 확인이 동작하지 않아, 예약 시각이 오면 후속이 확인 없이 나간다(그 사이 원본을 열람·해지한 사람에게도 간다). 후속 메일의 일반 수신거부는 axm.7에서도 전사 차단이라 부모 리스트까지 해지된다.
+- **이전 이미지(지금 운영 중인 axm.8 이하)로 되돌리기 전에 예약된 후속 캠페인이 있으면 초안으로 내린다.** 이전 이미지는 테이블을 읽지 않으므로 그 동안 발송 직전 다시 확인이 동작하지 않아, 예약 시각이 오면 후속이 확인 없이 나간다(그 사이 원본을 열람·해지한 사람에게도 간다). 후속 메일의 일반 수신거부는 이전 이미지에서도 전사 차단이라 부모 리스트까지 해지된다. `.16`의 트리거 5개(campaigns, campaign_lists, campaign_views, link_clicks, axm_campaign_sends)는 되돌려도 DB에 남아 계속 돈다. 후속 테이블에만 쓰므로 이전 이미지의 동작은 바뀌지 않는다.
 - 후속 캠페인이 하나도 없는 동안에는 발송 결과가 이전과 같다. 더해지는 DB 일은 엔진 틱마다 가벼운 조회 2회(시각이 된 후속 `axm-followup-due`, 집힌 캠페인 중 확인이 낡은 후속 `axm-followup-unchecked`), 수신자 배치마다 판 조회 1회(`axm-followup-stale`), 그리고 발송 배치 쿼리와 `next-campaigns`가 빈 보류 테이블을 한 번씩 더 보는 것이다.
 
 ### upstream을 따라갈 때
