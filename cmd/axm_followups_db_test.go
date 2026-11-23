@@ -1970,3 +1970,32 @@ func TestFollowupSendRecordWrittenAfterACheckHoldsAtOnce(t *testing.T) {
 		}
 	}
 }
+
+// Review 21 (1): Daniel opened the original before the draft was made, while his send record was
+// not written yet. He is added by hand, a check runs, and only then is his send record written:
+// his open counts and he is held back at once.
+func TestFollowupOpenBeforeTheDraftWithALateSendRecordHolds(t *testing.T) {
+	t.Parallel()
+	e := newFollowupEnv(t)
+	daniel := e.ids[3]
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, daniel)
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, daniel, got.List.ID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "not judged yet", e.held(got.Followup.ID), nil)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+	wantSame(t, "held at once", e.held(got.Followup.ID), []int{daniel})
+	// The statistics are cleared and the send records expire: the open was kept.
+	e.db.MustExec(`DELETE FROM campaign_views WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'paused' WHERE id = $1`, got.Followup.ID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held after another check", e.held(got.Followup.ID), []int{daniel})
+}

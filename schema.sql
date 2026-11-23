@@ -1273,6 +1273,9 @@ $$;
 -- breaks its condition: a reaction on a "did not" condition, or, for someone the draft was not
 -- made for, no reaction on a "did" condition. Called when a reaction is recorded and when a
 -- recipient of the original is kept late, so neither waits for the next check before sending.
+-- The person's reactions on record now (view and click rows, open and click times of the send
+-- record) are kept first: a reaction recorded before they were known to have got the original
+-- (their send record came late) counts too.
 CREATE OR REPLACE FUNCTION axm_followup_hold_reacted(p_campaign INT, p_sub INT)
 RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
@@ -1283,6 +1286,16 @@ BEGIN
     IF NOT FOUND THEN
         RETURN;
     END IF;
+    INSERT INTO axm_campaign_followup_reactions (campaign_id, subscriber_id, opened, clicked)
+    SELECT p_campaign, p_sub, x.o, x.c FROM (
+        SELECT EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = f.parent_campaign_id AND v.subscriber_id = p_sub)
+                OR EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = f.parent_campaign_id AND s.subscriber_id = p_sub AND s.opened_at IS NOT NULL) AS o,
+            EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = f.parent_campaign_id AND k.subscriber_id = p_sub)
+                OR EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = f.parent_campaign_id AND s.subscriber_id = p_sub AND s.clicked_at IS NOT NULL) AS c
+    ) x WHERE x.o OR x.c
+    ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
+        opened = axm_campaign_followup_reactions.opened OR EXCLUDED.opened,
+        clicked = axm_campaign_followup_reactions.clicked OR EXCLUDED.clicked;
     SELECT l.id INTO lid FROM lists l JOIN campaign_lists cl ON cl.list_id = l.id AND cl.campaign_id = p_campaign
     WHERE l.uuid = f.list_uuid AND l.axm_filter IS NULL;
     IF lid IS NULL THEN

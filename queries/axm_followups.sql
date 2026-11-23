@@ -239,7 +239,8 @@ WHERE cs.campaign_id = $3 AND NOT EXISTS (SELECT 1 FROM subscriber_lists sl WHER
 
 -- name: axm-followup-reactions-now
 -- Keeps for follow-up $1 the reactions to original $2 that are on record now (view and click
--- rows, and the open and click times of the send records), for the people it keeps. It runs when
+-- rows, and the open and click times of the send records), for everyone, also people not known
+-- yet to have got the original (their send record can come later). It runs when
 -- the follow-up is made, again once that is committed, and at the start of every check, so a
 -- reaction is kept before its record can be cleared or expire.
 INSERT INTO axm_campaign_followup_reactions (campaign_id, subscriber_id, opened, clicked)
@@ -251,7 +252,6 @@ SELECT $1::INT, e.sid, bool_or(e.o), bool_or(e.c) FROM (
     SELECT x.subscriber_id, x.opened_at IS NOT NULL, x.clicked_at IS NOT NULL FROM axm_campaign_sends x
     WHERE x.campaign_id = $2 AND (x.opened_at IS NOT NULL OR x.clicked_at IS NOT NULL)
 ) e
-WHERE EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = $1 AND m.subscriber_id = e.sid)
 GROUP BY e.sid
 ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
     opened = axm_campaign_followup_reactions.opened OR EXCLUDED.opened,
