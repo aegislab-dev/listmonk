@@ -1046,23 +1046,31 @@ func uploadSecurityHeaders(next echo.HandlerFunc) echo.HandlerFunc {
 		// The Content-Type is only known once the handler is about to write
 		// the response header.
 		c.Response().Before(func() {
-			// A 304 has no Content-Type, and its headers replace the ones
-			// the browser cached with the file. Leave the disposition alone.
-			if c.Response().Status == http.StatusNotModified {
-				return
-			}
-
 			h := c.Response().Header()
-			// Render images and PDFs inline; force a download for all other types.
-			typ, _, _ := mime.ParseMediaType(h.Get("Content-Type"))
-			if strings.HasPrefix(typ, "image/") || typ == "application/pdf" {
-				h.Set("Content-Disposition", "inline")
-			} else {
-				h.Set("Content-Disposition", "attachment")
-			}
+			h.Set("Content-Disposition", uploadDisposition(h.Get("Content-Type"), c.Request().URL.Path))
 		})
 		return next(c)
 	}
+}
+
+// uploadDisposition returns the Content-Disposition of an uploaded file:
+// images and PDFs render inline, every other type is forced to download.
+//
+// The type is the response's Content-Type, except where that does not name
+// the file's type: a 304 has none, and a multi-range 206 is
+// "multipart/byteranges". There the file extension decides, as it does for
+// the full response of a file on disk. A 304 must carry the disposition too:
+// its headers replace the ones the browser cached with the file, and a copy
+// cached before these headers existed has to pick up "attachment".
+func uploadDisposition(contentType, urlPath string) string {
+	typ, _, _ := mime.ParseMediaType(contentType)
+	if typ == "" || typ == "multipart/byteranges" {
+		typ, _, _ = mime.ParseMediaType(mime.TypeByExtension(path.Ext(urlPath)))
+	}
+	if strings.HasPrefix(typ, "image/") || typ == "application/pdf" {
+		return "inline"
+	}
+	return "attachment"
 }
 
 // serveUploadDir serves the filesystem media upload directory under the given

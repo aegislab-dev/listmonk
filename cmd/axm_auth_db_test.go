@@ -355,6 +355,27 @@ func (e *authEnv) addPasswordUser(username, password string, withTOTP bool) (id 
 	return id, totpKey
 }
 
+// wrongTOTP returns a code that is not valid for the key now, nor in the
+// periods next to now that the check also accepts.
+func wrongTOTP(t *testing.T, key string) string {
+	t.Helper()
+	valid := map[string]bool{}
+	for _, d := range []time.Duration{-60, -30, 0, 30, 60} {
+		code, err := totp.GenerateCode(key, time.Now().Add(d*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		valid[code] = true
+	}
+	for _, code := range []string{"000000", "111111", "222222", "333333", "444444", "555555"} {
+		if !valid[code] {
+			return code
+		}
+	}
+	t.Fatal("no wrong code")
+	return ""
+}
+
 func totpNow(t *testing.T, key string) string {
 	t.Helper()
 	code, err := totp.GenerateCode(key, time.Now())
@@ -456,7 +477,7 @@ func TestPasswordResetAsksForTOTP(t *testing.T) {
 	if _, err := e.core.LoginUser("totp", "password-new"); err != nil {
 		t.Fatalf("new password does not work: %v", err)
 	}
-	rec = e.do(http.MethodPost, "/admin/login/twofa", url.Values{"token": {loc.Query().Get("token")}, "next": {loc.Query().Get("next")}, "totp_code": {"000000"}})
+	rec = e.do(http.MethodPost, "/admin/login/twofa", url.Values{"token": {loc.Query().Get("token")}, "next": {loc.Query().Get("next")}, "totp_code": {wrongTOTP(t, key)}})
 	if sessionCookie(rec) != nil {
 		t.Fatal("wrong TOTP code gave a session")
 	}
@@ -548,7 +569,7 @@ func TestTOTPAttemptBudgetPerUser(t *testing.T) {
 
 	// 15 wrong guesses, each on a new login.
 	for i := 0; i < 15; i++ {
-		if rec := guess(login(), "000000"); rec.Code != http.StatusOK || rec.Body.String() != "admin-twofa|globals.messages.invalidValue" {
+		if rec := guess(login(), wrongTOTP(t, key)); rec.Code != http.StatusOK || rec.Body.String() != "admin-twofa|globals.messages.invalidValue" {
 			t.Fatalf("guess %d: %d %q", i+1, rec.Code, rec.Body.String())
 		}
 	}

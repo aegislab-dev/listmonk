@@ -170,26 +170,74 @@ func TestUploadSecurityHeaders(t *testing.T) {
 	}
 }
 
-// A 304 carries no Content-Type. Its headers replace the cached ones, so it
-// must not turn a cached image into a download.
+// A 304 carries no Content-Type, and its headers replace the ones the browser
+// cached with the file. It has to say the same as the full response: a text
+// file cached before these headers existed becomes a download, and a cached
+// image does not.
 func TestUploadSecurityHeadersNotModified(t *testing.T) {
-	srv := newUploadTestServer(t, map[string]string{"a.png": testPNG}, uploadSecurityHeaders)
+	srv := newUploadTestServer(t, map[string]string{
+		"a.png": testPNG, "a.svg": testSVG, "a.pdf": testPDF,
+		"a.txt": "hello", "a.html": "<script>alert(1)</script>", "noext": "hello",
+		"한글-이미지.png": testPNG,
+	}, uploadSecurityHeaders)
 
-	first := uploadGet(srv, "/uploads/a.png")
-	lastMod := first.Header().Get("Last-Modified")
-	if first.Code != http.StatusOK || lastMod == "" {
-		t.Fatalf("GET = %d, Last-Modified %q", first.Code, lastMod)
-	}
+	for target, want := range map[string]string{
+		"/uploads/a.png":  "inline",
+		"/uploads/a.svg":  "inline",
+		"/uploads/a.pdf":  "inline",
+		"/uploads/a.txt":  "attachment",
+		"/uploads/a.html": "attachment",
+		"/uploads/noext":  "attachment",
+		"/uploads/%ED%95%9C%EA%B8%80-%EC%9D%B4%EB%AF%B8%EC%A7%80.png": "inline",
+	} {
+		first := uploadGet(srv, target)
+		lastMod := first.Header().Get("Last-Modified")
+		if first.Code != http.StatusOK || lastMod == "" {
+			t.Fatalf("GET %s = %d, Last-Modified %q", target, first.Code, lastMod)
+		}
+		if got := first.Header().Get("Content-Disposition"); got != want && target != "/uploads/noext" {
+			t.Errorf("GET %s Content-Disposition = %q, want %q", target, got, want)
+		}
 
-	rec := uploadGet(srv, "/uploads/a.png", "If-Modified-Since", lastMod)
-	if rec.Code != http.StatusNotModified {
-		t.Fatalf("conditional GET = %d, want 304", rec.Code)
+		rec := uploadGet(srv, target, "If-Modified-Since", lastMod)
+		if rec.Code != http.StatusNotModified {
+			t.Fatalf("conditional GET %s = %d, want 304", target, rec.Code)
+		}
+		if got := rec.Header().Values("Content-Disposition"); len(got) != 1 || got[0] != want {
+			t.Errorf("304 %s Content-Disposition = %q, want %q", target, got, want)
+		}
+		if rec.Header().Get("Content-Security-Policy") != "sandbox" || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("304 %s lost a header: %v", target, rec.Header())
+		}
 	}
-	if got, ok := rec.Header()["Content-Disposition"]; ok {
-		t.Errorf("304 Content-Disposition = %q, want none", got)
-	}
-	if rec.Header().Get("Content-Security-Policy") != "sandbox" {
-		t.Errorf("304 lost the sandbox header: %v", rec.Header())
+}
+
+// A request for several byte ranges is answered as multipart/byteranges. The
+// file is still the same file.
+func TestUploadSecurityHeadersRanges(t *testing.T) {
+	srv := newUploadTestServer(t, map[string]string{
+		"a.pdf": testPDF + strings.Repeat("x", 100), "a.svg": testSVG, "a.txt": strings.Repeat("hello ", 30),
+	}, uploadSecurityHeaders)
+
+	for _, tc := range []struct {
+		target, ranges, ctype, want string
+	}{
+		{"/uploads/a.pdf", "bytes=0-3", "application/pdf", "inline"},
+		{"/uploads/a.pdf", "bytes=0-3,10-13", "multipart/byteranges", "inline"},
+		{"/uploads/a.svg", "bytes=0-3,10-13", "multipart/byteranges", "inline"},
+		{"/uploads/a.txt", "bytes=0-3", "text/plain", "attachment"},
+		{"/uploads/a.txt", "bytes=0-3,10-13", "multipart/byteranges", "attachment"},
+	} {
+		rec := uploadGet(srv, tc.target, "Range", tc.ranges)
+		if rec.Code != http.StatusPartialContent || !strings.HasPrefix(rec.Header().Get("Content-Type"), tc.ctype) {
+			t.Fatalf("GET %s %s = %d %q", tc.target, tc.ranges, rec.Code, rec.Header().Get("Content-Type"))
+		}
+		if got := rec.Header().Get("Content-Disposition"); got != tc.want {
+			t.Errorf("GET %s %s Content-Disposition = %q, want %q", tc.target, tc.ranges, got, tc.want)
+		}
+		if rec.Header().Get("Content-Security-Policy") != "sandbox" {
+			t.Errorf("GET %s %s lost the sandbox header", tc.target, tc.ranges)
+		}
 	}
 }
 
