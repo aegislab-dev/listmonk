@@ -63,7 +63,7 @@ export default Vue.extend({
     },
     removedTotal() {
       const r = this.info?.recheck;
-      return r ? r.reacted + r.optedOut + r.blocked + (r.unknown || 0) : 0;
+      return r ? r.reacted + r.optedOut + r.blocked + (r.unknown || 0) + (r.unsubscribed || 0) : 0;
     },
     removedParams() {
       const r = this.info.recheck;
@@ -73,6 +73,7 @@ export default Vue.extend({
         optedOut: this.num(r.optedOut),
         blocked: this.num(r.blocked),
         unknown: this.num(r.unknown || 0),
+        unsubscribed: this.num(r.unsubscribed || 0),
       };
     },
     madeAt() {

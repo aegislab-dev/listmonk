@@ -101,20 +101,10 @@ SELECT v.sid AS subscriber_id, v.reason, COALESCE(h.inserted, FALSE) AS inserted
 FROM verdict v LEFT JOIN held h ON h.subscriber_id = v.sid;
 
 -- name: axm-followup-to-send
--- Takes the people the sender newly left out of follow-up $1 ($2, of whom $3 were not counted by the
--- start of the run: blocked or no longer subscribed) off its to_send, so the campaign shows what it
--- really sends. When the start of a run counted again (to_send is not what was set last), everyone
--- left out who it counts again comes off. Never below what was sent.
-WITH c AS (
-    UPDATE campaigns c SET to_send = GREATEST(c.sent, CASE
-        WHEN f.to_send_seen IS DISTINCT FROM c.to_send THEN c.to_send - $3
-            - (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = c.id AND h.reason IN (-1, 2, 4))
-        ELSE c.to_send - $2
-    END)
-    FROM axm_campaign_followups f WHERE c.id = $1 AND f.campaign_id = c.id
-    RETURNING c.id, c.to_send
-)
-UPDATE axm_campaign_followups f SET to_send_seen = c.to_send FROM c WHERE f.campaign_id = c.id;
+-- Takes the $2 people the sender newly left out of follow-up $1 off its to_send while it sends, so
+-- its progress shows what it really sends (never below what was sent). When it finishes, to_send is
+-- set to what it sent (axm_followup_finished), however the start of a run counted.
+UPDATE campaigns SET to_send = GREATEST(sent, to_send - $2) WHERE id = $1;
 
 -- name: axm-followup-finish-empty
 -- A follow-up that is due with nobody at all on its lists is ended here (the sender does not start

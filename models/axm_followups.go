@@ -46,7 +46,9 @@ type FollowupRecheck struct {
 	Blocked  int `json:"blocked"`
 	// Unknown is held back because the records to judge by are gone (LST-47 review 15).
 	Unknown int `json:"unknown"`
-	Runs    int `json:"runs"`
+	// Unsubscribed is left out for no longer being subscribed through the campaign's lists.
+	Unsubscribed int `json:"unsubscribed"`
+	Runs         int `json:"runs"`
 }
 
 // FollowupPending is who a check made now would hold back from the follow-up campaign.

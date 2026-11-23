@@ -365,7 +365,6 @@ func TestFollowupConditionsStayTrue(t *testing.T) {
 	wantSame(t, "left out", e.held(got.Followup.ID), []int{e.ids[0]})
 }
 
-
 func (e *followupEnv) addRunning() int {
 	id, _ := e.addCampaign("running")
 	return id
@@ -604,7 +603,6 @@ func (e *followupEnv) addParent() int {
 	return id
 }
 
-
 // A follow-up list that went to the trash and came back is still checked, and only that list is:
 // someone the campaign also reaches through a newsletter added to it by hand is not held back.
 func TestFollowupListRestoredFromTrashIsStillChecked(t *testing.T) {
@@ -812,10 +810,6 @@ func TestFollowupKeepsExplicitUnsubscribes(t *testing.T) {
 	}
 }
 
-
-
-
-
 // Review 9 (2): everyone on the follow-up list unsubscribed from it by the time it is due. The
 // campaign ends with nothing sent and someone who subscribes again later does not get it.
 func TestFollowupWithEmptyListEnds(t *testing.T) {
@@ -918,8 +912,6 @@ func (e *followupEnv) lockWaiting(like string) func() bool {
 	}
 }
 
-
-
 // Review 11: the follow-up is started, and the people open the original while it is paused and
 // resumed. They are judged when their batch is read, after that, so they are left out.
 func TestFollowupPausedAndResumedBeforeTheFirstReadIsCheckedAgain(t *testing.T) {
@@ -947,7 +939,6 @@ func TestFollowupPausedAndResumedBeforeTheFirstReadIsCheckedAgain(t *testing.T) 
 	}
 	wantSame(t, "left out", e.held(camp), people)
 }
-
 
 // Review 12 (1): the follow-up list went to the trash and came back before the send. The people of
 // the restored list who opened the original are left out when the batch is read.
@@ -1157,7 +1148,6 @@ func TestFollowupPreflightLeavesOutWhoWouldBeHeld(t *testing.T) {
 		t.Fatalf("both opened: %d %q", n, zero)
 	}
 }
-
 
 // Review 17/18 (2): the draft is made while tracking is switched off; tracking comes back on (the
 // app starts with it on). The reactions of the time without tracking cannot be seen, so everyone
@@ -1478,7 +1468,6 @@ func TestFollowupHoldCommittedAfterTheBatchReadIsSeen(t *testing.T) {
 	wantSame(t, "the batch", ids, []int{e.ids[3]})
 }
 
-
 // Review 25: the follow-up also sends to a dynamic list, and Charlie, who opened the original,
 // comes into it while the follow-up sends. The read ends (it used to read the same batch again
 // without end); reached through a list added by hand, he is not judged.
@@ -1573,6 +1562,8 @@ func TestFollowupUnsubscribedWhileTheBatchIsJudgedIsNotSent(t *testing.T) {
 	waitFor(t, "the batch to wait", e.lockWaiting("%pg_advisory_xact_lock(4747%"))
 	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, daniel)
 	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1`, daniel)
+	// Charlie leaves only the follow-up list.
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, charlie, got.List.ID)
 	if err := view.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -1580,8 +1571,12 @@ func TestFollowupUnsubscribedWhileTheBatchIsJudgedIsNotSent(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	wantSame(t, "the batch", subIDs(r.subs), []int{charlie})
-	wantSame(t, "left out", e.held(camp), []int{daniel})
+	wantSame(t, "the batch", subIDs(r.subs), nil)
+	wantSame(t, "left out", e.held(camp), []int{charlie, daniel})
+	// Both are in what the follow-up shows as left out, with their reasons.
+	if _, info := e.callGet(e.admin, camp); info.Recheck == nil || info.Recheck.Blocked != 1 || info.Recheck.Unsubscribed != 1 {
+		t.Fatalf("recorded: %+v", info.Recheck)
+	}
 }
 
 // Review 26 (3, 4): the follow-up's to_send is what it really sends (the people left out come off,
@@ -1616,16 +1611,30 @@ func TestFollowupToSendAndAuditCountEachLeftOutPersonOnce(t *testing.T) {
 	if audited != 1 {
 		t.Fatalf("audited %d people left out, want 1", audited)
 	}
-	// Paused and resumed: the start counts again, and Daniel comes off again.
-	e.db.MustExec(`UPDATE campaigns SET status = 'paused' WHERE id = $1`, camp)
+	// Paused, Charlie unsubscribes meanwhile, resumed: the start counts again. When it finishes,
+	// to_send is what it sent.
+	e.db.MustExec(`UPDATE campaigns SET status = 'paused', sent = 1 WHERE id = $1`, camp)
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, charlie, got.List.ID)
 	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
 	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.store.NextSubscribers(camp, 0, 2); err != nil {
+	if _, err := e.store.NextSubscribers(camp, charlie, 2); err != nil {
 		t.Fatal(err)
 	}
-	if n := toSend(); n != 2 {
-		t.Fatalf("to_send after the resume %d, want 2", n)
+	if err := e.store.UpdateCampaignStatus(camp, models.CampaignStatusFinished); err != nil {
+		t.Fatal(err)
+	}
+	if n := toSend(); n != 1 {
+		t.Fatalf("to_send when finished %d, want 1 (what it sent)", n)
+	}
+	// An ordinary campaign keeps its to_send when it finishes.
+	other := e.addRunning()
+	e.db.MustExec(`UPDATE campaigns SET to_send = 5, sent = 3 WHERE id = $1`, other)
+	if err := e.store.UpdateCampaignStatus(other, models.CampaignStatusFinished); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT to_send FROM campaigns WHERE id = $1`, other); n != 5 {
+		t.Fatalf("an ordinary campaign's to_send became %d", n)
 	}
 }

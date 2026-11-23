@@ -1183,9 +1183,6 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     -- Who the sender left out so far, by reason, and how many batches it judged.
     recheck            JSONB NOT NULL DEFAULT '{}',
     rechecked_at       TIMESTAMP WITH TIME ZONE NULL,
-    -- The campaign's to_send as last set by the sender's judgement, which takes the people left out
-    -- off it. Another value means the start of a run counted them again.
-    to_send_seen       INTEGER NULL,
     created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CHECK (campaign_id <> parent_campaign_id)
@@ -1361,4 +1358,19 @@ DROP TRIGGER IF EXISTS axm_followup_reaction_send ON axm_campaign_sends;
 CREATE TRIGGER axm_followup_reaction_send AFTER UPDATE OF opened_at, clicked_at ON axm_campaign_sends
     FOR EACH ROW WHEN ((OLD.opened_at IS NULL AND NEW.opened_at IS NOT NULL) OR (OLD.clicked_at IS NULL AND NEW.clicked_at IS NOT NULL))
     EXECUTE FUNCTION axm_followup_reaction();
+-- A follow-up campaign that finishes counts as to send what it sent: the people it left out
+-- (axm_campaign_followup_holds) are not to be sent, however the start of a run counted them.
+CREATE OR REPLACE FUNCTION axm_followup_finished()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM axm_campaign_followups WHERE campaign_id = NEW.id) THEN
+        NEW.to_send := NEW.sent;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_followup_finished ON campaigns;
+CREATE TRIGGER axm_followup_finished BEFORE UPDATE OF status ON campaigns
+    FOR EACH ROW WHEN (NEW.status = 'finished' AND OLD.status IS DISTINCT FROM 'finished')
+    EXECUTE FUNCTION axm_followup_finished();
 -- End of AXM campaign follow-ups.

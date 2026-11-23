@@ -190,9 +190,6 @@ type followupDue struct {
 	ListIDs    pq.Int64Array   `db:"list_ids"`
 }
 
-
-
-
 // ClaimFollowupBatch decides, just before the sender uses a batch it has read for follow-up
 // campaign id, who of the people subs is left out, and returns them (isFollowup is false for any
 // other campaign: nothing is decided). The decision is one transaction: it first takes the
@@ -234,7 +231,7 @@ func (c *Core) ClaimFollowupBatch(ctx context.Context, id int, subs []int) (left
 	// meanwhile) is left out too.
 	send := make(map[int]bool, len(rows))
 	reasons := map[int]int{}
-	newly, newlyUncounted := 0, 0
+	newly := 0
 	for _, r := range rows {
 		if r.Reason == 0 {
 			send[r.SubscriberID] = true
@@ -243,9 +240,6 @@ func (c *Core) ClaimFollowupBatch(ctx context.Context, id int, subs []int) (left
 		if r.Inserted {
 			newly++
 			reasons[r.Reason]++
-			if r.Reason == 1 || r.Reason == 5 {
-				newlyUncounted++
-			}
 		}
 	}
 	left = make(map[int]bool, len(subs))
@@ -254,7 +248,7 @@ func (c *Core) ClaimFollowupBatch(ctx context.Context, id int, subs []int) (left
 			left[sid] = true
 		}
 	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupToSend).ExecContext(ctx, id, newly, newlyUncounted); err != nil {
+	if _, err := tx.Stmtx(c.q.AxmFollowupToSend).ExecContext(ctx, id, newly); err != nil {
 		return nil, true, err
 	}
 	var recorded json.RawMessage
@@ -363,11 +357,6 @@ func (c *Core) NoteTracking(on bool) error {
 	_, err := q.Exec()
 	return err
 }
-
-
-
-
-
 
 // GetFollowupInfo describes the follow-up link of a campaign, if it has one. withPending adds
 // how many people a check made now would take off a follow-up list that has not started.
