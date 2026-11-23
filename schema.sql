@@ -1232,8 +1232,8 @@ $$;
 
 -- The bounces recorded before: the webhooks say in their payload which address a bounce was for,
 -- each in its own field. The others are taken in by axm_mailed_email. SES and SendGrid are taken
--- in by the migration's Go code (V6_2_1_axm_16): an SES notification can name several bounced
--- recipients, and SendGrid's payload is a whole batch of events.
+-- in by the migration's Go code (V6_2_1_axm_16), by the addresses their notifications name alone,
+-- tied to no record or subscriber: a person lets such an address go by deleting its row (FORK.md).
 INSERT INTO axm_bounced_emails (email_hash, kind, bounce_id, subscriber_id)
     SELECT axm_email_hash(a.addr), b.type::TEXT, b.id, b.subscriber_id
     FROM bounces b

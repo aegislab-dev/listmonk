@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -936,114 +937,88 @@ func TestGateMigrationTwice(t *testing.T) {
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	bounce(id, "soft", "postmark", `{"Email":"legacy.soft@ok.test"}`, "NOW()")
 	e.db.MustExec(`DELETE FROM axm_bounced_emails`)
-	var rows1, records1 int
+	var records0 int
+	e.get(&records0, `SELECT COUNT(*) FROM bounces`)
+	var rows1 int
 	for i := 0; i < 2; i++ {
-		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
+		var logged bytes.Buffer
+		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, log.New(&logged, "", 0)); err != nil {
 			t.Fatal(err)
 		}
+		// SES and SendGrid (decided 2026-11-24): every address a notification names as hard bounced
+		// or complaining is kept, whatever became of the records and subscribers since: deleted,
+		// added again, edited, addresses changed or swapped, batches delivered twice.
 		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address", "ses-bad", "sg1", "sg2", "sg.own",
 			"multi-bad1", "multi-bad2", "single-bad", "same1", "same2", "either.one", "either.two",
 			"later", "sg.other", "deleted", "kept", "failed", "twice-bad",
 			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other", "cleared-old",
 			"replayed-kept", "replayed-gone", "current-peer", "control-peer", "deleted-edited-peer", "dep-holder",
-			"swap-a", "swap-b", "retry-a", "retry-b", "edited-a", "edited-b"} {
+			"swap-a", "swap-b", "retry-a", "retry-b", "edited-a", "edited-b", "released-current", "released-control"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
 		}
+		// Not hard bounced or complaining in any notification: delivered, soft, delayed, the mail's
+		// other recipients, a complaint that names several who may have complained.
 		for _, a := range []string{"delivered", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered",
-			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "released-current", "released-control", "dep-peer", "swap-b.new", "single-first", "same.delivered", "same1.now", "same2.now"} {
+			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "dep-peer", "swap-b.new", "single-first", "same.delivered", "same1.now", "same2.now"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}
 		}
-		// The second run adds nothing: no row, no copied SES record.
+		// The complaint with two who may have complained is the one item not judged; it is counted.
+		if i == 0 && !strings.Contains(logged.String(), "1 not judged") {
+			t.Fatalf("log: %q", logged.String())
+		}
+		// The second run adds nothing, and no run makes a bounce record.
 		n := e.bouncedRows()
 		var records int
 		e.get(&records, `SELECT COUNT(*) FROM bounces`)
+		if records != records0 {
+			t.Fatalf("run %d: %d bounce records, %d before", i+1, records, records0)
+		}
 		if i == 0 {
-			rows1, records1 = n, records
-		} else if n != rows1 || records != records1 {
-			t.Fatalf("run 2: %d rows, %d records; run 1: %d, %d", n, records, rows1, records1)
+			rows1 = n
+		} else if n != rows1 {
+			t.Fatalf("run 2: %d rows; run 1: %d", n, rows1)
 		}
 	}
-	// single-bad's address goes with single-bad's own bounce record, not with single-first's.
-	if err := e.a.core.DeleteSubscriberBounces(singleFirst, ""); err != nil {
+	// An address of an SES or SendGrid notification is one row of its own, tied to no record or
+	// subscriber: deleting bounce records of anyone does not let it go.
+	for _, a := range []string{"single-bad", "twice-bad", "retry-a", "edited-a", "swap-a", "replayed-kept", "hard-owned"} {
+		var all, alone int
+		e.get(&all, `SELECT COUNT(*) FROM axm_bounced_emails WHERE email_hash = axm_email_hash($1)`, a+"@ok.test")
+		e.get(&alone, `SELECT COUNT(*) FROM axm_bounced_emails WHERE email_hash = axm_email_hash($1) AND bounce_id IS NULL AND subscriber_id IS NULL`, a+"@ok.test")
+		if all != 1 || alone != 1 {
+			t.Fatalf("%s: %d rows, %d by the address alone", a, all, alone)
+		}
+	}
+	for _, sub := range []int{singleFirst, singleBad, twiceBad, replayKept, transOwned} {
+		if err := e.a.core.DeleteSubscriberBounces(sub, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.a.core.DeleteBounces([]int{retryIDs[2], editedIDs[2], swapARecord}, false); err != nil {
 		t.Fatal(err)
 	}
-	if !e.isBounced("single-bad@ok.test") {
-		t.Fatal("deleting the first recipient's record let the bounced address go")
+	for _, a := range []string{"single-bad", "twice-bad", "retry-a", "retry-b", "edited-a", "edited-b", "swap-a", "swap-b", "replayed-kept", "replayed-gone", "hard-owned"} {
+		if !e.isBounced(a + "@ok.test") {
+			t.Fatalf("%s let go by deleting bounce records", a)
+		}
 	}
-	var badRecords int
-	e.get(&badRecords, `SELECT COUNT(*) FROM bounces WHERE subscriber_id = $1`, singleBad)
-	if badRecords != 1 {
-		t.Fatalf("%d records of the bounced recipient", badRecords)
-	}
-	// Two bounces, two records of its own: deleting one leaves the address refused.
-	var twiceIDs []int
-	if err := e.db.Select(&twiceIDs, `SELECT id FROM bounces WHERE subscriber_id = $1 ORDER BY id`, twiceBad); err != nil {
-		t.Fatal(err)
-	}
-	if len(twiceIDs) != 2 {
-		t.Fatalf("%d records of the recipient bounced twice", len(twiceIDs))
-	}
-	if err := e.a.core.DeleteBounces(twiceIDs[:1], false); err != nil {
-		t.Fatal(err)
-	}
-	if !e.isBounced("twice-bad@ok.test") {
-		t.Fatal("deleting one of two bounces let the address go")
-	}
-	// Deleting A's record left of the batch delivered twice lets A's address go, not B's.
-	if err := e.a.core.DeleteBounces([]int{retryIDs[2]}, false); err != nil {
-		t.Fatal(err)
-	}
+	// A person lets such an address go by deleting its row (FORK.md); the others stay.
+	e.db.MustExec(`DELETE FROM axm_bounced_emails WHERE email_hash = axm_email_hash(' Retry-A@ok.test ')`)
 	if e.isBounced("retry-a@ok.test") || !e.isBounced("retry-b@ok.test") {
-		t.Fatalf("retry: a %v, b %v", e.isBounced("retry-a@ok.test"), e.isBounced("retry-b@ok.test"))
+		t.Fatalf("SQL release: a %v, b %v", e.isBounced("retry-a@ok.test"), e.isBounced("retry-b@ok.test"))
 	}
-	// B's record keeps B's address: deleting A's record lets A's go, not B's.
-	if err := e.a.core.DeleteBounces([]int{editedIDs[2]}, false); err != nil {
-		t.Fatal(err)
+	if issues := e.reviewIssues("retry-a@ok.test", "retry-b@ok.test"); len(issues["0"]) != 0 || strings.Join(issues["1"], ",") != "bounced" {
+		t.Fatalf("after the SQL release: %v", issues)
 	}
-	if e.isBounced("edited-a@ok.test") || !e.isBounced("edited-b@ok.test") {
-		t.Fatalf("edited: a %v, b %v", e.isBounced("edited-a@ok.test"), e.isBounced("edited-b@ok.test"))
-	}
-	// Deleting A's record lets A's old address go; B's address stays with B's record.
-	if err := e.a.core.DeleteBounces([]int{swapARecord}, false); err != nil {
-		t.Fatal(err)
-	}
-	if e.isBounced("swap-a@ok.test") || !e.isBounced("swap-b@ok.test") {
-		t.Fatalf("swap: a %v, b %v", e.isBounced("swap-a@ok.test"), e.isBounced("swap-b@ok.test"))
-	}
-	// Deleting the remaining subscriber's records of the replayed batch lets their own address go,
-	// not the deleted subscriber's.
-	if err := e.a.core.DeleteSubscriberBounces(replayKept, ""); err != nil {
-		t.Fatal(err)
-	}
-	if e.isBounced("replayed-kept@ok.test") || !e.isBounced("replayed-gone@ok.test") {
-		t.Fatalf("replayed batch: kept %v, gone %v", e.isBounced("replayed-kept@ok.test"), e.isBounced("replayed-gone@ok.test"))
-	}
-	// hard-owned has a hard record of its own, which lets the address go.
-	var ownedHard int
-	e.get(&ownedHard, `SELECT COUNT(*) FROM bounces WHERE subscriber_id = $1 AND type = 'hard'`, transOwned)
-	if ownedHard != 1 {
-		t.Fatalf("%d hard records for the 5.4.4 recipient", ownedHard)
-	}
-	if err := e.a.core.DeleteSubscriberBounces(transOwned, ""); err != nil {
-		t.Fatal(err)
-	}
-	if e.isBounced("hard-owned@ok.test") {
-		t.Fatal("deleting the 5.4.4 recipient's record did not let the address go")
-	}
-	var maybeRecords int
-	e.get(&maybeRecords, `SELECT COUNT(*) FROM bounces b JOIN subscribers s ON s.id = b.subscriber_id WHERE s.email = 'maybe2@ok.test'`)
-	if maybeRecords != 0 {
-		t.Fatal("a complaint record was made for a recipient who may have complained")
-	}
-	if err := e.a.core.DeleteSubscriberBounces(singleBad, ""); err != nil {
-		t.Fatal(err)
-	}
-	if e.isBounced("single-bad@ok.test") {
-		t.Fatal("deleting the bounced recipient's own record did not let the address go")
+	// No record is made for a recipient: not for a 5.4.4 recipient, not for one who may have complained.
+	var made int
+	e.get(&made, `SELECT COUNT(*) FROM bounces b JOIN subscribers s ON s.id = b.subscriber_id WHERE s.email IN ('maybe2@ok.test', 'hard-owned@ok.test')`)
+	if made != 0 {
+		t.Fatalf("%d bounce records made for recipients", made)
 	}
 	var n int
 	e.get(&n, `SELECT COUNT(*) FROM axm_bounced_emails WHERE bounce_id = $1`, edited)
