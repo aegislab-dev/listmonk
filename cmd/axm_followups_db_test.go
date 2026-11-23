@@ -2074,3 +2074,106 @@ func TestFollowupBatchIsJudgedAfterPendingSendRecords(t *testing.T) {
 	}
 	wantSame(t, "held", e.held(camp), []int{daniel})
 }
+
+// Review 24 (1): Charlie's open of the original is being recorded when the sender reads the
+// follow-up's first batch; its trigger holds him, committed only after the batch was read. The
+// sender sees that hold before using the batch and reads it again without him.
+func TestFollowupHoldCommittedAfterTheBatchReadIsSeen(t *testing.T) {
+	e := newFollowupEnv(t)
+	charlie := e.ids[2]
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Rollback()
+	if _, err := view.Exec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		subs []models.Subscriber
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		subs, err := e.store.NextSubscribers(camp, 0, 100)
+		done <- result{subs, err}
+	}()
+	waitFor(t, "the batch to wait for the open", e.lockWaiting("%pg_advisory_xact_lock(4747%"))
+	if err := view.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	ids := []int{}
+	for _, s := range r.subs {
+		ids = append(ids, s.ID)
+	}
+	wantSame(t, "the batch", ids, []int{e.ids[3]})
+}
+
+// Review 24 (2): a scheduled campaign is taken back to a draft (or paused) while the sender's query
+// that starts it waits for its row. It is not started and not given back to the sender.
+func TestCampaignTakenBackWhileStartingIsNotStarted(t *testing.T) {
+	for _, to := range []string{"draft", "paused"} {
+		t.Run(to, func(t *testing.T) {
+			e := newFollowupEnv(t)
+			camp, _ := e.addCampaign("scheduled")
+			e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name) VALUES ($1, $2, 'A') ON CONFLICT DO NOTHING`, camp, e.aList)
+			e.db.MustExec(`UPDATE campaigns SET send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
+			row, err := e.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer row.Rollback()
+			if _, err := row.Exec(`SELECT 1 FROM campaigns WHERE id = $1 FOR UPDATE`, camp); err != nil {
+				t.Fatal(err)
+			}
+			type result struct {
+				ids []int
+				err error
+			}
+			done := make(chan result, 1)
+			go func() {
+				camps, err := e.store.NextCampaigns([]int64{})
+				r := result{err: err}
+				for _, c := range camps {
+					r.ids = append(r.ids, c.ID)
+				}
+				done <- r
+			}()
+			waitFor(t, "the start to wait for the row", e.lockWaiting("%WITH camps AS (%"))
+			sendAt := "send_at"
+			if to == "draft" {
+				sendAt = "NULL"
+			}
+			if _, err := row.Exec(fmt.Sprintf(`UPDATE campaigns SET status = $2::campaign_status, send_at = %s WHERE id = $1`, sendAt), camp, to); err != nil {
+				t.Fatal(err)
+			}
+			if err := row.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			r := <-done
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			for _, id := range r.ids {
+				if id == camp {
+					t.Fatalf("given back to the sender: %v", r.ids)
+				}
+			}
+			var st string
+			e.get(&st, `SELECT status FROM campaigns WHERE id = $1`, camp)
+			if st != to {
+				t.Fatalf("the campaign is %s, want %s", st, to)
+			}
+		})
+	}
+}

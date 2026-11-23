@@ -287,8 +287,8 @@ func (c *Core) NoteTracking(on bool) error {
 // id, and holds back whoever the check's judgement says to (axm_followup_judge). It first takes
 // the original's lock exclusively, so the reactions and send records of the original being written
 // at this moment are committed and seen: a decision made earlier on data that was not committed
-// yet (a check, a trigger) cannot let someone through. It returns how many it held back now; the
-// caller reads the batch again then. Not a follow-up: 0.
+// yet (a check, a trigger) cannot let someone through. It returns how many of the batch are held
+// back now (by anyone); the caller reads the batch again then. Not a follow-up: 0.
 func (c *Core) GuardFollowupBatch(ctx context.Context, id int, subs []int) (int, error) {
 	if len(subs) == 0 {
 		return 0, nil
@@ -311,17 +311,22 @@ func (c *Core) GuardFollowupBatch(ctx context.Context, id int, subs []int) (int,
 	if _, err := tx.Stmtx(c.q.AxmFollowupGuardRecipients).ExecContext(ctx, id, g.Parent, pq.Array(subs)); err != nil {
 		return 0, err
 	}
-	var held []int
-	if err := tx.Stmtx(c.q.AxmFollowupGuardHold).SelectContext(ctx, &held, id, pq.Array(subs), c.tracking()); err != nil {
+	if _, err := tx.Stmtx(c.q.AxmFollowupGuardHold).ExecContext(ctx, id, pq.Array(subs), c.tracking()); err != nil {
+		return 0, err
+	}
+	// Everyone of the batch who is held back now counts, also when someone else held them after
+	// the batch was read (a reaction's trigger, a check): the batch must not be used then.
+	var held int
+	if err := tx.Stmtx(c.q.AxmFollowupGuardHeld).GetContext(ctx, &held, id, pq.Array(subs)); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	if len(held) > 0 {
-		c.log.Printf("follow-up campaign %d: %d people held back as their batch was read", id, len(held))
+	if held > 0 {
+		c.log.Printf("follow-up campaign %d: %d people of a batch are held back, reading it again", id, held)
 	}
-	return len(held), nil
+	return held, nil
 }
 
 // FollowupStale says whether the campaign is a follow-up whose last check is not for the campaign

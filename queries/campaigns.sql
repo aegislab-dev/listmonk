@@ -238,6 +238,19 @@ dynCounts AS (
     WHERE EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = ca.id AND cl.is_dynamic)
     GROUP BY ca.id
 ),
+starts AS (
+    SELECT * FROM counts co WHERE NOT EXISTS (
+        SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
+    )
+    UNION ALL SELECT * FROM dynCounts
+    -- AXM (LST-47) a follow-up campaign with nobody to send to at all still starts, so that the
+    -- sender finishes it with nothing sent. Left scheduled, it would go to anyone who subscribed
+    -- to its list later, without a new schedule.
+    UNION ALL SELECT camps.id, 0, 0 FROM camps
+    WHERE camps.id IN (SELECT campaign_id FROM axm_campaign_followups)
+        AND NOT EXISTS (SELECT 1 FROM counts WHERE counts.campaign_id = camps.id)
+        AND NOT EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = camps.id AND cl.is_dynamic)
+),
 u AS (
     -- For each campaign, update the to_send count and set the max_subscriber_id.
     UPDATE campaigns AS ca
@@ -245,26 +258,18 @@ u AS (
         status = (CASE WHEN status != 'running' THEN 'running' ELSE status END),
         max_subscriber_id = co.max_subscriber_id,
         started_at=(CASE WHEN ca.started_at IS NULL THEN NOW() ELSE ca.started_at END)
-    FROM (
-        SELECT * FROM counts co WHERE NOT EXISTS (
-            SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
-        )
-        UNION ALL SELECT * FROM dynCounts
-        -- AXM (LST-47) a follow-up campaign with nobody to send to at all still starts, so that the
-        -- sender finishes it with nothing sent. Left scheduled, it would go to anyone who subscribed
-        -- to its list later, without a new schedule.
-        UNION ALL SELECT camps.id, 0, 0 FROM camps
-        WHERE camps.id IN (SELECT campaign_id FROM axm_campaign_followups)
-            AND NOT EXISTS (SELECT 1 FROM counts WHERE counts.campaign_id = camps.id)
-            AND NOT EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = camps.id AND cl.is_dynamic)
-    ) co
+    FROM starts co
     WHERE ca.id = co.campaign_id
-        -- AXM (LST-47) a schedule moved to a later time while this ran is not started. Only that
-        -- case is left out (a campaign paused meanwhile is updated as before, so a resume right after
-        -- reads with its new upper bound).
-        AND NOT (ca.status = 'scheduled' AND NOW() < ca.send_at)
+        -- AXM (LST-47) the row is read again if it changed while this ran. A campaign paused, taken
+        -- back to a draft or scheduled for a later time meanwhile is not started (and not given
+        -- back below, so the sender does not read it with an upper bound that was not set).
+        AND (ca.status = 'running' OR (ca.status = 'scheduled' AND NOW() >= ca.send_at))
+    RETURNING ca.id
 )
-SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);
+-- AXM (LST-47) only the campaigns started above, and as before the ones that had nothing to start
+-- (no one on their lists: the sender ends them).
+SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id)
+WHERE camps.id IN (SELECT id FROM u) OR NOT EXISTS (SELECT 1 FROM starts WHERE starts.campaign_id = camps.id);
 
 -- name: get-campaign-analytics-unique-counts
 WITH intval AS (
