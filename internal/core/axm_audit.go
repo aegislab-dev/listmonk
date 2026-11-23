@@ -3,7 +3,10 @@ package core
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
@@ -14,6 +17,9 @@ import (
 // as the campaign send records (SendRetentionMonths). If a rule that applies to this system
 // asks for longer, change this number.
 const AuditRetentionMonths = 12
+
+// AuditMaxText is the longest text (a bulk condition, a name) an audit row keeps.
+const AuditMaxText = 500
 
 // auditDeleteBatch is the number of audit rows deleted per statement.
 const auditDeleteBatch = 20000
@@ -144,4 +150,51 @@ func (c *Core) CountBouncedSubscribers() (int, error) {
 	n := 0
 	err := c.db.Get(&n, `SELECT COUNT(DISTINCT subscriber_id) FROM bounces`)
 	return n, err
+}
+
+var (
+	// Any run of characters around an "@" (a whole address, or a part of one such as "kim.lee@"
+	// or "%@example.com") is hidden. An address typed URL-encoded (%40) is read as one first.
+	reAuditEmail = regexp.MustCompile(`[^\s'",()=<>;]*@[^\s'",()=<>;]*`)
+	reAuditPct40 = regexp.MustCompile(`(?i)%40`)
+)
+
+// scrubAuditText hides e-mail addresses in a text that will be stored in the audit log and
+// cuts it to AuditMaxText characters. Any "@" that is left over is replaced too, so a row
+// never holds one.
+func ScrubAuditText(s string) string {
+	s = reAuditPct40.ReplaceAllString(s, "@")
+	s = reAuditEmail.ReplaceAllString(s, "[email]")
+	s = strings.ReplaceAll(s, "@", "(at)")
+	if utf8.RuneCountInString(s) > AuditMaxText {
+		s = string([]rune(s)[:AuditMaxText]) + "…"
+	}
+	return s
+}
+
+// scrubAuditDetail applies scrubAuditText to every text in a detail value.
+func ScrubAuditDetail(v any) any {
+	switch t := v.(type) {
+	case string:
+		return ScrubAuditText(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[k] = ScrubAuditDetail(x)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, x := range t {
+			out[i] = ScrubAuditText(x)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = ScrubAuditDetail(x)
+		}
+		return out
+	}
+	return v
 }

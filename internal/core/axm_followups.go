@@ -204,17 +204,18 @@ func (c *Core) auditFollowupCheck(tx *sqlx.Tx, f followupDue, held int, recorded
 	if err := json.Unmarshal(recorded, &rc); err != nil {
 		return err
 	}
-	detail, err := json.Marshal(map[string]any{
+	// Campaign names can hold anything, an address too: scrubbed as every audit text is.
+	detail, err := json.Marshal(ScrubAuditDetail(map[string]any{
 		"parent":    map[string]any{"id": f.ParentID, "name": f.ParentName},
 		"reacted":   rc.Reacted,
 		"opted_out": rc.OptedOut,
 		"blocked":   rc.Blocked,
 		"check":     rc.Runs,
-	})
+	}))
 	if err != nil {
 		return err
 	}
-	name := f.Name
+	name := ScrubAuditText(f.Name)
 	if r := []rune(name); len(r) > 200 {
 		name = string(r[:200])
 	}

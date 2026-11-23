@@ -1489,8 +1489,11 @@ func TestFollowupListRestoredDuringTheCheckIsChecked(t *testing.T) {
 // and no person.
 func TestFollowupCheckIsAudited(t *testing.T) {
 	e := newFollowupEnv(t)
-	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	// A parent whose name holds an address: the audit row must not keep it.
+	e.db.MustExec(`UPDATE campaigns SET name = 'November invite eli-followup@example.invalid' WHERE id = $1`, e.campID)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true,"name":"Followup list"}`)
 	camp := got.Followup.ID
+	e.db.MustExec(`UPDATE campaigns SET name = 'Follow-up for eli-followup@example.invalid' WHERE id = $1`, camp)
 	run := func() {
 		t.Helper()
 		e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
@@ -1527,7 +1530,7 @@ func TestFollowupCheckIsAudited(t *testing.T) {
 		t.Fatalf("detail %s: %v", rows[1].Detail, err)
 	}
 	for _, r := range rows {
-		if strings.Contains(r.Row, "@") {
+		if strings.Contains(r.Row, "@") || strings.Contains(r.Row, "eli-followup") || !strings.Contains(r.Row, "[email]") {
 			t.Fatalf("an address in the audit row: %s", r.Row)
 		}
 	}
