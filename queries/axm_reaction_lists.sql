@@ -36,12 +36,14 @@ WITH reaction_candidates AS (
     FROM axm_campaign_sends cs
     JOIN subscribers s ON s.id = cs.subscriber_id
     WHERE cs.campaign_id = $1
-        AND ($2::TEXT = 'any' OR ($2 = 'yes') = EXISTS (
+        -- AXM (LST-47) an open or click counts also when only the send record still has its time
+        -- (the statistics can be cleared).
+        AND ($2::TEXT = 'any' OR ($2 = 'yes') = (cs.opened_at IS NOT NULL OR EXISTS (
             SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = cs.subscriber_id
-        ))
-        AND ($3::TEXT = 'any' OR ($3 = 'yes') = EXISTS (
+        )))
+        AND ($3::TEXT = 'any' OR ($3 = 'yes') = (cs.clicked_at IS NOT NULL OR EXISTS (
             SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = cs.subscriber_id
-        ))
+        )))
 )
 
 -- name: axm-reaction-counts

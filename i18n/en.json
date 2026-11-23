@@ -1798,6 +1798,7 @@
     "audit.detail.opted_out": "Left out, unsubscribed",
     "audit.detail.blocked": "Left out, blocked",
     "audit.detail.check": "Check number",
+    "audit.detail.unsubscribed": "No longer subscribed",
     "audit.detail.subscribers": "Subscribers",
     "audit.detail.own": "Own address",
     "audit.detail.internal": "Company addresses",

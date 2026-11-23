@@ -970,8 +970,8 @@ func TestFollowupListRestoredDuringTheCheckIsChecked(t *testing.T) {
 	wantSame(t, "left out", e.held(camp), people)
 }
 
-// Review 12 (2): every check before a send is in the audit log, with who it left out by reason
-// and no person.
+// Review 12 (2): every batch in which the sender leaves people out is in the audit log, each person
+// once, with the reasons and no person.
 func TestFollowupCheckIsAudited(t *testing.T) {
 	t.Parallel()
 	e := newFollowupEnv(t)
@@ -1008,7 +1008,7 @@ func TestFollowupCheckIsAudited(t *testing.T) {
 	if strings.Contains(made, "@") || strings.Contains(made, "eli-followup") || !strings.Contains(made, "[email]") {
 		t.Fatalf("an address in the row of making the draft: %s", made)
 	}
-	if len(rows) != 2 || rows[0].Count != 1 || rows[1].Count != 2 || rows[0].UserType != models.AuditUserTypeSystem {
+	if len(rows) != 2 || rows[0].Count != 1 || rows[1].Count != 1 || rows[0].UserType != models.AuditUserTypeSystem {
 		t.Fatalf("audit rows: %+v", rows)
 	}
 	var d struct {
@@ -1018,7 +1018,7 @@ func TestFollowupCheckIsAudited(t *testing.T) {
 		Reacted int `json:"reacted"`
 		Check   int `json:"check"`
 	}
-	if err := json.Unmarshal([]byte(rows[1].Detail), &d); err != nil || d.Parent.ID != e.campID || d.Reacted != 2 || d.Check != 2 {
+	if err := json.Unmarshal([]byte(rows[1].Detail), &d); err != nil || d.Parent.ID != e.campID || d.Reacted != 1 || d.Check != 2 {
 		t.Fatalf("detail %s: %v", rows[1].Detail, err)
 	}
 	for _, r := range rows {
@@ -1195,9 +1195,12 @@ func TestFollowupOpenOnlyInTheSendRecordIsKept(t *testing.T) {
 	charlie := e.ids[2]
 	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NOW() WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
-	wantSame(t, "made for", e.members(got.List.ID), []int{charlie, e.ids[3]})
+	// The open in the send record counts: Charlie is not among those who did not open.
+	wantSame(t, "made for", e.members(got.List.ID), []int{e.ids[3]})
+	// Added by hand anyway, and the send records expire: his open was kept for the follow-up.
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, charlie, got.List.ID)
 	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
-	e.send(got.Followup.ID)
+	wantSame(t, "sent to", e.send(got.Followup.ID), []int{e.ids[3]})
 	wantSame(t, "held", e.held(got.Followup.ID), []int{charlie})
 }
 
@@ -1521,5 +1524,108 @@ func TestFollowupHeldPersonInADynamicListDoesNotStopTheSender(t *testing.T) {
 	// A batch of only held people is read past, not taken for the end.
 	if subs, err := e.store.NextSubscribers(camp, daniel, 100); err != nil || len(subs) != 0 {
 		t.Fatalf("after Daniel: %d %v", len(subs), err)
+	}
+}
+
+// startRun starts the follow-up as the sender does at its send time and leaves it running.
+func (e *followupEnv) startRun(camp int) {
+	e.t.Helper()
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func subIDs(subs []models.Subscriber) []int {
+	out := []int{}
+	for _, s := range subs {
+		out = append(out, s.ID)
+	}
+	return out
+}
+
+// Review 26 (1): the sender has read Daniel's batch and waits for an open of the original being
+// recorded; meanwhile Daniel unsubscribes in one click (blocked, every subscription ended). He is
+// not sent to: whoever is no longer subscribed when the batch is judged is left out.
+func TestFollowupUnsubscribedWhileTheBatchIsJudgedIsNotSent(t *testing.T) {
+	e := newFollowupEnv(t)
+	charlie, daniel := e.ids[2], e.ids[3]
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	e.startRun(camp)
+	view, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Rollback()
+	if _, err := view.Exec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		subs []models.Subscriber
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		subs, err := e.store.NextSubscribers(camp, 0, 100)
+		done <- result{subs, err}
+	}()
+	waitFor(t, "the batch to wait", e.lockWaiting("%pg_advisory_xact_lock(4747%"))
+	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, daniel)
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1`, daniel)
+	if err := view.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	wantSame(t, "the batch", subIDs(r.subs), []int{charlie})
+	wantSame(t, "left out", e.held(camp), []int{daniel})
+}
+
+// Review 26 (3, 4): the follow-up's to_send is what it really sends (the people left out come off,
+// also after a pause and resume counts again), and someone left out at the end of a batch, read
+// again by the sender, is counted and audited once.
+func TestFollowupToSendAndAuditCountEachLeftOutPersonOnce(t *testing.T) {
+	e := newFollowupEnv(t)
+	got, manual := e.followupWithManualMember(`{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	charlie, daniel := e.ids[2], e.ids[3]
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+	e.startRun(camp)
+	toSend := func() int { return e.count(`SELECT to_send FROM campaigns WHERE id = $1`, camp) }
+	if n := toSend(); n != 3 {
+		t.Fatalf("to_send at the start %d", n)
+	}
+	// Charlie, then Daniel left out: the sender reads on after Charlie, so Daniel is read again.
+	subs, err := e.store.NextSubscribers(camp, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "first batch", subIDs(subs), []int{charlie})
+	subs, err = e.store.NextSubscribers(camp, charlie, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "second batch", subIDs(subs), []int{manual})
+	if n := toSend(); n != 2 {
+		t.Fatalf("to_send %d, want 2", n)
+	}
+	audited := e.count(`SELECT COALESCE(SUM(count), 0) FROM axm_audit_log WHERE action = $1 AND target_id = $2`, auditCampaignFollowupCk, camp)
+	if audited != 1 {
+		t.Fatalf("audited %d people left out, want 1", audited)
+	}
+	// Paused and resumed: the start counts again, and Daniel comes off again.
+	e.db.MustExec(`UPDATE campaigns SET status = 'paused' WHERE id = $1`, camp)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.NextSubscribers(camp, 0, 2); err != nil {
+		t.Fatal(err)
+	}
+	if n := toSend(); n != 2 {
+		t.Fatalf("to_send after the resume %d, want 2", n)
 	}
 }

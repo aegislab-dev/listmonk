@@ -60,24 +60,61 @@ WHERE cs.campaign_id = $2 AND cs.subscriber_id = ANY($3::INT[])
 ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
 
 -- name: axm-followup-claim
--- Decides, just before sending, who of the batch $2 of follow-up $1 is left out (with $3 = opens and
--- clicks recorded per subscriber now): the people axm_followup_judge gives a reason for. It runs
--- in the transaction that locked the original first (axm-followup-claim-lock), so everything
--- committed before it is seen, and records the outcome for each person of the batch.
+-- Decides, just before sending, who of the batch $2 of follow-up $1 may be sent to (with $3 = opens
+-- and clicks recorded per subscriber now). It runs in the transaction that locked the original
+-- first (axm-followup-claim-lock), so everything committed before it is seen. One row per person
+-- of the batch who still exists, with the reason to leave them out: 0 none (send), 1 blocked, 5 no
+-- longer subscribed through the campaign's lists, or the reason axm_followup_judge gives. Someone
+-- with no row is not sent to. The outcome is recorded in the holds (inserted tells a person left
+-- out now who was not before).
 WITH j AS MATERIALIZED (
     SELECT subscriber_id, reason FROM axm_followup_judge($1, $2::INT[], $3)
+),
+verdict AS MATERIALIZED (
+    SELECT x.sid, CASE
+        WHEN s.status = 'blocklisted' THEN 1
+        WHEN NOT EXISTS (
+            SELECT 1 FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+            WHERE cl.campaign_id = $1 AND (
+                (l.axm_filter IS NULL AND EXISTS (
+                    SELECT 1 FROM subscriber_lists sl WHERE sl.list_id = l.id AND sl.subscriber_id = x.sid
+                        AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END))
+                OR (l.axm_filter IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM axm_dynamic_list_members(l.id, x.sid - 1, x.sid, 1))))
+        ) THEN 5
+        ELSE COALESCE((SELECT j.reason FROM j WHERE j.subscriber_id = x.sid), 0)
+    END AS reason
+    FROM unnest($2::INT[]) AS x(sid) JOIN subscribers s ON s.id = x.sid
 ),
 cleared AS (
     DELETE FROM axm_campaign_followup_holds h
     WHERE h.campaign_id = $1 AND h.subscriber_id = ANY($2::INT[])
-        AND NOT EXISTS (SELECT 1 FROM j WHERE j.subscriber_id = h.subscriber_id AND j.reason <> 0)
+        AND EXISTS (SELECT 1 FROM verdict v WHERE v.sid = h.subscriber_id AND v.reason = 0)
 ),
 held AS (
     INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
-    SELECT $1::INT, subscriber_id, reason FROM j WHERE reason <> 0
+    SELECT $1::INT, sid, reason FROM verdict WHERE reason <> 0
     ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET reason = EXCLUDED.reason
+    RETURNING subscriber_id, (xmax = 0) AS inserted
 )
-SELECT subscriber_id, reason FROM j WHERE reason <> 0;
+SELECT v.sid AS subscriber_id, v.reason, COALESCE(h.inserted, FALSE) AS inserted
+FROM verdict v LEFT JOIN held h ON h.subscriber_id = v.sid;
+
+-- name: axm-followup-to-send
+-- Takes the people the sender newly left out of follow-up $1 ($2, of whom $3 were not counted by the
+-- start of the run: blocked or no longer subscribed) off its to_send, so the campaign shows what it
+-- really sends. When the start of a run counted again (to_send is not what was set last), everyone
+-- left out who it counts again comes off. Never below what was sent.
+WITH c AS (
+    UPDATE campaigns c SET to_send = GREATEST(c.sent, CASE
+        WHEN f.to_send_seen IS DISTINCT FROM c.to_send THEN c.to_send - $3
+            - (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = c.id AND h.reason IN (-1, 2, 4))
+        ELSE c.to_send - $2
+    END)
+    FROM axm_campaign_followups f WHERE c.id = $1 AND f.campaign_id = c.id
+    RETURNING c.id, c.to_send
+)
+UPDATE axm_campaign_followups f SET to_send_seen = c.to_send FROM c WHERE f.campaign_id = c.id;
 
 -- name: axm-followup-finish-empty
 -- A follow-up that is due with nobody at all on its lists is ended here (the sender does not start
@@ -172,6 +209,7 @@ UPDATE axm_campaign_followups f SET rechecked_at = NOW(), recheck = jsonb_build_
     'opted_out', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason IN (2, 3)),
     'unknown', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason = 4),
     'blocked', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason = 1),
+    'unsubscribed', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason = 5),
     'runs', COALESCE((f.recheck->>'runs')::INT, 0) + 1)
 WHERE f.campaign_id = $1
 RETURNING f.recheck;

@@ -223,32 +223,55 @@ func (c *Core) ClaimFollowupBatch(ctx context.Context, id int, subs []int) (left
 		return nil, true, err
 	}
 	var rows []struct {
-		SubscriberID int `db:"subscriber_id"`
-		Reason       int `db:"reason"`
+		SubscriberID int  `db:"subscriber_id"`
+		Reason       int  `db:"reason"`
+		Inserted     bool `db:"inserted"`
 	}
 	if err := tx.Stmtx(c.q.AxmFollowupClaim).SelectContext(ctx, &rows, id, pq.Array(subs), c.tracking()); err != nil {
+		return nil, true, err
+	}
+	// Who may be sent to is who has a verdict of 0: a person of the batch with no verdict (deleted
+	// meanwhile) is left out too.
+	send := make(map[int]bool, len(rows))
+	reasons := map[int]int{}
+	newly, newlyUncounted := 0, 0
+	for _, r := range rows {
+		if r.Reason == 0 {
+			send[r.SubscriberID] = true
+			continue
+		}
+		if r.Inserted {
+			newly++
+			reasons[r.Reason]++
+			if r.Reason == 1 || r.Reason == 5 {
+				newlyUncounted++
+			}
+		}
+	}
+	left = make(map[int]bool, len(subs))
+	for _, sid := range subs {
+		if !send[sid] {
+			left[sid] = true
+		}
+	}
+	if _, err := tx.Stmtx(c.q.AxmFollowupToSend).ExecContext(ctx, id, newly, newlyUncounted); err != nil {
 		return nil, true, err
 	}
 	var recorded json.RawMessage
 	if err := tx.Stmtx(c.q.AxmFollowupRecord).GetContext(ctx, &recorded, id); err != nil {
 		return nil, true, err
 	}
-	left = make(map[int]bool, len(rows))
-	if len(rows) > 0 {
-		reasons := map[int]int{}
-		for _, r := range rows {
-			left[r.SubscriberID] = true
-			reasons[r.Reason]++
-		}
-		if err := c.auditFollowupLeftOut(ctx, tx, id, g.Parent, reasons, len(rows), recorded); err != nil {
+	// The audit has each person left out once (a batch read again does not count them again).
+	if newly > 0 {
+		if err := c.auditFollowupLeftOut(ctx, tx, id, g.Parent, reasons, newly, recorded); err != nil {
 			return nil, true, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, true, err
 	}
-	if len(rows) > 0 {
-		c.log.Printf("follow-up campaign %d: %d of a batch of %d left out (reacted to the original, opted out, blocked or reactions unseen)", id, len(rows), len(subs))
+	if newly > 0 {
+		c.log.Printf("follow-up campaign %d: %d people of a batch of %d newly left out (reacted to the original, opted out, blocked, reactions unseen or no longer subscribed)", id, newly, len(subs))
 	}
 	return left, true, nil
 }
@@ -267,12 +290,13 @@ func (c *Core) auditFollowupLeftOut(ctx context.Context, tx *sqlx.Tx, id, parent
 	}
 	// Campaign names can hold anything, an address too: scrubbed as every audit text is.
 	detail, err := json.Marshal(ScrubAuditDetail(map[string]any{
-		"parent":    map[string]any{"id": parent, "name": names.ParentName},
-		"reacted":   reasons[-1],
-		"opted_out": reasons[2] + reasons[3],
-		"blocked":   reasons[1],
-		"unknown":   reasons[4],
-		"check":     rc.Runs,
+		"parent":       map[string]any{"id": parent, "name": names.ParentName},
+		"reacted":      reasons[-1],
+		"opted_out":    reasons[2] + reasons[3],
+		"blocked":      reasons[1],
+		"unknown":      reasons[4],
+		"unsubscribed": reasons[5],
+		"check":        rc.Runs,
 	}))
 	if err != nil {
 		return err

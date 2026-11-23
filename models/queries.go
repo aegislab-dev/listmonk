@@ -56,6 +56,7 @@ type Queries struct {
 	AxmFollowupClaimLock           *sqlx.Stmt `query:"axm-followup-claim-lock"`
 	AxmFollowupClaimRecipients     *sqlx.Stmt `query:"axm-followup-claim-recipients"`
 	AxmFollowupClaim               *sqlx.Stmt `query:"axm-followup-claim"`
+	AxmFollowupToSend              *sqlx.Stmt `query:"axm-followup-to-send"`
 	AxmFollowupFinishEmpty         *sqlx.Stmt `query:"axm-followup-finish-empty"`
 	AxmFollowupMembers             *sqlx.Stmt `query:"axm-followup-members"`
 	AxmFollowupReactionsNow        *sqlx.Stmt `query:"axm-followup-reactions-now"`

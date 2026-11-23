@@ -285,3 +285,17 @@ func TestReactionListAdminRequiresTeamChoice(t *testing.T) {
 		t.Fatalf("teamless result: %+v", result.List)
 	}
 }
+
+// Review 26 (2): an open that is only in the send record (the view statistics were cleared) still
+// counts: that person is not among those who did not open.
+func TestReactionListCountsOpensOnlyInTheSendRecord(t *testing.T) {
+	e := newReactionEnv(t)
+	charlie := e.ids[2]
+	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NOW() WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
+	got := e.preview(e.admin, `{"open":"no"}`)
+	before := got.Counts.Eligible
+	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NULL WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
+	if after := e.preview(e.admin, `{"open":"no"}`).Counts.Eligible; after != before+1 {
+		t.Fatalf("did not open: %d with the send record's open, %d without", before, after)
+	}
+}

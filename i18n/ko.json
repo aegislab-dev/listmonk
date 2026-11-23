@@ -1804,6 +1804,7 @@
     "audit.detail.opted_out": "해지로 제외",
     "audit.detail.blocked": "차단으로 제외",
     "audit.detail.check": "확인 횟수",
+    "audit.detail.unsubscribed": "후속 리스트 구독 해지",
     "audit.detail.subscribers": "구독자",
     "audit.detail.own": "본인 주소",
     "audit.detail.internal": "회사 주소",

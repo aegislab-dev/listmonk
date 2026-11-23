@@ -1183,12 +1183,16 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     -- Who the sender left out so far, by reason, and how many batches it judged.
     recheck            JSONB NOT NULL DEFAULT '{}',
     rechecked_at       TIMESTAMP WITH TIME ZONE NULL,
+    -- The campaign's to_send as last set by the sender's judgement, which takes the people left out
+    -- off it. Another value means the start of a run counted them again.
+    to_send_seen       INTEGER NULL,
     created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CHECK (campaign_id <> parent_campaign_id)
 );
--- People the sender left out of a follow-up campaign when it judged their batch, with the reason.
--- Their subscriptions are not changed. A later judgement of the same person replaces the row.
+-- People the sender left out of a follow-up campaign when it judged their batch, with the reason
+-- (as axm_followup_judge, and 5: no longer subscribed through the campaign's lists). Their
+-- subscriptions are not changed. A later judgement of the same person replaces the row.
 CREATE TABLE IF NOT EXISTS axm_campaign_followup_holds (
     campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
     subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
