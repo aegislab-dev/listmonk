@@ -19,13 +19,18 @@ func TestDynamicDBPreviewWithoutSharedMemory(t *testing.T) {
 	db, q, _ := dynamicTestDB(t)
 	c := testCore(t, db, q)
 	base := testList(db, nil, "single")
-	// Enough rows that the planner chooses a parallel scan for axm_filter_match().
+	// With a tiny /dev/shm, enough rows that the parallel hash join outgrows it (the
+	// production plan); an ordinary run only needs the count to be right.
+	rows := 20000
+	if os.Getenv("AXM_TEST_TINY_SHM") != "" {
+		rows = 300000
+	}
 	db.MustExec(`WITH s AS (
 		INSERT INTO subscribers(uuid,email,name,status,attribs)
 		SELECT gen_random_uuid(), 'u'||g||'@example.invalid', 'Synthetic', 'enabled',
 			jsonb_build_object('country', CASE WHEN g % 2 = 0 THEN 'US' ELSE 'KR' END, 'follower', g)
-		FROM generate_series(1, 120000) g RETURNING id)
-		INSERT INTO subscriber_lists(subscriber_id,list_id,status) SELECT id, $1, 'confirmed' FROM s`, base)
+		FROM generate_series(1, $2::int) g RETURNING id)
+		INSERT INTO subscriber_lists(subscriber_id,list_id,status) SELECT id, $1, 'confirmed' FROM s`, base, rows)
 	db.MustExec(`ANALYZE subscribers; ANALYZE subscriber_lists`)
 	str := func(s string) *string { return &s }
 	raw, _ := json.Marshal(DynamicFilter{Version: 1, Base: DynamicBase{Type: "all"}, Match: "all", Conditions: []DynamicCondition{
@@ -37,8 +42,13 @@ func TestDynamicDBPreviewWithoutSharedMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// US = even g; 10000 <= g < 100000 is 90000 numbers, half of them even.
-	const want = 45000
+	// US is every even g; the follower range is 10,000 <= g < 100,000.
+	want := 0
+	for g := 10000; g < 100000 && g <= rows; g++ {
+		if g%2 == 0 {
+			want++
+		}
+	}
 	p, err := c.PreviewDynamicFilter(f, 0, 3)
 	if err != nil {
 		if os.Getenv("AXM_TEST_TINY_SHM") != "" {

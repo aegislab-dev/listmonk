@@ -84,5 +84,5 @@ func (c *Core) runPreviewJob(job func(ctx context.Context, use func(*sqlx.Stmt) 
 	if _, txErr := tx.ExecContext(ctx, "SET LOCAL max_parallel_workers_per_gather = 0"); txErr != nil {
 		return err
 	}
-	return job(ctx, tx.Stmtx)
+	return job(ctx, func(s *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(s) })
 }
