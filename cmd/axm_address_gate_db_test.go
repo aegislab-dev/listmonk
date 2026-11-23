@@ -886,6 +886,19 @@ func TestGateMigrationTwice(t *testing.T) {
 	}
 	e.db.MustExec(`DELETE FROM subscribers WHERE id = $1`, depGone)
 	e.db.MustExec(`UPDATE subscribers SET name = 'Edited', updated_at = NOW() WHERE id = $1`, depPeer)
+	// SendGrid: A and B bounced in the same second for the same campaign; then B moved to a new
+	// address and A took B's old one. Each record is still for its own event: deleting A's record
+	// lets A's old address go and not B's, whose record is left.
+	var swapA, swapB int
+	e.get(&swapA, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'swap-a@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&swapB, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'swap-b@ok.test', 'P', 'enabled') RETURNING id`)
+	swapBatch := `[{"email":"swap-a@ok.test","event":"bounce","timestamp":1700011000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"swap-b@ok.test","event":"bounce","timestamp":1700011000,"XListmonkCampaign":"` + uuidA + `"}]`
+	var swapARecord int
+	e.get(&swapARecord, `INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700011000)) RETURNING id`, swapA, campA, swapBatch)
+	e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700011000))`, swapB, campA, swapBatch)
+	e.db.MustExec(`UPDATE subscribers SET email = 'swap-b.new@ok.test' WHERE id = $1`, swapB)
+	e.db.MustExec(`UPDATE subscribers SET email = 'swap-b@ok.test' WHERE id = $1`, swapA)
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -900,13 +913,14 @@ func TestGateMigrationTwice(t *testing.T) {
 			"multi-bad1", "multi-bad2", "single-bad", "same1", "same2", "either.one", "either.two",
 			"later", "sg.other", "deleted", "kept", "failed", "twice-bad",
 			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other", "cleared-old",
-			"replayed-kept", "replayed-gone", "current-peer", "control-peer", "deleted-edited-peer", "dep-holder"} {
+			"replayed-kept", "replayed-gone", "current-peer", "control-peer", "deleted-edited-peer", "dep-holder",
+			"swap-a", "swap-b"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
 		}
 		for _, a := range []string{"delivered", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered",
-			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "released-current", "released-control", "dep-peer", "single-first", "same.delivered", "same1.now", "same2.now"} {
+			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "released-current", "released-control", "dep-peer", "swap-b.new", "single-first", "same.delivered", "same1.now", "same2.now"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}
@@ -946,6 +960,13 @@ func TestGateMigrationTwice(t *testing.T) {
 	}
 	if !e.isBounced("twice-bad@ok.test") {
 		t.Fatal("deleting one of two bounces let the address go")
+	}
+	// Deleting A's record lets A's old address go; B's address stays with B's record.
+	if err := e.a.core.DeleteBounces([]int{swapARecord}, false); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("swap-a@ok.test") || !e.isBounced("swap-b@ok.test") {
+		t.Fatalf("swap: a %v, b %v", e.isBounced("swap-a@ok.test"), e.isBounced("swap-b@ok.test"))
 	}
 	// Deleting the remaining subscriber's records of the replayed batch lets their own address go,
 	// not the deleted subscriber's.

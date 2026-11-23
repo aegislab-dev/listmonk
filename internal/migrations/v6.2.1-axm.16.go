@@ -452,15 +452,15 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 		}
 	}
 	// A record's address, by what is surest first:
-	//   1. The subscriber's own address now, when it is one of the matching events: the webhook
-	//      found the subscriber by the address, and nobody changes theirs to another address that
-	//      bounced in the same second. (Their address may have changed and back, or only their
-	//      name was edited: what is on record of edits before this migration is not precise.)
-	//   2. The one matching event.
-	//   3. When several match: the event in the record's place, if the batch left one record per
-	//      bounce event, for different subscribers (a batch delivered twice leaves two records per
-	//      event, and one subscriber's two records are not two events), and that event's address
-	//      is not another subscriber's own now.
+	//   1. The one matching event.
+	//   2. The event in the record's place, when the batch left one record per bounce event, for
+	//      different subscribers: the bounces were recorded one after another from one queue, in
+	//      the order of the batch. (A batch delivered twice leaves two records per event, and one
+	//      subscriber's two records are not two events.) Addresses that changed hands since do not
+	//      matter here.
+	//   3. The subscriber's own address now, when it is one of the matching events: the webhook
+	//      found the subscriber by the address. (Before this migration an edit of the name only is
+	//      not told apart from a change of address, so "unchanged since" is not asked.)
 	// Else nothing is linked to the record, and the matching addresses are left to the pass for
 	// the bounces no record is left for, below.
 	distinct := map[int]bool{}
@@ -489,19 +489,12 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 		}
 		addr := ""
 		switch cur := strings.ToLower(strings.TrimSpace(b.Cur)); {
-		case seen[cur]:
-			addr = cur
 		case len(match) == 1:
 			addr = match[0]
 		case aligned && events[i].matches(b):
-			a := axm16Clean(events[i].Email)
-			var other bool
-			if err := db.Get(&other, `SELECT EXISTS (SELECT 1 FROM subscribers WHERE email = $1 AND id <> $2)`, a, b.SubID); err != nil {
-				return err
-			}
-			if !other {
-				addr = a
-			}
+			addr = axm16Clean(events[i].Email)
+		case seen[cur]:
+			addr = cur
 		}
 		if addr == "" {
 			continue
