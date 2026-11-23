@@ -10,7 +10,8 @@ import (
 )
 
 // dynamicPreviewTimeout bounds one preview query. A preview that runs longer than this
-// answers with a "took too long" message instead of leaving the screen waiting.
+// (or than the DB's own statement_timeout) answers with a "took too long" message instead of
+// leaving the screen waiting.
 const dynamicPreviewTimeout = 60 * time.Second
 
 // DynamicPreviewReason is why a count check failed, in terms an operator can act on.
@@ -81,7 +82,9 @@ func (c *Core) runPreviewJob(job func(ctx context.Context, use func(*sqlx.Stmt) 
 		return err
 	}
 	defer tx.Rollback()
-	if _, txErr := tx.ExecContext(ctx, "SET LOCAL max_parallel_workers_per_gather = 0"); txErr != nil {
+	// The statements are prepared, and a cached (generic) plan keeps its parallel nodes whatever
+	// max_parallel_workers_per_gather says now, so the retry also asks for a fresh plan.
+	if _, txErr := tx.ExecContext(ctx, "SET LOCAL max_parallel_workers_per_gather = 0; SET LOCAL plan_cache_mode = force_custom_plan"); txErr != nil {
 		return err
 	}
 	return job(ctx, func(s *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(s) })
