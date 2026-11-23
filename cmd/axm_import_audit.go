@@ -45,6 +45,8 @@ func (a *App) auditImportFinish(data any) {
 		Total    int
 		// AxmRejected: rows the address rules refused, by reason (LST-53).
 		AxmRejected map[string]int
+		// AxmWarned: rows imported with a warning, by reason (LST-56).
+		AxmWarned map[string]int
 	}
 	if err := json.Unmarshal(b, &st); err != nil {
 		return
@@ -61,6 +63,9 @@ func (a *App) auditImportFinish(data any) {
 	if len(st.AxmRejected) > 0 {
 		// Counts only: the refused addresses are not written to the audit log.
 		detail["rejected"] = st.AxmRejected
+	}
+	if len(st.AxmWarned) > 0 {
+		detail["warned"] = st.AxmWarned
 	}
 	a.auditAs(u, auditImportFinish, auditTarget{Type: auditTargetImport}, st.Imported, detail)
 }

@@ -172,7 +172,7 @@ func TestResolve(t *testing.T) {
 	}
 }
 
-func TestCacheTTLAndUnknownNotCached(t *testing.T) {
+func TestCacheTTLAndUnknownCachedBriefly(t *testing.T) {
 	f := newFake()
 	f.mx["ok.test."] = mx("mx.ok.test.")
 	f.mxErr["slow.test."] = errTimeout
@@ -196,7 +196,13 @@ func TestCacheTTLAndUnknownNotCached(t *testing.T) {
 
 	check()
 	lookups(1, 1, 1)
-	check() // ok and gone come from the cache; the unknown one is asked again
+	check() // all three come from the cache, the unknown one for UnknownTTL only
+	lookups(1, 1, 1)
+	advance(59 * time.Second)
+	check()
+	lookups(1, 1, 1)
+	advance(2 * time.Second) // past the 60 seconds of an unknown answer
+	check()
 	lookups(1, 1, 2)
 
 	advance(25 * time.Hour) // past the 1 day of a dead domain, within the 7 days of a working one
@@ -470,5 +476,47 @@ func TestAddressLiteralIsUnknownAndNotLookedUp(t *testing.T) {
 	defer f.mu.Unlock()
 	if len(f.mxN) != 0 || len(f.ipN) != 0 {
 		t.Fatalf("looked up %v %v", f.mxN, f.ipN)
+	}
+}
+
+// Lookups start at most MaxPerSecond times a second however many callers ask, and the
+// concurrency limit still holds.
+func TestLookupsAreRateLimited(t *testing.T) {
+	f := newFake()
+	domains := make([]string, 60)
+	for i := range domains {
+		domains[i] = "d" + string(rune('a'+i/26)) + string(rune('a'+i%26)) + ".test"
+		f.mx[domains[i]+"."] = mx("mx.test.")
+	}
+	c := NewChecker(Options{Resolver: f, MaxPerSecond: 100, Concurrency: 8})
+	start := time.Now()
+	got := c.CheckDomains(context.Background(), domains, 10*time.Second)
+	took := time.Since(start)
+	for _, d := range domains {
+		if got[d] != StatusOK {
+			t.Fatalf("%s: %s", d, got[d])
+		}
+	}
+	// 60 lookups at 100 a second: the last one starts 590ms after the first.
+	if took < 550*time.Millisecond {
+		t.Fatalf("60 lookups took %v, want at least 550ms at 100 a second", took)
+	}
+	if took > 5*time.Second {
+		t.Fatalf("60 lookups took %v", took)
+	}
+}
+
+// A domain that does not answer is not asked again by the next batch within UnknownTTL.
+func TestUnknownIsNotAskedAgainWithinTTL(t *testing.T) {
+	f := newFake()
+	f.mxErr["silent.test."] = errTimeout
+	c := NewChecker(Options{Resolver: f})
+	for i := 0; i < 3; i++ {
+		if got := c.CheckDomains(context.Background(), []string{"silent.test"}, time.Second); got["silent.test"] != StatusUnknown {
+			t.Fatalf("round %d: %v", i, got)
+		}
+	}
+	if mxN, _ := f.counts("silent.test."); mxN != 1 {
+		t.Fatalf("silent.test looked up %d times", mxN)
 	}
 }

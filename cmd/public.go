@@ -771,8 +771,10 @@ func (a *App) processSubForm(c echo.Context) (bool, error) {
 		return false, echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 	req.Email = em
-	// An address that cannot receive mail is not added, and the person is told why (LST-53).
-	if err := a.addressRuleError(c, req.Email); err != nil {
+	// An address that cannot receive mail is not added, and the person is told why (LST-53,
+	// LST-56). The blocklist and the bounce record are not looked at: nobody can find out from
+	// outside which addresses are on them (a blocklisted address still starts blocklisted).
+	if err := a.addressGateError(c, req.Email, gateOpt{Budget: publicGateBudget}); err != nil {
 		return false, err
 	}
 

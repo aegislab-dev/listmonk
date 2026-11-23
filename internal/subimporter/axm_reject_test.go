@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -111,5 +112,126 @@ func TestImportTotalIsTheFileRecords(t *testing.T) {
 	// Mapped, with the records of the chosen file (a row of the wrong width was not uploaded).
 	if st := load("email,name\ngood@example.org,A\nbad@gmail.con,B\n", SessionOpt{AxmExcluded: excluded, AxmFileRows: 4}); st.Total != 4 {
 		t.Fatalf("mapped with file rows: total %d", st.Total)
+	}
+}
+
+// LST-56: the rows of a file go through the address gate a batch at a time, and what comes
+// out keeps the order and the row numbers of the file.
+func TestGateBatchesKeepOrderAndRows(t *testing.T) {
+	for _, n := range []int{1, 499, 500, 501, 1203} {
+		var sizes []int
+		verify := func(emails []string) []AxmVerdict {
+			sizes = append(sizes, len(emails))
+			out := make([]AxmVerdict, len(emails))
+			for i, e := range emails {
+				switch {
+				case strings.HasPrefix(e, "dead"):
+					out[i].Reject = RejectDead
+				case strings.HasPrefix(e, "typo"):
+					out[i].Reject, out[i].Suggest = RejectTypo, "fixed@example.org"
+				case strings.HasPrefix(e, "role"):
+					out[i].Warn = "role"
+				case strings.HasPrefix(e, "slow"):
+					out[i].Warn = "unknown"
+				}
+			}
+			return out
+		}
+		var in strings.Builder
+		in.WriteString("email,name\n")
+		var want []string
+		wantDead, wantTyo, wantRole, wantSlow := 0, 0, 0, 0
+		var deadRows []int
+		for i := 0; i < n; i++ {
+			prefix := "ok"
+			switch i % 7 {
+			case 3:
+				prefix, wantDead = "dead", wantDead+1
+				deadRows = append(deadRows, i+2)
+			case 5:
+				prefix, wantTyo = "typo", wantTyo+1
+			case 6:
+				prefix, wantRole = "role", wantRole+1
+			case 1:
+				prefix, wantSlow = "slow", wantSlow+1
+			}
+			email := prefix + strings.Repeat("x", i%3) + string(rune('a'+i%26)) + "-" + itoa(i) + "@example.org"
+			in.WriteString(email + ",N\n")
+			if prefix != "dead" && prefix != "typo" {
+				want = append(want, email)
+			}
+		}
+		path := filepath.Join(t.TempDir(), "in.csv")
+		if err := os.WriteFile(path, []byte(in.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		im := &Importer{status: Status{Status: StatusNone}, importSeq: 1}
+		im.SetAxmVerify(verify)
+		s, err := im.NewSession(SessionOpt{Mode: ModeSubscribe})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		done := make(chan struct{})
+		go func() {
+			for sub := range s.subQueue {
+				got = append(got, sub.Email)
+			}
+			close(done)
+		}()
+		if err := s.LoadCSV(path, ','); err != nil {
+			t.Fatal(err)
+		}
+		<-done
+		st := im.GetStats()
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("n=%d: the queued rows are not the accepted rows in order (%d vs %d)", n, len(got), len(want))
+		}
+		if st.Total != n || st.AxmRejected[RejectDead] != wantDead || st.AxmRejected[RejectTypo] != wantTyo ||
+			st.AxmRejectedTotal != wantDead+wantTyo {
+			t.Fatalf("n=%d: stats %+v", n, st)
+		}
+		if st.AxmWarned["role"] != wantRole || st.AxmWarned["unknown"] != wantSlow || st.AxmWarnedTotal != wantRole+wantSlow {
+			t.Fatalf("n=%d: warned %+v", n, st.AxmWarned)
+		}
+		for _, sz := range sizes[:max(0, len(sizes)-1)] {
+			if sz != gateBatch {
+				t.Fatalf("n=%d: batch sizes %v", n, sizes)
+			}
+		}
+		rows, _ := im.GetRejected(st.AxmImportID, 0, true)
+		// The first refused row is the first dead row of the file, by its row number.
+		if len(deadRows) > 0 {
+			found := false
+			for _, r := range rows {
+				if r.Reason == RejectDead && r.Row == deadRows[0] {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("n=%d: the dead row %d is not reported under its file row: %v", n, deadRows[0], rows[:min(3, len(rows))])
+			}
+		}
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
+
+// Without a gate the rules of step 1 apply row by row, as before.
+func TestNoGateKeepsTheRulesOfStepOne(t *testing.T) {
+	im := &Importer{status: Status{Status: StatusNone}, importSeq: 1}
+	path := filepath.Join(t.TempDir(), "in.csv")
+	if err := os.WriteFile(path, []byte("email,name\na@gmail.con,A\nkim.lee@example.org,B\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := im.NewSession(SessionOpt{Mode: ModeSubscribe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LoadCSV(path, ','); err != nil {
+		t.Fatal(err)
+	}
+	if st := im.GetStats(); st.AxmRejected[RejectTypo] != 1 || st.AxmRejectedTotal != 1 || st.AxmWarnedTotal != 0 {
+		t.Fatalf("%+v", st)
 	}
 }

@@ -63,6 +63,15 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.Ts("globals.messages.invalidData")+": "+b.Type)
 	}
 
+	// A hard bounce or a complaint keeps the address out of future imports and additions
+	// (LST-56). It is written first: the delete action removes the subscriber, and with them the
+	// bounce rows, in the statement below. A failure here must not lose the bounce.
+	if b.Type == models.BounceTypeHard || b.Type == models.BounceTypeComplaint {
+		if _, err := c.q.AxmBouncedRecord.Exec(b.SubscriberUUID, b.Email, b.Type); err != nil {
+			c.log.Printf("error remembering a bounced address: %v", err)
+		}
+	}
+
 	_, err := c.q.RecordBounce.Exec(b.SubscriberUUID,
 		b.Email,
 		b.CampaignUUID,

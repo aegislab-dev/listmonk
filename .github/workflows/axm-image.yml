@@ -144,6 +144,8 @@ jobs:
           LISTMONK_app__address: 0.0.0.0:9000
           LISTMONK_ADMIN_USER: ci-admin
           LISTMONK_ADMIN_PASSWORD: ci-only-password
+          # The sandbox of the browser tests has no DNS: the gate leaves DNS out (LST-56).
+          LISTMONK_app__axm_address_gate: nodns
         run: |
           set -euo pipefail
           actual=$(docker run --rm --entrypoint ./listmonk listmonk-axm:ci --version)
@@ -170,6 +172,8 @@ jobs:
           test "$audit" = 12:5:2
           presets=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_column_presets')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE indexname = 'idx_axm_column_presets_name')::text")
           test "$presets" = 1:1
+          bounced=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_bounced_emails')::text || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'axm_bounced_release' AND NOT tgisinternal)::text")
+          test "$bounced" = 1:1
           docker exec -i ${{ job.services.postgres.id }} psql -v ON_ERROR_STOP=1 -U listmonk -d listmonk < frontend/cypress/fixtures/reaction-lists.sql
           # A test inbox, so that browser tests can check who a campaign really reached (LST-48).
           docker run -d --name axm-mail --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:1025 -e MP_UI_BIND_ADDR=127.0.0.1:8025 axllent/mailpit:v1.27
@@ -231,6 +235,8 @@ jobs:
           LISTMONK_app__address: 0.0.0.0:9001
           LISTMONK_ADMIN_USER: ci-admin
           LISTMONK_ADMIN_PASSWORD: ci-only-password
+          # The sandbox of the browser tests has no DNS: the gate leaves DNS out (LST-56).
+          LISTMONK_app__axm_address_gate: nodns
         run: |
           set -euo pipefail
           docker exec ${{ job.services.postgres.id }} createdb -U listmonk listmonk_upgrade
@@ -246,7 +252,7 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.15
+          test "$migration" = v6.2.1-axm.16
           test_domains=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value::text FROM settings WHERE key = 'axm.test_domains'")
           test "$test_domains" = '[]'
           test_addr=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_test_addresses')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_test_addresses')::text")
@@ -263,6 +269,8 @@ jobs:
           test "$audit" = 12:5:2
           presets=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_column_presets')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE indexname = 'idx_axm_column_presets_name')::text")
           test "$presets" = 1:1
+          bounced=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_bounced_emails')::text || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'axm_bounced_release' AND NOT tgisinternal)::text")
+          test "$bounced" = 1:1
           number=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT axm_to_number('\" 100,000 \"'::jsonb)::text || ':' || (axm_to_number('\"100,000원\"'::jsonb) IS NULL)::text")
           test "$number" = 100000:true
           column=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM information_schema.columns WHERE table_name = 'lists' AND column_name = 'axm_filter'")

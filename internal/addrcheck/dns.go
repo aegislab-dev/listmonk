@@ -20,7 +20,9 @@ const (
 	StatusDead DomainStatus = "dead"
 	// StatusNullMX: the domain says it accepts no mail ("MX 0 .", RFC 7505).
 	StatusNullMX DomainStatus = "nullmx"
-	// StatusUnknown: the lookup timed out or failed. Not a verdict, and not cached.
+	// StatusUnknown: the lookup timed out or failed. Not a verdict. It is remembered only
+	// briefly (Options.UnknownTTL) so that a silent domain is not waited for again by every
+	// batch.
 	StatusUnknown DomainStatus = "unknown"
 	// StatusPending: the lookup did not finish within the caller's budget. It goes on in
 	// the background, so a later call gets the answer from the cache.
@@ -40,6 +42,8 @@ type Options struct {
 	Concurrency   int           // lookups at once; default 8
 	OKTTL         time.Duration // how long a working domain is remembered; default 7 days
 	BadTTL        time.Duration // how long a dead or null-MX domain is remembered; default 1 day
+	UnknownTTL    time.Duration // how long a domain that did not answer is remembered; default 60s
+	MaxPerSecond  int           // lookups started per second, all callers together; default 50
 	MaxEntries    int           // cached domains; default 50,000
 	MaxQueued     int           // domains waiting for a lookup; default 20,000
 	Now           func() time.Time
@@ -72,6 +76,9 @@ type Checker struct {
 	inflight map[string]*call // domains queued or being looked up
 	queue    []string
 	workers  int
+
+	rateMu   sync.Mutex
+	nextSlot time.Time // the earliest time the next lookup may start
 }
 
 // NewChecker returns a checker with the given limits.
@@ -91,6 +98,12 @@ func NewChecker(opt Options) *Checker {
 	}
 	if opt.BadTTL <= 0 {
 		opt.BadTTL = 24 * time.Hour
+	}
+	if opt.UnknownTTL <= 0 {
+		opt.UnknownTTL = 60 * time.Second
+	}
+	if opt.MaxPerSecond <= 0 {
+		opt.MaxPerSecond = 50
 	}
 	if opt.MaxEntries <= 0 {
 		opt.MaxEntries = 50000
@@ -187,16 +200,33 @@ func (c *Checker) work() {
 		cl := c.inflight[d]
 		c.mu.Unlock()
 
+		c.waitSlot()
 		st := c.resolve(d)
 
 		c.mu.Lock()
 		delete(c.inflight, d)
-		if st != StatusUnknown {
-			c.store(d, st)
-		}
+		c.store(d, st)
 		c.mu.Unlock()
 		cl.status = st
 		close(cl.done)
+	}
+}
+
+// waitSlot blocks until the caller may start a lookup: lookups start at most MaxPerSecond
+// times a second in all, so that a big import cannot flood the resolver of the host. The
+// limit is on the start of a lookup; Concurrency still limits how many run at once.
+func (c *Checker) waitSlot() {
+	gap := time.Second / time.Duration(c.opt.MaxPerSecond)
+	c.rateMu.Lock()
+	now := time.Now()
+	at := c.nextSlot
+	if at.Before(now) {
+		at = now
+	}
+	c.nextSlot = at.Add(gap)
+	c.rateMu.Unlock()
+	if d := at.Sub(now); d > 0 {
+		time.Sleep(d)
 	}
 }
 
@@ -204,8 +234,11 @@ func (c *Checker) work() {
 func (c *Checker) store(domain string, st DomainStatus) {
 	now := c.opt.Now()
 	ttl := c.opt.BadTTL
-	if st == StatusOK {
+	switch st {
+	case StatusOK:
 		ttl = c.opt.OKTTL
+	case StatusUnknown:
+		ttl = c.opt.UnknownTTL
 	}
 	c.cache[domain] = cacheEntry{status: st, stored: now, expires: now.Add(ttl)}
 	c.order = append(c.order, queued{domain, now})

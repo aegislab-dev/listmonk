@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/knadh/listmonk/internal/addrcheck"
@@ -90,8 +91,32 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 
 	verdicts := a.addrCheck.Check(c.Request().Context(), req.Emails, addrCheckBudget)
 	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}, Suggest: map[int]string{}}
+	// What the database knows (LST-56): the column mapping screen shows the rows the server
+	// would refuse for these reasons, and the numbers of Summary are not changed by them.
+	var facts map[string]addrcheck.Facts
+	if a.gateStrength() != gateBasic {
+		emails := make([]string, 0, len(verdicts))
+		for _, v := range verdicts {
+			if !v.Format {
+				emails = append(emails, v.Email)
+			}
+		}
+		var err error
+		if facts, err = a.core.AddressFacts(c.Request().Context(), emails); err != nil {
+			a.log.Printf("error reading the address facts: %v", err)
+			facts = nil
+		}
+	}
 	for i, v := range verdicts {
 		classes := v.Classes()
+		if f := facts[strings.ToLower(strings.TrimSpace(v.Email))]; !v.Format {
+			if f.Suppressed {
+				classes = append(classes, addrcheck.ClassSuppressed)
+			}
+			if f.Bounced {
+				classes = append(classes, addrcheck.ClassBounced)
+			}
+		}
 		if v.Status == addrcheck.StatusPending {
 			classes = append(classes, string(addrcheck.StatusPending))
 		}
