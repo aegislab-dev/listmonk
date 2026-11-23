@@ -272,6 +272,11 @@ func (o *Auth) ExchangeOIDCToken(code, nonce string) (string, OIDCclaim, error) 
 			return "", OIDCclaim{}, errors.New("error fetching user info from OIDC")
 		}
 
+		// The UserInfo response must be about the user the ID token was issued for.
+		if userInfo.Subject != idTk.Subject {
+			return "", OIDCclaim{}, errors.New("OIDC UserInfo subject did not match")
+		}
+
 		// Parse the UserInfo claims into the claims struct
 		if err := userInfo.Claims(&claims); err != nil {
 			return "", OIDCclaim{}, errors.New("error parsing user info claims")
@@ -425,6 +430,11 @@ func (o *Auth) validateSession(c echo.Context) (*simplesessions.Session, User, e
 	user, err := o.cb.GetUser(userID)
 	if err != nil {
 		o.log.Printf("error fetching session user: %v", err)
+	}
+
+	// A user that has been disabled loses the sessions they already have.
+	if err == nil && user.Status != UserStatusEnabled {
+		return nil, User{}, echo.NewHTTPError(http.StatusForbidden, "user is disabled")
 	}
 
 	return sess, user, err
