@@ -821,6 +821,8 @@ export default Vue.extend({
         overwrite_subscription_status: this.form.overwriteSubStatus,
         // The rows the column mapping left out: the server counts them with its own refusals.
         axm_excluded: mapped && this.form.mode === 'subscribe' ? this.excludedForServer() : [],
+        // The row of the chosen file each uploaded row came from, for the numbers in the rejected rows.
+        axm_source_rows: mapped ? (this.csvSourceRows || []) : [],
       }));
       params.set('file', file);
 

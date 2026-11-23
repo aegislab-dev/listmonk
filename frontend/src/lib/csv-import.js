@@ -105,7 +105,14 @@ export function parseCSV(text, { delimiter = '', header = true } = {}) {
   // A quote error can consume all later physical lines as one logical record.
   // Their boundaries/count cannot be recovered safely; reject the whole file.
   if (result.errors.some((error) => error.type === 'Quotes')) throw new ImportError('quotes');
-  const nonempty = result.data.map((cells, index) => ({ cells, row: index + 1 }))
+  // The row is the line of the file the record starts on (a quoted cell can hold line breaks),
+  // the header being line 1: the number a spreadsheet and the server's download show.
+  let line = 1;
+  const nonempty = result.data.map((cells) => {
+    const entry = { cells, row: line };
+    line += 1 + cells.reduce((count, cell) => count + (cell.match(/\n/g) || []).length, 0);
+    return entry;
+  })
     .filter(({ cells }) => !(cells.length === 1 && cells[0].trim() === ''));
   const first = nonempty[0];
   if (!first) throw new ImportError('empty');
@@ -294,7 +301,7 @@ export function convertCSV(parsed, mapping, existingKeys = [], standard = [], ex
     if (issue) {
       summary[issue] += 1;
       if (examples[issue].length < 5) examples[issue].push({ row, email });
-      if (issue === 'invalid' && invalidRows.length < LIMITS.rows) invalidRows.push({ row, email });
+      if ((issue === 'invalid' || issue === 'empty') && invalidRows.length < LIMITS.rows) invalidRows.push({ row, email });
       return;
     }
     seen.add(email);

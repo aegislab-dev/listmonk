@@ -116,7 +116,8 @@ describe('Address rules', () => {
       + `map-typo-${stamp}@gmail.con,Typo\n`
       + 'abc@gmail.com,Short\n'
       + `map-dead-${stamp}@example.invalid,Dead\n`
-      + 'not-an-address,Broken\n';
+      + 'not-an-address,Broken\n'
+      + ',Nameonly\n';
     cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(csv), fileName: 'mapped.csv', mimeType: 'text/csv' }, { force: true });
     cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
     // A file with the standard header starts in as-is mode: ask for the review.
@@ -131,21 +132,21 @@ describe('Address rules', () => {
     submit().should('not.be.disabled').click();
     cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
     // The box counts the three left out rows by reason and keeps their CSV; nothing is refused by the server.
-    cy.get('[data-cy=import-rejected]').should('contain', '4');
-    cy.get('[data-cy=import-rejected-format]').should('contain', '1');
+    cy.get('[data-cy=import-rejected]').should('contain', '5');
+    cy.get('[data-cy=import-rejected-format]').should('contain', '2');
     cy.get('[data-cy=import-rejected-typo]').should('contain', '1');
     cy.get('[data-cy=import-rejected-provider]').should('contain', '1');
     cy.get('[data-cy=import-rejected-dead]').should('contain', '1');
     cy.get('[data-cy=import-rejected-download]').should('exist');
     cy.request('/api/import/subscribers').its('body.data').should((d) => {
-      expect(d.axm_excluded).to.eq(4);
-      expect(d.axm_rejected_total).to.eq(4);
+      expect(d.axm_excluded).to.eq(5);
+      expect(d.axm_rejected_total).to.eq(5);
     });
     cy.get('[data-cy=map-mismatch]').should('not.exist');
     // The box and its CSV are the server's: a reload keeps them, with the rows of the file the person chose.
     cy.reload();
-    cy.get('[data-cy=import-rejected]').should('contain', '4');
+    cy.get('[data-cy=import-rejected]').should('contain', '5');
     cy.request('/api/import/subscribers').its('body.data.axm_import_id').then((id) => cy.request(`/api/import/subscribers/rejected?id=${id}`))
-      .its('body').should('contain', '\n3,').and('contain', '\n4,').and('contain', '\n5,').and('contain', 'not-an-address');
+      .its('body').should('contain', '\n3,').and('contain', '\n4,').and('contain', '\n5,').and('contain', '\n6,not-an-address').and('contain', '\n7,');
   });
 });

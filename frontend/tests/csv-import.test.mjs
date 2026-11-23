@@ -419,3 +419,8 @@ test('the excluded rows CSV adds the suggestion column only when a row has a sug
   ], ['Row', 'E-mail', 'Reason', 'Suggested']);
   assert.equal(csv, 'Row,E-mail,Reason,Suggested\r\n2,kim@gmail.con,Misspelled domain,kim@gmail.com\r\n5,a@gone.invalid,No mail server,');
 });
+
+test('a row is the line of the file it starts on: blank lines and line breaks in a cell count', () => {
+  const parsed = parseCSV('email,name\na@x.example,"One\nTwo"\n\nb@x.example,Three\n');
+  assert.deepEqual(parsed.rows.map(({ row }) => row), [2, 5]);
+});
