@@ -30,6 +30,8 @@ UID, GID = os.getuid(), os.getgid()
 GO_IMAGE = 'golang:1.26.1-bookworm'
 PG_IMAGE = 'postgres:17.7-alpine'
 CYPRESS_IMAGE = 'cypress/included:15.8.1'
+# The test inbox, as in CI's browser step (LST-48: specs check who a campaign really reached).
+MAILPIT_IMAGE = 'axllent/mailpit:v1.27'
 LOCAL_VERSION = 'v6.2.0-axm.0-local'
 CI_WORKFLOW = '.github/workflows/axm-image.yml'
 DEFAULT_BASE_REF = 'origin/axm/v6.2'
@@ -94,6 +96,8 @@ class Ctx:
         base = 41000 + (self.n % 300) * 20 + rv * 10
         self.pg_port = free_port(base)
         self.app_port = free_port(base + 1, avoid={self.pg_port})
+        self.mail_smtp = free_port(base + 2, avoid={self.pg_port, self.app_port})
+        self.mail_ui = free_port(base + 3, avoid={self.pg_port, self.app_port, self.mail_smtp})
         self.display = 100 + (self.n % 150) * 2 + rv
         self.run = tmp_dir() / f'{self.prefix}'
         self.run.mkdir(parents=True, exist_ok=True)
@@ -1404,7 +1408,17 @@ def ensure_cy_modules(ctx, steps=None):
 
 
 def start_app(ctx, steps, image, pg):
-    """새 DB 설치 → 시험 데이터 적재 → 앱 기동. 앱 컨테이너 이름을 돌려준다."""
+    """새 DB 설치 → 시험 데이터 적재 → 시험 수신함·앱 기동. 앱 컨테이너 이름을 돌려준다.
+    도중에 실패하면 띄운 앱과 시험 수신함을 내리고 실패를 그대로 올린다(남는 컨테이너가 없게)."""
+    try:
+        return _start_app(ctx, steps, image, pg)
+    except BaseException:
+        docker('rm', '-f', ctx.name('app'), check=False)
+        docker('rm', '-f', ctx.name('mail'), check=False)
+        raise
+
+
+def _start_app(ctx, steps, image, pg):
     app, port = ctx.name('app'), ctx.app_port
     dsn_db = f'e2e{ctx.n}'
     pg.fresh_db(dsn_db)
@@ -1423,6 +1437,7 @@ def start_app(ctx, steps, image, pg):
                         input=fx, capture_output=True, text=True)
     if pr.returncode != 0:
         raise StageFailed('reaction-lists.sql 적재 실패: ' + pr.stderr[-300:])
+    start_mail(ctx, pg, dsn_db)
     docker('rm', '-f', app, check=False)
     docker('run', '-d', '--name', app, '--network', 'host', *limit_args(2), *eargs, image)
     ok = False
@@ -1437,6 +1452,35 @@ def start_app(ctx, steps, image, pg):
         raise StageFailed('앱이 /health 에 답하지 않는다')
     steps.add('e2e 준비(DB 설치·앱 기동)', time.time() - t0, None)
     return app
+
+
+def start_mail(ctx, pg, dsn_db):
+    """시험 수신함(Mailpit)을 띄우고 앱의 SMTP 를 그리로 돌린다 — CI 의 브라우저 시험 단계와 같다
+    (LST-48: 발송 확인 시험이 실제로 받은 사람을 수신함에서 확인한다). TLS 없이(STARTTLS 를 요구하면 아무도 못 받는다)."""
+    mail = ctx.name('mail')
+    docker('rm', '-f', mail, check=False)
+    for _ in range(3):
+        docker('run', '-d', '--name', mail, '--network', 'host', '-e', f'MP_SMTP_BIND_ADDR=127.0.0.1:{ctx.mail_smtp}',
+               '-e', f'MP_UI_BIND_ADDR=127.0.0.1:{ctx.mail_ui}', MAILPIT_IMAGE, check=False)
+        for _ in range(20):
+            if subprocess.run(['curl', '-sf', f'http://127.0.0.1:{ctx.mail_ui}/api/v1/info'], capture_output=True).returncode == 0:
+                break
+            time.sleep(0.5)
+        else:
+            # A port can be held for a moment by a container that just went away: start again.
+            docker('rm', '-f', mail, check=False)
+            time.sleep(2)
+            continue
+        break
+    else:
+        raise StageFailed('시험 수신함(Mailpit)이 뜨지 않는다')
+    sql = ("UPDATE settings SET value = jsonb_build_array(jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(value->0, "
+           f"'{{host}}', '\"127.0.0.1\"'), '{{port}}', '{ctx.mail_smtp}'), '{{auth_protocol}}', '\"none\"'), "
+           "'{tls_type}', '\"none\"'), '{enabled}', 'true')) WHERE key = 'smtp'")
+    pr = subprocess.run(['docker', 'exec', '-i', pg.name, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-p', str(ctx.pg_port), '-d', dsn_db, '-c', sql],
+                        capture_output=True, text=True)
+    if pr.returncode != 0:
+        raise StageFailed('SMTP 설정 실패: ' + pr.stderr[-300:])
 
 
 def e2e(ctx, steps, specs, image, pg, profile=False, browser='electron', extra_env=None, extra_dargs=None):
@@ -1455,6 +1499,7 @@ def e2e(ctx, steps, specs, image, pg, profile=False, browser='electron', extra_e
             ok, passed, failed = _e2e_run(ctx, steps, present, app, profile, browser, extra_env, extra_dargs)
         finally:
             docker('rm', '-f', app, check=False)
+            docker('rm', '-f', ctx.name('mail'), check=False)
     return judge_e2e(specs, ok, passed, failed)
 
 
@@ -1489,7 +1534,7 @@ def _e2e_run(ctx, steps, specs, app, profile, browser, extra_env, extra_dargs):
     dargs = ['--network', 'host', *limit_args(), '--shm-size', '1g', '--user', f'{UID}:{GID}', '-e', 'HOME=/tmp/cyhome', '-e', 'NO_COLOR=1',
              '-v', f'{cyhome}:/tmp/cyhome', '-v', f'{proj}:/e2e', '-v', f'{nm}:/e2e/node_modules:ro', '-w', '/e2e',
              '-e', 'CYPRESS_LISTMONK_ADMIN_USER=ci-admin', '-e', 'CYPRESS_LISTMONK_ADMIN_PASSWORD=ci-only-password',
-             '-e', f'CYPRESS_apiUrl=http://127.0.0.1:{port}']
+             '-e', f'CYPRESS_apiUrl=http://127.0.0.1:{port}', '-e', f'CYPRESS_mailpitUrl=http://127.0.0.1:{ctx.mail_ui}']
     for k, v in (extra_env or {}).items():
         dargs += ['-e', f'{k}={v}']
     dargs += extra_dargs or []

@@ -259,6 +259,20 @@ func (c *Campaign) CompileTemplate(f template.FuncMap) error {
 	return nil
 }
 
+// ExpandTplFuncs is a subject or body as CompileTemplate parses it: the shorthands
+// ({{ MessageURL }}, url@TrackLink, …) given the message as their argument. Empty when it has no
+// template expression and is not compiled at all. AXM (LST-48): the send confirmation reads the
+// subject the way the sender runs it.
+func ExpandTplFuncs(s string) string {
+	if !hasTplExpr(s) {
+		return ""
+	}
+	for _, r := range regTplFuncs {
+		s = r.regExp.ReplaceAllString(s, r.replace)
+	}
+	return s
+}
+
 // hasTplExpr checks whether a given string has a Go template expression with {{ and  }}.
 func hasTplExpr(s string) bool {
 	_, after, ok := strings.Cut(s, "{{")
