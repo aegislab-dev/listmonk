@@ -677,15 +677,26 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 			len(o3.Copies) != 1 || o3.Copies[0].Address != "regional-archive@crevasse.ai" || level(o3.Checks, "mail.copiesPerSubscriber") != "" {
 			t.Fatalf("from and bcc chosen by a subject from a campaign attribute: %s", data)
 		}
+		// The same attribute printed by a named template it is passed to (LST-48 review).
+		e.db.MustExec(`UPDATE campaigns SET subject='{{ define "edition" }}{{ . }}{{ end }}{{ template "edition" .Campaign.Attribs.edition }}' WHERE id=$1`, e.campID)
+		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+		o4.PerSubscriber = true
+		o3.Copies, o3.Checks = nil, nil
+		if json.Unmarshal(data, &o4) != nil || o4.PerSubscriber || json.Unmarshal(data, &o3) != nil ||
+			len(o3.Copies) != 1 || o3.Copies[0].Address != "regional-archive@crevasse.ai" || level(o3.Checks, "mail.copiesPerSubscriber") != "" {
+			t.Fatalf("from and bcc chosen by a subject from a named template: %s", data)
+		}
 		// A subject with the shorthand {{ MessageURL }}, each person's link (LST-48 review): the
 		// headers that read it are per subscriber.
-		e.db.MustExec(`UPDATE campaigns SET subject='News {{ MessageURL }}' WHERE id=$1`, e.campID)
-		_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
-		o4.PerSubscriber = false
-		o3.Copies, o3.Checks = nil, nil
-		if json.Unmarshal(data, &o4) != nil || !o4.PerSubscriber || json.Unmarshal(data, &o3) != nil ||
-			len(o3.Copies) != 0 || level(o3.Checks, "mail.copiesPerSubscriber") != "warn" {
-			t.Fatalf("from and bcc chosen by a subject with MessageURL: %s", data)
+		for _, subject := range []string{`News {{ MessageURL }}`, `News {{ with $mail := . }}{{ MessageURL $mail }}{{ end }}`} {
+			e.db.MustExec(`UPDATE campaigns SET subject=$2 WHERE id=$1`, e.campID, subject)
+			_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
+			o4.PerSubscriber = false
+			o3.Copies, o3.Checks = nil, nil
+			if json.Unmarshal(data, &o4) != nil || !o4.PerSubscriber || json.Unmarshal(data, &o3) != nil ||
+				len(o3.Copies) != 0 || level(o3.Checks, "mail.copiesPerSubscriber") != "warn" {
+				t.Fatalf("from and bcc chosen by the subject %s: %s", subject, data)
+			}
 		}
 		e.db.MustExec(`UPDATE campaigns SET subject='Stored subject', headers='[{"Reply-To":"desk@crevasse.ai"}]'::jsonb WHERE id=$1`, e.campID)
 		e.db.MustExec(`UPDATE campaigns SET subject='Check {{ .Campaign.Name }}', headers='[]'::jsonb WHERE id=$1`, e.campID)
@@ -1305,6 +1316,11 @@ func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
 	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p>{{ if hasSuffix "ffffffffffff" .Subject }}<a href="https://example.org/archive">archive</a>{{ else }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("footer chosen by a subject with MessageURL, for one beyond the sample: %q", got)
+	}
+	// The same link through a variable that with declares (LST-48 review).
+	e.db.MustExec(`UPDATE campaigns SET subject='News {{ with $mail := . }}{{ MessageURL $mail }}{{ end }}' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("footer chosen by a subject with MessageURL through with $mail: %q", got)
 	}
 	e.db.MustExec(`UPDATE campaigns SET subject='News' WHERE id=$1`, e.campID)
 	// Printed always: a pass.

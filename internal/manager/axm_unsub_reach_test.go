@@ -117,6 +117,8 @@ func TestUnsubscribeFixedSubject(t *testing.T) {
 		{`{{ MessageURL }}`, false},
 		{`{{ MessageURL . }}`, false},
 		{`{{ $m := . }}{{ $m.Campaign.Attribs.edition }}`, true},
+		{`{{ define "e" }}{{ . }}{{ end }}{{ template "e" .Campaign.Attribs.edition }}`, true},
+		{`{{ with $mail := . }}{{ MessageURL $mail }}{{ end }}`, false},
 	} {
 		c := models.Campaign{ContentType: models.CampaignContentTypeHTML, Messenger: "email", TemplateBody: `{{ template "content" . }}`, Body: src, Subject: tc.subject,
 			Attribs: models.JSON{"edition": "Full"}}
@@ -150,7 +152,13 @@ func TestReadsVarying(t *testing.T) {
 	}
 	// The same headers with a subject the same for everyone (LST-48 review): .Subject is fixed.
 	for _, subject := range []string{"Regional edition", `{{ "Regional" }} edition`, `{{ .Campaign.Name }}`, `{{ Date "2006" }}`,
-		`{{ with .Campaign.Attribs.edition }}{{ . }}{{ end }}`, `{{ range .Campaign.Tags }}{{ . }}{{ end }}`, `{{ $m := . }}{{ $m.Campaign.Name }}`} {
+		`{{ with .Campaign.Attribs.edition }}{{ . }}{{ end }}`, `{{ range .Campaign.Tags }}{{ . }}{{ end }}`, `{{ $m := . }}{{ $m.Campaign.Name }}`,
+		// LST-48 review: a named template gets as "." what it is called with.
+		`{{ define "edition" }}{{ . }}{{ end }}{{ template "edition" .Campaign.Attribs.edition }}`,
+		`{{ define "edition" }}{{ $ }}{{ end }}{{ template "edition" .Campaign.Attribs.edition }}`,
+		`{{ define "name" }}{{ .Name }}{{ end }}{{ template "name" .Campaign }}`,
+		`{{ define "unused" }}{{ MessageURL . }}{{ end }}Regional edition`,
+		`{{ with $e := .Campaign.Attribs.edition }}{{ $e }}{{ end }}`} {
 		c := &models.Campaign{Subject: subject, Attribs: models.JSON{"edition": "Regional edition"}}
 		for _, text := range []string{`{{ if eq .Subject "Regional edition" }}regional@crevasse.ai{{ end }}`, `{{ $m := . }}{{ if eq $m.Subject "R" }}r{{ end }}`} {
 			if m.ReadsVarying(c, text) {
@@ -160,7 +168,15 @@ func TestReadsVarying(t *testing.T) {
 	}
 	// A subject that passes the message on, or reads the subscriber through a variable.
 	for _, subject := range []string{`{{ UnsubscribeURL . }}`, `{{ $s := .Subscriber }}{{ $s.Name }}`, `{{ $m := . }}{{ $m.Subscriber.Name }}`,
-		`News {{ MessageURL }}`, `{{ UnsubscribeURL }}`, `{{ with . }}{{ MessageURL . }}{{ end }}`, `{{ $m := . }}{{ MessageURL $m }}`} {
+		`News {{ MessageURL }}`, `{{ UnsubscribeURL }}`, `{{ with . }}{{ MessageURL . }}{{ end }}`, `{{ $m := . }}{{ MessageURL $m }}`,
+		// LST-48 review: the message declared by with, if or range, and passed to a named template.
+		`{{ with $mail := . }}{{ MessageURL $mail }}{{ end }}`, `{{ if $mail := . }}{{ MessageURL $mail }}{{ end }}`,
+		`{{ with $mail := . }}{{ $mail.Subscriber.Name }}{{ end }}`,
+		`{{ define "u" }}{{ MessageURL . }}{{ end }}{{ template "u" . }}`,
+		`{{ define "u" }}{{ MessageURL $ }}{{ end }}{{ template "u" . }}`,
+		`{{ define "u" }}{{ .Subscriber.Name }}{{ end }}{{ template "u" . }}`,
+		`{{ define "u" }}{{ . }}{{ end }}{{ template "u" .Subscriber.Name }}`,
+		`{{ define "a" }}{{ template "b" . }}{{ end }}{{ define "b" }}{{ MessageURL . }}{{ end }}{{ template "a" . }}`} {
 		c := &models.Campaign{Subject: subject}
 		if !m.ReadsVarying(c, `{{ if eq .Subject "R" }}r{{ end }}`) {
 			t.Errorf("subject %q: not varying", subject)

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"html/template"
+	"strconv"
 	"strings"
 	"text/template/parse"
 
@@ -292,100 +293,144 @@ func (m *Manager) subjectVaries(c *models.Campaign, withTime bool) bool {
 // templateVaries tells whether a template text reads something that differs from mail to mail:
 // a field that does (varyingFields, with .Subject when subj), the message itself passed on (to
 // UnsubscribeURL, MessageURL and the like, which print the subscriber's links), or, with
-// withTime, the time. What "." is follows the template: inside a with or range over something
-// other than the message it is that value (LST-48 review: {{ with .Campaign.Attribs.edition }}
-// {{ . }}{{ end }} is the same for everyone); a variable given the message is the message. A text
-// that cannot be parsed is taken as varying.
+// withTime, the time. It follows what is rendered, from the main template: what "." and "$" are
+// follows the template — inside a with or range over something other than the message "." is
+// that value (LST-48 review: {{ with .Campaign.Attribs.edition }}{{ . }}{{ end }} is the same
+// for everyone); a variable given the message, also where a with, if or range declares it
+// ({{ with $mail := . }}), is the message; a named template gets as "." and "$" what it is called
+// with ({{ template "edition" .Campaign.Attribs.edition }}). A text that cannot be parsed is
+// taken as varying.
 func (m *Manager) templateVaries(c *models.Campaign, text string, subj, withTime bool) bool {
 	t, err := template.New("").Funcs(m.TemplateFuncs(c)).Parse(text)
-	if err != nil {
-		return true
+	if err != nil || t.Tree == nil {
+		return err != nil
 	}
-	for _, tt := range t.Templates() {
-		if tt.Tree != nil && listVaries(tt.Tree.Root, true, map[string]bool{"$": true}, subj, withTime) {
-			return true
+	w := &varyWalker{t: t, subj: subj, withTime: withTime, seen: map[string]bool{}}
+	return w.list(t.Tree.Root, true, map[string]bool{"$": true})
+}
+
+// varyWalker walks the templates for templateVaries.
+type varyWalker struct {
+	t              *template.Template
+	subj, withTime bool
+	// seen: the named templates already walked, by name and whether "." is the message.
+	seen map[string]bool
+}
+
+// pipe tells whether a pipe reads something that varies, where dotMsg tells whether "." is the
+// message and msgVars are the variables that hold it.
+func (w *varyWalker) pipe(p *parse.PipeNode, dotMsg bool, msgVars map[string]bool) bool {
+	dep := false
+	inspect(p, func(n parse.Node) {
+		switch x := n.(type) {
+		case *parse.DotNode:
+			dep = dep || dotMsg
+		case *parse.VariableNode:
+			if msgVars[x.Ident[0]] {
+				dep = dep || len(x.Ident) == 1 || varyingFields(x.Ident[1:], w.subj)
+			}
+		case *parse.FieldNode:
+			dep = dep || varyingFields(x.Ident, w.subj)
+		case *parse.ChainNode:
+			dep = dep || varyingFields(x.Field, w.subj)
+		case *parse.IdentifierNode:
+			if w.withTime && (x.Ident == "Date" || x.Ident == "now") {
+				dep = true
+			}
 		}
+	})
+	return dep
+}
+
+// isMsg tells whether a pipe's value is the message itself: "." where it is the message, or a
+// variable that holds it.
+func isMsg(p *parse.PipeNode, dotMsg bool, msgVars map[string]bool) bool {
+	if p == nil || len(p.Cmds) != 1 || len(p.Cmds[0].Args) != 1 {
+		return false
+	}
+	switch x := p.Cmds[0].Args[0].(type) {
+	case *parse.DotNode:
+		return dotMsg
+	case *parse.VariableNode:
+		return len(x.Ident) == 1 && msgVars[x.Ident[0]]
 	}
 	return false
 }
 
-// listVaries walks a template list for templateVaries. dotMsg: "." is the message here. msgVars:
-// the variables that hold the message.
-func listVaries(l *parse.ListNode, dotMsg bool, msgVars map[string]bool, subj, withTime bool) bool {
+// declare records the variables a pipe declares or assigns: they hold the message when the
+// pipe's value is the message, and no longer otherwise.
+func declare(p *parse.PipeNode, msg bool, msgVars map[string]bool) {
+	if p == nil {
+		return
+	}
+	for _, v := range p.Decl {
+		if msg {
+			msgVars[v.Ident[0]] = true
+		} else {
+			delete(msgVars, v.Ident[0])
+		}
+	}
+}
+
+// list walks a list of nodes.
+func (w *varyWalker) list(l *parse.ListNode, dotMsg bool, msgVars map[string]bool) bool {
 	if l == nil {
-		return false
-	}
-	pipeVaries := func(p *parse.PipeNode) bool {
-		dep := false
-		inspect(p, func(n parse.Node) {
-			switch x := n.(type) {
-			case *parse.DotNode:
-				dep = dep || dotMsg
-			case *parse.VariableNode:
-				if msgVars[x.Ident[0]] {
-					dep = dep || len(x.Ident) == 1 || varyingFields(x.Ident[1:], subj)
-				}
-			case *parse.FieldNode:
-				dep = dep || varyingFields(x.Ident, subj)
-			case *parse.ChainNode:
-				dep = dep || varyingFields(x.Field, subj)
-			case *parse.IdentifierNode:
-				if withTime && (x.Ident == "Date" || x.Ident == "now") {
-					dep = true
-				}
-			}
-		})
-		return dep
-	}
-	// isMsg: the pipe is the message itself (. where it is the message, or a variable that holds it).
-	isMsg := func(p *parse.PipeNode) bool {
-		if p == nil || len(p.Cmds) != 1 || len(p.Cmds[0].Args) != 1 {
-			return false
-		}
-		switch x := p.Cmds[0].Args[0].(type) {
-		case *parse.DotNode:
-			return dotMsg
-		case *parse.VariableNode:
-			return len(x.Ident) == 1 && msgVars[x.Ident[0]]
-		}
 		return false
 	}
 	for _, n := range l.Nodes {
 		switch x := n.(type) {
 		case *parse.ActionNode:
-			if len(x.Pipe.Decl) > 0 && isMsg(x.Pipe) {
+			if len(x.Pipe.Decl) > 0 && isMsg(x.Pipe, dotMsg, msgVars) {
 				// {{ $mail := . }}: an alias, nothing printed.
-				for _, v := range x.Pipe.Decl {
-					msgVars[v.Ident[0]] = true
-				}
+				declare(x.Pipe, true, msgVars)
 				continue
 			}
-			if pipeVaries(x.Pipe) {
+			if w.pipe(x.Pipe, dotMsg, msgVars) {
 				return true
 			}
+			declare(x.Pipe, false, msgVars)
 		case *parse.IfNode:
-			if pipeVaries(x.Pipe) || listVaries(x.List, dotMsg, msgVars, subj, withTime) ||
-				listVaries(x.ElseList, dotMsg, msgVars, subj, withTime) {
+			msg := isMsg(x.Pipe, dotMsg, msgVars)
+			if !msg && w.pipe(x.Pipe, dotMsg, msgVars) {
+				return true
+			}
+			declare(x.Pipe, msg, msgVars)
+			if w.list(x.List, dotMsg, msgVars) || w.list(x.ElseList, dotMsg, msgVars) {
 				return true
 			}
 		case *parse.WithNode:
-			if isMsg(x.Pipe) {
-				if listVaries(x.List, true, msgVars, subj, withTime) || listVaries(x.ElseList, dotMsg, msgVars, subj, withTime) {
-					return true
-				}
-				continue
+			msg := isMsg(x.Pipe, dotMsg, msgVars)
+			if !msg && w.pipe(x.Pipe, dotMsg, msgVars) {
+				return true
 			}
-			if pipeVaries(x.Pipe) || listVaries(x.List, false, msgVars, subj, withTime) ||
-				listVaries(x.ElseList, dotMsg, msgVars, subj, withTime) {
+			declare(x.Pipe, msg, msgVars)
+			if w.list(x.List, msg, msgVars) || w.list(x.ElseList, dotMsg, msgVars) {
 				return true
 			}
 		case *parse.RangeNode:
-			if pipeVaries(x.Pipe) || listVaries(x.List, false, msgVars, subj, withTime) ||
-				listVaries(x.ElseList, dotMsg, msgVars, subj, withTime) {
+			if w.pipe(x.Pipe, dotMsg, msgVars) {
+				return true
+			}
+			declare(x.Pipe, false, msgVars)
+			if w.list(x.List, false, msgVars) || w.list(x.ElseList, dotMsg, msgVars) {
 				return true
 			}
 		case *parse.TemplateNode:
-			if pipeVaries(x.Pipe) {
+			// The named template gets the value it is called with as "." and "$".
+			msg := isMsg(x.Pipe, dotMsg, msgVars)
+			if !msg && w.pipe(x.Pipe, dotMsg, msgVars) {
+				return true
+			}
+			key := x.Name + "|" + strconv.FormatBool(msg)
+			if w.seen[key] {
+				continue
+			}
+			w.seen[key] = true
+			nt := w.t.Lookup(x.Name)
+			if nt == nil || nt.Tree == nil {
+				continue
+			}
+			if w.list(nt.Tree.Root, msg, map[string]bool{"$": msg}) {
 				return true
 			}
 		}
