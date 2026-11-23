@@ -1392,14 +1392,14 @@ func TestFollowupPausedAndResumedBeforeTheFirstReadIsCheckedAgain(t *testing.T) 
 		t.Fatalf("first read: %d %v", len(subs), err)
 	}
 	// Paused and resumed (the status API), and both open the parent meanwhile.
-	if _, err := e.a.core.UpdateCampaignStatus(camp, models.CampaignStatusPaused, ""); err != nil {
+	if _, err := e.a.core.UpdateCampaignStatus(camp, models.CampaignStatusPaused, "", "", false); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range people {
 		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
 	}
 	e.db.MustExec(`UPDATE campaigns SET send_at = NULL WHERE id = $1`, camp)
-	if _, err := e.a.core.UpdateCampaignStatus(camp, models.CampaignStatusRunning, ""); err != nil {
+	if _, err := e.a.core.UpdateCampaignStatus(camp, models.CampaignStatusRunning, "", "", false); err != nil {
 		t.Fatal(err)
 	}
 	// The pipe that was being set up reads its batch: refused, not "no subscribers left".

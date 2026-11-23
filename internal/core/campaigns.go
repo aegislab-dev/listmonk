@@ -292,8 +292,28 @@ func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs
 }
 
 // UpdateCampaignStatus updates a campaign's status, eg: draft to running.
-func (c *Core) UpdateCampaignStatus(id int, status string, from string) (models.Campaign, error) {
-	cm, err := c.GetCampaign(id, "", "")
+//
+// seenAt (AXM, LST-48) is the campaign's updated_at that the pre-send confirmation showed,
+// as text exactly as it was read. When it is not empty and the campaign was changed since,
+// nothing is changed and the error is a 409. pastShown: the confirmation said that the send
+// time has passed; when it did not and the time has come, the error is a 412.
+func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt string, pastShown bool) (models.Campaign, error) {
+	// AXM (LST-48): the campaign is locked and compared with what the confirmation showed
+	// before anything else is judged, so a campaign changed in the meantime is a 409 and not
+	// whatever its new state would be refused with. Everything until the commit reads on the
+	// transaction's own connection: a second one (GetCampaign) would wait for a free
+	// connection while this one is held, which a small pool with the sender's lock connection
+	// in it does not have (LST-48 review).
+	tx, err := c.db.Beginx()
+	if err != nil {
+		return models.Campaign{}, err
+	}
+	defer tx.Rollback()
+	if err := c.checkCampaignSeen(tx, id, seenAt); err != nil {
+		return models.Campaign{}, err
+	}
+
+	cm, due, err := c.lockCampaignState(tx, id)
 	if err != nil {
 		return models.Campaign{}, err
 	}
@@ -329,12 +349,10 @@ func (c *Core) UpdateCampaignStatus(id int, status string, from string) (models.
 	if len(errMsg) > 0 {
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, errMsg)
 	}
-
-	tx, err := c.db.Beginx()
-	if err != nil {
+	if err := c.checkSendTimeShown(cm, due, status, seenAt, pastShown); err != nil {
 		return models.Campaign{}, err
 	}
-	defer tx.Rollback()
+
 	if from != "" && cm.Status == models.CampaignStatusDraft {
 		if _, err := tx.Stmtx(c.q.UpdateCampaignFrom).Exec(id, from); err != nil {
 			return models.Campaign{}, err

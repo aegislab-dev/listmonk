@@ -26,19 +26,19 @@
         <div v-if="canManage || canSend" class="buttons">
           <b-field grouped v-if="isEditing && canEdit">
             <b-field v-if="canManage" expanded>
-              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
+              <b-button expanded @click="() => onSubmit('update')" :loading="loading.campaigns || savingCampaign" type="is-primary"
                 icon-left="content-save-outline" data-cy="btn-save" aria-keyshortcuts="ctrl+s">
                 <span class="has-kbd">{{ $t('globals.buttons.saveChanges') }} <span class="kbd">Ctrl+S</span></span>
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canStart">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign" type="is-primary"
                 icon-left="rocket-launch-outline" data-cy="btn-start">
                 {{ $t('campaigns.start') }}
               </b-button>
             </b-field>
             <b-field expanded v-if="canSend && canSchedule">
-              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign || startBusy" type="is-primary"
+              <b-button expanded @click="startCampaign" :loading="loading.campaigns || savingCampaign" type="is-primary"
                 icon-left="clock-start" data-cy="btn-schedule">
                 {{ $t('campaigns.schedule') }}
               </b-button>
@@ -58,6 +58,13 @@
 
     <campaign-followup-banner v-if="isEditing && data.id" :campaign-id="data.id" :status="data.status"
       :updated-at="data.updatedAt" @loaded="onFollowupLoaded" />
+    <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
+      :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
+      @close="onSendClosed">
+      <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
+        :campaign-name="sendAsk.name"
+        @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" @failed="onSendFailed" />
+    </b-modal>
 
     <b-tabs type="is-boxed" :animated="false" v-model="activeTab" @input="onTab">
       <b-tab-item :label="$tc('globals.terms.campaign')" label-position="on-border" value="campaign"
@@ -385,6 +392,7 @@ import TimezonePicker from '../components/TimezonePicker.vue';
 import Media from './Media.vue';
 import SenderAddressInput from '../components/SenderAddressInput.vue';
 import TrackingCheck from '../components/TrackingCheck.vue';
+import CampaignSendConfirm from '../components/CampaignSendConfirm.vue';
 import { isSenderDomain } from '../senders';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
 import {
@@ -393,7 +401,7 @@ import {
 import {
   newSample, rejectedOf, sampleLabel, samplePayload,
 } from '../test-send';
-import { trackingConfirmLines, trackingToastParts, warningsCovered } from '../tracking-check';
+import { trackingToastParts } from '../tracking-check';
 
 export default Vue.extend({
   components: {
@@ -409,6 +417,7 @@ export default Vue.extend({
     RecentSendExclude,
     TimezonePicker,
     TrackingCheck,
+    CampaignSendConfirm,
   },
 
   data() {
@@ -431,6 +440,10 @@ export default Vue.extend({
       activeTab: 'campaign',
       replyError: '',
       recentRule: defaultRecentRule(),
+      // The window every start, resume and schedule goes through (LST-48).
+      isSendVisible: false,
+      sendAsk: null,
+
       savedRecentRule: JSON.stringify({ enabled: false }),
       recentRuleLoaded: false,
       recentRuleError: '',
@@ -449,13 +462,6 @@ export default Vue.extend({
       testSample: newSample(),
       testRejected: [],
       testOwnUnverified: false,
-
-      // A start/schedule in progress (LST-44): its number, and its open confirmation.
-      startingCampaign: false,
-      startBusy: false,
-      startSeq: 0,
-      startAsk: null,
-      isDestroyed: false,
 
       data: {},
 
@@ -617,8 +623,7 @@ export default Vue.extend({
     },
 
     onSubmit(typ) {
-      // While a start is being checked and confirmed, a save would change what was checked.
-      if (this.savingCampaign || this.startingCampaign) return;
+      if (this.savingCampaign) return;
       if (!this.parseFormJSON()) return;
 
       switch (typ) {
@@ -949,113 +954,51 @@ export default Vue.extend({
 
     // Starts or schedule a campaign.
     //
-    // The tracking warning (LST-44) is about what will really be sent, and cancelling does
-    // nothing. So: check what is on the page, ask; only after the confirmation save, check
-    // the saved campaign again and start. If the saved campaign warns about something that
-    // was not confirmed (an edit made while the first check was on its way, headers that
-    // the server merges on save, a save from another tab), ask again with what was found.
-    // Every step first makes sure that this page still shows this campaign and that this
-    // start is the current one: a page that was left or a newer start drops it.
+    // Saves the page first, then opens the pre-send window (LST-48) on the saved campaign:
+    // the window reads from the server what will really be sent (the people, the sender,
+    // the tracking and the other checks) and, when confirmed, only changes the status. The
+    // server refuses the change when the campaign was edited after the window read it.
+    // Cancelling the window leaves the edits saved (approved LST-48 design, A1 note).
     async startCampaign() {
-      if (this.savingCampaign || this.startingCampaign || (!this.canStart && !this.canSchedule)) {
+      if (this.savingCampaign || (!this.canStart && !this.canSchedule)) {
         return;
       }
 
-      const { id } = this.data;
-      this.startSeq += 1;
-      const seq = this.startSeq;
-      const current = () => !this.isDestroyed && this.startSeq === seq && this.data.id === id;
-      // Start or schedule: decided by the page as it is when asking, and again by what
-      // was saved (the send time may be switched off while the check is on its way).
-      const action = () => {
-        if (this.canStart) return 'running';
-        return this.canSchedule ? 'scheduled' : null;
-      };
-      // Only the requests show as loading on the buttons; an open question does not.
-      const busy = async (p) => {
-        this.startBusy = true;
-        try {
-          return await p;
-        } finally {
-          if (this.startSeq === seq) this.startBusy = false;
-        }
-      };
-      const check = (payload) => busy(this.$api.checkCampaignTracking(id, payload).catch(() => null)
-        .then((r) => trackingConfirmLines(r)));
-
-      this.startingCampaign = true;
-      let saved = null;
+      if (!await this.checkReplyTo()) return;
+      if (!this.parseFormJSON()) return;
+      const status = this.canStart ? 'running' : 'scheduled';
+      let saved;
       try {
-        if (!await busy(this.checkReplyTo()) || !current()) return;
-        if (!this.parseFormJSON()) return;
-
-        // The box checks the same values, so it shows what the question says.
-        if (this.$refs.tracking) this.$refs.tracking.run();
-        let lines = await check(this.trackingPayload);
-        let status = action();
-        for (;;) {
-          if (!current() || !status) return;
-          // eslint-disable-next-line no-await-in-loop
-          if (!await this.askStart(lines, status) || !current()) return;
-
-          if (!saved) {
-            // Saves the page as it is now (it may have been edited while the check was
-            // on its way); the check of the saved campaign below covers the difference.
-            if (!this.parseFormJSON()) return;
-            try {
-              // eslint-disable-next-line no-await-in-loop
-              saved = await this.updateCampaign(undefined, { quiet: true });
-            } catch (e) {
-              return;
-            }
-            if (!saved || !current()) return;
-          }
-
-          const after = action();
-          if (!after) return;
-          // eslint-disable-next-line no-await-in-loop
-          const now = await check({ status: after });
-          if (!current()) return;
-          if (after === status && warningsCovered(lines, now)) break;
-          lines = now;
-          status = after;
-        }
-
-        await busy(this.$api.changeCampaignStatus(id, status).then(() => {
-          if (current()) this.$router.push({ name: 'campaigns' });
-        }).catch((err) => {
-          if (this.senderPolicyEnabled && current()) this.replyError = err.response?.data?.message || '';
-        }));
-      } finally {
-        if (this.startSeq === seq) this.startingCampaign = false;
-        // The save notice waits until the questions are answered: it does not belong
-        // over the confirmation (approved design v1).
-        if (saved) this.$utils.toast(this.$t('globals.messages.updated', { name: saved.name }));
+        // The save notice is not shown over the window; closing the window shows it.
+        saved = await this.updateCampaign(undefined, { quiet: true });
+      } catch (e) {
+        return;
       }
+      if (!saved) return;
+
+      // The window shows the campaign as saved and, when confirmed, only changes its status.
+      this.sendAsk = {
+        id: saved.id, name: saved.name, status, handled: false, busy: false,
+      };
+      this.isSendVisible = true;
     },
 
-    // The start/schedule confirmation, with the tracking warnings when there are any.
-    // Resolves true on confirm, false on cancel or when the page goes away.
-    askStart(lines, status) {
-      return new Promise((resolve) => {
-        const done = (ok) => {
-          if (this.startAsk && this.startAsk.resolve === done) this.startAsk = null;
-          resolve(ok);
-        };
-        const warnings = lines.map(({ key, params }) => this.$t(key, params));
-        const msg = this.recentRule.enabled
-          ? `${this.$t('globals.messages.confirm')}\n${this.$t('campaigns.recent.sendNotice')}` : null;
-        const dialog = warnings.length
-          ? this.$utils.confirmWithWarnings(
-            msg,
-            warnings,
-            this.$t(`campaigns.tracking.confirm.${status === 'running' ? 'start' : 'schedule'}`),
-            () => done(true),
-            () => done(false),
-          )
-          : this.$utils.confirm(msg, () => done(true), () => done(false));
-        this.startAsk = { dialog, resolve: done };
-      });
+    onSendDone() {
+      if (this.sendAsk) this.sendAsk.handled = true;
+      this.$router.push({ name: 'campaigns' });
+    },
+
+    onSendFailed(err) {
+      // The error is shown by the window.
+      if (this.sendAsk) this.sendAsk.handled = true;
+      if (this.senderPolicyEnabled) this.replyError = err.response?.data?.message || '';
+    },
+
+    // The window was closed without sending: say that the edits were saved before it opened.
+    onSendClosed() {
+      const ask = this.sendAsk;
+      this.sendAsk = null;
+      if (ask && !ask.handled) this.$utils.toast(this.$t('globals.messages.updated', { name: ask.name }));
     },
 
     unscheduleCampaign() {
@@ -1394,15 +1337,6 @@ export default Vue.extend({
 
   beforeDestroy() {
     this.$events.$off('campaign.update');
-
-    // A start that is still being checked or confirmed belongs to this page only.
-    this.isDestroyed = true;
-    this.startSeq += 1;
-    if (this.startAsk) {
-      const { dialog, resolve } = this.startAsk;
-      if (dialog) dialog.close();
-      resolve(false);
-    }
   },
 });
 </script>
