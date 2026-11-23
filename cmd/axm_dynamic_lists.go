@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/knadh/listmonk/internal/auth"
@@ -96,9 +97,27 @@ func (a *App) PreviewDynamicList(c echo.Context) error {
 	out, err := a.core.PreviewDynamicFilter(f, req.ListID, sampleSize)
 	if err != nil {
 		a.log.Printf("dynamic list preview: %v", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("lists.dynamic.previewError"))
+		status, key := dynamicPreviewFailure(err)
+		return echo.NewHTTPError(status, a.i18n.T(key))
 	}
 	return c.JSON(http.StatusOK, okResp{out})
+}
+
+// dynamicPreviewFailure turns a failed count check into the status and the message the screen
+// shows, so a time-out, a full server resource and a bad number are told apart.
+func dynamicPreviewFailure(err error) (int, string) {
+	var pe *core.DynamicPreviewError
+	if errors.As(err, &pe) {
+		switch pe.Reason {
+		case core.PreviewReasonTimeout:
+			return http.StatusGatewayTimeout, "lists.dynamic.previewTimeout"
+		case core.PreviewReasonResource:
+			return http.StatusServiceUnavailable, "lists.dynamic.previewResource"
+		case core.PreviewReasonNumber:
+			return http.StatusInternalServerError, "lists.dynamic.previewNumber"
+		}
+	}
+	return http.StatusInternalServerError, "lists.dynamic.previewError"
 }
 
 func (a *App) rejectDynamicTargets(ids []int) error {

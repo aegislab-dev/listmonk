@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -75,5 +78,26 @@ func TestDynamicSampleFollowsSubscriberReadPermission(t *testing.T) {
 		if got := canSampleDynamic(tc.user, tc.filter); got != tc.want {
 			t.Fatalf("%s: got %v", tc.name, got)
 		}
+	}
+}
+
+func TestDynamicPreviewFailure(t *testing.T) {
+	for _, tc := range []struct {
+		reason core.DynamicPreviewReason
+		status int
+		key    string
+	}{
+		{core.PreviewReasonTimeout, http.StatusGatewayTimeout, "lists.dynamic.previewTimeout"},
+		{core.PreviewReasonResource, http.StatusServiceUnavailable, "lists.dynamic.previewResource"},
+		{core.PreviewReasonNumber, http.StatusInternalServerError, "lists.dynamic.previewNumber"},
+		{core.PreviewReasonOther, http.StatusInternalServerError, "lists.dynamic.previewError"},
+	} {
+		status, key := dynamicPreviewFailure(fmt.Errorf("preview: %w", &core.DynamicPreviewError{Reason: tc.reason, Err: errors.New("db")}))
+		if status != tc.status || key != tc.key {
+			t.Fatalf("%s: got %d %s", tc.reason, status, key)
+		}
+	}
+	if status, key := dynamicPreviewFailure(errors.New("plain")); status != 500 || key != "lists.dynamic.previewError" {
+		t.Fatalf("plain error: %d %s", status, key)
 	}
 }
