@@ -179,12 +179,15 @@ type axm16Bounce struct {
 	// Own is the subscriber's address when it did not change since the bounce: the webhooks
 	// that give an address found the subscriber by it.
 	Own sql.NullString `db:"own"`
+	// Cur is the subscriber's address now.
+	Cur string `db:"cur"`
 }
 
 const axm16Columns = `b.id, b.subscriber_id, b.campaign_id, (SELECT c.uuid::TEXT FROM campaigns c WHERE c.id = b.campaign_id) AS camp,
 	b.type::TEXT AS type, b.meta, EXTRACT(EPOCH FROM b.created_at)::BIGINT AS epoch, b.created_at::TEXT AS created_at,
 	(SELECT s.email FROM subscribers s WHERE s.id = b.subscriber_id AND NOT EXISTS (
-		SELECT 1 FROM axm_email_changes x WHERE x.subscriber_id = s.id AND x.changed_at >= b.created_at)) AS own`
+		SELECT 1 FROM axm_email_changes x WHERE x.subscriber_id = s.id AND x.changed_at >= b.created_at)) AS own,
+	COALESCE((SELECT s.email FROM subscribers s WHERE s.id = b.subscriber_id), '') AS cur`
 
 func axm16Permanent(typ string) bool { return typ == "hard" || typ == "complaint" }
 
@@ -448,6 +451,23 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 			events = append(events, e)
 		}
 	}
+	// A record's address, by what is surest first:
+	//   1. The subscriber's own address now, when it is one of the matching events: the webhook
+	//      found the subscriber by the address, and nobody changes theirs to another address that
+	//      bounced in the same second. (Their address may have changed and back, or only their
+	//      name was edited: what is on record of edits before this migration is not precise.)
+	//   2. The one matching event.
+	//   3. When several match: the event in the record's place, if the batch left one record per
+	//      bounce event, for different subscribers (a batch delivered twice leaves two records per
+	//      event, and one subscriber's two records are not two events), and that event's address
+	//      is not another subscriber's own now.
+	// Else nothing is linked to the record, and the matching addresses are left to the pass for
+	// the bounces no record is left for, below.
+	distinct := map[int]bool{}
+	for _, b := range rows {
+		distinct[b.SubID] = true
+	}
+	aligned := len(rows) == len(events) && len(distinct) == len(rows)
 	accounted := map[string]bool{}
 	for i, b := range rows {
 		if !axm16Permanent(b.Type) {
@@ -461,32 +481,34 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 				match = append(match, a)
 			}
 		}
-		addr := ""
-		switch {
-		case len(match) == 0:
+		if len(match) == 0 {
 			if _, err := db.Exec(axm16Mailed, b.Type, b.ID, b.SubID, b.CampaignID); err != nil {
 				return err
 			}
 			continue
+		}
+		addr := ""
+		switch cur := strings.ToLower(strings.TrimSpace(b.Cur)); {
+		case seen[cur]:
+			addr = cur
 		case len(match) == 1:
 			addr = match[0]
-		case len(rows) == len(events) && events[i].matches(b):
-			addr = axm16Clean(events[i].Email)
-		case b.Own.Valid && seen[strings.ToLower(b.Own.String)]:
-			addr = strings.ToLower(b.Own.String)
-		}
-		if addr != "" {
-			accounted[addr] = true
-			if _, err := db.Exec(axm16Link, addr, b.Type, b.ID, b.SubID); err != nil {
+		case aligned && events[i].matches(b):
+			a := axm16Clean(events[i].Email)
+			var other bool
+			if err := db.Get(&other, `SELECT EXISTS (SELECT 1 FROM subscribers WHERE email = $1 AND id <> $2)`, a, b.SubID); err != nil {
 				return err
 			}
+			if !other {
+				addr = a
+			}
+		}
+		if addr == "" {
 			continue
 		}
-		for _, a := range match {
-			accounted[a] = true
-			if _, err := db.Exec(axm16Unlinked, a, b.Type); err != nil {
-				return err
-			}
+		accounted[addr] = true
+		if _, err := db.Exec(axm16Link, addr, b.Type, b.ID, b.SubID); err != nil {
+			return err
 		}
 	}
 	// A hard bounce of the batch that no record is left for: its subscriber was deleted (with

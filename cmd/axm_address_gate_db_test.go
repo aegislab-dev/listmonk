@@ -833,6 +833,59 @@ func TestGateMigrationTwice(t *testing.T) {
 	e.db.MustExec(`DELETE FROM bounces WHERE id = $1`, clearedRecord)
 	e.db.MustExec(`UPDATE subscribers SET email = 'cleared-new@ok.test' WHERE id = $1`, cleared)
 	e.db.MustExec(`UPDATE subscribers SET name = 'Edited', updated_at = NOW() WHERE id = $1`, clearedOther)
+	// SendGrid: the same batch delivered twice left two records per bounce event; then one of the
+	// two subscribers was deleted. The two records left are the remaining subscriber's own, not
+	// one per event: the deleted subscriber's address is kept apart from them.
+	var replayKept, replayGone int
+	e.get(&replayKept, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'replayed-kept@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&replayGone, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'replayed-gone@ok.test', 'P', 'enabled') RETURNING id`)
+	replayBatch := `[{"email":"replayed-kept@ok.test","event":"bounce","timestamp":1700007000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"replayed-gone@ok.test","event":"bounce","timestamp":1700007000,"XListmonkCampaign":"` + uuidA + `"}]`
+	for _, sub := range []int{replayKept, replayGone, replayKept, replayGone} {
+		e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700007000))`, sub, campA, replayBatch)
+	}
+	e.db.MustExec(`DELETE FROM subscribers WHERE id = $1`, replayGone)
+	// SendGrid: a person deleted the hard bounce record of a subscriber who kept their address (to
+	// let it go), and the other subscriber of the batch had only their name edited (the edit before
+	// the migration counts as a possible change of address). The released address stays let go,
+	// as in the batch whose other subscriber was not edited.
+	released := func(at int, mine, peer string, editPeer bool) {
+		var me, other int
+		e.get(&me, `INSERT INTO subscribers (uuid, email, name, status, created_at, updated_at) VALUES (gen_random_uuid(), $1, 'P', 'enabled', to_timestamp($2), to_timestamp($2)) RETURNING id`, mine, at-100)
+		e.get(&other, `INSERT INTO subscribers (uuid, email, name, status, created_at, updated_at) VALUES (gen_random_uuid(), $1, 'P', 'enabled', to_timestamp($2), to_timestamp($2)) RETURNING id`, peer, at-100)
+		batch := `[{"email":"` + mine + `","event":"bounce","timestamp":` + itoa(at) + `,"XListmonkCampaign":"` + uuidA + `"},` +
+			`{"email":"` + peer + `","event":"bounce","timestamp":` + itoa(at) + `,"XListmonkCampaign":"` + uuidA + `"}]`
+		var mine1 int
+		e.get(&mine1, `INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp($4)) RETURNING id`, me, campA, batch, at)
+		e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp($4))`, other, campA, batch, at)
+		e.db.MustExec(`DELETE FROM bounces WHERE id = $1`, mine1)
+		if editPeer {
+			e.db.MustExec(`UPDATE subscribers SET name = 'Edited', updated_at = NOW() WHERE id = $1`, other)
+		}
+	}
+	released(1700008000, "released-current@ok.test", "current-peer@ok.test", true)
+	released(1700009000, "released-control@ok.test", "control-peer@ok.test", false)
+	// SendGrid: the subscriber of a hard bounce was deleted, and another subscriber who got the
+	// same campaign but has no record in the batch had only their name edited: the deleted
+	// subscriber's address is kept all the same.
+	var campE, depHolder, depGone, depPeer int
+	var uuidE string
+	e.get(&campE, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'E','S','test@example.invalid','b','email') RETURNING id`)
+	e.get(&uuidE, `SELECT uuid::TEXT FROM campaigns WHERE id = $1`, campE)
+	for _, p := range []struct {
+		id    *int
+		email string
+	}{{&depHolder, "dep-holder@ok.test"}, {&depGone, "deleted-edited-peer@ok.test"}, {&depPeer, "dep-peer@ok.test"}} {
+		e.get(p.id, `INSERT INTO subscribers (uuid, email, name, status, created_at, updated_at) VALUES (gen_random_uuid(), $1, 'P', 'enabled', to_timestamp(1700009900), to_timestamp(1700009900)) RETURNING id`, p.email)
+		e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, to_timestamp(1700009950))`, campE, *p.id)
+	}
+	depBatch := `[{"email":"deleted-edited-peer@ok.test","event":"bounce","timestamp":1700010000,"XListmonkCampaign":"` + uuidE + `"},` +
+		`{"email":"dep-holder@ok.test","event":"bounce","timestamp":1700010000,"XListmonkCampaign":"` + uuidE + `"}]`
+	for _, sub := range []int{depGone, depHolder} {
+		e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700010000))`, sub, campE, depBatch)
+	}
+	e.db.MustExec(`DELETE FROM subscribers WHERE id = $1`, depGone)
+	e.db.MustExec(`UPDATE subscribers SET name = 'Edited', updated_at = NOW() WHERE id = $1`, depPeer)
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -846,13 +899,14 @@ func TestGateMigrationTwice(t *testing.T) {
 		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address", "ses-bad", "sg1", "sg2", "sg.own",
 			"multi-bad1", "multi-bad2", "single-bad", "same1", "same2", "either.one", "either.two",
 			"later", "sg.other", "deleted", "kept", "failed", "twice-bad",
-			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other", "cleared-old"} {
+			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other", "cleared-old",
+			"replayed-kept", "replayed-gone", "current-peer", "control-peer", "deleted-edited-peer", "dep-holder"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
 		}
 		for _, a := range []string{"delivered", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered",
-			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "single-first", "same.delivered", "same1.now", "same2.now"} {
+			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "released-current", "released-control", "dep-peer", "single-first", "same.delivered", "same1.now", "same2.now"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}
@@ -892,6 +946,14 @@ func TestGateMigrationTwice(t *testing.T) {
 	}
 	if !e.isBounced("twice-bad@ok.test") {
 		t.Fatal("deleting one of two bounces let the address go")
+	}
+	// Deleting the remaining subscriber's records of the replayed batch lets their own address go,
+	// not the deleted subscriber's.
+	if err := e.a.core.DeleteSubscriberBounces(replayKept, ""); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("replayed-kept@ok.test") || !e.isBounced("replayed-gone@ok.test") {
+		t.Fatalf("replayed batch: kept %v, gone %v", e.isBounced("replayed-kept@ok.test"), e.isBounced("replayed-gone@ok.test"))
 	}
 	// hard-owned has a hard record of its own, which lets the address go.
 	var ownedHard int
