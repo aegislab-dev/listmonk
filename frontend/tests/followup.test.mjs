@@ -51,7 +51,7 @@ test('every follow-up text the screens and the server use exists in Korean and E
 });
 
 test('the two languages carry the same follow-up keys and the same placeholders', () => {
-  const names = (o) => Object.keys(o).filter((k) => k.startsWith('campaigns.followup.') || k === 'audit.action.campaign.followup').sort();
+  const names = (o) => Object.keys(o).filter((k) => k.startsWith('campaigns.followup.') || k.startsWith('audit.action.campaign.followup')).sort();
   assert.deepEqual(names(ko), names(en));
   const holes = (s) => (s.match(/\{[A-Za-z]+\}/g) || []).sort().join(',');
   for (const key of names(ko)) assert.equal(holes(ko[key]), holes(en[key]), key);

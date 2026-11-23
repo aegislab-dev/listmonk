@@ -11,7 +11,7 @@ export const AUDIT_ACTIONS = {
     'subscriber.lists_unsubscribe', 'subscriber.gc'],
   import: ['import.start', 'import.stop', 'import.finish'],
   campaign: ['campaign.start', 'campaign.schedule', 'campaign.unschedule', 'campaign.pause', 'campaign.cancel',
-    'campaign.delete', 'campaign.test'],
+    'campaign.delete', 'campaign.test', 'campaign.followup', 'campaign.followup_check'],
   access: ['role.create', 'role.update', 'role.delete', 'team.create', 'team.update', 'team.delete', 'team.members',
     'user.create', 'user.update', 'user.delete', 'user.twofa'],
   settings: ['settings.update'],

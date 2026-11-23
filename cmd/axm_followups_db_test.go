@@ -1436,3 +1436,99 @@ func TestFollowupProgressDoesNotMakeTheCheckStale(t *testing.T) {
 		t.Fatalf("checked %d times", runs)
 	}
 }
+
+// Review 12 (1): the follow-up list is in the trash when the follow-up falls due, and is restored
+// while the check waits for the campaign. The check made without the list is dropped, and the one
+// made with it holds back the people who opened the parent.
+func TestFollowupListRestoredDuringTheCheckIsChecked(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	people := []int{e.ids[2], e.ids[3]}
+	for _, id := range people {
+		e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, id)
+	}
+	if code, _ := e.trash(got.List.ID, e.superAdmin); code != 200 {
+		t.Fatalf("trash: %d", code)
+	}
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
+	row, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer row.Rollback()
+	if _, err := row.Exec(`SELECT 1 FROM campaigns WHERE id = $1 FOR UPDATE`, camp); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []int, 1)
+	go func() {
+		camps, err := e.store.NextCampaigns([]int64{})
+		if err != nil {
+			t.Error(err)
+		}
+		var ids []int
+		for _, c := range camps {
+			ids = append(ids, c.ID)
+		}
+		done <- ids
+	}()
+	waitFor(t, "the check to wait for the campaign", e.lockWaiting("SELECT c.id FROM campaigns c%FOR UPDATE OF c%"))
+	if code, _ := e.restore(got.List.ID, e.superAdmin); code != 200 {
+		t.Fatalf("restore: %d", code)
+	}
+	row.Rollback()
+	ids := <-done
+	wantSame(t, "picked up", ids, []int{camp})
+	wantSame(t, "held", e.held(camp), people)
+	if subs, err := e.store.NextSubscribers(camp, 0, 100); err != nil || len(subs) != 0 {
+		t.Fatalf("read: %d %v", len(subs), err)
+	}
+}
+
+// Review 12 (2): every check before a send is in the audit log, with who it left out by reason
+// and no person.
+func TestFollowupCheckIsAudited(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	run := func() {
+		t.Helper()
+		e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+			t.Fatal(err)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'paused' WHERE id = $1`, camp)
+	}
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[2])
+	run()
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[3])
+	run()
+	var rows []struct {
+		UserType string `db:"user_type"`
+		Count    int    `db:"count"`
+		Detail   string `db:"detail"`
+		Row      string `db:"row"`
+	}
+	if err := e.db.Select(&rows, `SELECT user_type, count, detail::TEXT AS detail, row_to_json(l)::TEXT AS row FROM axm_audit_log l
+		WHERE action = $1 AND target_type = 'campaign' AND target_id = $2 ORDER BY id`, auditCampaignFollowupCk, camp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Count != 1 || rows[1].Count != 2 || rows[0].UserType != models.AuditUserTypeSystem {
+		t.Fatalf("audit rows: %+v", rows)
+	}
+	var d struct {
+		Parent struct {
+			ID int `json:"id"`
+		} `json:"parent"`
+		Reacted int `json:"reacted"`
+		Check   int `json:"check"`
+	}
+	if err := json.Unmarshal([]byte(rows[1].Detail), &d); err != nil || d.Parent.ID != e.campID || d.Reacted != 2 || d.Check != 2 {
+		t.Fatalf("detail %s: %v", rows[1].Detail, err)
+	}
+	for _, r := range rows {
+		if strings.Contains(r.Row, "@") {
+			t.Fatalf("an address in the audit row: %s", r.Row)
+		}
+	}
+}

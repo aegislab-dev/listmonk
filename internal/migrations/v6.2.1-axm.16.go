@@ -38,17 +38,23 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followup_holds (
 );
 -- A follow-up's version counts the changes that make an earlier check before sending stale.
 -- Those are a status change other than the sender starting a due schedule (a pause and resume, a
--- schedule saved or taken back), a new send time, and a list added to or taken off the campaign.
+-- schedule saved or taken back), a new send time, and a list added to, taken off or restored on
+-- the campaign.
 -- The sender only gives a follow-up back, and only reads recipients for it, while its last check
 -- was made for the version it has now.
 CREATE OR REPLACE FUNCTION axm_followup_touch()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    IF TG_OP = 'DELETE' THEN
-        UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = OLD.campaign_id;
-    ELSIF TG_TABLE_NAME = 'campaigns' THEN
+    IF TG_TABLE_NAME = 'campaigns' THEN
         UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = NEW.id;
-    ELSE
+        RETURN NULL;
+    END IF;
+    -- campaign_lists: a row added, taken off, or pointed at another list (a list deleted to the
+    -- trash and restored from it updates list_id).
+    IF TG_OP IN ('DELETE', 'UPDATE') THEN
+        UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = OLD.campaign_id;
+    END IF;
+    IF TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND NEW.campaign_id IS DISTINCT FROM OLD.campaign_id) THEN
         UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = NEW.campaign_id;
     END IF;
     RETURN NULL;
@@ -60,7 +66,7 @@ CREATE TRIGGER axm_followup_touch_campaign AFTER UPDATE OF status, send_at ON ca
         AND NOT (OLD.status = 'scheduled' AND NEW.status = 'running')))
     EXECUTE FUNCTION axm_followup_touch();
 DROP TRIGGER IF EXISTS axm_followup_touch_lists ON campaign_lists;
-CREATE TRIGGER axm_followup_touch_lists AFTER INSERT OR DELETE ON campaign_lists
+CREATE TRIGGER axm_followup_touch_lists AFTER INSERT OR DELETE OR UPDATE OF list_id, campaign_id ON campaign_lists
     FOR EACH ROW EXECUTE FUNCTION axm_followup_touch();
 -- End of AXM campaign follow-ups.`)
 	return err

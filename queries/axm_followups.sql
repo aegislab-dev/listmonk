@@ -38,12 +38,13 @@ WHERE f.campaign_id = $1 OR f.parent_campaign_id = $1;
 -- check is the follow-up list, found by its UUID, so a list that was deleted and restored from
 -- the trash is still the one checked, and a list added to the campaign by hand is never touched.
 -- A follow-up list that was taken off the campaign is not checked (nobody is held back then).
-SELECT f.campaign_id, f.parent_campaign_id, f.condition,
+SELECT f.campaign_id, f.parent_campaign_id, f.condition, c.name, pc.name AS parent_name,
     CASE WHEN l.id IS NOT NULL AND l.axm_filter IS NULL AND EXISTS (
         SELECT 1 FROM campaign_lists x WHERE x.campaign_id = f.campaign_id AND x.list_id = l.id
     ) THEN ARRAY[l.id] ELSE '{}'::INT[] END AS list_ids,
     f.version
 FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
+JOIN campaigns pc ON pc.id = f.parent_campaign_id
 LEFT JOIN lists l ON l.uuid = f.list_uuid
 WHERE (c.status = 'running' OR (c.status = 'scheduled' AND NOW() >= c.send_at))
     AND NOT (c.id = ANY(COALESCE($1::INT[], '{}')))
@@ -51,12 +52,13 @@ ORDER BY f.campaign_id;
 
 -- name: axm-followup-by-ids
 -- The same rows for campaigns the sender just found, whatever made them start.
-SELECT f.campaign_id, f.parent_campaign_id, f.condition,
+SELECT f.campaign_id, f.parent_campaign_id, f.condition, c.name, pc.name AS parent_name,
     CASE WHEN l.id IS NOT NULL AND l.axm_filter IS NULL AND EXISTS (
         SELECT 1 FROM campaign_lists x WHERE x.campaign_id = f.campaign_id AND x.list_id = l.id
     ) THEN ARRAY[l.id] ELSE '{}'::INT[] END AS list_ids,
     f.version
 FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
+JOIN campaigns pc ON pc.id = f.parent_campaign_id
 LEFT JOIN lists l ON l.uuid = f.list_uuid
 WHERE f.campaign_id = ANY($1::INT[]);
 
@@ -158,4 +160,5 @@ UPDATE axm_campaign_followups f SET rechecked_at = NOW(), checked_version = $2, 
     'opted_out', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason IN (2, 3)),
     'blocked', (SELECT COUNT(*) FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.reason = 1),
     'runs', COALESCE((f.recheck->>'runs')::INT, 0) + 1)
-WHERE f.campaign_id = $1;
+WHERE f.campaign_id = $1
+RETURNING f.recheck;

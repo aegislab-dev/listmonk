@@ -55,6 +55,7 @@ const (
 	auditCampaignDelete     = "campaign.delete"
 	auditCampaignTest       = "campaign.test"
 	auditCampaignFollowup   = "campaign.followup"
+	auditCampaignFollowupCk = models.AuditActionFollowupCheck
 
 	auditRoleCreate     = "role.create"
 	auditRoleUpdate     = "role.update"

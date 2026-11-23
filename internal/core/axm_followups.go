@@ -166,6 +166,8 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 type followupDue struct {
 	CampaignID int             `db:"campaign_id"`
 	ParentID   int             `db:"parent_campaign_id"`
+	Name       string          `db:"name"`
+	ParentName string          `db:"parent_name"`
 	Condition  json.RawMessage `db:"condition"`
 	ListIDs    pq.Int64Array   `db:"list_ids"`
 	Version    int             `db:"version"`
@@ -194,6 +196,31 @@ func (c *Core) FollowupsToCheck(ctx context.Context, ids []int) ([]int, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// auditFollowupCheck writes the audit row of one check before a follow-up starts, in its transaction.
+func (c *Core) auditFollowupCheck(tx *sqlx.Tx, f followupDue, held int, recorded json.RawMessage) error {
+	var rc models.FollowupRecheck
+	if err := json.Unmarshal(recorded, &rc); err != nil {
+		return err
+	}
+	detail, err := json.Marshal(map[string]any{
+		"parent":    map[string]any{"id": f.ParentID, "name": f.ParentName},
+		"reacted":   rc.Reacted,
+		"opted_out": rc.OptedOut,
+		"blocked":   rc.Blocked,
+		"check":     rc.Runs,
+	})
+	if err != nil {
+		return err
+	}
+	name := f.Name
+	if r := []rune(name); len(r) > 200 {
+		name = string(r[:200])
+	}
+	_, err = tx.Stmtx(c.q.AxmInsertAudit).Exec(nil, "system", "system", models.AuditUserTypeSystem, models.AuditActionFollowupCheck,
+		"campaign", f.CampaignID, name, held, string(detail))
+	return err
 }
 
 // FollowupStale says whether the campaign is a follow-up whose last check is not for the campaign
@@ -283,7 +310,13 @@ func (c *Core) recheckOne(ctx context.Context, f followupDue, s models.ReactionS
 	if version != f.Version {
 		return 0, false, nil
 	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupRecord).ExecContext(ctx, f.CampaignID, f.Version); err != nil {
+	var recorded json.RawMessage
+	if err := tx.Stmtx(c.q.AxmFollowupRecord).GetContext(ctx, &recorded, f.CampaignID, f.Version); err != nil {
+		return 0, false, err
+	}
+	// The check goes to the audit log with the campaign, so who was left out at each start can be
+	// read back (counts only, no person).
+	if err := c.auditFollowupCheck(tx, f, held, recorded); err != nil {
 		return 0, false, err
 	}
 	if err := tx.Commit(); err != nil {
