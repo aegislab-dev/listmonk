@@ -32,6 +32,23 @@ describe('Address rules', () => {
       .its('body.data.results').should('have.length', 1);
   });
 
+  it('keeps a name outside ASCII whole when the domain fix is applied', () => {
+    const stamp = Date.now();
+    ['리뷰', 'réview'].forEach((name) => {
+      cy.loginAndVisit('/admin/subscribers');
+      cy.get('[data-cy=btn-new]').click();
+      cy.get('input[name=email]').type(`${name}${stamp}@dept.example.con`);
+      cy.get('input[name=name]').type('Gate Intl');
+      cy.get('.modal-card-foot button[type=submit]').click();
+      cy.get('[data-cy=addr-suggest-apply]').click();
+      cy.get('input[name=email]').should('have.value', `${name}${stamp}@dept.example.com`);
+      cy.get('.modal-card-foot button[type=submit]').click();
+      cy.get('.modal-card').should('not.exist');
+      cy.request({ url: '/api/subscribers', qs: { query: `email = '${name}${stamp}@dept.example.com'` } })
+        .its('body.data.results').should('have.length', 1);
+    });
+  });
+
   it('refuses a Gmail name that cannot exist, with no suggestion button', () => {
     cy.loginAndVisit('/admin/subscribers');
     cy.get('[data-cy=btn-new]').click();
@@ -82,6 +99,7 @@ describe('Address rules', () => {
     cy.get('[data-cy=map-mismatch]').should('not.exist');
     cy.request('/api/import/subscribers').its('body.data').should((d) => {
       expect(d.imported).to.eq(2);
+      expect(d.total).to.eq(6);
       expect(d.axm_rejected_total).to.eq(4);
     });
     cy.request('/api/import/subscribers').its('body.data.axm_import_id').then((id) => cy.request(`/api/import/subscribers/rejected?id=${id}`)).then((resp) => {
@@ -141,6 +159,8 @@ describe('Address rules', () => {
     cy.request('/api/import/subscribers').its('body.data').should((d) => {
       expect(d.axm_excluded).to.eq(5);
       expect(d.axm_rejected_total).to.eq(5);
+      // The total counts the left out rows, as the raw upload of the file does.
+      expect(d.total).to.eq(6);
     });
     cy.get('[data-cy=map-mismatch]').should('not.exist');
     // The box and its CSV are the server's: a reload keeps them, with the rows of the file the person chose.
@@ -148,6 +168,41 @@ describe('Address rules', () => {
     cy.get('[data-cy=import-rejected]').should('contain', '5');
     cy.request('/api/import/subscribers').its('body.data.axm_import_id').then((id) => cy.request(`/api/import/subscribers/rejected?id=${id}`))
       .its('body').should('contain', '\n3,').and('contain', '\n4,').and('contain', '\n5,').and('contain', '\n6,not-an-address').and('contain', '\n7,');
+  });
+
+  it('the review screen download holds the malformed rows too, also when no row is left to import', () => {
+    const stamp = Date.now();
+    cy.intercept('POST', '/api/subscribers/address-check', (req) => req.reply({
+      data: {
+        total: req.body.emails.length,
+        risky: 2,
+        confirmed: 2,
+        warning: 0,
+        unknown: 0,
+        pending: 0,
+        classes: {},
+        issues: { 0: ['typo'], 1: ['provider'] },
+        suggest: { 0: `all-typo-${stamp}@gmail.com` },
+      },
+    }));
+    cy.loginAndVisit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('.list-selector input').type(listName);
+    cy.contains('.list-selector .autocomplete a', listName).click();
+    const csv = `email,name\nall-typo-${stamp}@gmail.con,Typo\nabc@gmail.com,Short\nnot-an-address,Broken\n`;
+    cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(csv), fileName: 'allbad.csv', mimeType: 'text/csv' }, { force: true });
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-address-fixed]').should('contain', '2');
+    submit().should('be.disabled');
+    cy.get('[data-cy=map-address-download]').click();
+    cy.readFile('cypress/downloads/allbad-excluded.csv', 'utf8').then((text) => {
+      const lines = text.replace(/^\uFEFF/, '').split('\r\n').filter(Boolean);
+      expect(lines.slice(1).map((line) => Number(line.split(',')[0]))).to.deep.equal([2, 3, 4]);
+      expect(lines[3]).to.match(/^4,not-an-address,/);
+    });
   });
 
   // The same file gives the same refused rows, numbered alike, whether it goes as it is or

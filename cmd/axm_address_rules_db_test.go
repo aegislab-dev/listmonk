@@ -98,6 +98,11 @@ func TestAddressRulesSingleAdd(t *testing.T) {
 			t.Errorf("%s: must not be stored", email)
 		}
 	}
+	// A name outside ASCII: the header is percent-encoded, the message keeps it as it is.
+	if code, msg := add("리뷰@dept.example.con"); code != http.StatusBadRequest || !strings.Contains(msg, "리뷰@dept.example.com") ||
+		e.lastSuggest != "%EB%A6%AC%EB%B7%B0@dept.example.com" {
+		t.Errorf("a Korean name: %d %q, header %q", code, msg, e.lastSuggest)
+	}
 	for _, email := range []string{"abc@gmail.com", "john_smith77@gmail.com", "john-smith77@gmail.com", "abc12@googlemail.com"} {
 		code, msg := add(email)
 		if code != http.StatusBadRequest || !strings.Contains(msg, "Gmail names are 6–30") {

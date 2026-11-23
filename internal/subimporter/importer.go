@@ -628,9 +628,14 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		return errors.New("empty file")
 	}
 
-	// Exclude the header from count.
+	// Exclude the header from count. The rows the column mapping left out for their address
+	// are not in the file but are rows of the import, as their refusal is counted: the total
+	// is on the same footing as the raw upload of the same file (LST-53).
 	s.im.Lock()
 	s.im.status.Total = numLines - 1
+	if s.id == s.im.importSeq {
+		s.im.status.Total += s.im.status.AxmExcluded
+	}
 	s.im.Unlock()
 
 	// Rewind, now that we've done a linecount on the same handler.

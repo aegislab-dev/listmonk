@@ -1181,7 +1181,7 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 
 | 길 | 동작 |
 |---|---|
-| 관리자·API 단건 추가 `POST /api/subscribers` | 400, 메시지에 사유와 제안 주소 |
+| 관리자·API 단건 추가 `POST /api/subscribers` | 400, 메시지에 사유와 제안 주소. 헤더 `X-Axm-Address-Rule`(`provider`·`typo`)과 `X-Axm-Suggest`(제안 주소, 퍼센트 인코딩: ASCII 밖의 바이트·제어 문자·`%`만 `%XX`로 바꾼다. `decodeURIComponent`로 읽는다. 폼은 제안의 도메인만 가져와 입력한 이름 앞부분은 그대로 둔다) |
 | 주소 수정 `PUT`·`PATCH /api/subscribers/:id` | **주소가 바뀔 때만** 검사. 이름 등 다른 항목만 고치는 저장은 막지 않는다(옛 주소가 규칙에 걸려도 편집 가능) |
 | 공개 구독 폼 | 400(규칙에 걸린 주소는 사람이 고칠 수 있게 이유를 알린다) |
 | 대량 가져오기 (구독 모드) | 그 행을 넣지 않고 사유별로 센다. 차단 모드는 형식만(무엇이든 차단할 수 있어야 한다) |
@@ -1190,8 +1190,9 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 
 ### 가져오기 결과
 
-- 가져오기 상태(`GET /api/import/subscribers`)에 `axm_rejected`(사유별: `format` `domain` `provider` `typo`)와 `axm_rejected_total`. 사유 `domain`은 설정의 도메인 허용·차단 목록에 걸린 행이다.
-- `GET /api/import/subscribers/rejected`(`subscribers:import`): 거절된 행을 CSV(행 번호·이메일·사유·제안 주소, UTF-8 BOM)로 준다. 서버는 마지막 가져오기의 거절 행을 최대 50,000개 메모리에 두고 다음 가져오기가 시작되면 버린다. 건수는 전체를 센다. 값이 `=+-@`로 시작하면 앞에 `'`를 붙여 스프레드시트가 수식으로 읽지 않게 한다.
+- 가져오기 상태(`GET /api/import/subscribers`)에 `axm_rejected`(사유별: `format` `domain` `provider` `typo`, 열 맞춤이 뺀 행의 `dead` `nullmx` 포함)와 `axm_rejected_total`, 열 맞춤이 업로드 전에 뺀 행 수 `axm_excluded`, 이 가져오기의 번호 `axm_import_id`. 사유 `domain`은 설정의 도메인 허용·차단 목록에 걸린 행이다. `total`은 열 맞춤 업로드에서도 뺀 행을 더한 수라 같은 파일을 원본으로 올린 것과 기준이 같다.
+- 열 맞춤 업로드는 요청 매개변수에 `axm_excluded`(뺀 행: 원본 행 번호·주소·사유·제안)와 `axm_source_rows`(변환된 행마다의 원본 행 번호)를 함께 보낸다. 서버는 뺀 행을 거절 행과 함께 세고, 서버가 거절한 행도 원본 행 번호로 적는다. 행 번호는 스프레드시트 기준(헤더 = 1, 빈 줄도 센다, 셀 안 줄바꿈은 한 행)이다.
+- `GET /api/import/subscribers/rejected?id=<axm_import_id>`(`subscribers:import`): 그 가져오기의 거절된 행을 CSV(행 번호·이메일·사유·제안 주소, UTF-8 BOM)로 준다. `id`는 필수이고 가져오기 상태의 `axm_import_id`를 쓴다. 번호가 없거나 마지막 가져오기의 번호가 아니면(다음 가져오기가 시작됐거나 앱이 다시 켜졌으면) 410, 가져오기를 시작한 사용자가 아니고 `subscribers:get_all`도 없으면 403. 서버는 마지막 가져오기의 거절 행을 최대 50,000개 메모리에 두고 다음 가져오기가 시작되면 버린다. 건수는 전체를 센다. 값이 `=+-@`로 시작하면 앞에 `'`를 붙여 스프레드시트가 수식으로 읽지 않게 한다.
 - 감사 기록 `import.finish`의 detail에 `rejected`(사유별 건수)가 들어간다. 거절된 주소는 쓰지 않는다.
 - 이미 있는 구독자의 행도 규칙에 걸리면 적용하지 않는다(새 리스트에 붙지 않는다).
 

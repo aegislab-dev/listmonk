@@ -37,14 +37,31 @@ func (a *App) addressRule(email string) (err error, rule, suggest string) {
 // markAddressRule tells the form that a 400 is an address rule and belongs under the address
 // field (X-Axm-Address-Rule), and sends the corrected address of a misspelled domain
 // (X-Axm-Suggest) so that the form can offer a button without reading it out of the message.
+// The suggestion is percent-encoded (headerEscape): a header is read as Latin-1, so a name
+// such as 리뷰 or réview would come back to the browser as other characters.
 func markAddressRule(c echo.Context, rule, suggest string) {
 	if rule != addrcheck.ClassProvider && rule != addrcheck.ClassTypo {
 		return
 	}
 	c.Response().Header().Set("X-Axm-Address-Rule", rule)
 	if suggest != "" {
-		c.Response().Header().Set("X-Axm-Suggest", suggest)
+		c.Response().Header().Set("X-Axm-Suggest", headerEscape(suggest))
 	}
+}
+
+// headerEscape percent-encodes the bytes of s that a header cannot carry as they are (UTF-8,
+// controls) and the percent sign itself, so that decodeURIComponent gives s back. An ASCII
+// address without a percent sign is sent unchanged.
+func headerEscape(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c >= 0x7f || c == '%' {
+			b.WriteString("%" + strings.ToUpper(strconv.FormatInt(int64(c)+0x100, 16)[1:]))
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // addressRuleError returns the 400 for an address that breaks a rule, or nil.

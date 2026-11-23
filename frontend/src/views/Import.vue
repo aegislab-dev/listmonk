@@ -439,14 +439,23 @@ export default Vue.extend({
       return out.slice(0, LIMITS.rows);
     },
 
+    // The rows the review leaves out for their address, for the download on the review screen:
+    // the address check's rows and the rows that are not an address at all, by source row. The
+    // same rows the box that ends the import counts.
     excludedRows() {
       const reasons = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING];
-      return (this.csvExclude || []).map((row) => ({
-        row,
-        email: this.addr.emails[row] || '',
-        reasons: (this.addr.issues[row] || []).filter((c) => reasons.includes(c)).map((c) => this.$t(`addressCheck.class.${c}`)),
-        suggest: (this.addr.suggest || {})[row] || '',
-      }));
+      const format = [this.$t('addressCheck.class.format')];
+      return [
+        ...(this.csvExclude || []).map((row) => ({
+          row,
+          email: this.addr.emails[row] || '',
+          reasons: (this.addr.issues[row] || []).filter((c) => reasons.includes(c)).map((c) => this.$t(`addressCheck.class.${c}`)),
+          suggest: (this.addr.suggest || {})[row] || '',
+        })),
+        ...(this.csvInvalidRows || []).map(({ row, email }) => ({
+          row, email, reasons: format, suggest: '',
+        })),
+      ].sort((a, b) => a.row - b.row);
     },
 
     saveCSV(csv, name) {

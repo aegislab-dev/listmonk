@@ -207,6 +207,15 @@ import ListSelector from '../components/ListSelector.vue';
 import CopyText from '../components/CopyText.vue';
 import SubscriberActivity from '../components/SubscriberActivity.vue';
 
+// The suggestion header is percent-encoded by the server, so a name outside ASCII arrives whole.
+function decodeSuggest(value) {
+  try {
+    return value ? decodeURIComponent(value) : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 export default Vue.extend({
   components: {
     ListSelector,
@@ -254,7 +263,7 @@ export default Vue.extend({
       if (res && res.headers && res.headers['x-axm-address-rule']) {
         if (sent !== this.form.email) return;
         this.addrError = msg;
-        this.addrSuggest = res.headers['x-axm-suggest'] || '';
+        this.addrSuggest = decodeSuggest(res.headers['x-axm-suggest']);
         return;
       }
       this.$utils.toast(msg, 'is-danger');
@@ -266,8 +275,10 @@ export default Vue.extend({
       this.addrSuggest = '';
     },
 
+    // Only the domain is taken from the suggestion: the name is the one the person typed.
     applySuggest() {
-      this.form.email = this.addrSuggest;
+      const at = this.form.email.lastIndexOf('@');
+      this.form.email = at < 0 ? this.addrSuggest : `${this.form.email.slice(0, at)}@${this.addrSuggestDomain}`;
       this.addrSuggest = '';
       this.addrError = '';
     },

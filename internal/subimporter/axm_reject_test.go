@@ -3,6 +3,8 @@ package subimporter
 import (
 	"encoding/csv"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -73,5 +75,27 @@ func TestRowNumbersFollowTheChosenFile(t *testing.T) {
 	}
 	if s.rowOf(4, 12) != 12 || (&Session{}).rowOf(1, 6) != 6 {
 		t.Fatal("without a source the line of the uploaded file is used")
+	}
+}
+
+// The total of a mapped upload counts the rows the column mapping left out, as the raw upload
+// of the same file counts them: the box of refusals and the total are on one footing.
+func TestMappedTotalCountsExcludedRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mapped.csv")
+	if err := os.WriteFile(path, []byte("email,name\ngood@example.org,A\nbad@gmail.con,B\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	im := &Importer{status: Status{Status: StatusNone}, importSeq: 1}
+	s, err := im.NewSession(SessionOpt{
+		Mode: ModeSubscribe, AxmExcluded: []ExcludedRow{{Row: 3, Email: "not-an-address", Reason: RejectFormat}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LoadCSV(path, ','); err != nil {
+		t.Fatal(err)
+	}
+	if st := im.GetStats(); st.Total != 3 || st.AxmRejectedTotal != 2 || st.AxmExcluded != 1 {
+		t.Fatalf("total %d, refused %d, left out %d", st.Total, st.AxmRejectedTotal, st.AxmExcluded)
 	}
 }
