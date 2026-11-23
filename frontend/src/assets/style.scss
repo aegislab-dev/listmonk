@@ -435,6 +435,11 @@ body.is-noscroll {
     margin: 0 10px;
     display: inline-block;
   }
+  // Dimmed but focusable, so its tooltip (the reason) shows on hover and focus.
+  .actions a.delete-blocked {
+    cursor: not-allowed;
+    color: $grey-light;
+  }
   .actions a[data-disabled],
   .actions .icon[data-disabled] {
     pointer-events: none;
