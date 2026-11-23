@@ -1278,6 +1278,10 @@ DECLARE
     f RECORD;
     lid INT;
 BEGIN
+    -- A follow-up being made of this campaign takes this lock exclusively just before it commits,
+    -- so it waits for this reaction to be committed (and keeps it afterwards), and a reaction
+    -- recorded meanwhile waits for it and then sees it below.
+    PERFORM pg_advisory_xact_lock_shared(4747, NEW.campaign_id);
     FOR f IN SELECT fu.* FROM axm_campaign_followups fu JOIN campaigns c ON c.id = fu.campaign_id
         WHERE fu.parent_campaign_id = NEW.campaign_id AND c.status NOT IN ('finished', 'cancelled')
     LOOP
@@ -1312,4 +1316,20 @@ CREATE TRIGGER axm_followup_reaction_view AFTER INSERT ON campaign_views
 DROP TRIGGER IF EXISTS axm_followup_reaction_click ON link_clicks;
 CREATE TRIGGER axm_followup_reaction_click AFTER INSERT ON link_clicks
     FOR EACH ROW WHEN (NEW.subscriber_id IS NOT NULL) EXECUTE FUNCTION axm_followup_reaction();
+-- Send records of an original campaign written after a follow-up of it was made (they are saved
+-- shortly after the messages went out): the people are kept for the follow-up as well.
+CREATE OR REPLACE FUNCTION axm_followup_recipients()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock_shared(4747, c.campaign_id) FROM (SELECT DISTINCT campaign_id FROM axm_new_sends) c;
+    INSERT INTO axm_campaign_followup_members (campaign_id, subscriber_id, made_for)
+    SELECT f.campaign_id, n.subscriber_id, FALSE
+    FROM axm_new_sends n JOIN axm_campaign_followups f ON f.parent_campaign_id = n.campaign_id
+    ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_followup_recipients ON axm_campaign_sends;
+CREATE TRIGGER axm_followup_recipients AFTER INSERT ON axm_campaign_sends
+    REFERENCING NEW TABLE AS axm_new_sends FOR EACH STATEMENT EXECUTE FUNCTION axm_followup_recipients();
 -- End of AXM campaign follow-ups.

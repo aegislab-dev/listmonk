@@ -271,6 +271,9 @@ func (c *Core) MakeReactionList(ctx context.Context, id int, s models.ReactionSe
 	// AXM (LST-47): a reaction recorded while the transaction ran did not see the new follow-up
 	// (its trigger looked before the commit). Keep what is on record now as well.
 	if out.Followup != nil {
+		if _, err := c.q.AxmFollowupRecipientsNow.ExecContext(ctx, out.Followup.ID, out.Campaign.ID); err != nil {
+			c.log.Printf("error keeping the recipients for follow-up campaign %d: %v", out.Followup.ID, err)
+		}
 		if _, err := c.q.AxmFollowupReactionsNow.ExecContext(ctx, out.Followup.ID, out.Campaign.ID); err != nil {
 			c.log.Printf("error keeping the reactions for follow-up campaign %d: %v", out.Followup.ID, err)
 		}

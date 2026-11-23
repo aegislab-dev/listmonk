@@ -1859,3 +1859,67 @@ func TestFollowupOpenWhileTheDraftIsMadeIsKept(t *testing.T) {
 	}
 	wantSame(t, "held", e.held(got.Followup.ID), []int{charlie})
 }
+
+// Review 19 (1): Charlie's open is being recorded (its trigger ran) while the draft is made, and is
+// committed only after the draft's own copy would have run. The draft waits for it, so the open is
+// kept and he stays held back once the statistics are cleared and the send records expire.
+func TestFollowupOpenCommittedAfterTheDraftIsKept(t *testing.T) {
+	e := newFollowupEnv(t)
+	charlie := e.ids[2]
+	view, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Rollback()
+	if _, err := view.Exec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		code int
+		data json.RawMessage
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, data := e.sendRequest(true, e.admin, e.campID, `{"open":"no","no_team":true,"followup":true}`)
+		done <- result{code, data}
+	}()
+	waitFor(t, "the draft to wait for the open", e.lockWaiting("%pg_advisory_xact_lock(4747%"))
+	if err := view.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	var got models.ReactionResult
+	if r.code != http.StatusOK || json.Unmarshal(r.data, &got) != nil || got.Followup == nil {
+		t.Fatalf("made: %d %s", r.code, r.data)
+	}
+	wantSame(t, "made for", e.members(got.List.ID), []int{charlie, e.ids[3]})
+	e.db.MustExec(`DELETE FROM campaign_views WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(got.Followup.ID), []int{charlie})
+}
+
+// Review 19 (2): Daniel's send record of the original is written after the draft was made. He
+// is added to the follow-up list by hand and opens the original: he is held back.
+func TestFollowupSendRecordWrittenAfterTheDraftCounts(t *testing.T) {
+	t.Parallel()
+	e := newFollowupEnv(t)
+	daniel := e.ids[3]
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, daniel)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	wantSame(t, "made for", e.members(got.List.ID), []int{e.ids[2]})
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, daniel, got.List.ID)
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+	if _, info := e.callGet(e.admin, got.Followup.ID); info.Pending == nil || info.Pending.Reacted != 1 {
+		t.Fatalf("pending: %+v", info.Pending)
+	}
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(got.Followup.ID), []int{daniel})
+}

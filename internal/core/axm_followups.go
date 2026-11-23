@@ -165,6 +165,11 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 	if _, err := tx.Stmtx(c.q.AxmFollowupReactionsNow).ExecContext(ctx, id, out.Campaign.ID); err != nil {
 		return err
 	}
+	// Last before the commit: wait for the reactions to the original being recorded now, so the
+	// copy made right after the commit keeps them (see axm_followup_reaction).
+	if _, err := tx.Stmtx(c.q.AxmFollowupLockOriginal).ExecContext(ctx, out.Campaign.ID); err != nil {
+		return err
+	}
 	// Made while opens and clicks are not recorded per subscriber: that time is noted (it is
 	// otherwise noted when the app starts with tracking off).
 	if !c.tracking() {
@@ -334,8 +339,11 @@ func (c *Core) recheckOne(ctx context.Context, f followupDue, s models.ReactionS
 	}
 	defer tx.Rollback()
 
-	// Reactions on record now are kept first, so the judgement below and every later one sees
-	// them even once their records are cleared or expire.
+	// Who got the original and the reactions on record now are kept first, so the judgement below
+	// and every later one sees them even once their records are cleared or expire.
+	if _, err := tx.Stmtx(c.q.AxmFollowupRecipientsNow).ExecContext(ctx, f.CampaignID, f.ParentID); err != nil {
+		return 0, false, err
+	}
 	if _, err := tx.Stmtx(c.q.AxmFollowupReactionsNow).ExecContext(ctx, f.CampaignID, f.ParentID); err != nil {
 		return 0, false, err
 	}

@@ -258,6 +258,19 @@ ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
     clicked = axm_campaign_followup_reactions.clicked OR EXCLUDED.clicked
     WHERE NOT (axm_campaign_followup_reactions.opened >= EXCLUDED.opened AND axm_campaign_followup_reactions.clicked >= EXCLUDED.clicked);
 
+-- name: axm-followup-lock-original
+-- Taken by the transaction that makes a follow-up, just before it commits. It waits for the
+-- reactions to the original being recorded now (axm_followup_reaction takes it shared), which are
+-- then kept once the follow-up is committed, and makes the ones that come later wait to see it.
+SELECT pg_advisory_xact_lock(4747, $1);
+
+-- name: axm-followup-recipients-now
+-- Keeps for follow-up $1 the people of the send records of original $2 that are not kept yet (send
+-- records written after the follow-up was made, before axm_followup_recipients saw it).
+INSERT INTO axm_campaign_followup_members (campaign_id, subscriber_id, made_for)
+SELECT $1::INT, cs.subscriber_id, FALSE FROM axm_campaign_sends cs WHERE cs.campaign_id = $2
+ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
+
 -- name: axm-tracking-off-start
 -- The app starts with opens and clicks not recorded per subscriber: a time without tracking
 -- begins, unless one is open already.
