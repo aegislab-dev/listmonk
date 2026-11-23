@@ -199,7 +199,7 @@ func axm16SES(db *sqlx.DB) error {
 	for {
 		var rows []axm16Bounce
 		if err := db.Select(&rows, `SELECT `+axm16Columns+` FROM bounces b
-			WHERE b.source = 'ses' AND b.type IN ('hard', 'complaint') AND b.id > $1 ORDER BY b.id LIMIT 500`, last); err != nil {
+			WHERE b.source = 'ses' AND b.id > $1 ORDER BY b.id LIMIT 500`, last); err != nil {
 			return err
 		}
 		if len(rows) == 0 {
@@ -215,18 +215,28 @@ func axm16SES(db *sqlx.DB) error {
 }
 
 func axm16OneSES(db *sqlx.DB, b axm16Bounce) error {
+	permanent := axm16Permanent(b.Type)
 	var m axm16SESMail
 	if err := json.Unmarshal(b.Meta, &m); err != nil {
 		// Not a notification: the subscriber's own address if it is surely the one.
+		if !permanent {
+			return nil
+		}
 		_, err := db.Exec(axm16Mailed, b.Type, b.ID, b.SubID, b.CampaignID)
 		return err
 	}
 	if r := axm16Clean(m.Recipient); r != "" {
+		if !permanent {
+			return nil
+		}
 		_, err := db.Exec(axm16Link, r, b.Type, b.ID, b.SubID)
 		return err
 	}
-	named, known := axm16SESRecipients(m, b.Type)
+	recips, known := axm16SESRecipients(m, b.Type)
 	if !known {
+		if !permanent {
+			return nil
+		}
 		_, err := db.Exec(axm16Mailed, b.Type, b.ID, b.SubID, b.CampaignID)
 		return err
 	}
@@ -234,36 +244,39 @@ func axm16OneSES(db *sqlx.DB, b axm16Bounce) error {
 	if len(m.Mail.Destination) > 0 {
 		first = axm16Clean(m.Mail.Destination[0])
 	}
-	for _, r := range named {
-		if r == first {
-			if _, err := db.Exec(axm16Link, r, b.Type, b.ID, b.SubID); err != nil {
+	for _, r := range recips {
+		// The first recipient's bounce of the record's own type: that record.
+		if r.Email == first && r.Type == b.Type {
+			if _, err := db.Exec(axm16Link, r.Email, b.Type, b.ID, b.SubID); err != nil {
 				return err
 			}
 			continue
 		}
 		var owner sql.NullInt64
-		if err := db.Get(&owner, `SELECT (SELECT id FROM subscribers WHERE email = $1)`, r); err != nil {
+		if err := db.Get(&owner, `SELECT (SELECT id FROM subscribers WHERE email = $1)`, r.Email); err != nil {
 			return err
 		}
-		if !owner.Valid || int(owner.Int64) == b.SubID {
-			if _, err := db.Exec(axm16Unlinked, r, b.Type); err != nil {
+		if !owner.Valid {
+			if _, err := db.Exec(axm16Unlinked, r.Email, r.Type); err != nil {
 				return err
 			}
 			continue
 		}
-		// The record of its own, made once for this record and recipient.
+		// A record of its own for the subscriber who has the address, of the recipient's own type
+		// (the collector typed the notification by its first recipient), made once for this
+		// record and recipient.
 		var id int
 		err := db.Get(&id, `SELECT id FROM bounces WHERE source = 'ses' AND meta->>'axm_from' = $1::TEXT
-			AND meta->>'axm_recipient' = $2 ORDER BY id LIMIT 1`, strconv.Itoa(b.ID), r)
+			AND meta->>'axm_recipient' = $2 ORDER BY id LIMIT 1`, strconv.Itoa(b.ID), r.Email)
 		if err == sql.ErrNoRows {
 			err = db.Get(&id, `INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at)
-				SELECT $1, campaign_id, type, source, meta || jsonb_build_object('axm_recipient', $2::TEXT, 'axm_from', $3::TEXT), created_at
-				FROM bounces WHERE id = $4 RETURNING id`, owner.Int64, r, strconv.Itoa(b.ID), b.ID)
+				SELECT $1, campaign_id, $5::bounce_type, source, meta || jsonb_build_object('axm_recipient', $2::TEXT, 'axm_from', $3::TEXT), created_at
+				FROM bounces WHERE id = $4 RETURNING id`, owner.Int64, r.Email, strconv.Itoa(b.ID), b.ID, r.Type)
 		}
 		if err != nil {
 			return err
 		}
-		if _, err := db.Exec(axm16Link, r, b.Type, id, owner.Int64); err != nil {
+		if _, err := db.Exec(axm16Link, r.Email, r.Type, id, owner.Int64); err != nil {
 			return err
 		}
 	}
@@ -291,48 +304,55 @@ type axm16SESMail struct {
 	} `json:"mail"`
 }
 
-// axm16SESRecipients are the addresses of an SES notification that a record of the type typ is
-// about, by the rules of the webhook (internal/bounce/webhooks/ses.go sesRecipients): the bounced
-// recipients of that type (a delayed one in a Permanent bounce is soft), or the one complaining
-// recipient (several are only the ones who may have complained: none), else the mail's only
-// recipient. known is false when the notification has no recipients at all (not a notification).
-func axm16SESRecipients(m axm16SESMail, typ string) (named []string, known bool) {
+// axm16Recipient is an address of an SES notification with its own type.
+type axm16Recipient struct{ Email, Type string }
+
+// axm16SESRecipients are the addresses of an SES notification that had a hard bounce or a
+// complaint, each with its own type, by the rules of the webhook (internal/bounce/webhooks/ses.go
+// sesRecipients): each bounced recipient typed by its own status (a delayed one in a Permanent
+// bounce is soft; 5.4.4 in a Transient one is hard, whatever the first recipient had: the
+// collector before typed the whole notification, and so the record, by the first), or the one
+// complaining recipient (several are only the ones who may have complained: none). With none
+// named, the mail's only recipient, of the record's type. known is false when the notification
+// has no recipients at all (not a notification).
+func axm16SESRecipients(m axm16SESMail, typ string) (out []axm16Recipient, known bool) {
 	seen := map[string]bool{}
-	add := func(e string) {
-		if e = axm16Clean(e); e != "" && !seen[e] {
-			seen[e] = true
-			named = append(named, e)
-		}
-	}
-	if typ == "complaint" {
+	if typ == "complaint" || m.NotifType == "Complaint" {
+		var named []string
 		for _, r := range m.Complaint.Recipients {
-			add(r.Email)
+			if e := axm16Clean(r.Email); e != "" && !seen[e] {
+				seen[e] = true
+				named = append(named, e)
+			}
 		}
 		switch {
 		case len(named) == 1:
-			return named, true
+			return []axm16Recipient{{named[0], "complaint"}}, true
 		case len(named) > 1:
 			return nil, true
 		}
 	} else {
 		listed := false
 		for _, r := range m.Bounce.Recipients {
-			if axm16Clean(r.Email) == "" {
+			e := axm16Clean(r.Email)
+			if e == "" || seen[e] {
 				continue
 			}
+			seen[e] = true
 			listed = true
-			if axm16SESType(m.Bounce.BounceType, r.Action, r.Status) == typ {
-				add(r.Email)
+			if t := axm16SESType(m.Bounce.BounceType, r.Action, r.Status); t == "hard" {
+				out = append(out, axm16Recipient{e, t})
 			}
 		}
 		if listed {
-			return named, true
+			return out, true
 		}
 	}
 	if len(m.Mail.Destination) == 1 {
-		if e := axm16Clean(m.Mail.Destination[0]); e != "" {
-			return []string{e}, true
+		if e := axm16Clean(m.Mail.Destination[0]); e != "" && axm16Permanent(typ) {
+			return []axm16Recipient{{e, typ}}, true
 		}
+		return nil, true
 	}
 	// A mail to several recipients that names none: nobody. No recipients at all: not known.
 	return nil, len(m.Mail.Destination) > 1
@@ -469,22 +489,53 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 			}
 		}
 	}
-	// A hard bounce of the batch that no record is left for: its subscriber was deleted (with
-	// their bounce records), or there was none. The address bounced all the same and is nobody's
-	// now. An address a subscriber has now is left to that subscriber's records: a person may
-	// have deleted the record to let it go.
+	// A hard bounce of the batch that no record is left for. Either its subscriber was deleted
+	// (with their bounce records) or there was none: the address bounced all the same and is
+	// kept. Or a person deleted the record to let the address go: it is not kept. What is left
+	// tells them apart as far as it can:
+	//   - A subscriber has the address now: kept when they were added after the bounce (it was a
+	//     deleted subscriber's), else left to that subscriber's own records.
+	//   - Nobody has it: not kept when a subscriber may be the one whose record was deleted: one
+	//     added before the bounce, whose address changed since, with no record in this batch and
+	//     no hard bounce or complaint on record, and who got the campaign of the bounce (when its
+	//     sends are on record). Else kept.
+	subs := make(pq.Int64Array, 0, len(rows))
+	for _, b := range rows {
+		subs = append(subs, int64(b.SubID))
+	}
 	for _, e := range events {
 		a := axm16Clean(e.Email)
 		if a == "" || accounted[a] || e.typ() != "hard" {
 			continue
 		}
 		accounted[a] = true
-		var owner sql.NullInt64
-		if err := db.Get(&owner, `SELECT (SELECT id FROM subscribers WHERE email = $1)`, a); err != nil {
+		at, _ := strconv.ParseInt(strings.Trim(string(e.TS), `"`), 10, 64)
+		var owner struct {
+			ID    sql.NullInt64 `db:"id"`
+			Newer bool          `db:"newer"`
+		}
+		if err := db.Get(&owner, `SELECT (SELECT id FROM subscribers WHERE email = $1) AS id,
+			COALESCE((SELECT created_at > to_timestamp($2) FROM subscribers WHERE email = $1), false) AS newer`, a, at); err != nil {
 			return err
 		}
-		if owner.Valid {
+		if owner.ID.Valid && !owner.Newer {
 			continue
+		}
+		if !owner.ID.Valid {
+			var maybe bool
+			if err := db.Get(&maybe, `SELECT EXISTS (
+				SELECT 1 FROM subscribers s JOIN axm_email_changes c ON c.subscriber_id = s.id
+				WHERE s.created_at <= to_timestamp($1) AND c.changed_at >= to_timestamp($1)
+					AND NOT (s.id = ANY($2::INT[]))
+					AND NOT EXISTS (SELECT 1 FROM bounces x WHERE x.subscriber_id = s.id AND x.type IN ('hard', 'complaint'))
+					AND (NOT EXISTS (SELECT 1 FROM axm_campaign_sends x JOIN campaigns k ON k.id = x.campaign_id WHERE k.uuid::TEXT = lower($3))
+						OR EXISTS (SELECT 1 FROM axm_campaign_sends x JOIN campaigns k ON k.id = x.campaign_id
+							WHERE k.uuid::TEXT = lower($3) AND x.subscriber_id = s.id)))`, at, subs, strings.TrimSpace(e.Camp)); err != nil {
+				return err
+			}
+			if maybe {
+				continue
+			}
 		}
 		if _, err := db.Exec(axm16Unlinked, a, "hard"); err != nil {
 			return err

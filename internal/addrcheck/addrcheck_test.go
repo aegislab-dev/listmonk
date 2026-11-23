@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -524,13 +525,23 @@ func TestLookupsAreRateLimited(t *testing.T) {
 			t.Fatalf("%s: %s", d, got[d])
 		}
 	}
-	// 60 lookups at 100 a second (a millisecond more than the even gap): the last one starts
-	// about 650ms after the first.
-	if took < 600*time.Millisecond {
-		t.Fatalf("60 lookups took %v, want at least 550ms at 100 a second", took)
+	// At most 20 lookups start in any second: of the start times in order, each one and the one
+	// 20 later are a second apart (less the scheduling slack between taking the slot and the
+	// resolver noting the time). 60 lookups at 20 a second take at least two seconds.
+	f.mu.Lock()
+	times := append([]time.Time(nil), f.times...)
+	f.mu.Unlock()
+	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
+	if len(times) != 60 {
+		t.Fatalf("%d lookups started", len(times))
 	}
-	if took > 5*time.Second {
-		t.Fatalf("60 lookups took %v", took)
+	for i := 0; i+20 < len(times); i++ {
+		if gap := times[i+20].Sub(times[i]); gap < 950*time.Millisecond {
+			t.Fatalf("lookups %d and %d started %v apart: more than 20 in a second", i, i+20, gap)
+		}
+	}
+	if took < 1900*time.Millisecond || took > 6*time.Second {
+		t.Fatalf("60 lookups took %v, want about 2s at 20 a second", took)
 	}
 }
 

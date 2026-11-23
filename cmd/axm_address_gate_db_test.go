@@ -795,6 +795,42 @@ func TestGateMigrationTwice(t *testing.T) {
 		e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700004000))`, sub, campA, keptBatch)
 	}
 	e.db.MustExec(`DELETE FROM subscribers WHERE id = $1`, gone)
+	// SES: the collector before typed a Transient notification by its first recipient (4.2.2, soft),
+	// and the second one had 5.4.4 (no such domain, hard): that one is kept, for nobody when nobody
+	// has the address, with a hard record of its own for the subscriber who has it.
+	var transFirst, transOwned int
+	e.get(&transFirst, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'trans-full@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&transOwned, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'hard-owned@ok.test', 'P', 'enabled') RETURNING id`)
+	bounce(transFirst, "soft", "ses", `{"bounce":{"bounceType":"Transient","bouncedRecipients":[{"emailAddress":"trans-full@ok.test","status":"4.2.2"},{"emailAddress":"hard-second@ok.test","status":"5.4.4"},{"emailAddress":"hard-owned@ok.test","status":"5.4.4"}]},"mail":{"destination":["trans-full@ok.test","hard-second@ok.test","hard-owned@ok.test"]}}`, "NOW()")
+	// SendGrid: the subscriber of a hard bounce was deleted and the address added again (after the
+	// bounce) before the upgrade: the bounce was the deleted subscriber's, and is kept.
+	var recreatedOld, recreatedOther int
+	e.get(&recreatedOld, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'recreated@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&recreatedOther, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'recreated.other@ok.test', 'P', 'enabled') RETURNING id`)
+	recreatedBatch := `[{"email":"recreated@ok.test","event":"bounce","timestamp":1700006000,"bounce_classification":"invalid"},` +
+		`{"email":"recreated.other@ok.test","event":"bounce","timestamp":1700006000,"bounce_classification":"invalid"}]`
+	for _, sub := range []int{recreatedOld, recreatedOther} {
+		e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source, meta, created_at) VALUES ($1, 'hard', 'sendgrid', $2, to_timestamp(1700006000))`, sub, recreatedBatch)
+	}
+	e.db.MustExec(`DELETE FROM subscribers WHERE id = $1`, recreatedOld)
+	e.db.MustExec(`INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'recreated@ok.test', 'P', 'enabled')`)
+	// SendGrid: a person deleted a subscriber's hard bounce record (to let the address go) and then
+	// changed their address: the old address is not kept again. The subscriber was added before the
+	// bounce and got its campaign.
+	var cleared, clearedOther, campC int
+	e.get(&campC, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'C','S','test@example.invalid','b','email') RETURNING id`)
+	var uuidC string
+	e.get(&uuidC, `SELECT uuid::TEXT FROM campaigns WHERE id = $1`, campC)
+	e.get(&cleared, `INSERT INTO subscribers (uuid, email, name, status, created_at, updated_at) VALUES (gen_random_uuid(), 'cleared-old@ok.test', 'P', 'enabled', to_timestamp(1700004500), to_timestamp(1700004500)) RETURNING id`)
+	e.get(&clearedOther, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'cleared.other@ok.test', 'P', 'enabled') RETURNING id`)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, to_timestamp(1700004900)), ($1, $3, to_timestamp(1700004900))`, campC, cleared, clearedOther)
+	clearedBatch := `[{"email":"cleared-old@ok.test","event":"bounce","timestamp":1700005000,"XListmonkCampaign":"` + uuidC + `"},` +
+		`{"email":"cleared.other@ok.test","event":"bounce","timestamp":1700005000,"XListmonkCampaign":"` + uuidC + `"}]`
+	var clearedRecord int
+	e.get(&clearedRecord, `INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700005000)) RETURNING id`, cleared, campC, clearedBatch)
+	e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700005000))`, clearedOther, campC, clearedBatch)
+	e.db.MustExec(`DELETE FROM bounces WHERE id = $1`, clearedRecord)
+	e.db.MustExec(`UPDATE subscribers SET email = 'cleared-new@ok.test' WHERE id = $1`, cleared)
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -807,13 +843,14 @@ func TestGateMigrationTwice(t *testing.T) {
 		}
 		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address", "ses-bad", "sg1", "sg2", "sg.own",
 			"multi-bad1", "multi-bad2", "single-bad", "same1", "same2", "either.one", "either.two",
-			"later", "sg.other", "deleted", "kept", "failed", "twice-bad"} {
+			"later", "sg.other", "deleted", "kept", "failed", "twice-bad",
+			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
 		}
 		for _, a := range []string{"delivered", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered",
-			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "single-first", "same.delivered", "same1.now", "same2.now"} {
+			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-old", "cleared-new", "single-first", "same.delivered", "same1.now", "same2.now"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}
@@ -853,6 +890,18 @@ func TestGateMigrationTwice(t *testing.T) {
 	}
 	if !e.isBounced("twice-bad@ok.test") {
 		t.Fatal("deleting one of two bounces let the address go")
+	}
+	// hard-owned has a hard record of its own, which lets the address go.
+	var ownedHard int
+	e.get(&ownedHard, `SELECT COUNT(*) FROM bounces WHERE subscriber_id = $1 AND type = 'hard'`, transOwned)
+	if ownedHard != 1 {
+		t.Fatalf("%d hard records for the 5.4.4 recipient", ownedHard)
+	}
+	if err := e.a.core.DeleteSubscriberBounces(transOwned, ""); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("hard-owned@ok.test") {
+		t.Fatal("deleting the 5.4.4 recipient's record did not let the address go")
 	}
 	var maybeRecords int
 	e.get(&maybeRecords, `SELECT COUNT(*) FROM bounces b JOIN subscribers s ON s.id = b.subscriber_id WHERE s.email = 'maybe2@ok.test'`)
