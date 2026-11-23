@@ -1656,14 +1656,23 @@ func TestFollowupToSendAndAuditCountEachLeftOutPersonOnce(t *testing.T) {
 	if n := toSend(); n != 1 {
 		t.Fatalf("to_send after another resume %d, want 1", n)
 	}
-	// It finishes: to_send is the people it decided to send to, also when a message was refused by
-	// the mail server and has no send record.
-	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, camp)
-	if err := e.store.UpdateCampaignStatus(camp, models.CampaignStatusFinished); err != nil {
+	// Review 31: Manual, who got it, deletes their data (the send record goes with it); the
+	// campaign is picked up once more. They stay among those it decided to send to.
+	e.db.MustExec(`DELETE FROM subscribers WHERE id = $1`, manual)
+	if _, err := e.store.GetCampaignSentIDs(camp, 0); err != nil {
 		t.Fatal(err)
 	}
 	if n := toSend(); n != 1 {
-		t.Fatalf("to_send when finished %d, want 1", n)
+		t.Fatalf("to_send after Manual deleted their data %d, want 1", n)
+	}
+	// It finishes: to_send is the people it decided to send to, also when a message was refused by
+	// the mail server and has no send record (Charlie, decided once more).
+	e.db.MustExec(`INSERT INTO axm_campaign_followup_claims (campaign_id, subscriber_id) VALUES ($1, $2)`, camp, charlie)
+	if err := e.store.UpdateCampaignStatus(camp, models.CampaignStatusFinished); err != nil {
+		t.Fatal(err)
+	}
+	if n := toSend(); n != 2 {
+		t.Fatalf("to_send when finished %d, want 2", n)
 	}
 	// An ordinary campaign keeps its to_send when it finishes.
 	other := e.addRunning()

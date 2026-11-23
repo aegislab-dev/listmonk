@@ -36,12 +36,14 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followup_holds (
     PRIMARY KEY (campaign_id, subscriber_id)
 );
 -- People the sender decided to send a follow-up campaign to, written in the judgement of their
--- batch before their message is queued. A finished follow-up counts them as its to_send (whatever
--- happened to their subscription or send record later); one who is judged again before their
--- message went out (a pause drops queued messages) and left out loses the row.
+-- batch before their message is queued; sent is set when their send record is written. A finished
+-- follow-up counts them as its to_send (whatever happened to their subscription, send record or
+-- data later: the row has only the number and outlives the subscriber); one who is judged again
+-- before their message went out (a pause drops queued messages) and left out loses the row.
 CREATE TABLE IF NOT EXISTS axm_campaign_followup_claims (
     campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    subscriber_id INTEGER NOT NULL,
+    sent          BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (campaign_id, subscriber_id)
 );
 -- Who got the original campaign, kept when the follow-up is made (and when a send record of the
@@ -196,6 +198,9 @@ BEGIN
     SELECT f.campaign_id, n.subscriber_id, FALSE
     FROM axm_new_sends n JOIN axm_campaign_followups f ON f.parent_campaign_id = n.campaign_id
     ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
+    -- A follow-up's own send records mark the decisions as sent.
+    UPDATE axm_campaign_followup_claims c SET sent = TRUE
+    FROM axm_new_sends n WHERE c.campaign_id = n.campaign_id AND c.subscriber_id = n.subscriber_id AND NOT c.sent;
     RETURN NULL;
 END;
 $$;

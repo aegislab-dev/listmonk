@@ -65,15 +65,14 @@ ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
 -- first (axm-followup-claim-lock), so everything committed before it is seen. One row per person
 -- of the batch who still exists, with the reason to leave them out: 0 none (send), 1 blocked, 5 no
 -- longer subscribed through the campaign's lists, or the reason axm_followup_judge gives. Someone
--- with no row is not sent to. Someone it decided to send to before and who has a send record of it
--- is not judged again (the sender does not send twice). The people to send to are written in the
+-- with no row is not sent to. Someone it decided to send to before and whose send record was
+-- written is not judged again (the sender does not send twice). The people to send to are written in the
 -- claims before their messages are queued; the people left out in the holds (inserted tells a
 -- person left out now who was not before, given_back one sent now who was left out before), and a
 -- claim of one left out now whose message did not go out is taken back.
 WITH done AS MATERIALIZED (
     SELECT c.subscriber_id FROM axm_campaign_followup_claims c
-    WHERE c.campaign_id = $1 AND c.subscriber_id = ANY($2::INT[])
-        AND EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = c.subscriber_id)
+    WHERE c.campaign_id = $1 AND c.subscriber_id = ANY($2::INT[]) AND c.sent
 ),
 j AS MATERIALIZED (
     SELECT subscriber_id, reason FROM axm_followup_judge($1, $2::INT[], $3)
@@ -126,10 +125,10 @@ FROM verdict v LEFT JOIN held h ON h.subscriber_id = v.sid;
 -- app are written), the people above the checkpoint it decided to send to and who have no send
 -- record did not get their message (a pause or stop drops queued messages): their decision is
 -- taken back, and they are judged again if the sender reads them. axm-followup-recount then
--- counts its to_send whole.
+-- counts its to_send whole. (Sent is kept on the decision, so a send record that is gone with the
+-- subscriber's data, or expired, does not take it back.)
 DELETE FROM axm_campaign_followup_claims c
-WHERE c.campaign_id = $1 AND c.subscriber_id > $2
-    AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = c.subscriber_id);
+WHERE c.campaign_id = $1 AND c.subscriber_id > $2 AND NOT c.sent;
 
 -- name: axm-followup-recount
 UPDATE campaigns SET to_send = axm_followup_to_send(id) WHERE id = $1;
