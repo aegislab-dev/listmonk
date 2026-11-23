@@ -18,7 +18,8 @@
   "address-check.cy.js",
   "campaign-test-send.cy.js",
   "schedule-time.cy.js",
-  "campaign-delete-guard.cy.js"
+  "campaign-delete-guard.cy.js",
+  "campaign-send-confirm.cy.js"
  ],
  "smoke": [
   "audit.cy.js",
@@ -81,7 +82,8 @@
    "specs": [
     "sender-addresses.cy.js",
     "campaign-test-send.cy.js",
-    "from-addresses.cy.js"
+    "from-addresses.cy.js",
+    "campaign-send-confirm.cy.js"
    ]
   },
   {
@@ -97,7 +99,8 @@
     "internal/manager/message.go"
    ],
    "specs": [
-    "campaign-test-send.cy.js"
+    "campaign-test-send.cy.js",
+    "campaign-send-confirm.cy.js"
    ]
   },
   {
@@ -108,7 +111,8 @@
     "cmd/axm_send_tz*.go"
    ],
    "specs": [
-    "schedule-time.cy.js"
+    "schedule-time.cy.js",
+    "campaign-send-confirm.cy.js"
    ]
   },
   {
@@ -125,7 +129,8 @@
     "dynamic-lists.cy.js",
     "campaign-test-send.cy.js",
     "schedule-time.cy.js",
-    "from-addresses.cy.js"
+    "from-addresses.cy.js",
+    "campaign-send-confirm.cy.js"
    ]
   },
   {
@@ -141,7 +146,8 @@
     "campaign-test-send.cy.js",
     "schedule-time.cy.js",
     "from-addresses.cy.js",
-    "campaign-delete-guard.cy.js"
+    "campaign-delete-guard.cy.js",
+    "campaign-send-confirm.cy.js"
    ]
   },
   {
@@ -160,7 +166,8 @@
     "campaign-test-send.cy.js",
     "schedule-time.cy.js",
     "from-addresses.cy.js",
-    "campaign-delete-guard.cy.js"
+    "campaign-delete-guard.cy.js",
+    "campaign-send-confirm.cy.js"
    ]
   },
   {
@@ -314,7 +321,8 @@
     "queries/axm_tracking_check.sql"
    ],
    "specs": [
-    "campaign-tracking-check.cy.js"
+    "campaign-tracking-check.cy.js",
+    "campaign-send-confirm.cy.js"
    ]
   },
   {
@@ -407,6 +415,25 @@
    ],
    "specs": [
     "dynamic-lists.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/components/CampaignSendConfirm.vue",
+    "frontend/src/send-confirm.js",
+    "cmd/axm_preflight*.go",
+    "internal/core/axm_preflight*.go",
+    "internal/manager/axm_preflight*.go",
+    "queries/axm_preflight.sql",
+    "models/axm_preflight.go",
+    "internal/messenger/email/axm_headers*.go",
+    "internal/manager/axm_unsub_reach*.go"
+   ],
+   "specs": [
+    "campaign-send-confirm.cy.js",
+    "campaign-tracking-check.cy.js",
+    "schedule-time.cy.js",
+    "campaign-recent-exclude.cy.js"
    ]
   }
  ],

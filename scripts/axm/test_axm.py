@@ -748,3 +748,28 @@ class Round11Test(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StartAppCleanupTest(unittest.TestCase):
+    """LST-48 review: when the app does not start after the test inbox did, neither is left behind."""
+
+    def test_failed_start_removes_app_and_mail(self):
+        calls = []
+
+        class FakeCtx:
+            def name(self, what):
+                return f'axm0-{what}'
+
+        def fail(*a, **k):
+            raise axm.StageFailed('앱이 /health 에 답하지 않는다')
+
+        old_docker, old_start = axm.docker, axm._start_app
+        axm.docker = lambda *a, **k: calls.append(a)
+        axm._start_app = fail
+        try:
+            with self.assertRaises(axm.StageFailed):
+                axm.start_app(FakeCtx(), None, 'img', None)
+        finally:
+            axm.docker, axm._start_app = old_docker, old_start
+        removed = {a[2] for a in calls if a[:2] == ('rm', '-f')}
+        self.assertEqual(removed, {'axm0-app', 'axm0-mail'})
