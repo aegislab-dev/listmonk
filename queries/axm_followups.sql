@@ -65,13 +65,22 @@ ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
 -- first (axm-followup-claim-lock), so everything committed before it is seen. One row per person
 -- of the batch who still exists, with the reason to leave them out: 0 none (send), 1 blocked, 5 no
 -- longer subscribed through the campaign's lists, or the reason axm_followup_judge gives. Someone
--- with no row is not sent to. The outcome is recorded in the holds (inserted tells a person left
--- out now who was not before, given_back one sent now who was left out before).
-WITH j AS MATERIALIZED (
+-- with no row is not sent to. Someone it decided to send to before and who has a send record of it
+-- is not judged again (the sender does not send twice). The people to send to are written in the
+-- claims before their messages are queued; the people left out in the holds (inserted tells a
+-- person left out now who was not before, given_back one sent now who was left out before), and a
+-- claim of one left out now whose message did not go out is taken back.
+WITH done AS MATERIALIZED (
+    SELECT c.subscriber_id FROM axm_campaign_followup_claims c
+    WHERE c.campaign_id = $1 AND c.subscriber_id = ANY($2::INT[])
+        AND EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = c.subscriber_id)
+),
+j AS MATERIALIZED (
     SELECT subscriber_id, reason FROM axm_followup_judge($1, $2::INT[], $3)
 ),
 verdict AS MATERIALIZED (
-    SELECT x.sid, CASE
+    SELECT x.sid, d.subscriber_id IS NOT NULL AS done, CASE
+        WHEN d.subscriber_id IS NOT NULL THEN 0
         WHEN s.status = 'blocklisted' THEN 1
         WHEN NOT EXISTS (
             SELECT 1 FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
@@ -85,12 +94,22 @@ verdict AS MATERIALIZED (
         ELSE COALESCE((SELECT j.reason FROM j WHERE j.subscriber_id = x.sid), 0)
     END AS reason
     FROM unnest($2::INT[]) AS x(sid) JOIN subscribers s ON s.id = x.sid
+    LEFT JOIN done d ON d.subscriber_id = x.sid
 ),
 cleared AS (
     DELETE FROM axm_campaign_followup_holds h
     WHERE h.campaign_id = $1 AND h.subscriber_id = ANY($2::INT[])
         AND EXISTS (SELECT 1 FROM verdict v WHERE v.sid = h.subscriber_id AND v.reason = 0)
     RETURNING h.subscriber_id
+),
+claimed AS (
+    INSERT INTO axm_campaign_followup_claims (campaign_id, subscriber_id)
+    SELECT $1::INT, sid FROM verdict WHERE reason = 0 AND NOT done
+    ON CONFLICT (campaign_id, subscriber_id) DO NOTHING
+),
+unclaimed AS (
+    DELETE FROM axm_campaign_followup_claims c
+    WHERE c.campaign_id = $1 AND c.subscriber_id IN (SELECT sid FROM verdict WHERE reason <> 0)
 ),
 held AS (
     INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
@@ -102,11 +121,27 @@ SELECT v.sid AS subscriber_id, v.reason, COALESCE(h.inserted, FALSE) AS inserted
     EXISTS (SELECT 1 FROM cleared c WHERE c.subscriber_id = v.sid) AS given_back
 FROM verdict v LEFT JOIN held h ON h.subscriber_id = v.sid;
 
+-- name: axm-followup-pickup
+-- When follow-up $1 is picked up to send from its checkpoint $2 (after the send records of this
+-- app are written), the people above the checkpoint it decided to send to and who have no send
+-- record did not get their message (a pause or stop drops queued messages): their decision is
+-- taken back, and they are judged again if the sender reads them. axm-followup-recount then
+-- counts its to_send whole.
+DELETE FROM axm_campaign_followup_claims c
+WHERE c.campaign_id = $1 AND c.subscriber_id > $2
+    AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = c.subscriber_id);
+
+-- name: axm-followup-recount
+UPDATE campaigns SET to_send = axm_followup_to_send(id) WHERE id = $1;
+
 -- name: axm-followup-to-send
 -- Keeps follow-up $1's to_send what it means to send while it sends: $2 people newly left out come
--- off, $3 people left out before and sent now come back on. (The start of a run takes the people
--- left out off what it counts: axm_followup_recount.)
-UPDATE campaigns SET to_send = GREATEST(0, to_send - $2 + $3) WHERE id = $1;
+-- off, $3 people left out before and sent now come back on, and it is never below the people it
+-- decided to send to. (The start and the finish of a run count it whole: axm_followup_recount.)
+UPDATE campaigns c SET to_send = GREATEST(
+    (SELECT COUNT(*) FROM axm_campaign_followup_claims x WHERE x.campaign_id = c.id),
+    c.to_send - $2 + $3)
+WHERE c.id = $1;
 
 -- name: axm-followup-finish-empty
 -- A follow-up that is due with nobody at all on its lists is ended here (the sender does not start

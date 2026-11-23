@@ -308,6 +308,39 @@ func (c *Core) auditFollowupLeftOut(ctx context.Context, tx *sqlx.Tx, id, parent
 	return err
 }
 
+// PickUpFollowup is called when the sender picks up campaign id to send from its checkpoint
+// lastSubID, after the send records of this app are written. For a follow-up, the people above the
+// checkpoint it decided to send to and who have no send record did not get their message (a pause
+// or stop drops queued messages): their decision is taken back, so that they are judged again if
+// the sender reads them and are not counted if it does not. Then to_send is counted whole.
+// Without send records (the table is missing) nothing can be told and nothing is changed.
+func (c *Core) PickUpFollowup(id, lastSubID int) error {
+	var isFollowup bool
+	if err := c.q.AxmFollowupIsFollowup.Get(&isFollowup, id); err != nil {
+		return err
+	}
+	if !isFollowup {
+		return nil
+	}
+	tx, err := c.db.BeginTxx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Stmtx(c.q.AxmFollowupPickup).Exec(id, lastSubID); err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "42P01" {
+			c.log.Printf("follow-up campaign %d: no send records to pick up by: %v", id, err)
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.Stmtx(c.q.AxmFollowupRecount).Exec(id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // FinishEmptyFollowup ends a follow-up campaign that is due with nobody at all on its lists (the
 // sender does not start it). It reports whether it did.
 func (c *Core) FinishEmptyFollowup(id int) (bool, error) {

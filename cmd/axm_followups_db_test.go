@@ -541,7 +541,7 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	if !ok || !endOK || !strings.Contains(string(mig), "`"+start+block+end+"`") {
 		t.Fatal("schema and migration SQL of axm_campaign_followups differ")
 	}
-	e.db.MustExec(`DROP TABLE axm_campaign_followup_holds, axm_campaign_followup_members, axm_campaign_followup_reactions, axm_campaign_followups, axm_tracking_off`)
+	e.db.MustExec(`DROP TABLE axm_campaign_followup_holds, axm_campaign_followup_claims, axm_campaign_followup_members, axm_campaign_followup_reactions, axm_campaign_followups, axm_tracking_off`)
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
@@ -1624,33 +1624,54 @@ func TestFollowupToSendAndAuditCountEachLeftOutPersonOnce(t *testing.T) {
 	if n := toSend(); n != 2 {
 		t.Fatalf("to_send after a resume %d, want 2", n)
 	}
-	if _, err := e.store.NextSubscribers(camp, charlie, 2); err != nil {
-		t.Fatal(err)
-	}
-	if n := toSend(); n != 2 {
-		t.Fatalf("to_send after reading on %d, want 2", n)
-	}
-	// Charlie unsubscribes while it is paused: the next start counts one fewer.
-	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, charlie, got.List.ID)
-	resume()
-	if n := toSend(); n != 1 {
-		t.Fatalf("to_send after an unsubscribe and a resume %d, want 1", n)
-	}
-	// Manual got it before the pause and then unsubscribes (one click: blocked, every subscription
-	// ended): at the resume they are still among those it sent to.
-	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, camp, manual)
+	// Review 29, 30: Manual's message went out before the pause, but its send record is written
+	// after the resume counts, and Manual unsubscribes in one click (blocked, every subscription
+	// ended) meanwhile. Charlie's message was dropped by the pause, and Charlie leaves the
+	// follow-up list. The start counts the people it decided to send to once, whatever their
+	// subscription now.
 	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, manual)
 	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1`, manual)
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, charlie, got.List.ID)
+	resume()
+	if n := toSend(); n != 2 {
+		t.Fatalf("to_send after the resume %d, want 2 (both were decided)", n)
+	}
+	// The send record comes, and the sender picks the campaign up from its checkpoint (after it
+	// wrote its send records): Charlie's decision is taken back (no send record: the message was
+	// dropped), Manual's stays. Neither is read again (Charlie left the list, Manual is blocked).
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, camp, manual)
+	if _, err := e.store.GetCampaignSentIDs(camp, 0); err != nil {
+		t.Fatal(err)
+	}
+	if n := toSend(); n != 1 {
+		t.Fatalf("to_send after the pick-up %d, want 1", n)
+	}
+	subs, err = e.store.NextSubscribers(camp, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "read again", subIDs(subs), nil)
+	wantSame(t, "decided", e.sendsEnv.ids(`SELECT subscriber_id FROM axm_campaign_followup_claims WHERE campaign_id = $1 ORDER BY 1`, camp), []int{manual})
 	resume()
 	if n := toSend(); n != 1 {
-		t.Fatalf("to_send after one who got it unsubscribed %d, want 1", n)
+		t.Fatalf("to_send after another resume %d, want 1", n)
 	}
-	// It finishes with a message refused by the mail server (nothing sent): to_send stays what it
-	// meant to send, as for any campaign.
+	// It finishes: to_send is the people it decided to send to, also when a message was refused by
+	// the mail server and has no send record.
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, camp)
 	if err := e.store.UpdateCampaignStatus(camp, models.CampaignStatusFinished); err != nil {
 		t.Fatal(err)
 	}
 	if n := toSend(); n != 1 {
 		t.Fatalf("to_send when finished %d, want 1", n)
+	}
+	// An ordinary campaign keeps its to_send when it finishes.
+	other := e.addRunning()
+	e.db.MustExec(`UPDATE campaigns SET to_send = 5, sent = 3 WHERE id = $1`, other)
+	if err := e.store.UpdateCampaignStatus(other, models.CampaignStatusFinished); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT to_send FROM campaigns WHERE id = $1`, other); n != 5 {
+		t.Fatalf("an ordinary campaign's to_send became %d", n)
 	}
 }

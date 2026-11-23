@@ -613,6 +613,7 @@ DROP TABLE IF EXISTS axm_column_presets CASCADE;
 DROP TABLE IF EXISTS axm_campaign_recent_rules CASCADE;
 DROP TABLE IF EXISTS axm_test_addresses CASCADE;
 DROP TABLE IF EXISTS axm_campaign_followup_holds CASCADE;
+DROP TABLE IF EXISTS axm_campaign_followup_claims CASCADE;
 DROP TABLE IF EXISTS axm_campaign_followup_members CASCADE;
 DROP TABLE IF EXISTS axm_tracking_off CASCADE;
 DROP TABLE IF EXISTS axm_campaign_followup_reactions CASCADE;
@@ -1196,6 +1197,15 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followup_holds (
     reason        SMALLINT NOT NULL,
     PRIMARY KEY (campaign_id, subscriber_id)
 );
+-- People the sender decided to send a follow-up campaign to, written in the judgement of their
+-- batch before their message is queued. A finished follow-up counts them as its to_send (whatever
+-- happened to their subscription or send record later); one who is judged again before their
+-- message went out (a pause drops queued messages) and left out loses the row.
+CREATE TABLE IF NOT EXISTS axm_campaign_followup_claims (
+    campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    PRIMARY KEY (campaign_id, subscriber_id)
+);
 -- Who got the original campaign, kept when the follow-up is made (and when a send record of the
 -- original comes later), and whether the draft was made for them (made_for: put on the follow-up
 -- list then). They are judged whatever happens to their list row or to the original's send
@@ -1358,39 +1368,51 @@ DROP TRIGGER IF EXISTS axm_followup_reaction_send ON axm_campaign_sends;
 CREATE TRIGGER axm_followup_reaction_send AFTER UPDATE OF opened_at, clicked_at ON axm_campaign_sends
     FOR EACH ROW WHEN ((OLD.opened_at IS NULL AND NEW.opened_at IS NOT NULL) OR (OLD.clicked_at IS NULL AND NEW.clicked_at IS NOT NULL))
     EXECUTE FUNCTION axm_followup_reaction();
--- Whether the start of a run of campaign p_campaign counts p_sub among the people to send to (as
--- next-campaigns counts them: not blocked, and subscribed through one of its lists).
-CREATE OR REPLACE FUNCTION axm_followup_counted(p_campaign INT, p_sub INT)
-RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
-    SELECT EXISTS (SELECT 1 FROM subscribers s WHERE s.id = p_sub AND s.status != 'blocklisted')
-        AND EXISTS (
-            SELECT 1 FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
-            WHERE cl.campaign_id = p_campaign AND (
-                (l.axm_filter IS NULL AND EXISTS (
-                    SELECT 1 FROM subscriber_lists sl WHERE sl.list_id = l.id AND sl.subscriber_id = p_sub
-                        AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END))
-                OR (l.axm_filter IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM axm_dynamic_list_members(l.id, p_sub - 1, p_sub, 1)))));
+-- What follow-up campaign p_campaign means to send, in one statement: the people it decided to send
+-- to, and the people on its lists now whom the sender has not left out.
+CREATE OR REPLACE FUNCTION axm_followup_to_send(p_campaign INT)
+RETURNS INT LANGUAGE SQL STABLE AS $$
+    SELECT COUNT(*)::INT FROM (
+        SELECT c.subscriber_id FROM axm_campaign_followup_claims c WHERE c.campaign_id = p_campaign
+        UNION
+        SELECT m.id FROM (
+            SELECT sl.subscriber_id AS id FROM campaign_lists cl
+            JOIN lists l ON l.id = cl.list_id AND l.axm_filter IS NULL
+            JOIN subscriber_lists sl ON sl.list_id = l.id
+                AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END
+            JOIN subscribers s ON s.id = sl.subscriber_id AND s.status != 'blocklisted'
+            WHERE cl.campaign_id = p_campaign
+            UNION
+            SELECT dm.subscriber_id FROM campaign_lists cl
+            JOIN lists l ON l.id = cl.list_id AND l.axm_filter IS NOT NULL
+            CROSS JOIN LATERAL axm_dynamic_list_members(l.id) dm
+            WHERE cl.campaign_id = p_campaign
+        ) m
+        WHERE NOT EXISTS (SELECT 1 FROM axm_campaign_followup_holds h WHERE h.campaign_id = p_campaign AND h.subscriber_id = m.id)
+    ) x;
 $$;
 -- The start of a follow-up's run (next-campaigns sets to_send and max_subscriber_id together, and
--- is the only statement that sets max_subscriber_id) counts the people on its lists now. The people
--- the sender has left out and who are counted there come off, and the people it already sent to and
--- who are not counted any more (they unsubscribed since) come back on, so to_send is what the
--- follow-up means to send in all. Ordinary campaigns are left as they are.
+-- is the only statement that sets max_subscriber_id) sets its to_send to axm_followup_to_send, and
+-- its finish to the people it decided to send to. Ordinary campaigns are left as they are.
 CREATE OR REPLACE FUNCTION axm_followup_recount()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM axm_campaign_followups WHERE campaign_id = NEW.id) THEN
-        NEW.to_send := GREATEST(0, NEW.to_send
-            - (SELECT COUNT(*) FROM axm_campaign_followup_holds h
-                WHERE h.campaign_id = NEW.id AND axm_followup_counted(NEW.id, h.subscriber_id))
-            + (SELECT COUNT(*) FROM axm_campaign_sends x
-                WHERE x.campaign_id = NEW.id AND NOT axm_followup_counted(NEW.id, x.subscriber_id)));
+    IF NOT EXISTS (SELECT 1 FROM axm_campaign_followups WHERE campaign_id = NEW.id) THEN
+        RETURN NEW;
     END IF;
+    IF TG_ARGV[0] = 'finish' THEN
+        NEW.to_send := (SELECT COUNT(*) FROM axm_campaign_followup_claims c WHERE c.campaign_id = NEW.id);
+        RETURN NEW;
+    END IF;
+    NEW.to_send := axm_followup_to_send(NEW.id);
     RETURN NEW;
 END;
 $$;
 DROP TRIGGER IF EXISTS axm_followup_recount ON campaigns;
 CREATE TRIGGER axm_followup_recount BEFORE UPDATE OF max_subscriber_id ON campaigns
-    FOR EACH ROW EXECUTE FUNCTION axm_followup_recount();
+    FOR EACH ROW EXECUTE FUNCTION axm_followup_recount('start');
+DROP TRIGGER IF EXISTS axm_followup_finished ON campaigns;
+CREATE TRIGGER axm_followup_finished BEFORE UPDATE OF status ON campaigns
+    FOR EACH ROW WHEN (NEW.status = 'finished' AND OLD.status IS DISTINCT FROM 'finished')
+    EXECUTE FUNCTION axm_followup_recount('finish');
 -- End of AXM campaign follow-ups.

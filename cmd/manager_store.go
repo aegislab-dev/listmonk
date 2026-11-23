@@ -275,6 +275,11 @@ func (s *store) CountCampaignSends(campID int) (int, error) {
 // while the app runs) holds no record of anyone, so that case is an empty result and
 // not an error: the campaign goes out, as it does when records cannot be written.
 func (s *store) GetCampaignSentIDs(campID, lastSubID int) ([]int, error) {
+	// AXM (LST-47): a follow-up takes back what it decided for messages that did not go out.
+	if err := s.core.PickUpFollowup(campID, lastSubID); err != nil {
+		return nil, err
+	}
+
 	var out []int
 	err := s.queries.AxmGetCampaignSentIDs.Select(&out, campID, lastSubID)
 
