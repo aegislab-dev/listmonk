@@ -279,4 +279,154 @@ describe('Address rules', () => {
       expect(lines.slice(1).map((line) => Number(line.split(',')[0]))).to.deep.equal([2, 3]);
     });
   });
+
+  // LST-56 step 2. The server of the browser tests runs the gate without DNS (nodns); the DNS
+  // classes and the bounce record are covered by the Go tests, so the DNS answers of the review
+  // screen are stubbed and the rest goes to the real server.
+  const blocklistedBefore = (email) => cy.request('POST', '/api/subscribers', {
+    email, name: 'Was blocked', status: 'blocklisted', lists: [],
+  }).then(({ body }) => cy.request('DELETE', `/api/subscribers/${body.data.id}`));
+
+  it('refuses a disposable domain and a blocklisted address under the address field, with no fix button', () => {
+    const stamp = Date.now();
+    const blocked = `gate-blocked-${stamp}@example.invalid`;
+    blocklistedBefore(blocked);
+    cy.loginAndVisit('/admin/subscribers');
+    cy.get('[data-cy=btn-new]').click();
+    cy.get('input[name=email]').type(`gate-temp-${stamp}@mailinator.com`);
+    cy.get('input[name=name]').type('Gate Temp');
+    cy.get('.modal-card-foot button[type=submit]').click();
+    cy.get('.modal-card').should('contain', 'disposable-mailbox domain');
+    cy.get('[data-cy=addr-suggest]').should('not.exist');
+    cy.get('input[name=email]').clear().type(blocked);
+    cy.get('.modal-card-foot button[type=submit]').click();
+    cy.get('.modal-card').should('contain', 'blocklisted before');
+    cy.get('[data-cy=addr-suggest]').should('not.exist');
+    [`gate-temp-${stamp}@mailinator.com`, blocked].forEach((email) => {
+      cy.request({ url: '/api/subscribers', qs: { query: `email = '${email}'` } })
+        .its('body.data.results').should('have.length', 0);
+    });
+    // The API says the same with the header the form reads.
+    cy.request({
+      method: 'POST', url: '/api/subscribers', failOnStatusCode: false,
+      body: { email: blocked, name: 'Gate Api', status: 'enabled', lists: [] },
+    }).then((resp) => {
+      expect(resp.status).to.eq(400);
+      expect(resp.headers['x-axm-address-rule']).to.eq('suppressed');
+    });
+    // Blocklisting takes any address.
+    cy.request({
+      method: 'POST', url: '/api/subscribers', failOnStatusCode: false,
+      body: { email: blocked, name: 'Gate Again', status: 'blocklisted', lists: [] },
+    }).its('status').should('eq', 200);
+  });
+
+  it('saves a role address and says so in a warning toast', () => {
+    const stamp = Date.now();
+    cy.loginAndVisit('/admin/subscribers');
+    cy.get('[data-cy=btn-new]').click();
+    cy.get('input[name=email]').type(`info@gate${stamp}.example.invalid`);
+    cy.get('input[name=name]').type('Gate Role');
+    cy.get('.modal-card-foot button[type=submit]').click();
+    cy.get('.modal-card').should('not.exist');
+    cy.get('.toast.is-warning').should('contain', 'role address');
+    cy.request({ url: '/api/subscribers', qs: { query: `email = 'info@gate${stamp}.example.invalid'` } })
+      .its('body.data.results').should('have.length', 1);
+    cy.request({
+      method: 'POST', url: '/api/subscribers', body: { email: `info@gate-api${stamp}.example.invalid`, name: 'Gate Role Api', status: 'enabled', lists: [] },
+    }).then((resp) => {
+      expect(resp.status).to.eq(200);
+      expect(resp.headers['x-axm-address-warn']).to.eq('role');
+    });
+  });
+
+  it('counts the refused rows by the new reasons and the rows that came in with a warning', () => {
+    const stamp = Date.now();
+    const blocked = `gate-import-blocked-${stamp}@example.invalid`;
+    blocklistedBefore(blocked);
+    cy.intercept('POST', '/api/subscribers/address-check', (req) => req.reply({
+      data: {
+        total: req.body.emails.length, risky: 0, confirmed: 0, warning: 0, unknown: 0, pending: 0, classes: {}, issues: {}, suggest: {},
+      },
+    }));
+    cy.loginAndVisit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('.list-selector input').type(listName);
+    cy.contains('.list-selector .autocomplete a', listName).click();
+    const csv = 'email,name\n'
+      + `gate-new-a-${stamp}@example.invalid,Good A\n`
+      + `gate-temp-${stamp}@mailinator.com,Disposable\n`
+      + `${blocked},Blocked\n`
+      + `info@gate-import${stamp}.example.invalid,Role\n`
+      + `gate-new-b-${stamp}@example.invalid,Good B\n`;
+    cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(csv), fileName: 'gate2.csv', mimeType: 'text/csv' }, { force: true });
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    submit().should('not.be.disabled').click();
+    cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+    cy.get('[data-cy=import-rejected]').should('contain', '2');
+    cy.get('[data-cy=import-rejected-disposable]').should('contain', '1');
+    cy.get('[data-cy=import-rejected-suppressed]').should('contain', '1');
+    cy.get('[data-cy=import-warned]').should('contain', '1');
+    cy.get('[data-cy=import-warned-role]').should('contain', '1');
+    cy.get('[data-cy=import-warned-unknown]').should('not.exist');
+    cy.get('[data-cy=map-mismatch]').should('not.exist');
+    cy.request('/api/import/subscribers').its('body.data').should((d) => {
+      expect(d.imported).to.eq(3);
+      expect(d.total).to.eq(5);
+      expect(d.axm_rejected_total).to.eq(2);
+      expect(d.axm_warned_total).to.eq(1);
+      expect(d.axm_warned.role).to.eq(1);
+    });
+    // The CSV holds the refused rows only, never the warned ones.
+    cy.request('/api/import/subscribers').its('body.data.axm_import_id').then((id) => cy.request(`/api/import/subscribers/rejected?id=${id}`))
+      .its('body').should('contain', 'mailinator.com').and('contain', blocked).and('not.contain', 'info@gate-import');
+    // A reload keeps both boxes: they are the server's.
+    cy.reload();
+    cy.get('[data-cy=import-warned-role]').should('contain', '1');
+  });
+
+  it('shows blocklisted, bounced and disposable rows as left out, and only role rows as a switch, in the review', () => {
+    const stamp = Date.now();
+    const rows = ['good', 'blocked', 'bounced', 'temp', 'role', 'silent'].map((n) => `gate-review-${n}-${stamp}@example.invalid`);
+    cy.intercept('POST', '/api/subscribers/address-check', (req) => req.reply({
+      data: {
+        total: 6, risky: 0, confirmed: 0, warning: 0, unknown: 1, pending: 0, classes: {},
+        issues: {
+          1: ['suppressed'], 2: ['bounced'], 3: ['disposable'], 4: ['role'], 5: ['unknown'],
+        },
+        suggest: {},
+      },
+    }));
+    cy.loginAndVisit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('.list-selector input').type(listName);
+    cy.contains('.list-selector .autocomplete a', listName).click();
+    cy.get('input[type=file]').selectFile({
+      contents: Cypress.Buffer.from(`email,name\n${rows.map((e, n) => `${e},Review ${n}`).join('\n')}\n`), fileName: 'review2.csv', mimeType: 'text/csv',
+    }, { force: true });
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    // The counts come from the rows, not from the server's summary (which says 0 here).
+    cy.get('[data-cy=map-address-summary]').should('contain', '4');
+    ['suppressed', 'bounced', 'disposable'].forEach((name) => {
+      cy.get(`[data-cy=map-address-${name}]`).should('contain', '1');
+    });
+    cy.get('[data-cy=map-address-suppressed] .map-address-chip').should('have.class', 'is-confirmed');
+    cy.get('[data-cy=map-address-bounced] .map-address-chip').should('have.class', 'is-confirmed');
+    cy.get('[data-cy=map-address-disposable] .map-address-chip').should('have.class', 'is-confirmed');
+    cy.get('[data-cy=map-address-role] .map-address-chip').should('have.class', 'is-warning');
+    cy.get('[data-cy=map-address-fixed]').should('contain', '3');
+    cy.get('[data-cy=map-address-exclude-warning]').should('contain', 'role addresses').and('not.contain', 'disposable');
+    // The three confirmed rows are left out, and the box that ends the import counts them by reason.
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '3');
+    submit().should('not.be.disabled').click();
+    cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+    cy.get('[data-cy=import-rejected-suppressed]').should('contain', '1');
+    cy.get('[data-cy=import-rejected-bounced]').should('contain', '1');
+    cy.get('[data-cy=import-rejected-disposable]').should('contain', '1');
+    cy.get('[data-cy=map-mismatch]').should('not.exist');
+  });
 });

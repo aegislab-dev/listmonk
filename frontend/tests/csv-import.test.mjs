@@ -408,10 +408,13 @@ test('address exclusion follows the two switches and the excluded-rows file is s
   const issues = {
     3: ['dead', 'role'], 5: ['role'], 7: ['disposable'], 9: ['nullmx'], 11: ['unknown'], 13: ['format'], 15: ['pending'],
   };
-  assert.deepEqual(addressExcludedRows(issues), [3, 9, 13]);
+  // A disposable domain is refused by the server (LST-56): it is a confirmed row, and only role rows are a warning.
+  assert.deepEqual(addressExcludedRows(issues), [3, 7, 9, 13]);
   assert.deepEqual(addressExcludedRows(issues, { confirmed: true, warning: true }), [3, 5, 7, 9, 13]);
-  assert.deepEqual(addressExcludedRows(issues, { confirmed: false, warning: true }), [3, 5, 7]);
+  assert.deepEqual(addressExcludedRows(issues, { confirmed: false, warning: true }), [3, 5]);
   assert.deepEqual(addressExcludedRows(issues, { confirmed: false }), []);
+  // A blocklisted address and one with a bounce on record are refused too.
+  assert.deepEqual(addressExcludedRows({ 2: ['suppressed'], 4: ['bounced', 'role'], 6: ['role'] }), [2, 4]);
   // The rules of LST-53 (a misspelled domain, a Gmail name that cannot exist) are confirmed risks too.
   assert.deepEqual(addressExcludedRows({ 2: ['typo'], 4: ['provider', 'role'], 6: ['role'] }), [2, 4]);
 

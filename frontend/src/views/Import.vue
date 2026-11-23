@@ -163,6 +163,17 @@
         </p>
       </b-message>
 
+      <b-message v-if="warnedTotal" type="is-info" :closable="false" class="has-text-left" data-cy="import-warned">
+        <strong>{{ $t('import.warned.title', { count: warnedTotal }) }}</strong>
+        <table class="rejected-table">
+          <tr v-for="r in warnedLines" :key="r.reason" :data-cy="`import-warned-${r.reason}`">
+            <td>{{ $t(`import.warned.${r.reason}`) }}</td>
+            <td class="has-text-right">{{ r.count }}</td>
+          </tr>
+        </table>
+        <p class="help">{{ $t('import.warned.help') }}</p>
+      </b-message>
+
       <p>
         <b-button @click="stopImport" :loading="isProcessing" icon-left="file-upload-outline" type="is-primary">
           {{ isDone() ? $t('import.importDone') : $t('import.stopImport') }}
@@ -927,6 +938,7 @@ export default Vue.extend({
       const has = (row, classes) => issues[row].some((c) => classes.includes(c));
       const confirmed = rows.filter((row) => has(row, ADDRESS_CONFIRMED));
       const confirmedSet = new Set(confirmed);
+      const warningOnly = rows.filter((row) => !confirmedSet.has(row) && has(row, ADDRESS_WARNING));
       const polling = this.addressPolling;
       // A misspelled domain is shown with the address it should be.
       const shownAddress = (row) => (suggest[row] ? `${emails[row]} → ${suggest[row]}` : emails[row]);
@@ -937,6 +949,7 @@ export default Vue.extend({
         else if (ADDRESS_WARNING.includes(name)) kind = 'warning';
         let help = '';
         if (['role', 'provider', 'typo'].includes(name)) help = this.$t(`addressCheck.classHelp.${name}`);
+        else if (['suppressed', 'bounced', 'disposable', 'dead', 'nullmx'].includes(name)) help = this.$t(`import.addr.help.${name}`);
         else if (name === 'unknown') help = this.$t('import.addr.unknownHelp');
         return {
           name,
@@ -950,9 +963,11 @@ export default Vue.extend({
         state,
         lines,
         total: result.total,
-        risky: result.risky,
-        confirmed: result.confirmed,
-        warning: result.warning,
+        // Counted here from the rows: the server's summary counts a disposable domain as a
+        // warning and knows nothing of the blocklist and bounce classes (LST-56).
+        risky: confirmed.length + warningOnly.length,
+        confirmed: confirmed.length,
+        warning: warningOnly.length,
         pending: polling ? result.pending : 0,
         unknown: result.unknown + (polling ? 0 : result.pending),
         busy: this.addressBusy,
@@ -974,7 +989,16 @@ export default Vue.extend({
     },
     rejectedLines() {
       const counts = (this.status && this.status.axmRejected) || {};
-      return ['typo', 'provider', 'format', 'dead', 'nullmx', 'domain'].filter((r) => counts[r]).map((r) => ({ reason: r, count: counts[r] }));
+      return ['suppressed', 'bounced', 'disposable', 'nullmx', 'dead', 'typo', 'provider', 'format', 'domain']
+        .filter((r) => counts[r]).map((r) => ({ reason: r, count: counts[r] }));
+    },
+    // Rows that came in with a warning (LST-56): the server imported them and only counts them.
+    warnedTotal() {
+      return (this.status && this.status.axmWarnedTotal) || 0;
+    },
+    warnedLines() {
+      const counts = (this.status && this.status.axmWarned) || {};
+      return ['unknown', 'role'].filter((r) => counts[r]).map((r) => ({ reason: r, count: counts[r] }));
     },
     countMismatch() {
       return this.sentCount !== null && this.isDone() && this.status.imported + this.serverRejected !== this.sentCount;
