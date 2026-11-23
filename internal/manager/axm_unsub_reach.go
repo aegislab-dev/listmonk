@@ -1,9 +1,9 @@
 package manager
 
 import (
-	"html/template"
 	"strconv"
 	"strings"
+	txttpl "text/template"
 	"text/template/parse"
 
 	"github.com/knadh/listmonk/models"
@@ -300,18 +300,29 @@ func (m *Manager) subjectVaries(c *models.Campaign, withTime bool) bool {
 // ({{ with $mail := . }}), is the message; a named template gets as "." and "$" what it is called
 // with ({{ template "edition" .Campaign.Attribs.edition }}). A text that cannot be parsed is
 // taken as varying.
+//
+// It is parsed and entered as the sender does for a subject or header (Campaign.CompileTemplate,
+// CampaignMessage.render): a text/template named models.ContentTpl, executed by that name, so a
+// {{ define "content" }} in the text is what is rendered (LST-48 review: the subject defined in
+// it was read from the empty root instead).
 func (m *Manager) templateVaries(c *models.Campaign, text string, subj, withTime bool) bool {
-	t, err := template.New("").Funcs(m.TemplateFuncs(c)).Parse(text)
-	if err != nil || t.Tree == nil {
-		return err != nil
+	var funcs map[string]any = m.TemplateFuncs(c)
+	t, err := txttpl.New(models.ContentTpl).Funcs(funcs).Parse(text)
+	if err != nil {
+		return true
 	}
-	w := &varyWalker{t: t, subj: subj, withTime: withTime, seen: map[string]bool{}}
-	return w.list(t.Tree.Root, true, map[string]bool{"$": true})
+	root := t.Lookup(models.ContentTpl)
+	if root == nil || root.Tree == nil {
+		// Nothing would render (the sender's ExecuteTemplate fails): no value to vary.
+		return false
+	}
+	w := &varyWalker{t: t, subj: subj, withTime: withTime, seen: map[string]bool{models.ContentTpl + "|true": true}}
+	return w.list(root.Tree.Root, true, map[string]bool{"$": true})
 }
 
 // varyWalker walks the templates for templateVaries.
 type varyWalker struct {
-	t              *template.Template
+	t              *txttpl.Template
 	subj, withTime bool
 	// seen: the named templates already walked, by name and whether "." is the message.
 	seen map[string]bool

@@ -688,7 +688,9 @@ func TestCampaignPreflightWhatIsSent(t *testing.T) {
 		}
 		// A subject with the shorthand {{ MessageURL }}, each person's link (LST-48 review): the
 		// headers that read it are per subscriber.
-		for _, subject := range []string{`News {{ MessageURL }}`, `News {{ with $mail := . }}{{ MessageURL $mail }}{{ end }}`} {
+		for _, subject := range []string{`News {{ MessageURL }}`, `News {{ with $mail := . }}{{ MessageURL $mail }}{{ end }}`,
+			// The subject defined in "content", which the sender executes (LST-48 review).
+			`{{ define "content" }}{{ if .Subscriber.Attribs.regional }}Regional{{ else }}Weekly{{ end }} edition{{ end }}`} {
 			e.db.MustExec(`UPDATE campaigns SET subject=$2 WHERE id=$1`, e.campID, subject)
 			_, data = e.call(e.a.GetCampaignPreflight, member, http.MethodGet, "/", id, "")
 			o4.PerSubscriber = false
@@ -1317,6 +1319,12 @@ func TestCampaignPreflightUnsubscribeSample(t *testing.T) {
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {
 		t.Fatalf("footer chosen by a subject with MessageURL, for one beyond the sample: %q", got)
 	}
+	// The subject defined in "content", chosen by a subscriber attribute (LST-48 review).
+	e.db.MustExec(`UPDATE campaigns SET subject='{{ define "content" }}{{ if .Subscriber.Attribs.regional }}Regional{{ else }}Weekly{{ end }} edition{{ end }}', body='<p>News</p>{{ if eq .Subject "Regional edition" }}<a href="https://example.org/archive">archive</a>{{ else }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
+	if got := read(); got != "unsubscribe.perSubscriber=warn" {
+		t.Fatalf("footer chosen by a subject defined in content: %q", got)
+	}
+	e.db.MustExec(`UPDATE campaigns SET body='<p>News</p>{{ if hasSuffix "ffffffffffff" .Subject }}<a href="https://example.org/archive">archive</a>{{ else }}<a href="{{ UnsubscribeURL }}">leave</a>{{ end }}' WHERE id=$1`, e.campID)
 	// The same link through a variable that with declares (LST-48 review).
 	e.db.MustExec(`UPDATE campaigns SET subject='News {{ with $mail := . }}{{ MessageURL $mail }}{{ end }}' WHERE id=$1`, e.campID)
 	if got := read(); got != "unsubscribe.perSubscriber=warn" {

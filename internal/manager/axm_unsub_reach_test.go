@@ -119,6 +119,8 @@ func TestUnsubscribeFixedSubject(t *testing.T) {
 		{`{{ $m := . }}{{ $m.Campaign.Attribs.edition }}`, true},
 		{`{{ define "e" }}{{ . }}{{ end }}{{ template "e" .Campaign.Attribs.edition }}`, true},
 		{`{{ with $mail := . }}{{ MessageURL $mail }}{{ end }}`, false},
+		{`{{ define "content" }}{{ if .Subscriber.Attribs.digest }}Digest{{ else }}Full{{ end }}{{ end }}`, false},
+		{`{{ define "content" }}Full{{ end }}`, true},
 	} {
 		c := models.Campaign{ContentType: models.CampaignContentTypeHTML, Messenger: "email", TemplateBody: `{{ template "content" . }}`, Body: src, Subject: tc.subject,
 			Attribs: models.JSON{"edition": "Full"}}
@@ -158,7 +160,9 @@ func TestReadsVarying(t *testing.T) {
 		`{{ define "edition" }}{{ $ }}{{ end }}{{ template "edition" .Campaign.Attribs.edition }}`,
 		`{{ define "name" }}{{ .Name }}{{ end }}{{ template "name" .Campaign }}`,
 		`{{ define "unused" }}{{ MessageURL . }}{{ end }}Regional edition`,
-		`{{ with $e := .Campaign.Attribs.edition }}{{ $e }}{{ end }}`} {
+		`{{ with $e := .Campaign.Attribs.edition }}{{ $e }}{{ end }}`,
+		`{{ define "content" }}Regional edition{{ end }}`,
+		`{{ define "content" }}{{ .Campaign.Attribs.edition }}{{ end }}`} {
 		c := &models.Campaign{Subject: subject, Attribs: models.JSON{"edition": "Regional edition"}}
 		for _, text := range []string{`{{ if eq .Subject "Regional edition" }}regional@crevasse.ai{{ end }}`, `{{ $m := . }}{{ if eq $m.Subject "R" }}r{{ end }}`} {
 			if m.ReadsVarying(c, text) {
@@ -176,7 +180,10 @@ func TestReadsVarying(t *testing.T) {
 		`{{ define "u" }}{{ MessageURL $ }}{{ end }}{{ template "u" . }}`,
 		`{{ define "u" }}{{ .Subscriber.Name }}{{ end }}{{ template "u" . }}`,
 		`{{ define "u" }}{{ . }}{{ end }}{{ template "u" .Subscriber.Name }}`,
-		`{{ define "a" }}{{ template "b" . }}{{ end }}{{ define "b" }}{{ MessageURL . }}{{ end }}{{ template "a" . }}`} {
+		`{{ define "a" }}{{ template "b" . }}{{ end }}{{ define "b" }}{{ MessageURL . }}{{ end }}{{ template "a" . }}`,
+		// LST-48 review: the sender executes "content", so a subject defined there is what renders.
+		`{{ define "content" }}{{ if .Subscriber.Attribs.regional }}Regional{{ else }}Weekly{{ end }} edition{{ end }}`,
+		`{{ define "content" }}{{ template "e" . }}{{ end }}{{ define "e" }}{{ MessageURL . }}{{ end }}`} {
 		c := &models.Campaign{Subject: subject}
 		if !m.ReadsVarying(c, `{{ if eq .Subject "R" }}r{{ end }}`) {
 			t.Errorf("subject %q: not varying", subject)
