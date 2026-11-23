@@ -201,8 +201,7 @@ campMedia AS (
     GROUP BY campaign_id
 ),
 counts AS (
-    -- AXM (LST-47) people held back from a follow-up campaign are not counted to send.
-    SELECT camps.id AS campaign_id, COUNT(DISTINCT sl.subscriber_id) FILTER (WHERE h.subscriber_id IS NULL) AS to_send, COALESCE(MAX(sl.subscriber_id), 0) AS max_subscriber_id
+    SELECT camps.id AS campaign_id, COUNT(DISTINCT sl.subscriber_id) AS to_send, COALESCE(MAX(sl.subscriber_id), 0) AS max_subscriber_id
     FROM camps
     JOIN campLists cl ON cl.campaign_id = camps.id
     JOIN subscriber_lists sl ON sl.list_id = cl.list_id
@@ -214,11 +213,10 @@ counts AS (
             END
         )
     JOIN subscribers s ON (s.id = sl.subscriber_id AND s.status != 'blocklisted')
-    LEFT JOIN axm_campaign_followup_holds h ON (h.campaign_id = camps.id AND h.subscriber_id = sl.subscriber_id)
     GROUP BY camps.id
 ),
 dynCounts AS (
-    SELECT ca.id AS campaign_id, COUNT(DISTINCT members.id) FILTER (WHERE h.subscriber_id IS NULL) AS to_send,
+    SELECT ca.id AS campaign_id, COUNT(DISTINCT members.id) AS to_send,
         COALESCE(MAX(members.id), 0) AS max_subscriber_id
     FROM camps ca
     LEFT JOIN LATERAL (
@@ -234,22 +232,8 @@ dynCounts AS (
         CROSS JOIN LATERAL axm_dynamic_list_members(cl.list_id) m
         WHERE cl.campaign_id = ca.id AND cl.is_dynamic AND ca.type != 'optin'
     ) members ON TRUE
-    LEFT JOIN axm_campaign_followup_holds h ON (h.campaign_id = ca.id AND h.subscriber_id = members.id)
     WHERE EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = ca.id AND cl.is_dynamic)
     GROUP BY ca.id
-),
-starts AS (
-    SELECT * FROM counts co WHERE NOT EXISTS (
-        SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
-    )
-    UNION ALL SELECT * FROM dynCounts
-    -- AXM (LST-47) a follow-up campaign with nobody to send to at all still starts, so that the
-    -- sender finishes it with nothing sent. Left scheduled, it would go to anyone who subscribed
-    -- to its list later, without a new schedule.
-    UNION ALL SELECT camps.id, 0, 0 FROM camps
-    WHERE camps.id IN (SELECT campaign_id FROM axm_campaign_followups)
-        AND NOT EXISTS (SELECT 1 FROM counts WHERE counts.campaign_id = camps.id)
-        AND NOT EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = camps.id AND cl.is_dynamic)
 ),
 u AS (
     -- For each campaign, update the to_send count and set the max_subscriber_id.
@@ -258,18 +242,15 @@ u AS (
         status = (CASE WHEN status != 'running' THEN 'running' ELSE status END),
         max_subscriber_id = co.max_subscriber_id,
         started_at=(CASE WHEN ca.started_at IS NULL THEN NOW() ELSE ca.started_at END)
-    FROM starts co
+    FROM (
+        SELECT * FROM counts co WHERE NOT EXISTS (
+            SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
+        )
+        UNION ALL SELECT * FROM dynCounts
+    ) co
     WHERE ca.id = co.campaign_id
-        -- AXM (LST-47) the row is read again if it changed while this ran. A campaign paused, taken
-        -- back to a draft or scheduled for a later time meanwhile is not started (and not given
-        -- back below, so the sender does not read it with an upper bound that was not set).
-        AND (ca.status = 'running' OR (ca.status = 'scheduled' AND NOW() >= ca.send_at))
-    RETURNING ca.id
 )
--- AXM (LST-47) only the campaigns started above, and as before the ones that had nothing to start
--- (no one on their lists: the sender ends them).
-SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id)
-WHERE camps.id IN (SELECT id FROM u) OR NOT EXISTS (SELECT 1 FROM starts WHERE starts.campaign_id = camps.id);
+SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);
 
 -- name: get-campaign-analytics-unique-counts
 WITH intval AS (
@@ -399,8 +380,6 @@ subs AS (
             AND s.id <= $4
              -- Subscriber should not be blacklisted.
             AND s.status != 'blocklisted'
-            -- AXM (LST-47) not held back from this follow-up campaign by the check before sending.
-            AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_holds h WHERE h.campaign_id = $1 AND h.subscriber_id = s.id)
             AND (
                 -- If it's an optin campaign and the list is double-optin, only pick unconfirmed subscribers.
                 ($2 = 'optin' AND sl.status = 'unconfirmed' AND campLists.optin = 'double')

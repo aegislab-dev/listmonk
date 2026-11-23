@@ -188,59 +188,116 @@ type followupDue struct {
 	ParentName string          `db:"parent_name"`
 	Condition  json.RawMessage `db:"condition"`
 	ListIDs    pq.Int64Array   `db:"list_ids"`
-	Version    int             `db:"version"`
 }
 
-// RecheckFollowups runs the check before follow-up campaigns start: the people on a follow-up
-// list who reacted to the original campaign since the list was made, opted out of it, or got
-// blocked are held back, and the sender skips them. Subscriptions are not changed, and who is held
-// is decided again at every check. This covers the follow-ups the sender is about to pick up (a
-// start, a due schedule, a resume, a restart); it does nothing when there are none. It returns
-// the campaigns it checked. An error means the check did not happen, and the caller must not
-// start those campaigns.
-func (c *Core) RecheckFollowups(ctx context.Context, currentIDs []int64) (checked, skipped []int, err error) {
-	var due []followupDue
-	if err := c.q.AxmFollowupDue.SelectContext(ctx, &due, pq.Array(currentIDs)); err != nil {
-		return nil, nil, err
+
+
+
+// ClaimFollowupBatch decides, just before the sender uses a batch it has read for follow-up
+// campaign id, who of the people subs is left out, and returns them (isFollowup is false for any
+// other campaign: nothing is decided). The decision is one transaction: it first takes the
+// original's lock exclusively, so the reactions and send records of the original being written at
+// this moment are committed and seen; then it keeps the batch's late recipients of the original,
+// judges the batch (axm_followup_judge) and records who is left out and why (and that the others
+// are not). Whatever is committed before it counts; what comes after is after the send was decided.
+func (c *Core) ClaimFollowupBatch(ctx context.Context, id int, subs []int) (left map[int]bool, isFollowup bool, err error) {
+	if len(subs) == 0 {
+		return nil, false, nil
 	}
-	return c.recheck(ctx, due)
-}
-
-// FollowupsToCheck returns the follow-ups among the given campaigns whose last check was not made
-// for the campaign as it is now. The sender gives none of them back before they are checked.
-func (c *Core) FollowupsToCheck(ctx context.Context, ids []int) ([]int, error) {
-	out := []int{}
-	if err := c.q.AxmFollowupUnchecked.SelectContext(ctx, &out, pq.Array(ids)); err != nil {
-		return nil, err
+	tx, err := c.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, false, err
 	}
-	return out, nil
+	defer tx.Rollback()
+	var g struct {
+		Parent int    `db:"parent_campaign_id"`
+		Locked string `db:"locked"`
+	}
+	if err := tx.Stmtx(c.q.AxmFollowupClaimLock).GetContext(ctx, &g, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if _, err := tx.Stmtx(c.q.AxmFollowupClaimRecipients).ExecContext(ctx, id, g.Parent, pq.Array(subs)); err != nil {
+		return nil, true, err
+	}
+	var rows []struct {
+		SubscriberID int `db:"subscriber_id"`
+		Reason       int `db:"reason"`
+	}
+	if err := tx.Stmtx(c.q.AxmFollowupClaim).SelectContext(ctx, &rows, id, pq.Array(subs), c.tracking()); err != nil {
+		return nil, true, err
+	}
+	var recorded json.RawMessage
+	if err := tx.Stmtx(c.q.AxmFollowupRecord).GetContext(ctx, &recorded, id); err != nil {
+		return nil, true, err
+	}
+	left = make(map[int]bool, len(rows))
+	if len(rows) > 0 {
+		reasons := map[int]int{}
+		for _, r := range rows {
+			left[r.SubscriberID] = true
+			reasons[r.Reason]++
+		}
+		if err := c.auditFollowupLeftOut(ctx, tx, id, g.Parent, reasons, len(rows), recorded); err != nil {
+			return nil, true, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, true, err
+	}
+	if len(rows) > 0 {
+		c.log.Printf("follow-up campaign %d: %d of a batch of %d left out (reacted to the original, opted out, blocked or reactions unseen)", id, len(rows), len(subs))
+	}
+	return left, true, nil
 }
 
-// auditFollowupCheck writes the audit row of one check before a follow-up starts, in its transaction.
-func (c *Core) auditFollowupCheck(tx *sqlx.Tx, f followupDue, held int, recorded json.RawMessage) error {
+// auditFollowupLeftOut writes the audit row of a batch in which the sender left people out of a
+// follow-up, in the claim's transaction: counts only, no person.
+func (c *Core) auditFollowupLeftOut(ctx context.Context, tx *sqlx.Tx, id, parent int, reasons map[int]int, left int, recorded json.RawMessage) error {
 	var rc models.FollowupRecheck
-	if err := json.Unmarshal(recorded, &rc); err != nil {
+	_ = json.Unmarshal(recorded, &rc)
+	var names struct {
+		Name       string `db:"name"`
+		ParentName string `db:"parent_name"`
+	}
+	if err := tx.GetContext(ctx, &names, `SELECT c.name, p.name AS parent_name FROM campaigns c, campaigns p WHERE c.id = $1 AND p.id = $2`, id, parent); err != nil {
 		return err
 	}
 	// Campaign names can hold anything, an address too: scrubbed as every audit text is.
 	detail, err := json.Marshal(ScrubAuditDetail(map[string]any{
-		"parent":    map[string]any{"id": f.ParentID, "name": f.ParentName},
-		"reacted":   rc.Reacted,
-		"opted_out": rc.OptedOut,
-		"blocked":   rc.Blocked,
-		"unknown":   rc.Unknown,
+		"parent":    map[string]any{"id": parent, "name": names.ParentName},
+		"reacted":   reasons[-1],
+		"opted_out": reasons[2] + reasons[3],
+		"blocked":   reasons[1],
+		"unknown":   reasons[4],
 		"check":     rc.Runs,
 	}))
 	if err != nil {
 		return err
 	}
-	name := ScrubAuditText(f.Name)
+	name := ScrubAuditText(names.Name)
 	if r := []rune(name); len(r) > 200 {
 		name = string(r[:200])
 	}
-	_, err = tx.Stmtx(c.q.AxmInsertAudit).Exec(nil, "system", "system", models.AuditUserTypeSystem, models.AuditActionFollowupCheck,
-		"campaign", f.CampaignID, name, held, string(detail))
+	_, err = tx.Stmtx(c.q.AxmInsertAudit).ExecContext(ctx, nil, "system", "system", models.AuditUserTypeSystem, models.AuditActionFollowupCheck,
+		"campaign", id, name, left, string(detail))
 	return err
+}
+
+// FinishEmptyFollowup ends a follow-up campaign that is due with nobody at all on its lists (the
+// sender does not start it). It reports whether it did.
+func (c *Core) FinishEmptyFollowup(id int) (bool, error) {
+	var ended int
+	if err := c.q.AxmFollowupFinishEmpty.Get(&ended, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	c.log.Printf("follow-up campaign %d: nobody is on its lists at its send time, finished without sending", id)
+	return true, nil
 }
 
 // FollowupHeldNow is who a check made now would hold back from campaign id, if it is a follow-up
@@ -283,162 +340,10 @@ func (c *Core) NoteTracking(on bool) error {
 	return err
 }
 
-// GuardFollowupBatch judges the people of a batch the sender has just read for follow-up campaign
-// id, and holds back whoever the check's judgement says to (axm_followup_judge). It first takes
-// the original's lock exclusively, so the reactions and send records of the original being written
-// at this moment are committed and seen: a decision made earlier on data that was not committed
-// yet (a check, a trigger) cannot let someone through. It returns who of the batch is held back
-// now (by anyone); the caller leaves them out. Not a follow-up: nil.
-func (c *Core) GuardFollowupBatch(ctx context.Context, id int, subs []int) (map[int]bool, error) {
-	if len(subs) == 0 {
-		return nil, nil
-	}
-	tx, err := c.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	var g struct {
-		Parent int    `db:"parent_campaign_id"`
-		Locked string `db:"locked"`
-	}
-	if err := tx.Stmtx(c.q.AxmFollowupGuard).GetContext(ctx, &g, id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupGuardRecipients).ExecContext(ctx, id, g.Parent, pq.Array(subs)); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupGuardHold).ExecContext(ctx, id, pq.Array(subs), c.tracking()); err != nil {
-		return nil, err
-	}
-	// Everyone of the batch who is held back now, also when someone else held them after the batch
-	// was read (a reaction's trigger, a check).
-	var held []int
-	if err := tx.Stmtx(c.q.AxmFollowupGuardHeld).SelectContext(ctx, &held, id, pq.Array(subs)); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	out := make(map[int]bool, len(held))
-	for _, h := range held {
-		out[h] = true
-	}
-	return out, nil
-}
 
-// FollowupStale says whether the campaign is a follow-up whose last check is not for the campaign
-// as it is now; the sender must read no recipients for it then.
-func (c *Core) FollowupStale(id int) (bool, error) {
-	var stale bool
-	err := c.q.AxmFollowupStale.Get(&stale, id)
-	return stale, err
-}
 
-// RecheckFollowupsByID checks the follow-ups among the given campaigns, whatever their state.
-// The sender uses it for a campaign it found after the first check (a schedule that fell due
-// while another check ran). It returns the follow-ups it checked and the follow-ups it skipped
-// because they were not due when it came to them: those are not checked and must not start.
-func (c *Core) RecheckFollowupsByID(ctx context.Context, ids []int) (checked, skipped []int, err error) {
-	var rows []followupDue
-	if err := c.q.AxmFollowupByIDs.SelectContext(ctx, &rows, pq.Array(ids)); err != nil {
-		return nil, nil, err
-	}
-	return c.recheck(ctx, rows)
-}
 
-// recheck checks each follow-up. A follow-up that was not due any more (a later time was saved
-// meanwhile) is skipped, not checked: it can fall due again before the sender's query runs, and
-// then it must be checked again first.
-func (c *Core) recheck(ctx context.Context, rows []followupDue) (done, skipped []int, err error) {
-	done = []int{}
-	for _, f := range rows {
-		var s models.ReactionSettings
-		if err := json.Unmarshal(f.Condition, &s); err != nil || s.Validate() != nil {
-			return done, skipped, errors.New("follow-up campaign " + strconv.Itoa(f.CampaignID) + " has no valid condition")
-		}
-		held, checked, err := c.recheckOne(ctx, f, s)
-		if err != nil {
-			return done, skipped, err
-		}
-		if !checked {
-			skipped = append(skipped, f.CampaignID)
-			continue
-		}
-		if len(f.ListIDs) > 0 {
-			c.log.Printf("follow-up campaign %d: checked against campaign %d before sending, %d people held back",
-				f.CampaignID, f.ParentID, held)
-		}
-		done = append(done, f.CampaignID)
-	}
-	return done, skipped, nil
-}
 
-// recheckOne decides who is held back from one follow-up campaign, in one transaction. checked is
-// false when the campaign was no longer due (its schedule was moved): nothing changes then.
-func (c *Core) recheckOne(ctx context.Context, f followupDue, s models.ReactionSettings) (held int, checked bool, err error) {
-	tx, err := c.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return 0, false, err
-	}
-	defer tx.Rollback()
-
-	// Who got the original and the reactions on record now are kept first, so the judgement below
-	// and every later one sees them even once their records are cleared or expire.
-	if _, err := tx.Stmtx(c.q.AxmFollowupRecipientsNow).ExecContext(ctx, f.CampaignID, f.ParentID); err != nil {
-		return 0, false, err
-	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupReactionsNow).ExecContext(ctx, f.CampaignID, f.ParentID); err != nil {
-		return 0, false, err
-	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupUnhold).ExecContext(ctx, f.CampaignID); err != nil {
-		return 0, false, err
-	}
-	if len(f.ListIDs) > 0 {
-		var reasons []int
-		args := []any{f.CampaignID, c.tracking()}
-		if err := tx.Stmtx(c.q.AxmFollowupRecheck).SelectContext(ctx, &reasons, args...); err != nil {
-			return 0, false, err
-		}
-		held = len(reasons)
-	}
-	// Then, with the campaign locked: if it changed since its row was read (a later time saved, its
-	// lists changed, a pause), the check was made for a campaign that no longer is and is dropped;
-	// the sender checks it again (FollowupsToCheck). A save that comes after this lock waits for the
-	// check; core.UpdateCampaign then reads the status again and refuses the save if the campaign
-	// has started meanwhile. The campaign row is locked before the link row is written, the order a
-	// save takes them in (its trigger axm_followup_touch writes the link row), so the two never
-	// wait for each other.
-	var locked, version int
-	if err := tx.Stmtx(c.q.AxmFollowupLockDue).GetContext(ctx, &locked, f.CampaignID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, false, nil
-		}
-		return 0, false, err
-	}
-	if err := tx.Stmtx(c.q.AxmFollowupVersion).GetContext(ctx, &version, f.CampaignID); err != nil {
-		return 0, false, err
-	}
-	if version != f.Version {
-		return 0, false, nil
-	}
-	var recorded json.RawMessage
-	if err := tx.Stmtx(c.q.AxmFollowupRecord).GetContext(ctx, &recorded, f.CampaignID, f.Version); err != nil {
-		return 0, false, err
-	}
-	// The check goes to the audit log with the campaign, so who was left out at each start can be
-	// read back (counts only, no person).
-	if err := c.auditFollowupCheck(tx, f, held, recorded); err != nil {
-		return 0, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, false, err
-	}
-	return held, true, nil
-}
 
 // GetFollowupInfo describes the follow-up link of a campaign, if it has one. withPending adds
 // how many people a check made now would take off a follow-up list that has not started.

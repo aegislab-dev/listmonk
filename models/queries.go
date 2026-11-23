@@ -52,27 +52,19 @@ type Queries struct {
 	AxmFollowupIsFollowup          *sqlx.Stmt `query:"axm-followup-is-followup"`
 	AxmFollowupInsert              *sqlx.Stmt `query:"axm-followup-insert"`
 	AxmFollowupGet                 *sqlx.Stmt `query:"axm-followup-get"`
-	AxmFollowupDue                 *sqlx.Stmt `query:"axm-followup-due"`
 	AxmFollowupByIDs               *sqlx.Stmt `query:"axm-followup-by-ids"`
-	AxmFollowupLockDue             *sqlx.Stmt `query:"axm-followup-lock-due"`
-	AxmFollowupUnhold              *sqlx.Stmt `query:"axm-followup-unhold"`
-	AxmFollowupUnchecked           *sqlx.Stmt `query:"axm-followup-unchecked"`
-	AxmFollowupStale               *sqlx.Stmt `query:"axm-followup-stale"`
-	AxmFollowupVersion             *sqlx.Stmt `query:"axm-followup-version"`
+	AxmFollowupClaimLock           *sqlx.Stmt `query:"axm-followup-claim-lock"`
+	AxmFollowupClaimRecipients     *sqlx.Stmt `query:"axm-followup-claim-recipients"`
+	AxmFollowupClaim               *sqlx.Stmt `query:"axm-followup-claim"`
+	AxmFollowupFinishEmpty         *sqlx.Stmt `query:"axm-followup-finish-empty"`
 	AxmFollowupMembers             *sqlx.Stmt `query:"axm-followup-members"`
 	AxmFollowupReactionsNow        *sqlx.Stmt `query:"axm-followup-reactions-now"`
 	AxmFollowupLockOriginal        *sqlx.Stmt `query:"axm-followup-lock-original"`
 	AxmFollowupRecipientsNow       *sqlx.Stmt `query:"axm-followup-recipients-now"`
-	AxmFollowupGuard               *sqlx.Stmt `query:"axm-followup-guard"`
-	AxmFollowupGuardRecipients     *sqlx.Stmt `query:"axm-followup-guard-recipients"`
-	AxmFollowupGuardHold           *sqlx.Stmt `query:"axm-followup-guard-hold"`
-	AxmFollowupGuardHeld           *sqlx.Stmt `query:"axm-followup-guard-held"`
 	AxmTrackingOffStart            *sqlx.Stmt `query:"axm-tracking-off-start"`
 	AxmTrackingOffEnd              *sqlx.Stmt `query:"axm-tracking-off-end"`
-	AxmFollowupRecheck             *sqlx.Stmt `query:"axm-followup-recheck"`
 	AxmFollowupPending             *sqlx.Stmt `query:"axm-followup-pending"`
 	AxmFollowupRecord              *sqlx.Stmt `query:"axm-followup-record"`
-	AxmLockCampaignStatus          *sqlx.Stmt `query:"axm-lock-campaign-status"`
 	AxmGetColumnPresets            *sqlx.Stmt `query:"axm-get-column-presets"`
 	AxmGetColumnPreset             *sqlx.Stmt `query:"axm-get-column-preset"`
 	AxmColumnPresetExists          *sqlx.Stmt `query:"axm-column-preset-exists"`

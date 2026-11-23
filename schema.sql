@@ -1180,58 +1180,25 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     list_uuid          UUID NOT NULL,
     condition          JSONB NOT NULL,
     counts             JSONB NOT NULL DEFAULT '{}',
+    -- Who the sender left out so far, by reason, and how many batches it judged.
     recheck            JSONB NOT NULL DEFAULT '{}',
     rechecked_at       TIMESTAMP WITH TIME ZONE NULL,
-    -- The follow-up's version (see axm_followup_touch) and the version its last check was made for.
-    version            INTEGER NOT NULL DEFAULT 0,
-    checked_version    INTEGER NULL,
     created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CHECK (campaign_id <> parent_campaign_id)
 );
--- People the check before sending holds back from a follow-up campaign. The sender skips them;
--- their subscriptions are not changed. Each check replaces the rows of its campaign.
+-- People the sender left out of a follow-up campaign when it judged their batch, with the reason.
+-- Their subscriptions are not changed. A later judgement of the same person replaces the row.
 CREATE TABLE IF NOT EXISTS axm_campaign_followup_holds (
     campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
     subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
     reason        SMALLINT NOT NULL,
     PRIMARY KEY (campaign_id, subscriber_id)
 );
--- A follow-up's version counts the changes that make an earlier check before sending stale.
--- Those are a status change other than the sender starting a due schedule (a pause and resume, a
--- schedule saved or taken back), a new send time, and a list added to, taken off or restored on
--- the campaign.
--- The sender only gives a follow-up back, and only reads recipients for it, while its last check
--- was made for the version it has now.
-CREATE OR REPLACE FUNCTION axm_followup_touch()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-    IF TG_TABLE_NAME = 'campaigns' THEN
-        UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = NEW.id;
-        RETURN NULL;
-    END IF;
-    -- campaign_lists: a row added, taken off, or pointed at another list (a list deleted to the
-    -- trash and restored from it updates list_id).
-    IF TG_OP IN ('DELETE', 'UPDATE') THEN
-        UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = OLD.campaign_id;
-    END IF;
-    IF TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND NEW.campaign_id IS DISTINCT FROM OLD.campaign_id) THEN
-        UPDATE axm_campaign_followups SET version = version + 1 WHERE campaign_id = NEW.campaign_id;
-    END IF;
-    RETURN NULL;
-END;
-$$;
-DROP TRIGGER IF EXISTS axm_followup_touch_campaign ON campaigns;
-CREATE TRIGGER axm_followup_touch_campaign AFTER UPDATE OF status, send_at ON campaigns
-    FOR EACH ROW WHEN (OLD.send_at IS DISTINCT FROM NEW.send_at OR (OLD.status IS DISTINCT FROM NEW.status
-        AND NOT (OLD.status = 'scheduled' AND NEW.status = 'running')))
-    EXECUTE FUNCTION axm_followup_touch();
-DROP TRIGGER IF EXISTS axm_followup_touch_lists ON campaign_lists;
-CREATE TRIGGER axm_followup_touch_lists AFTER INSERT OR DELETE OR UPDATE OF list_id, campaign_id ON campaign_lists
-    FOR EACH ROW EXECUTE FUNCTION axm_followup_touch();
--- Who got the original campaign, kept when the follow-up is made, and whether the draft was made
--- for them (made_for: put on the follow-up list then). They are judged before sending whatever
--- happens to their list row or to the original's send records, which expire.
+-- Who got the original campaign, kept when the follow-up is made (and when a send record of the
+-- original comes later), and whether the draft was made for them (made_for: put on the follow-up
+-- list then). They are judged whatever happens to their list row or to the original's send
+-- records, which expire.
 CREATE TABLE IF NOT EXISTS axm_campaign_followup_members (
     campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
     subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -1246,8 +1213,9 @@ CREATE TABLE IF NOT EXISTS axm_tracking_off (
     started_at TIMESTAMP WITH TIME ZONE PRIMARY KEY,
     ended_at   TIMESTAMP WITH TIME ZONE NULL
 );
--- Opens and clicks of the original campaign since the follow-up was made, kept as they are
--- recorded: clearing the statistics or the send records' keeping time does not take them away.
+-- Opens and clicks of the original campaign, kept for the follow-up as they are recorded (and
+-- copied from the records when it is made): clearing the statistics or the send records' keeping
+-- time does not take them away.
 CREATE TABLE IF NOT EXISTS axm_campaign_followup_reactions (
     campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
     subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -1256,7 +1224,7 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followup_reactions (
     PRIMARY KEY (campaign_id, subscriber_id)
 );
 -- Whether follow-up campaign p_campaign also reaches p_sub through a list other than its
--- follow-up list(s) p_lists (a list added to it by hand): such a person is not held back.
+-- follow-up list(s) p_lists (a list added to it by hand): such a person is not left out.
 CREATE OR REPLACE FUNCTION axm_followup_reaches_otherwise(p_campaign INT, p_sub INT, p_lists INT[])
 RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
     SELECT EXISTS (
@@ -1269,9 +1237,8 @@ RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
                 SELECT 1 FROM axm_dynamic_list_members(ol.id, p_sub - 1, p_sub, 1))))
     );
 $$;
--- The judgement of the check before a follow-up is sent, in one place: the check, the count of who
--- it would hold now, and the holds made at once when a reaction or a late send record comes in all
--- read it. One row per person on the follow-up list (subscribed, not sent the follow-up yet, not
+-- The judgement of who a follow-up leaves out, in one place: the sender reads it for every batch
+-- just before sending (axm-followup-claim), and the count of who would be left out now reads it. One row per person on the follow-up list (subscribed, not sent the follow-up yet, not
 -- reached through another list of the campaign) who got the original, with the reason to hold
 -- them back: 0 none, 1 blocked, 2 opted out of the original's lists, 4 reactions cannot be seen
 -- (per-subscriber tracking off now, p_tracking, or for a time since the original went out), -1
@@ -1332,43 +1299,9 @@ LANGUAGE SQL STABLE AS $$
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = p_campaign AND sent.subscriber_id = sl.subscriber_id)
         AND NOT axm_followup_reaches_otherwise(p_campaign, sl.subscriber_id, ARRAY[lst.id]);
 $$;
--- Holds person p_sub back from follow-up p_campaign at once when the check's judgement
--- (axm_followup_judge) says so. Called when a reaction is recorded and when a
--- recipient of the original is kept late, so neither waits for the next check before sending.
--- The person's reactions on record now (view and click rows, open and click times of the send
--- record) are kept first: a reaction recorded before they were known to have got the original
--- (their send record came late) counts too.
-CREATE OR REPLACE FUNCTION axm_followup_hold_reacted(p_campaign INT, p_sub INT)
-RETURNS VOID LANGUAGE plpgsql AS $$
-DECLARE
-    f RECORD;
-BEGIN
-    SELECT * INTO f FROM axm_campaign_followups WHERE campaign_id = p_campaign;
-    IF NOT FOUND THEN
-        RETURN;
-    END IF;
-    INSERT INTO axm_campaign_followup_reactions (campaign_id, subscriber_id, opened, clicked)
-    SELECT p_campaign, p_sub, x.o, x.c FROM (
-        SELECT EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = f.parent_campaign_id AND v.subscriber_id = p_sub)
-                OR EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = f.parent_campaign_id AND s.subscriber_id = p_sub AND s.opened_at IS NOT NULL) AS o,
-            EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = f.parent_campaign_id AND k.subscriber_id = p_sub)
-                OR EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = f.parent_campaign_id AND s.subscriber_id = p_sub AND s.clicked_at IS NOT NULL) AS c
-    ) x WHERE x.o OR x.c
-    ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
-        opened = axm_campaign_followup_reactions.opened OR EXCLUDED.opened,
-        clicked = axm_campaign_followup_reactions.clicked OR EXCLUDED.clicked;
-    -- The same judgement as the check (opted out, blocked, reactions unseen, condition broken).
-    -- Tracking that is off now is recorded in axm_tracking_off when the app starts.
-    INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
-    SELECT p_campaign, j.subscriber_id, j.reason FROM axm_followup_judge(p_campaign, ARRAY[p_sub], TRUE) j
-    WHERE j.reason <> 0
-    ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
-END;
-$$;
 -- Keeps an open or click of an original campaign for its follow-up as it is recorded: a view or
 -- click row, or the open or click time written on the send record (that can come later than the
--- row, and the row can be cleared meanwhile). It also holds the person back at once if the
--- reaction breaks the condition (axm_followup_hold_reacted).
+-- row, and the row can be cleared meanwhile).
 CREATE OR REPLACE FUNCTION axm_followup_reaction()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
@@ -1383,9 +1316,8 @@ BEGIN
         o := TG_TABLE_NAME = 'campaign_views';
         k := TG_TABLE_NAME = 'link_clicks';
     END IF;
-    -- A follow-up being made of this campaign takes this lock exclusively just before it commits,
-    -- so it waits for this reaction to be committed (and keeps it afterwards), and a reaction
-    -- recorded meanwhile waits for it and then sees it below.
+    -- A follow-up being made of this campaign, and the sender judging a batch of one, take this
+    -- lock exclusively: they wait for this reaction to be committed and then see it.
     PERFORM pg_advisory_xact_lock_shared(4747, NEW.campaign_id);
     FOR f IN SELECT fu.campaign_id FROM axm_campaign_followups fu JOIN campaigns c ON c.id = fu.campaign_id
         WHERE fu.parent_campaign_id = NEW.campaign_id AND c.status NOT IN ('finished', 'cancelled')
@@ -1395,7 +1327,6 @@ BEGIN
         ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
             opened = axm_campaign_followup_reactions.opened OR EXCLUDED.opened,
             clicked = axm_campaign_followup_reactions.clicked OR EXCLUDED.clicked;
-        PERFORM axm_followup_hold_reacted(f.campaign_id, NEW.subscriber_id);
     END LOOP;
     RETURN NULL;
 END;
@@ -1407,8 +1338,7 @@ DROP TRIGGER IF EXISTS axm_followup_reaction_click ON link_clicks;
 CREATE TRIGGER axm_followup_reaction_click AFTER INSERT ON link_clicks
     FOR EACH ROW WHEN (NEW.subscriber_id IS NOT NULL) EXECUTE FUNCTION axm_followup_reaction();
 -- Send records of an original campaign written after a follow-up of it was made (they are saved
--- shortly after the messages went out): the people are kept for the follow-up as well, and held
--- back at once if what is kept of their reactions breaks its condition.
+-- shortly after the messages went out): the people are kept for the follow-up as well.
 CREATE OR REPLACE FUNCTION axm_followup_recipients()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -1417,8 +1347,6 @@ BEGIN
     SELECT f.campaign_id, n.subscriber_id, FALSE
     FROM axm_new_sends n JOIN axm_campaign_followups f ON f.parent_campaign_id = n.campaign_id
     ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
-    PERFORM axm_followup_hold_reacted(f.campaign_id, n.subscriber_id)
-    FROM axm_new_sends n JOIN axm_campaign_followups f ON f.parent_campaign_id = n.campaign_id;
     RETURN NULL;
 END;
 $$;

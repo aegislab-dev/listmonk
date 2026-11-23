@@ -24,6 +24,10 @@ type store struct {
 	core    *core.Core
 	media   media.Store
 
+	// AXM (LST-47): whether a campaign is a follow-up, asked once per campaign (a campaign only
+	// becomes one when it is made as a draft).
+	followups sync.Map
+
 	// AXM (LST-20): the connection that holds the campaign sending lock.
 	db       *sqlx.DB
 	lockMut  sync.Mutex
@@ -64,54 +68,9 @@ func newManagerStore(q *models.Queries, c *core.Core, m media.Store, db *sqlx.DB
 // campaigns that are also being processed. Progress saves own sent counts;
 // discovery must not update them, as Select can fail after the SQL commits.
 func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
-	// AXM (LST-47): a follow-up campaign is checked against its original before it can be
-	// picked up. The first check covers the ones that are due now. A schedule can fall due while
-	// that check runs (a lock wait, a long list), so every campaign the query then finds is looked
-	// at again, and a follow-up that was not checked yet is checked before the result is given
-	// back. If a check fails nothing is picked up in this round: it is tried again in the next
-	// one, and a follow-up never starts unchecked.
-	ctx := context.Background()
-	if _, _, err := s.core.RecheckFollowups(ctx, currentIDs); err != nil {
-		return nil, err
-	}
-	for round := 0; ; round++ {
-		var out []*models.Campaign
-		if err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs)); err != nil {
-			return out, err
-		}
-		// A follow-up is given back only when its last check was made for the campaign as it is
-		// now. A check made before a later time was saved or the lists were changed does not count,
-		// whenever in this call it was made. Once next-campaigns has started a campaign, the editor
-		// cannot change it any more (core.UpdateCampaign), so what is checked here is what is sent.
-		ids := make([]int, 0, len(out))
-		for _, camp := range out {
-			ids = append(ids, camp.ID)
-		}
-		stale, err := s.core.FollowupsToCheck(ctx, ids)
-		if err != nil {
-			return nil, err
-		}
-		if len(stale) == 0 {
-			return out, nil
-		}
-		if round >= 3 {
-			// Still changing: give back what is checked, the rest comes in the next round.
-			skip := map[int]bool{}
-			for _, id := range stale {
-				skip[id] = true
-			}
-			kept := out[:0]
-			for _, camp := range out {
-				if !skip[camp.ID] {
-					kept = append(kept, camp)
-				}
-			}
-			return kept, nil
-		}
-		if _, _, err := s.core.RecheckFollowupsByID(ctx, stale); err != nil {
-			return nil, err
-		}
-	}
+	var out []*models.Campaign
+	err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs))
+	return out, err
 }
 
 // NextSubscribers retrieves a subset of subscribers of a given campaign.
@@ -131,6 +90,11 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	// AXM (LST-25): no row means the campaign is not running. That is not the same
 	// as having no subscribers left, which would finish it.
 	if len(camps) == 0 {
+		// AXM (LST-47): a follow-up that is due with nobody on its lists is not started by the
+		// sender; it is ended here instead of staying scheduled.
+		if _, err := s.core.FinishEmptyFollowup(campID); err != nil {
+			return nil, err
+		}
 		return nil, manager.ErrCampaignNotRunning
 	}
 
@@ -154,56 +118,51 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	// checkpoint in the DB.
 	camps[0].LastSubscriberID = lastSubID
 
-	// AXM (LST-47): the people of a follow-up's batch are judged once more as it is read, after every
-	// reaction or send record of the original being written now is committed (see
-	// core.GuardFollowupBatch). Whoever is held back (by that or by anyone else meanwhile) is taken
-	// out of the batch. A batch of only held people is read past, so the position always moves on:
-	// someone held can come back in every read (a dynamic list of the campaign is not read with the
-	// holds), and reading the same batch again would never end.
-	var out []models.Subscriber
+	// AXM (LST-47): a follow-up campaign decides who of each batch it leaves out just before the
+	// batch is used (core.ClaimFollowupBatch: the people who reacted to the original, opted out of
+	// it, are blocked, or whose reactions cannot be seen), and the batch is given back without them.
+	// A batch of only such people is read past, so the position always moves on. Any other campaign
+	// is read as before.
+	isFollowup, known := s.followups.Load(campID)
+	if !known {
+		var f bool
+		if err := s.queries.AxmFollowupIsFollowup.Get(&f, campID); err != nil {
+			return nil, err
+		}
+		s.followups.Store(campID, f)
+		isFollowup = f
+	}
 	after := camps[0].LastSubscriberID
 	for {
-		var raw []models.Subscriber
-		if err := query.Select(&raw, camps[0].CampaignID, camps[0].CampaignType, after, camps[0].MaxSubscriberID, pq.Array(listIDs), limit); err != nil {
-			return raw, err
+		var out []models.Subscriber
+		if err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, after, camps[0].MaxSubscriberID, pq.Array(listIDs), limit); err != nil {
+			return out, err
 		}
-		if len(raw) == 0 {
-			out = raw
-			break
+		if len(out) == 0 || !isFollowup.(bool) {
+			return out, nil
 		}
-		ids := make([]int, len(raw))
-		for i, sub := range raw {
+		ids := make([]int, len(out))
+		for i, sub := range out {
 			ids[i] = sub.ID
 		}
-		held, err := s.core.GuardFollowupBatch(context.Background(), campID, ids)
+		left, _, err := s.core.ClaimFollowupBatch(context.Background(), campID, ids)
 		if err != nil {
 			return nil, err
 		}
-		out = raw[:0]
-		for _, sub := range raw {
-			if !held[sub.ID] {
-				out = append(out, sub)
+		if len(left) == 0 {
+			return out, nil
+		}
+		kept := out[:0]
+		for _, sub := range out {
+			if !left[sub.ID] {
+				kept = append(kept, sub)
 			}
 		}
-		if len(out) > 0 {
-			break
+		if len(kept) > 0 {
+			return kept, nil
 		}
-		after = raw[len(raw)-1].ID
+		after = out[len(out)-1].ID
 	}
-
-	// AXM (LST-47): a follow-up is sent only while its last check is for the campaign as it is now.
-	// After a pause and resume (or another change) that the sender has not checked yet, for example
-	// while the pipe was being set up, the batch is dropped and the pipe stops without finishing:
-	// the next scan checks the campaign again and starts it anew. Asked after the batch is read,
-	// so a change made while it was read is caught too.
-	stale, err := s.core.FollowupStale(campID)
-	if err != nil {
-		return nil, err
-	}
-	if stale {
-		return nil, manager.ErrCampaignNotRunning
-	}
-	return out, nil
 }
 
 // GetCampaign fetches a campaign from the database.
