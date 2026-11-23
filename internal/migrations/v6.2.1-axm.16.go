@@ -77,24 +77,43 @@ RETURNS TEXT LANGUAGE sql STABLE AS $$
 $$;
 
 -- The bounces recorded before: the webhooks say in their payload which address a bounce was for,
--- each in its own field. SendGrid's payload is the whole batch of events, and the bounce is the
--- event of that time and type (none when several addresses match). The others are taken in by
--- axm_mailed_email.
+-- each in its own field. SES names the bounced (complaining) recipients apart from the mail's
+-- recipients: the first of them, else the mail's only recipient. SendGrid's payload is the whole
+-- batch of events, and the bounce is the event of its time, type and campaign; when several
+-- addresses match, the subscriber's own one if it did not change since the bounce (the bounce
+-- found the subscriber by it), else none. The others are taken in by axm_mailed_email.
 INSERT INTO axm_bounced_emails (email_hash, kind, bounce_id, subscriber_id)
     SELECT axm_email_hash(a.addr), b.type::TEXT, b.id, b.subscriber_id
     FROM bounces b
+    CROSS JOIN LATERAL (SELECT
+        (SELECT c.uuid::TEXT FROM campaigns c WHERE c.id = b.campaign_id) AS camp,
+        (SELECT s.email FROM subscribers s WHERE s.id = b.subscriber_id AND NOT EXISTS (
+            SELECT 1 FROM axm_email_changes x WHERE x.subscriber_id = s.id AND x.changed_at >= b.created_at)) AS own) k
     CROSS JOIN LATERAL (SELECT COALESCE(CASE b.source
         WHEN 'postmark' THEN NULLIF(b.meta->>'Email', '')
         WHEN 'forwardemail' THEN NULLIF(b.meta->>'recipient', '')
         WHEN 'lettermint' THEN NULLIF(b.meta->'data'->>'recipient', '')
         WHEN 'azure' THEN NULLIF(b.meta->'data'->>'recipient', '')
-        WHEN 'ses' THEN NULLIF(b.meta->'mail'->'destination'->>0, '')
+        WHEN 'ses' THEN COALESCE(
+            (SELECT lower(btrim(r->>'emailAddress'))
+                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.meta->'bounce'->'bouncedRecipients') = 'array'
+                    THEN b.meta->'bounce'->'bouncedRecipients' ELSE '[]'::JSONB END) WITH ORDINALITY AS t(r, n)
+                WHERE COALESCE(btrim(r->>'emailAddress'), '') <> '' ORDER BY n LIMIT 1),
+            (SELECT lower(btrim(r->>'emailAddress'))
+                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.meta->'complaint'->'complainedRecipients') = 'array'
+                    THEN b.meta->'complaint'->'complainedRecipients' ELSE '[]'::JSONB END) WITH ORDINALITY AS t(r, n)
+                WHERE COALESCE(btrim(r->>'emailAddress'), '') <> '' ORDER BY n LIMIT 1),
+            CASE WHEN jsonb_typeof(b.meta->'mail'->'destination') = 'array' AND jsonb_array_length(b.meta->'mail'->'destination') = 1
+                THEN NULLIF(b.meta->'mail'->'destination'->>0, '') END)
         WHEN 'sendgrid' THEN (
-            SELECT CASE WHEN COUNT(DISTINCT lower(e->>'email')) = 1 THEN MIN(lower(e->>'email')) END
-            FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.meta) = 'array' THEN b.meta ELSE '[]'::JSONB END) e
-            WHERE e->>'event' = 'bounce' AND NULLIF(e->>'email', '') IS NOT NULL
-                AND e->>'timestamp' = EXTRACT(EPOCH FROM b.created_at)::BIGINT::TEXT
-                AND (CASE WHEN e->>'bounce_classification' IN ('technical', 'content') THEN 'soft' ELSE 'hard' END) = b.type::TEXT)
+            SELECT CASE WHEN COUNT(DISTINCT m.addr) = 1 THEN MIN(m.addr)
+                WHEN bool_or(m.addr = k.own) THEN k.own END
+            FROM (SELECT lower(btrim(e->>'email')) AS addr
+                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.meta) = 'array' THEN b.meta ELSE '[]'::JSONB END) e
+                WHERE e->>'event' = 'bounce' AND COALESCE(btrim(e->>'email'), '') <> ''
+                    AND e->>'timestamp' = EXTRACT(EPOCH FROM b.created_at)::BIGINT::TEXT
+                    AND (CASE WHEN e->>'bounce_classification' IN ('technical', 'content') THEN 'soft' ELSE 'hard' END) = b.type::TEXT
+                    AND (k.camp IS NULL OR lower(COALESCE(e->>'XListmonkCampaign', '')) = k.camp)) m)
         END, axm_mailed_email(b.subscriber_id, b.campaign_id)) AS addr) a
     WHERE b.type IN ('hard', 'complaint') AND a.addr LIKE '%@%'
     ON CONFLICT (bounce_id) WHERE bounce_id IS NOT NULL DO NOTHING;

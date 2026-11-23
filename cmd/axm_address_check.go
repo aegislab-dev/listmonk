@@ -124,6 +124,11 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 	}
 	for i, v := range verdicts {
 		classes := v.Classes()
+		// The gate refuses a disposable domain only when it is on the list itself (not a
+		// subdomain of one): the review leaves out only the rows the import would refuse.
+		if v.Disposable && a.gateStrength() != gateBasic && !addrcheck.ListedDisposable(v.Domain) {
+			classes = slices.DeleteFunc(classes, func(c string) bool { return c == addrcheck.ClassDisposable })
+		}
 		if f := facts[strings.ToLower(strings.TrimSpace(v.Email))]; !v.Format {
 			if f.Suppressed {
 				classes = append(classes, addrcheck.ClassSuppressed)

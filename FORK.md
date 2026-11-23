@@ -1291,13 +1291,13 @@ ZeroBounce, NeverBounce, Kickbox, Bouncer, Emailable, Mailgun Validate, AWS SES 
 | 1~3 | `format` `provider` `typo` | 1단계 규칙 | 거절 |
 | 4 | `suppressed` | 차단된 주소(`axm_suppressed_emails`) | 거절. 전에는 조용히 차단 상태로 들어갔다 |
 | 5 | `bounced` | hard 반송·수신 거부 신고 이력(`axm_bounced_emails`) | 거절 |
-| 6 | `disposable` | 일회용 도메인 | 거절 |
+| 6 | `disposable` | 일회용 도메인(내장 목록에 도메인 자체가 있을 때만: 정확 일치) | 거절 |
 | 7 | `nullmx` | 메일을 받지 않는다고 밝힌 도메인(`MX 0 .`) | 거절 |
 | 8 | `dead` | 도메인 없음·메일 서버 없음 | 거절 |
 | – | `role` | 역할 주소(info@ 등) | **넣고 경고** |
 | – | `unknown` | DNS 시간 초과·일시 오류·예산 초과·주소 리터럴 | **넣고 「확인 못 함」 경고**. 거절하지 않는다 |
 
-DB(4·5)를 DNS(7·8)보다 먼저 본다: 차단·반송이면 DNS를 기다리지 않는다. 일회용을 거절, 역할을 경고로 둔 것은 사람이 승인했다(2026-11-23). 바꾸려면 `Gate`의 줄과 열 맞춤 스위치 문구만 바뀐다.
+DB(4·5)를 DNS(7·8)보다 먼저 본다: 차단·반송이면 DNS를 기다리지 않는다. 일회용을 거절, 역할을 경고로 둔 것은 사람이 승인했다(2026-11-23). 일회용 거절은 목록의 도메인과 **정확히 일치**할 때만이다(`addrcheck.ListedDisposable`). 목록 도메인의 하위 도메인(`x.mailinator.com`)은 캠페인·리스트 패널에서는 지금처럼 일회용 경고로 분류되지만 관문은 거절하지 않고, 열 맞춤 검토도 그 행을 빼지 않는다(`basic`이면 1단계대로 경고). 바꾸려면 `Gate`의 줄과 열 맞춤 스위치 문구만 바뀐다.
 
 - **차단 모드 가져오기와 `status: blocklisted` 단건 추가·수정은 4~8(차단·반송·일회용·DNS)을 보지 않는다**(무엇이든 차단할 수 있어야 한다). 1~3은 둘이 다르다: **차단 모드 CSV는 형식과 설정의 도메인 허용·차단 목록(`privacy.domain_*`)만** 본다(오타 도메인 `gmail.con`은 들어간다), **`blocklisted` 단건 추가·수정은 1~3 전부**(오타·Gmail 규칙은 400)를 본다.
 - **공개 구독 폼은 4·5를 보지 않는다**(차단·반송 여부를 밖에서 알아낼 수 없게). 차단된 주소는 지금처럼 트리거가 차단 상태로 넣는다. 1~3·6~8은 본다.
@@ -1335,13 +1335,15 @@ DB(4·5)를 DNS(7·8)보다 먼저 본다: 차단·반송이면 DNS를 기다리
 
 - 주소의 sha256 해시(`axm_email_hash`)만 저장한다(`axm_suppressed_emails`와 같은 방식). 행: `email_hash`, `kind`(`hard`·`complaint`), `bounce_id`(그 반송 기록), `subscriber_id`(그 반송의 구독자), `created_at`. **반송 기록 한 건에 한 행**이고, 같은 주소에 구독자 둘의 반송이 있거나 한 구독자의 서로 다른 주소가 반송돼도 행은 따로다.
 - **넣기**: `core.RecordBounce`가 한 트랜잭션에서 그 반송이 가리키는 주소를 설정 `axm.bounce_email`에 적고(`axm-bounce-address`) `record-bounce`를 실행한다. `bounces`의 INSERT 트리거 `axm_bounced_record`가 hard·complaint 행이 실제로 들어가면 그 주소의 해시를 넣는다. 반송 본문 기록이 실패하면 해시도 없다. soft 반송은 기록하지 않는다. hard 1회면 거절한다(승인된 범위. listmonk는 5xx를 모두 hard로 적어 스팸 차단성 거절도 섞일 수 있다).
-- **반송 기록이 안 생기는 반송**(이미 차단된 구독자, 또는 반송 처리 설정의 횟수를 넘은 반송: `record-bounce`가 INSERT를 건너뛴다)도 그 주소를 `bounce_id` 없이 `subscriber_id`와 함께 남긴다(`axm-bounced-unless-recorded`). 같은 구독자에게 같은 해시가 이미 있으면 남기지 않는다(같은 신고가 두 번 와도 행이 하나). 그래서 횟수 상한에 이른 구독자가 주소를 바꾼 뒤 새 주소가 반송돼도 새 주소가 남는다.
+- **반송 기록이 안 생기는 반송**(이미 차단된 구독자, 또는 반송 처리 설정의 횟수를 넘은 반송: `record-bounce`가 INSERT를 건너뛴다)도 그 주소를 `bounce_id` 없이 `subscriber_id`와 함께 남긴다(`axm-bounced-unless-recorded`). 같은 구독자에게 같은 해시가 이미 있으면 남기지 않는다(같은 신고가 두 번 와도 행이 하나). **차단된 구독자 자신의 현재 주소는 남기지 않는다**: 차단 표(`axm_suppressed_emails`)가 그 주소를 막고(구독자를 지워도 남는다) 차단 해제 때 풀어 준다. 손으로 차단한 구독자가 받은 신고는 반송 기록이 없어 구독자 화면의 반송 탭이 비활성이라, 여기 행을 남기면 화면에서 풀 길이 없기 때문이다. 그래서 횟수 상한에 이른 구독자가 주소를 바꾼 뒤 새 주소가 반송돼도 새 주소가 남는다.
 - **구독자를 못 찾는 반송**(`email`만 오고 그 주소를 가진 구독자가 없음: 주소를 고친 뒤 도착한 SES·Postmark 반송)은 요청의 `email`을 `bounce_id` 없이 남긴다. 지금 그 주소를 가진 구독자가 있으면 그 `subscriber_id`를 단다.
 - **어느 주소인가**: 반송 요청이 `email`을 주면 그 주소(메일을 보낸 뒤 주소를 고친 구독자의 반송은 옛 주소를 막고 새 주소는 막지 않는다). `email` 없이 UUID만 오면(내장 POP 수집기, 가입 확인·트랜잭션 메일의 반송) SQL 함수 `axm_mailed_email`이 정한다: 구독자의 현재 주소이되 **주소가 한 번도 바뀌지 않았거나, 반송이 가리킨 캠페인의 발송 기록(`axm_campaign_sends`)이 주소가 바뀐 때보다 1시간 넘게 뒤일 때만**이다. 캠페인이 없는 반송(가입 확인 메일)이나 발송 기록이 보존 기간(12개월)으로 지워진 반송은 주소가 바뀐 구독자라면 남기지 않는다(반송 기록은 그대로 남는다). 1시간은 주소가 바뀌는 순간 진행 중이던 발송(옛 주소를 읽어 둔 묶음)의 여유다.
+- **SES 웹훅**(`internal/bounce/webhooks/ses.go` `sesRecipient`)은 반송의 주소를 SES가 반송·신고된 수신자로 적은 첫 주소로 한다(없을 때만 업스트림처럼 메일의 첫 수신자). 여러 수신자에게 간 메일이 일부만 반송되면 업스트림은 첫 수신자를 반송 주소로 적어, 그 주소가 영구 거절되고 실제 반송 주소는 다시 들어왔다.
 - **주소가 바뀐 때**는 새 표 `axm_email_changes`(`subscriber_id`, `changed_at`)에 있다. `subscribers`의 UPDATE 트리거 `axm_email_changed`가 이메일이 실제로 바뀔 때만 적는다(이름·속성·상태 수정은 적지 않는다). 마이그레이션 전의 수정은 주소를 바꿨는지 알 수 없어 `updated_at > created_at`인 구독자의 `updated_at`을 바뀐 때로 넣는다.
+- **가져오기와 DB 연결**: 가져오기의 쓰는 쪽은 업스트림처럼 한 트랜잭션에 여러 행을 넣는다. 관문은 묶음(500행)마다 DB(`axm-address-facts`)를 읽으므로, 묶음을 판정하기 전에 쓰는 쪽에 지금까지의 행을 커밋하라고 알린다(큐의 표시 행). 쓰는 쪽은 다음 행이 올 때 새 트랜잭션을 연다. 그래서 DB 최대 연결이 하나(`db.max_open = 1`)여도 가져오기가 자기 트랜잭션을 기다리며 멈추지 않고, 다른 관리 요청도 묶음 사이에 연결을 얻는다. 커밋은 1만 행이 아니라 500행 묶음마다 일어난다.
 - 해시 저장 실패는 반송 기록을 잃게 하지 않는다: 트리거가 오류를 경고로만 남기고(`RAISE WARNING`), 이름 붙이기·보충 INSERT는 savepoint 안에서 한다. 실패한 트랜잭션은 구독자를 못 찾는 반송의 보충 INSERT 전에 연결을 돌려준다(연결이 하나뿐인 설정에서도 막히지 않게).
 - **풀기**: 사람이 반송 기록을 지우면(`DeleteBounces`·`DeleteSubscriberBounces`·팀 범위 판) 트리거 `axm_bounced_release`가, 구독자가 **아직 있을 때** 그 반송 기록의 행(`bounce_id`)을 지우고, 그 구독자의 hard·complaint 기록이 하나도 안 남으면 그 구독자의 `bounce_id` 없는 행도 지운다. 구독자 화면의 「반송 기록 삭제」(`DeleteSubscriberBounces`)는 기록이 하나도 없던 구독자(손으로 차단한 뒤 받은 신고)의 `bounce_id` 없는 행도 지운다. 구독자를 지우면서 연쇄로 지워지는 반송 행은 구독자가 이미 없어 해시가 남는다(시험: `cmd/axm_address_gate_db_test.go`). 같은 주소의 다른 반송 기록이 남아 있으면 풀리지 않는다.
-- **마이그레이션은 지금 있는 hard·complaint 반송 기록을 넣는다.** 주소는 출처(`source`)별로 그 웹훅이 받는 주소를 담는 필드에서 읽는다: Postmark `Email`, ForwardEmail `recipient`, Lettermint·Azure `data.recipient`, SES `mail.destination[0]`, SendGrid는 페이로드가 알림 묶음 전체라 **그 반송 기록과 시각(`timestamp`)·유형(`bounce_classification`이 technical·content면 soft)이 맞는 `bounce` 이벤트**의 `email`(맞는 주소가 둘 이상이면 모른다). 읽지 못하면(POP 수집기, 모르는 출처) 위의 `axm_mailed_email` 규칙을 쓴다.
+- **마이그레이션은 지금 있는 hard·complaint 반송 기록을 넣는다.** 주소는 출처(`source`)별로 그 웹훅이 받는 주소를 담는 필드에서 읽는다: Postmark `Email`, ForwardEmail `recipient`, Lettermint·Azure `data.recipient`, SES는 반송·신고된 수신자(`bounce.bouncedRecipients`·`complaint.complainedRecipients`의 첫 `emailAddress`, 없으면 메일 수신자가 하나일 때만 `mail.destination[0]`: 여러 수신자에게 간 메일은 일부만 반송된다), SendGrid는 페이로드가 알림 묶음 전체라 **그 반송 기록과 시각(`timestamp`)·유형(`bounce_classification`이 technical·content면 soft)·캠페인(`XListmonkCampaign`, 기록에 캠페인이 있을 때)이 맞는 `bounce` 이벤트**의 `email`. 맞는 주소가 둘 이상이면 그중 구독자 자신의 주소(반송 뒤로 바뀌지 않았을 때: 그 반송은 이 주소로 구독자를 찾았다), 그것도 아니면 모른다. 읽지 못하면(POP 수집기, 모르는 출처) 위의 `axm_mailed_email` 규칙을 쓴다.
 - **`subscriber_id`도 `bounce_id`도 없는 행과 지워진 구독자의 주소는 푸는 화면이 없다.** 운영에서 풀려면(운영 SQL 쓰기는 사람 몫): `DELETE FROM axm_bounced_emails WHERE email_hash = axm_email_hash('주소');`
 - 새 표 `axm_bounced_emails`·`axm_email_changes`와 `subscribers`의 새 트리거는 이전 이미지가 읽거나 기대하지 않으므로 이미지 롤백에 안전하다(롤백한 이미지에서도 트리거는 이메일이 바뀔 때 한 행을 적을 뿐이다). 릴리스 때 백업 역할이 두 표를 읽는지 확인한다(기본 권한이 이미 있어 GRANT는 필요 없을 것이다).
 
@@ -1352,7 +1354,7 @@ DB(4·5)를 DNS(7·8)보다 먼저 본다: 차단·반송이면 DNS를 기다리
 ### 운영에서 알 것
 
 - 단건 저장·가져오기가 DNS를 기다린다: 단건 4초, 공개 폼 3초, 가져오기 묶음당 10초. 시간 안에 끝나지 않으면 「확인 못 함」 경고로 들어간다(거절하지 않는다).
-- 컨테이너에서 DNS가 막혀 있으면 모든 새 도메인이 「확인 못 함」으로 들어가므로 아무 것도 거절되지 않고 경고만 는다. 이때는 `nodns`로 두는 것과 같다.
+- 컨테이너에서 DNS가 막혀 있으면 `full`에서도 DNS 사유(없는 도메인·null MX)로는 아무 것도 거절되지 않는다. 새 도메인은 모두 「확인 못 함」으로 들어간다. 거절되는 범위는 `nodns`와 같지만 경고는 다르다. `full`은 그 주소마다 경고를 단다: 단건·수정은 `X-Axm-Address-Warn: unknown`, 가져오기는 결과 상자의 「넣었지만 확인이 필요합니다」 집계(`axm_warned.unknown`)다. `nodns`는 DNS를 보지 않으므로 이 경고가 없다(역할 주소 경고만 남는다). 열 맞춤 검토도 `nodns`·`basic`에서는 「DNS 조회 안 함(서버 설정)」·「주소 규칙만 검사(서버 설정)」로 표시하고, 위험 주소가 없을 때 DNS(와 `basic`이면 차단·반송 이력)를 확인하지 않았다고 적는다.
 - hard 반송으로 거절된 주소가 잘못 분류된 것이면 그 구독자의 반송 기록을 지운다(구독자가 있는 경우). 지워진 구독자는 위 SQL.
 - 마이그레이션 `.16`은 새 표·트리거만 더한다. 이전 이미지로 되돌려도 동작에는 영향이 없다.
 

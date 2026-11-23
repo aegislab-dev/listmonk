@@ -20,6 +20,7 @@ type Facts struct {
 //
 //	format, provider, typo, suppressed, bounced, disposable, nullmx, dead
 //
+// A disposable domain is refused only when the domain itself is on the list (exact match).
 // The database facts come before DNS so that a blocklisted address is never waited for. With
 // dns false the DNS classes (nullmx, dead) and the "unknown" warning are left out, for a gate
 // that does not look domains up. DNS that did not answer in time (unknown, pending) or an
@@ -36,7 +37,8 @@ func Gate(v Verdict, f Facts, dns bool) (reject, warn string) {
 		return ClassSuppressed, ""
 	case f.Bounced:
 		return ClassBounced, ""
-	case v.Disposable:
+	case v.Disposable && ListedDisposable(v.Domain):
+		// The domain itself is on the list: a subdomain of a listed one is not refused.
 		return ClassDisposable, ""
 	}
 	if dns {

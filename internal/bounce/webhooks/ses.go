@@ -52,9 +52,15 @@ type sesMail struct {
 	Bounce    struct {
 		BounceType        string `json:"bounceType"`
 		BouncedRecipients []struct {
-			Status string `json:"status"`
+			EmailAddress string `json:"emailAddress"`
+			Status       string `json:"status"`
 		} `json:"bouncedRecipients"`
 	} `json:"bounce"`
+	Complaint struct {
+		ComplainedRecipients []struct {
+			EmailAddress string `json:"emailAddress"`
+		} `json:"complainedRecipients"`
+	} `json:"complaint"`
 	Mail struct {
 		Timestamp        sesTimestamp        `json:"timestamp"`
 		HeadersTruncated bool                `json:"headersTruncated"`
@@ -165,7 +171,7 @@ func (s *SES) ProcessBounce(b []byte) (models.Bounce, error) {
 	}
 
 	return models.Bounce{
-		Email:        strings.ToLower(m.Mail.Destination[0]),
+		Email:        sesRecipient(m),
 		CampaignUUID: campUUID,
 		Type:         typ,
 		Source:       "ses",
@@ -280,4 +286,22 @@ func (st *sesTimestamp) UnmarshalJSON(b []byte) error {
 	}
 	*st = sesTimestamp(t)
 	return nil
+}
+
+// sesRecipient is the address the notification is about: the first recipient SES names as
+// bounced (or as complaining), else the first of the mail's recipients. A mail sent to several
+// recipients bounces for some of them only, and the address of a hard bounce is refused for good
+// where subscribers are added (LST-56). Keep in step with the migration V6_2_1_axm_16.
+func sesRecipient(m sesMail) string {
+	for _, r := range m.Bounce.BouncedRecipients {
+		if e := strings.TrimSpace(r.EmailAddress); e != "" {
+			return strings.ToLower(e)
+		}
+	}
+	for _, r := range m.Complaint.ComplainedRecipients {
+		if e := strings.TrimSpace(r.EmailAddress); e != "" {
+			return strings.ToLower(e)
+		}
+	}
+	return strings.ToLower(m.Mail.Destination[0])
 }

@@ -6,7 +6,9 @@ import (
 	"testing"
 )
 
-func verdict(email string, st DomainStatus) Verdict { return Verdict{Result: Classify(email), Status: st} }
+func verdict(email string, st DomainStatus) Verdict {
+	return Verdict{Result: Classify(email), Status: st}
+}
 
 func TestGateTable(t *testing.T) {
 	both := Facts{Suppressed: true, Bounced: true}
@@ -26,6 +28,8 @@ func TestGateTable(t *testing.T) {
 		{"bounced before disposable", verdict("kim@mailinator.com", StatusOK), Facts{Bounced: true}, true, ClassBounced, ""},
 		{"disposable", verdict("kim@mailinator.com", StatusOK), Facts{}, true, ClassDisposable, ""},
 		{"disposable before dead", verdict("kim@mailinator.com", StatusDead), Facts{}, true, ClassDisposable, ""},
+		{"subdomain of a listed disposable domain passes", verdict("kim@unlisted-child.mailinator.com", StatusOK), Facts{}, true, "", ""},
+		{"subdomain of a listed disposable domain: a role warning only", verdict("info@unlisted-child.mailinator.com", StatusOK), Facts{}, true, "", ClassRole},
 		{"nullmx", verdict("kim@example.com", StatusNullMX), Facts{}, true, ClassNullMX, ""},
 		{"dead", verdict("kim@example.com", StatusDead), Facts{}, true, ClassDead, ""},
 		{"dead beats role", verdict("info@example.com", StatusDead), Facts{}, true, ClassDead, ""},

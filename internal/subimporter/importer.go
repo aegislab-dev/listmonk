@@ -172,7 +172,7 @@ type Status struct {
 	AxmExcluded int `json:"axm_excluded"`
 	// AxmImportID is the number of this import; the rejected rows are asked for by it.
 	AxmImportID int `json:"axm_import_id"`
-	logBuf           *bytes.Buffer
+	logBuf      *bytes.Buffer
 }
 
 // The reasons a row is refused. format, provider and typo are the codes of addrcheck.
@@ -215,6 +215,10 @@ type SubReq struct {
 	// AxmWarn is the warning the address gate gave the row ("role", "unknown"; LST-56). It is
 	// counted when the row is committed, so a rolled back row is not counted.
 	AxmWarn string `json:"-"`
+	// axmFlush is not a row: the gate is about to read the database (LST-56), and the rows queued
+	// so far are committed first, so that the import's own open transaction never keeps the
+	// gate waiting for a connection (a pool of one connection would wait for good).
+	axmFlush bool
 }
 
 type importStatusTpl struct {
@@ -506,6 +510,19 @@ func (s *Session) Start() {
 	// warned counts the rows of the open transaction that came in with a warning (LST-56).
 	warned := map[string]int{}
 	for sub := range s.subQueue {
+		if sub.axmFlush {
+			if cur > 0 {
+				if err := tx.Commit(); err != nil {
+					tx.Rollback()
+					s.log.Printf("error committing to DB: %v", err)
+				} else {
+					s.im.incrementImportCount(cur)
+					s.im.addWarned(s.id, warned)
+				}
+				cur = 0
+			}
+			continue
+		}
 		if cur == 0 {
 			warned = map[string]int{}
 			// New transaction batch.
@@ -927,6 +944,9 @@ func (s *Session) decide(rows []gateRow) {
 	}
 	var verdicts []AxmVerdict
 	if len(emails) > 0 {
+		// The writer commits what it has before the gate asks the database for a connection. It
+		// begins its next transaction only with the next row, which comes after the gate is done.
+		s.subQueue <- SubReq{axmFlush: true}
 		verdicts = s.im.verify(emails)
 	}
 	for i, r := range rows {

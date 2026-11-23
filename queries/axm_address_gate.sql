@@ -21,12 +21,17 @@ SELECT set_config('axm.bounce_email', COALESCE(NULLIF(lower(btrim($2)), ''), (
 -- A hard bounce or a complaint that left no bounce record of its own (the subscriber was
 -- blocklisted already, or over the count of the bounce action) still keeps the address named
 -- above, for that subscriber ($1: UUID, else $2: address, as record-bounce finds them): it goes
--- with their bounce records. Once per address and subscriber.
+-- with their bounce records. Once per address and subscriber. Not the own address of a blocklisted
+-- subscriber: the blocklist keeps that one (axm_suppressed_emails, also when they are deleted) and
+-- lets it go when a person takes them off it, where a row here could not be let go from the
+-- subscriber screen (no bounce record to delete).
 INSERT INTO axm_bounced_emails (email_hash, kind, subscriber_id)
 SELECT axm_email_hash(v.email), $3::TEXT, (SELECT id FROM subscribers WHERE CASE WHEN $1 != '' THEN uuid = $1::UUID ELSE email = $2 END)
 FROM (SELECT NULLIF(current_setting('axm.bounce_email', true), '') AS email) v
 WHERE v.email IS NOT NULL
     AND COALESCE(current_setting('axm.bounce_recorded', true), '') <> '1'
+    AND NOT EXISTS (SELECT 1 FROM subscribers s WHERE (CASE WHEN $1 != '' THEN s.uuid = $1::UUID ELSE s.email = $2 END)
+        AND s.status = 'blocklisted' AND lower(s.email) = lower(btrim(v.email)))
     AND NOT EXISTS (SELECT 1 FROM axm_bounced_emails b WHERE b.email_hash = axm_email_hash(v.email)
         AND b.subscriber_id IS NOT DISTINCT FROM (SELECT id FROM subscribers WHERE CASE WHEN $1 != '' THEN uuid = $1::UUID ELSE email = $2 END));
 

@@ -13,18 +13,18 @@ import (
 
 // fakeDNS answers from a table. A domain that is not in the table does not exist.
 type fakeDNS struct {
-	mu    sync.Mutex
-	mx    map[string][]*net.MX
-	mxErr map[string]error
-	ip    map[string]bool
-	ipErr map[string]error
+	mu     sync.Mutex
+	mx     map[string][]*net.MX
+	mxErr  map[string]error
+	ip     map[string]bool
+	ipErr  map[string]error
 	ip6Err map[string]error // only the AAAA lookup fails
 	ipErr4 map[string]error // only the A lookup fails
 	ip6    map[string]bool  // has an AAAA record
-	hold  chan struct{} // when set, every MX lookup waits for it
-	mxN   map[string]int
-	times []time.Time // when each MX lookup started
-	ipN   map[string]int
+	hold   chan struct{}    // when set, every MX lookup waits for it
+	mxN    map[string]int
+	times  []time.Time // when each MX lookup started
+	ipN    map[string]int
 }
 
 var (
@@ -181,7 +181,7 @@ func TestResolve(t *testing.T) {
 		"aonly.test": StatusOK, "gone.test": StatusDead,
 		"slow.test": StatusUnknown, "broken.test": StatusUnknown, "plain.test": StatusUnknown,
 		"ipslow.test": StatusUnknown,
-		"half.test": StatusUnknown, "half4.test": StatusUnknown, "v6only.test": StatusOK, "a-ok.test": StatusOK,
+		"half.test":   StatusUnknown, "half4.test": StatusUnknown, "v6only.test": StatusOK, "a-ok.test": StatusOK,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("statuses\n got %v\nwant %v", got, want)

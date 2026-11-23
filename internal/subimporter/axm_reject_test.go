@@ -178,6 +178,10 @@ func TestGateBatchesKeepOrderAndRows(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			for sub := range s.subQueue {
+				if sub.axmFlush {
+					// Not a row: the commit asked for before each gate batch.
+					continue
+				}
 				got = append(got, sub.Email)
 				if sub.AxmWarn != "" {
 					warned[sub.AxmWarn]++

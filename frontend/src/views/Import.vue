@@ -995,6 +995,10 @@ export default Vue.extend({
         excludeWarning: this.addrExclude.warning,
         // With the gate at basic a disposable domain is a warning row too.
         warningKey: this.addr.gate === 'basic' ? 'import.addr.excludeWarningBasic' : 'import.addr.excludeWarning',
+        // What the server looked at: with the gate at nodns or basic it did not look domains up
+        // (and with basic not the blocklist and bounces either), so "no risky addresses" says so.
+        sourceKey: ({ nodns: 'import.addr.serverNoDns', basic: 'import.addr.serverBasic' })[this.addr.gate] || 'import.addr.server',
+        cleanKey: ({ nodns: 'import.addr.cleanNoDns', basic: 'import.addr.cleanBasic' })[this.addr.gate] || 'import.addr.clean',
       };
     },
     // Rows the server refused because of the address rules (LST-53): counted by reason.

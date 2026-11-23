@@ -68,6 +68,7 @@
     "cmd/axm_address_gate.go",
     "internal/core/axm_address_gate.go",
     "internal/core/bounces.go",
+    "internal/bounce/webhooks/ses.go",
     "queries/axm_address_gate.sql",
     "internal/addrcheck/**",
     "internal/subimporter/**"

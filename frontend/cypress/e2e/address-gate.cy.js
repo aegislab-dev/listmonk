@@ -462,5 +462,30 @@ describe('Address rules', () => {
     cy.get('[data-cy=map-address-fixed]').should('not.exist');
     cy.get('[data-cy=map-address-exclude-warning]').should('contain', 'role or disposable');
     cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
+    cy.get('[data-cy=map-address-source]').should('contain', 'Address rules only');
+  });
+
+  // With the gate at nodns the server does not look domains up: the review must not say it did, nor
+  // that the rows are free of risky addresses without saying that domains were not checked.
+  it('says that domains were not checked when the gate is nodns', () => {
+    const stamp = Date.now();
+    cy.intercept('POST', '/api/subscribers/address-check', (req) => req.reply({
+      data: {
+        total: 1, risky: 0, confirmed: 0, warning: 0, unknown: 0, pending: 0, classes: {}, issues: {}, suggest: {}, gate: 'nodns',
+      },
+    }));
+    cy.loginAndVisit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('.list-selector input').type(listName);
+    cy.contains('.list-selector .autocomplete a', listName).click();
+    cy.get('input[type=file]').selectFile({
+      contents: Cypress.Buffer.from(`email,name\ngate-nodns-${stamp}@gone.test,No DNS\n`), fileName: 'nodns.csv', mimeType: 'text/csv',
+    }, { force: true });
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-address-source]').should('contain', 'No DNS lookup').and('not.contain', 'DNS lookup on the server');
+    cy.get('[data-cy=map-address-summary]').should('contain', 'Domains (DNS) were not checked');
   });
 });

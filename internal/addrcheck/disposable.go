@@ -41,3 +41,11 @@ func isDisposable(domain string) bool {
 		}
 	}
 }
+
+// ListedDisposable reports whether the domain itself is on the list. The gate (LST-56) refuses
+// only these: a subdomain of a listed domain is classified disposable (isDisposable) for the
+// review panels, but the list does not say that it is one.
+func ListedDisposable(domain string) bool {
+	_, ok := disposableDomains[strings.ToLower(strings.TrimSpace(domain))]
+	return ok
+}

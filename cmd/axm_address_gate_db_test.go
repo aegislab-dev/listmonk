@@ -588,6 +588,13 @@ func TestGateStrength(t *testing.T) {
 	if r := e.add("known@ok.test"); r.code != 400 || r.rule != "suppressed" {
 		t.Errorf("nodns, suppressed: %+v", r)
 	}
+	// Only a domain on the list itself is refused, not a subdomain of one; the review agrees.
+	if r := e.add("kim@unlisted-child.mailinator.com"); r.code != 200 || r.warn != "" {
+		t.Errorf("nodns, subdomain of a disposable domain: %+v", r)
+	}
+	if issues := e.reviewIssues("kim@unlisted-child.mailinator.com", "kim2@mailinator.com"); len(issues["0"]) != 0 || strings.Join(issues["1"], ",") != "disposable" {
+		t.Errorf("review issues %v", issues)
+	}
 	if r := e.add("info@ok.test"); r.code != 200 || r.warn != "role" {
 		t.Errorf("nodns, role: %+v", r)
 	}
@@ -722,6 +729,27 @@ func TestGateMigrationTwice(t *testing.T) {
 	// Two bounces of the same time and type in one batch: which one is not known.
 	bounce(id, "hard", "sendgrid", `[{"email":"either.one@ok.test","event":"bounce","timestamp":1700000500},`+
 		`{"email":"either.two@ok.test","event":"bounce","timestamp":1700000500}]`, "to_timestamp(1700000500)")
+	// SES: a mail to two recipients that bounced for the second only.
+	bounce(id, "hard", "ses", `{"bounce":{"bounceType":"Permanent","bouncedRecipients":[{"emailAddress":"SES-Bad@ok.test"}]},"mail":{"destination":["ses-first@ok.test","ses-bad@ok.test"]}}`, "NOW()")
+	// SendGrid: two hard bounces of the same second for two campaigns, each record knows its campaign.
+	var campA, campB int
+	var uuidA, uuidB string
+	e.get(&campA, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'A','S','test@example.invalid','b','email') RETURNING id`)
+	e.get(&campB, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'B','S','test@example.invalid','b','email') RETURNING id`)
+	e.get(&uuidA, `SELECT uuid::TEXT FROM campaigns WHERE id = $1`, campA)
+	e.get(&uuidB, `SELECT uuid::TEXT FROM campaigns WHERE id = $1`, campB)
+	batch := `[{"email":"sg.delivered@ok.test","event":"delivered","timestamp":1700001000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"sg1@ok.test","event":"bounce","timestamp":1700001000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"sg2@ok.test","event":"bounce","timestamp":1700001000,"XListmonkCampaign":"` + uuidB + `"}]`
+	for _, c := range []int{campA, campB} {
+		e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700001000))`, id, c, batch)
+	}
+	// Two addresses of the same time without a campaign: the one of the subscriber, whose address
+	// did not change since.
+	var own int
+	e.get(&own, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'sg.own@ok.test', 'P', 'enabled') RETURNING id`)
+	bounce(own, "hard", "sendgrid", `[{"email":"sg.other@ok.test","event":"bounce","timestamp":1700002000},`+
+		`{"email":"sg.own@ok.test","event":"bounce","timestamp":1700002000}]`, "to_timestamp(1700002000)")
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -731,17 +759,17 @@ func TestGateMigrationTwice(t *testing.T) {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
-		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address"} {
+		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address", "ses-bad", "sg1", "sg2", "sg.own"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
 		}
-		for _, a := range []string{"delivered", "later", "legacy.soft", "legacy.soft2", "either.one", "either.two", "now.address", "was.address"} {
+		for _, a := range []string{"delivered", "later", "legacy.soft", "legacy.soft2", "either.one", "either.two", "now.address", "was.address", "ses-first", "sg.delivered", "sg.other"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}
 		}
-		if n := e.bouncedRows(); n != 7 {
+		if n := e.bouncedRows(); n != 11 {
 			t.Fatalf("run %d: %d rows", i+1, n)
 		}
 	}
@@ -1014,22 +1042,35 @@ func TestGateBounceOverTheCountKeepsTheAddress(t *testing.T) {
 		t.Fatal("not released with the last bounce record")
 	}
 
-	// A subscriber blocklisted by hand gets no bounce record at all: deleting their bounces (the
-	// subscriber page) releases the address all the same.
+	// A subscriber blocklisted by hand gets no bounce record at all. The blocklist keeps their own
+	// address, here and once they are deleted, and lets it go when a person takes them off it: the
+	// subscriber screen has no bounce record to delete, so nothing else may hold the address.
 	blocked := e.person2("by.hand@ok.test")
 	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, blocked)
 	if err := e.a.core.RecordBounce(models.Bounce{SubscriberUUID: e.uuidOf(blocked), Type: "complaint", Source: "t",
 		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if !e.isBounced("by.hand@ok.test") {
-		t.Fatal("the complaint of a blocklisted subscriber was not kept")
+	if e.isBounced("by.hand@ok.test") {
+		t.Fatal("the complaint of a blocklisted subscriber was kept apart from the blocklist")
 	}
-	if err := e.a.core.DeleteSubscriberBounces(blocked, ""); err != nil {
+	if issues := e.reviewIssues("by.hand@ok.test"); strings.Join(issues["0"], ",") != "suppressed" {
+		t.Fatalf("while blocklisted: %v", issues)
+	}
+	e.db.MustExec(`UPDATE subscribers SET status = 'enabled' WHERE id = $1`, blocked)
+	if issues := e.reviewIssues("by.hand@ok.test"); len(issues["0"]) != 0 {
+		t.Fatalf("taken off the blocklist, still: %v", issues)
+	}
+	// Deleted while blocklisted: the blocklist still refuses the address.
+	gone := e.person2("by.hand.gone@ok.test")
+	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, gone)
+	if err := e.a.core.RecordBounce(models.Bounce{SubscriberUUID: e.uuidOf(gone), Type: "complaint", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if e.isBounced("by.hand@ok.test") {
-		t.Fatal("not released by deleting the subscriber's bounces")
+	e.db.MustExec(`DELETE FROM subscribers WHERE id = $1`, gone)
+	if r := e.add("by.hand.gone@ok.test"); r.code != 400 || r.rule != "suppressed" {
+		t.Fatalf("%+v", r)
 	}
 	// Through the list-bounded call too.
 	e.hardBounce("cap.third@ok.test", e.uuidOf(id))
@@ -1039,5 +1080,54 @@ func TestGateBounceOverTheCountKeepsTheAddress(t *testing.T) {
 	}
 	if e.isBounced("cap.third@ok.test") {
 		t.Fatal("not released by the bounded delete")
+	}
+}
+
+// reviewIssues runs the address check of the column mapping for the addresses.
+func (e *gateEnv) reviewIssues(emails ...string) map[string][]string {
+	e.t.Helper()
+	body, _ := json.Marshal(map[string]any{"emails": emails})
+	req := httptest.NewRequest("POST", "/api/subscribers/address-check", bytes.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(req, rec)
+	c.Set(auth.UserHTTPCtxKey, e.as(e.superAdmin))
+	if err := e.a.CheckImportAddresses(c); err != nil {
+		e.t.Fatal(err)
+	}
+	var resp struct {
+		Data struct {
+			Issues map[string][]string `json:"issues"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		e.t.Fatal(err)
+	}
+	return resp.Data.Issues
+}
+
+// An import of several gate batches with a pool of one database connection: the gate's database
+// read of each next batch must not wait for the import's own open transaction.
+func TestGateImportWithOneConnection(t *testing.T) {
+	e := newGateEnv(t)
+	e.a.addrGate = "nodns"
+	e.db.SetMaxOpenConns(1)
+	defer e.db.SetMaxOpenConns(0)
+	var b strings.Builder
+	b.WriteString("email,name\n")
+	for i := 0; i < 2001; i++ {
+		b.WriteString("one.conn." + itoa(i) + "@ok.test,P\n")
+	}
+	params := `{"mode":"subscribe","subscription_status":"confirmed","delim":",","lists":[` + itoa(e.aList) + `]}`
+	if code := e.importAs(e.as(e.superAdmin), params, b.String()); code != 200 {
+		t.Fatal(code)
+	}
+	if st := e.lastImport; st.Imported != 2001 {
+		t.Fatalf("stats %+v", st)
+	}
+	var n int
+	e.get(&n, `SELECT COUNT(*) FROM subscribers WHERE email LIKE 'one.conn.%'`)
+	if n != 2001 {
+		t.Fatalf("%d subscribers", n)
 	}
 }

@@ -80,8 +80,8 @@ type Checker struct {
 	queue    []string
 	workers  int
 
-	rateMu   sync.Mutex
-	starts   []time.Time // when the last MaxPerSecond lookups started, oldest first
+	rateMu sync.Mutex
+	starts []time.Time // when the last MaxPerSecond lookups started, oldest first
 }
 
 // NewChecker returns a checker with the given limits.
