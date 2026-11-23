@@ -35,13 +35,16 @@ WITH d AS (
 )
 SELECT COUNT(*) FROM d;
 
--- name: axm-resolve-campaigns-to-delete
--- The campaigns a delete by IDs or by query reaches (same conditions as delete-campaigns).
-SELECT c.id, c.name FROM campaigns c
+-- name: axm-lock-campaigns-to-delete
+-- LST-55. Step 1 of a guarded delete: the IDs of the campaigns a delete by IDs ($1) or by
+-- search ($2) reaches (the conditions of delete-campaigns), locked FOR UPDATE. A transaction
+-- that is recording send records for one of them holds a share lock on it (the foreign key),
+-- so this waits for it to commit.
+SELECT c.id FROM campaigns c
 WHERE (
     CASE
-        WHEN CARDINALITY($1::INT[]) > 0 THEN id = ANY($1)
-        ELSE $2 = '' OR TO_TSVECTOR(CONCAT(name, ' ', subject)) @@ TO_TSQUERY($2) OR CONCAT(c.name, ' ', c.subject) ILIKE $2
+        WHEN CARDINALITY($1::INT[]) > 0 THEN c.id = ANY($1)
+        ELSE $2 = '' OR TO_TSVECTOR(CONCAT(c.name, ' ', c.subject)) @@ TO_TSQUERY($2) OR CONCAT(c.name, ' ', c.subject) ILIKE $2
     END
 )
 AND (
@@ -49,4 +52,40 @@ AND (
         SELECT 1 FROM campaign_lists WHERE campaign_id = c.id AND list_id = ANY($4::INT[])
     )
 )
-ORDER BY c.id;
+ORDER BY c.id
+FOR UPDATE OF c;
+
+-- name: axm-delete-campaigns-guarded
+-- LST-55. Step 2, in the same transaction as axm-lock-campaigns-to-delete and run after it:
+-- the statement takes its snapshot after the locks were granted, so it sees send records that
+-- were committed while step 1 waited (one statement would read the snapshot from before the
+-- wait and delete them). Deletes the campaigns $1 unless one of them is a campaign that is
+-- sending or has sent. In that case nothing is deleted. The status, sent and to_send that come
+-- back are the values the campaign had when it was deleted (or refused). $2 is the number of
+-- months the send records are kept.
+-- block: 'sending' (running or paused), 'sent' (it has send records, or sent mail within the
+-- retention period and its records may not be written yet), '' (may be deleted).
+WITH target AS (
+    SELECT c.id, c.name, c.status, c.sent, c.to_send, COALESCE(c.started_at, c.created_at) AS began
+    FROM campaigns c
+    WHERE c.id = ANY($1::INT[])
+    ORDER BY c.id
+    FOR UPDATE OF c
+),
+checked AS (
+    SELECT t.id, t.name, t.status::TEXT AS status, t.sent, t.to_send,
+        CASE
+            WHEN t.status IN ('running', 'paused') THEN 'sending'
+            WHEN EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = t.id) THEN 'sent'
+            WHEN t.sent > 0 AND t.began > NOW() - MAKE_INTERVAL(months => $2::INT) THEN 'sent'
+        END AS block
+    FROM target t
+),
+del AS (
+    DELETE FROM campaigns
+    WHERE id IN (SELECT id FROM checked) AND NOT EXISTS (SELECT 1 FROM checked WHERE block IS NOT NULL)
+    RETURNING id
+)
+SELECT k.id, k.name, k.status, k.sent, k.to_send, COALESCE(k.block, '') AS block, (d.id IS NOT NULL) AS deleted
+FROM checked k LEFT JOIN del d ON d.id = k.id
+ORDER BY k.id;
