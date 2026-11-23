@@ -159,6 +159,9 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 		}
 		return err
 	}
+	if _, err := tx.Stmtx(c.q.AxmFollowupMembers).ExecContext(ctx, id, out.List.ID); err != nil {
+		return err
+	}
 	out.Followup = &models.FollowupRef{ID: id, Name: o.Name, Status: models.CampaignStatusDraft}
 	return nil
 }
@@ -252,6 +255,13 @@ func (c *Core) FollowupHeldNow(ctx context.Context, id int) (*models.FollowupPen
 func (c *Core) SetIndividualTracking(f func() bool) { c.individualTracking = f }
 
 func (c *Core) tracking() bool { return c.individualTracking != nil && c.individualTracking() }
+
+// MarkFollowupTrackingGap notes on the follow-ups still to be sent that opens and clicks are not
+// recorded per subscriber now (the app calls it at start when tracking is off).
+func (c *Core) MarkFollowupTrackingGap() error {
+	_, err := c.q.AxmFollowupTrackingGap.Exec()
+	return err
+}
 
 // FollowupStale says whether the campaign is a follow-up whose last check is not for the campaign
 // as it is now; the sender must read no recipients for it then.

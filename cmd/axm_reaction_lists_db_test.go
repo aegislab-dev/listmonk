@@ -41,7 +41,7 @@ func newReactionEnv(t *testing.T) *reactionEnv {
 	e.a.log = log.New(io.Discard, "", 0)
 	e.a.i18n = lang
 	e.a.core = core.New(&core.Opt{DB: e.db, Queries: e.q, Log: e.a.log, I18n: lang}, nil)
-	e.a.core.SetIndividualTracking(func() bool { return e.a.cfg.Privacy.IndividualTracking })
+	e.a.core.SetIndividualTracking(e.a.followupTracking)
 	e.db.MustExec(`UPDATE roles SET permissions = array_append(permissions, 'campaigns:get_analytics') WHERE id = $1`, e.memberRole)
 	e.db.MustExec(`UPDATE campaigns SET status = 'finished', name = 'Synthetic engagement', started_at = NOW() WHERE id = $1`, e.campID)
 	e.db.MustExec(`UPDATE lists SET axm_preset = 'b2b-sales' WHERE id = $1`, e.aList)

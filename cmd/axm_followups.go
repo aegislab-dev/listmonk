@@ -131,6 +131,12 @@ func (a *App) hideUnreadableFollowup(c echo.Context, out *models.ReactionPreview
 	}
 }
 
+// followupTracking tells whether opens and clicks are recorded per subscriber now: individual
+// tracking on and tracking as a whole not switched off (LST-47, the check before sending).
+func (a *App) followupTracking() bool {
+	return a.cfg.Privacy.IndividualTracking && !a.cfg.Privacy.DisableTracking
+}
+
 func (a *App) auditFollowup(c echo.Context, out models.ReactionResult, s models.ReactionSettings) {
 	if out.Followup == nil {
 		return

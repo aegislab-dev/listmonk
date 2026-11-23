@@ -1545,14 +1545,18 @@ func TestFollowupCheckIsAudited(t *testing.T) {
 	}
 }
 
-// Review 15 (1): the original's send records expired (removed after their keeping time) while the
-// follow-up waited. Who the draft was made for is still judged, and an open still counts.
+// Review 15/16 (1): the original's send records expired while the follow-up waited, and an admin
+// took a person off the follow-up list and put them back. Who the draft was made for is still
+// judged, and an open still counts.
 func TestFollowupJudgedAfterTheSendRecordsExpired(t *testing.T) {
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	camp, charlie := got.Followup.ID, e.ids[2]
 	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
 	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
+	// Off the list and back on: a new row, made after the draft.
+	e.db.MustExec(`DELETE FROM subscriber_lists WHERE subscriber_id = $1 AND list_id = $2`, charlie, got.List.ID)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status, created_at) VALUES ($1, $2, 'confirmed', NOW() + INTERVAL '1 minute')`, charlie, got.List.ID)
 	if _, info := e.callGet(e.admin, camp); info.Pending == nil || info.Pending.Reacted != 1 || info.Pending.Unknown != 0 {
 		t.Fatalf("pending: %+v", info.Pending)
 	}
@@ -1563,7 +1567,7 @@ func TestFollowupJudgedAfterTheSendRecordsExpired(t *testing.T) {
 	wantSame(t, "held", e.held(camp), []int{charlie})
 	// Someone added by hand afterwards, who never got the original, is still not judged.
 	ian := e.sendsEnv.ids(`SELECT id FROM subscribers WHERE name = 'Ian'`)[0]
-	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status, created_at) VALUES ($1, $2, 'confirmed', NOW() + INTERVAL '1 second')`, ian, got.List.ID)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, ian, got.List.ID)
 	e.db.MustExec(`UPDATE campaigns SET status = 'paused' WHERE id = $1`, camp)
 	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
 	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
@@ -1572,14 +1576,15 @@ func TestFollowupJudgedAfterTheSendRecordsExpired(t *testing.T) {
 	wantSame(t, "held", e.held(camp), []int{charlie})
 }
 
-// Review 15 (2): an admin cleared the view statistics. An open kept in the send record still
-// counts; with no open record left at all, nobody's reaction can be seen and everyone is held.
+// Review 15/16 (2): the send records expired and an admin cleared the statistics after Charlie
+// opened the original; then someone else opens it. Charlie's open was kept for the follow-up
+// when it happened, so he stays held back, and Daniel, who never opened it, is sent to.
 func TestFollowupJudgedAfterTheStatisticsWereCleared(t *testing.T) {
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
-	camp, charlie, daniel := got.Followup.ID, e.ids[2], e.ids[3]
+	camp, charlie := got.Followup.ID, e.ids[2]
 	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
-	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NOW() WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
 	e.db.MustExec(`DELETE FROM campaign_views WHERE campaign_id = $1`, e.campID)
 	run := func() {
 		t.Helper()
@@ -1589,23 +1594,50 @@ func TestFollowupJudgedAfterTheStatisticsWereCleared(t *testing.T) {
 		}
 		e.db.MustExec(`UPDATE campaigns SET status = 'draft' WHERE id = $1`, camp)
 	}
+	if _, info := e.callGet(e.admin, camp); info.Pending == nil || info.Pending.Reacted != 1 || info.Pending.Unknown != 0 {
+		t.Fatalf("pending: %+v", info.Pending)
+	}
 	run()
-	wantSame(t, "held by the send record's open", e.held(camp), []int{charlie})
-	// No open record of the original anywhere: everyone is held back, as unknown.
-	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NULL WHERE campaign_id = $1`, e.campID)
+	wantSame(t, "held by the kept open", e.held(camp), []int{charlie})
+	// Alice, not on the follow-up, opens the original: nothing changes for the follow-up's people.
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[0])
+	run()
+	wantSame(t, "held after another open", e.held(camp), []int{charlie})
+}
+
+// Review 16 (3): tracking is switched off (as a whole, or per subscriber). Opens and clicks are not
+// recorded then, so nobody's reaction can be seen: everyone is held back, also after tracking is
+// on again (the app notes the gap when it starts with tracking off).
+func TestFollowupHeldWhileTrackingIsOff(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp, charlie, daniel := got.Followup.ID, e.ids[2], e.ids[3]
+	run := func() {
+		t.Helper()
+		e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+			t.Fatal(err)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'draft' WHERE id = $1`, camp)
+	}
+	run()
+	wantSame(t, "held with tracking on", e.held(camp), nil)
+	e.a.cfg.Privacy.DisableTracking = true
 	if _, info := e.callGet(e.admin, camp); info.Pending == nil || info.Pending.Unknown != 2 {
 		t.Fatalf("pending: %+v", info.Pending)
 	}
 	run()
-	wantSame(t, "held, nothing to judge by", e.held(camp), []int{charlie, daniel})
+	wantSame(t, "held, tracking off", e.held(camp), []int{charlie, daniel})
+	// The app starts with tracking off and notes it; tracking comes back on later.
+	if err := e.a.core.MarkFollowupTrackingGap(); err != nil {
+		t.Fatal(err)
+	}
+	e.a.cfg.Privacy.DisableTracking = false
+	run()
+	wantSame(t, "held after a time without tracking", e.held(camp), []int{charlie, daniel})
 	if _, info := e.callGet(e.admin, camp); info.Recheck == nil || info.Recheck.Unknown != 2 {
 		t.Fatalf("recorded: %+v", info.Recheck)
 	}
-	// Individual tracking switched off: the same.
-	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
-	e.a.cfg.Privacy.IndividualTracking = false
-	run()
-	wantSame(t, "held, tracking off", e.held(camp), []int{charlie, daniel})
 }
 
 // Review 15 (3): the pre-send confirmation of a follow-up that the check would leave with nobody

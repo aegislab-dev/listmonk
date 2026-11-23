@@ -551,7 +551,7 @@
     "campaigns.followup.pending": "If checked now, {count} would be left out (opened, clicked or unsubscribed since)",
     "campaigns.followup.removed": "Left out by the check before sending: {count} ({reacted} opened or clicked, {optedOut} unsubscribed, {blocked} blocked)",
     "campaigns.followup.madeAt": "As of {time} when made · {matched} of {received} recipients: {condition}",
-    "campaigns.followup.unknown": "The original campaign's open and click records are gone (statistics cleared, send records past their keeping time, or individual tracking off), so {count} people are left out of this follow-up.",
+    "campaigns.followup.unknown": "Opens and clicks are not recorded per subscriber now, or were not for a time since this follow-up was made (individual tracking or tracking switched off), so reactions cannot be seen and {count} people are left out of this follow-up. Make the follow-up again if needed.",
     "campaigns.followup.listsChanged": "The lists of this campaign were changed. The check before sending covers only the follow-up list.",
     "campaigns.followup.hasFollowup": "Follow-up of this campaign:",
     "campaigns.followup.excludeNote": "The original campaign was sent first, so the recent-send exclusion preview counts those people as excluded.",

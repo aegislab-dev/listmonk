@@ -66,6 +66,8 @@ type Queries struct {
 	AxmFollowupUnchecked           *sqlx.Stmt `query:"axm-followup-unchecked"`
 	AxmFollowupStale               *sqlx.Stmt `query:"axm-followup-stale"`
 	AxmFollowupVersion             *sqlx.Stmt `query:"axm-followup-version"`
+	AxmFollowupMembers             *sqlx.Stmt `query:"axm-followup-members"`
+	AxmFollowupTrackingGap         *sqlx.Stmt `query:"axm-followup-tracking-gap"`
 	AxmFollowupRecheck             *sqlx.Stmt `query:"axm-followup-recheck"`
 	AxmFollowupPending             *sqlx.Stmt `query:"axm-followup-pending"`
 	AxmFollowupRecord              *sqlx.Stmt `query:"axm-followup-record"`
