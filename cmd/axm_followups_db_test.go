@@ -1636,6 +1636,15 @@ func TestFollowupToSendAndAuditCountEachLeftOutPersonOnce(t *testing.T) {
 	if n := toSend(); n != 1 {
 		t.Fatalf("to_send after an unsubscribe and a resume %d, want 1", n)
 	}
+	// Manual got it before the pause and then unsubscribes (one click: blocked, every subscription
+	// ended): at the resume they are still among those it sent to.
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, camp, manual)
+	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, manual)
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1`, manual)
+	resume()
+	if n := toSend(); n != 1 {
+		t.Fatalf("to_send after one who got it unsubscribed %d, want 1", n)
+	}
 	// It finishes with a message refused by the mail server (nothing sent): to_send stays what it
 	// meant to send, as for any campaign.
 	if err := e.store.UpdateCampaignStatus(camp, models.CampaignStatusFinished); err != nil {
