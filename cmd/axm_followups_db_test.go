@@ -1544,3 +1544,106 @@ func TestFollowupCheckIsAudited(t *testing.T) {
 		}
 	}
 }
+
+// Review 15 (1): the original's send records expired (removed after their keeping time) while the
+// follow-up waited. Who the draft was made for is still judged, and an open still counts.
+func TestFollowupJudgedAfterTheSendRecordsExpired(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp, charlie := got.Followup.ID, e.ids[2]
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
+	if _, info := e.callGet(e.admin, camp); info.Pending == nil || info.Pending.Reacted != 1 || info.Pending.Unknown != 0 {
+		t.Fatalf("pending: %+v", info.Pending)
+	}
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(camp), []int{charlie})
+	// Someone added by hand afterwards, who never got the original, is still not judged.
+	ian := e.sendsEnv.ids(`SELECT id FROM subscribers WHERE name = 'Ian'`)[0]
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status, created_at) VALUES ($1, $2, 'confirmed', NOW() + INTERVAL '1 second')`, ian, got.List.ID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'paused' WHERE id = $1`, camp)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(camp), []int{charlie})
+}
+
+// Review 15 (2): an admin cleared the view statistics. An open kept in the send record still
+// counts; with no open record left at all, nobody's reaction can be seen and everyone is held.
+func TestFollowupJudgedAfterTheStatisticsWereCleared(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp, charlie, daniel := got.Followup.ID, e.ids[2], e.ids[3]
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
+	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NOW() WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
+	e.db.MustExec(`DELETE FROM campaign_views WHERE campaign_id = $1`, e.campID)
+	run := func() {
+		t.Helper()
+		e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+			t.Fatal(err)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'paused' WHERE id = $1`, camp)
+	}
+	run()
+	wantSame(t, "held by the send record's open", e.held(camp), []int{charlie})
+	// No open record of the original anywhere: everyone is held back, as unknown.
+	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NULL WHERE campaign_id = $1`, e.campID)
+	if _, info := e.callGet(e.admin, camp); info.Pending == nil || info.Pending.Unknown != 2 {
+		t.Fatalf("pending: %+v", info.Pending)
+	}
+	run()
+	wantSame(t, "held, nothing to judge by", e.held(camp), []int{charlie, daniel})
+	if _, info := e.callGet(e.admin, camp); info.Recheck == nil || info.Recheck.Unknown != 2 {
+		t.Fatalf("recorded: %+v", info.Recheck)
+	}
+	// Individual tracking switched off: the same.
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
+	e.db.MustExec(`UPDATE settings SET value = 'false' WHERE key = 'privacy.individual_tracking'`)
+	run()
+	wantSame(t, "held, tracking off", e.held(camp), []int{charlie, daniel})
+}
+
+// Review 15 (3): the pre-send confirmation of a follow-up that the check would leave with nobody
+// stops it, as it stops any campaign that reaches nobody.
+func TestFollowupPreflightLeavesOutWhoWouldBeHeld(t *testing.T) {
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	path := fmt.Sprintf("/api/campaigns/%d/preflight", camp)
+	read := func() (recipients int, zero string) {
+		t.Helper()
+		code, data := e.call(e.a.GetCampaignPreflight, e.admin, http.MethodGet, path, fmt.Sprint(camp), "")
+		if code != http.StatusOK {
+			t.Fatalf("preflight: %d %s", code, data)
+		}
+		var out struct {
+			Recipients int                     `json:"recipients"`
+			Checks     []models.PreflightCheck `json:"checks"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range out.Checks {
+			if c.Key == "recipients.zero" {
+				zero = c.Level
+			}
+		}
+		return out.Recipients, zero
+	}
+	if n, zero := read(); n != 2 || zero != "" {
+		t.Fatalf("before: %d %q", n, zero)
+	}
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[2])
+	if n, zero := read(); n != 1 || zero != "" {
+		t.Fatalf("one opened: %d %q", n, zero)
+	}
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[3])
+	if n, zero := read(); n != 0 || zero != models.PreflightBlock {
+		t.Fatalf("both opened: %d %q", n, zero)
+	}
+}

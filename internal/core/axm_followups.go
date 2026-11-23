@@ -210,6 +210,7 @@ func (c *Core) auditFollowupCheck(tx *sqlx.Tx, f followupDue, held int, recorded
 		"reacted":   rc.Reacted,
 		"opted_out": rc.OptedOut,
 		"blocked":   rc.Blocked,
+		"unknown":   rc.Unknown,
 		"check":     rc.Runs,
 	}))
 	if err != nil {
@@ -222,6 +223,29 @@ func (c *Core) auditFollowupCheck(tx *sqlx.Tx, f followupDue, held int, recorded
 	_, err = tx.Stmtx(c.q.AxmInsertAudit).Exec(nil, "system", "system", models.AuditUserTypeSystem, models.AuditActionFollowupCheck,
 		"campaign", f.CampaignID, name, held, string(detail))
 	return err
+}
+
+// FollowupHeldNow is who a check made now would hold back from campaign id, if it is a follow-up
+// with its list (nil otherwise), and the id of that list. The pre-send confirmation leaves them
+// out of its count.
+func (c *Core) FollowupHeldNow(ctx context.Context, id int) (*models.FollowupPending, int, error) {
+	var rows []followupDue
+	if err := c.q.AxmFollowupByIDs.SelectContext(ctx, &rows, pq.Array([]int{id})); err != nil {
+		return nil, 0, err
+	}
+	if len(rows) == 0 || len(rows[0].ListIDs) == 0 {
+		return nil, 0, nil
+	}
+	f := rows[0]
+	var s models.ReactionSettings
+	if err := json.Unmarshal(f.Condition, &s); err != nil || s.Validate() != nil {
+		return nil, 0, errors.New("follow-up campaign " + strconv.Itoa(id) + " has no valid condition")
+	}
+	var p models.FollowupPending
+	if err := c.q.AxmFollowupPending.GetContext(ctx, &p, f.ParentID, s.Open, s.Click, f.ListIDs, f.CampaignID); err != nil {
+		return nil, 0, err
+	}
+	return &p, int(f.ListIDs[0]), nil
 }
 
 // FollowupStale says whether the campaign is a follow-up whose last check is not for the campaign
@@ -285,7 +309,7 @@ func (c *Core) recheckOne(ctx context.Context, f followupDue, s models.ReactionS
 	}
 	if len(f.ListIDs) > 0 {
 		var reasons []int
-		args := []any{f.ParentID, s.Open, s.Click, pq.Array([]int(nil)), true, f.ListIDs, f.CampaignID}
+		args := []any{f.ParentID, s.Open, s.Click, f.ListIDs, f.CampaignID}
 		if err := tx.Stmtx(c.q.AxmFollowupRecheck).SelectContext(ctx, &reasons, args...); err != nil {
 			return 0, false, err
 		}
@@ -373,7 +397,7 @@ func (c *Core) GetFollowupInfo(ctx context.Context, id int, withPending bool) (m
 	if row.Role == "followup" && withPending && out.Condition != nil && len(row.ListIDs) > 0 &&
 		(row.FollowupStatus == models.CampaignStatusDraft || row.FollowupStatus == models.CampaignStatusScheduled) {
 		var p models.FollowupPending
-		args := []any{row.ParentCampaignID, out.Condition.Open, out.Condition.Click, pq.Array([]int(nil)), true, row.ListIDs, row.CampaignID}
+		args := []any{row.ParentCampaignID, out.Condition.Open, out.Condition.Click, row.ListIDs, row.CampaignID}
 		if err := c.q.AxmFollowupPending.GetContext(ctx, &p, args...); err != nil {
 			return out, err
 		}

@@ -93,8 +93,7 @@ type ReactionResult struct {
 // that consume it. Both fragments come from the named SQL files.
 func WithReactionCandidates(name, query, candidates string) string {
 	switch name {
-	case "axm-reaction-counts", "axm-reaction-sample", "axm-reaction-add-members",
-		"axm-followup-recheck", "axm-followup-pending":
+	case "axm-reaction-counts", "axm-reaction-sample", "axm-reaction-add-members":
 		return candidates + "\n" + query
 	default:
 		return query

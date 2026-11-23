@@ -555,6 +555,7 @@
     "campaigns.followup.pending": "지금 기준으로 빠질 사람 {count}명 (그 사이 열람·클릭 또는 해지)",
     "campaigns.followup.removed": "발송 전 확인으로 빠진 사람 {count}명 (열람·클릭 {reacted}, 해지 {optedOut}, 차단 {blocked})",
     "campaigns.followup.madeAt": "만들 때 기준 {time} · 받은 사람 {received}명 중 {condition} {matched}명",
+    "campaigns.followup.unknown": "원본 캠페인의 열람·클릭 기록이 남아 있지 않아(통계 정리, 발송 기록 보관 기간 만료, 개인별 추적 꺼짐) {count}명을 이 후속에서 보내지 않습니다.",
     "campaigns.followup.listsChanged": "이 캠페인의 대상 리스트가 바뀌었습니다. 발송 전 확인은 후속 리스트에만 적용됩니다.",
     "campaigns.followup.hasFollowup": "이 캠페인의 후속:",
     "campaigns.followup.excludeNote": "원본 캠페인의 발송은 후속의 전제이므로, 최근 발송 제외 미리보기에서는 제외 인원으로 잡힙니다.",

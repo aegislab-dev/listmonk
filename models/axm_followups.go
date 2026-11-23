@@ -44,7 +44,9 @@ type FollowupRecheck struct {
 	Reacted  int `json:"reacted"`
 	OptedOut int `json:"opted_out"`
 	Blocked  int `json:"blocked"`
-	Runs     int `json:"runs"`
+	// Unknown is held back because the records to judge by are gone (LST-47 review 15).
+	Unknown int `json:"unknown"`
+	Runs    int `json:"runs"`
 }
 
 // FollowupPending is who a check made now would hold back from the follow-up campaign.
@@ -52,6 +54,11 @@ type FollowupPending struct {
 	Reacted  int `db:"reacted" json:"reacted"`
 	OptedOut int `db:"opted_out" json:"opted_out"`
 	Blocked  int `db:"blocked" json:"blocked"`
+	Unknown  int `db:"unknown" json:"unknown"`
+	// Reachable is how many of them the campaign would otherwise send to (all, and after its
+	// checkpoint): the pre-send confirmation leaves them out of its count.
+	Reachable      int `db:"reachable" json:"-"`
+	ReachableAfter int `db:"reachable_after" json:"-"`
 }
 
 // FollowupRow is one link, joined with both campaigns and the follow-up list.

@@ -22,6 +22,9 @@
         </template>
       </p>
       <p v-if="madeAt" class="followup-line followup-muted">{{ madeAt }}</p>
+      <p v-if="unknownTotal > 0" class="followup-line followup-warn" data-cy="followup-unknown">
+        {{ f('unknown', { count: num(unknownTotal) }) }}
+      </p>
       <p v-if="info.listsChanged" class="followup-line followup-warn" data-cy="followup-lists-changed">
         {{ f('listsChanged') }}
       </p>
@@ -59,11 +62,18 @@ export default Vue.extend({
     },
     pendingTotal() {
       const p = this.info?.pending;
-      return p ? p.reacted + p.optedOut + p.blocked : 0;
+      return p ? p.reacted + p.optedOut + p.blocked + (p.unknown || 0) : 0;
     },
     removedTotal() {
       const r = this.info?.recheck;
-      return r ? r.reacted + r.optedOut + r.blocked : 0;
+      return r ? r.reacted + r.optedOut + r.blocked + (r.unknown || 0) : 0;
+    },
+    // Held back because the original's open and click records are gone: told apart from the rest.
+    unknownTotal() {
+      const p = this.info?.pending;
+      if (p) return p.unknown || 0;
+      const r = this.info?.recheck;
+      return r ? r.unknown || 0 : 0;
     },
     removedParams() {
       const r = this.info.recheck;
