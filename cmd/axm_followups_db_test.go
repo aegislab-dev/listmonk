@@ -572,7 +572,7 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	if !ok || !endOK || !strings.Contains(string(mig), "`"+start+block+end+"`") {
 		t.Fatal("schema and migration SQL of axm_campaign_followups differ")
 	}
-	e.db.MustExec(`DROP TABLE axm_campaign_followup_holds, axm_campaign_followups`)
+	e.db.MustExec(`DROP TABLE axm_campaign_followup_holds, axm_campaign_followup_members, axm_campaign_followup_reactions, axm_campaign_followups`)
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
