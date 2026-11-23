@@ -111,8 +111,15 @@ func TestUnsubscribeFixedSubject(t *testing.T) {
 		{`{{ "Full" }}`, true},
 		{`{{ if .Subscriber.Attribs.digest }}Digest{{ else }}Full{{ end }}`, false},
 		{`{{ if eq (Date "15") "09" }}Digest{{ else }}Full{{ end }}`, false},
+		// LST-48 review: a campaign attribute read with with is the same for everyone; the
+		// shorthand {{ MessageURL }} is the message's link, different for each.
+		{`{{ with .Campaign.Attribs.edition }}{{ . }}{{ end }}`, true},
+		{`{{ MessageURL }}`, false},
+		{`{{ MessageURL . }}`, false},
+		{`{{ $m := . }}{{ $m.Campaign.Attribs.edition }}`, true},
 	} {
-		c := models.Campaign{ContentType: models.CampaignContentTypeHTML, Messenger: "email", TemplateBody: `{{ template "content" . }}`, Body: src, Subject: tc.subject}
+		c := models.Campaign{ContentType: models.CampaignContentTypeHTML, Messenger: "email", TemplateBody: `{{ template "content" . }}`, Body: src, Subject: tc.subject,
+			Attribs: models.JSON{"edition": "Full"}}
 		c.UUID = "11111111-2222-3333-4444-555555555555"
 		if got, err := m.UnsubscribeOnEveryPath(&c, sub, "running"); err != nil || got != tc.want {
 			t.Errorf("subject %q: got %v %v", tc.subject, got, err)
@@ -142,8 +149,9 @@ func TestReadsVarying(t *testing.T) {
 		}
 	}
 	// The same headers with a subject the same for everyone (LST-48 review): .Subject is fixed.
-	for _, subject := range []string{"Regional edition", `{{ "Regional" }} edition`, `{{ .Campaign.Name }}`, `{{ Date "2006" }}`} {
-		c := &models.Campaign{Subject: subject}
+	for _, subject := range []string{"Regional edition", `{{ "Regional" }} edition`, `{{ .Campaign.Name }}`, `{{ Date "2006" }}`,
+		`{{ with .Campaign.Attribs.edition }}{{ . }}{{ end }}`, `{{ range .Campaign.Tags }}{{ . }}{{ end }}`, `{{ $m := . }}{{ $m.Campaign.Name }}`} {
+		c := &models.Campaign{Subject: subject, Attribs: models.JSON{"edition": "Regional edition"}}
 		for _, text := range []string{`{{ if eq .Subject "Regional edition" }}regional@crevasse.ai{{ end }}`, `{{ $m := . }}{{ if eq $m.Subject "R" }}r{{ end }}`} {
 			if m.ReadsVarying(c, text) {
 				t.Errorf("subject %q, %q: varying", subject, text)
@@ -151,7 +159,8 @@ func TestReadsVarying(t *testing.T) {
 		}
 	}
 	// A subject that passes the message on, or reads the subscriber through a variable.
-	for _, subject := range []string{`{{ UnsubscribeURL . }}`, `{{ $s := .Subscriber }}{{ $s.Name }}`, `{{ $m := . }}{{ $m.Subscriber.Name }}`} {
+	for _, subject := range []string{`{{ UnsubscribeURL . }}`, `{{ $s := .Subscriber }}{{ $s.Name }}`, `{{ $m := . }}{{ $m.Subscriber.Name }}`,
+		`News {{ MessageURL }}`, `{{ UnsubscribeURL }}`, `{{ with . }}{{ MessageURL . }}{{ end }}`, `{{ $m := . }}{{ MessageURL $m }}`} {
 		c := &models.Campaign{Subject: subject}
 		if !m.ReadsVarying(c, `{{ if eq .Subject "R" }}r{{ end }}`) {
 			t.Errorf("subject %q: not varying", subject)
