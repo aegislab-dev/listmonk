@@ -97,7 +97,7 @@ func (a *App) LoginPage(c echo.Context) error {
 	if c.Request().Method == http.MethodPost {
 		loginErr = a.doLogin(c)
 		if loginErr == nil {
-			return c.Redirect(http.StatusFound, utils.SanitizeURI(c.FormValue("next")))
+			return nil
 		}
 	}
 
@@ -257,6 +257,11 @@ func (a *App) OIDCFinish(c echo.Context) error {
 		}
 	}
 
+	// Disallow disabled users from logging in via OIDC.
+	if user.Status != auth.UserStatusEnabled {
+		return a.renderLoginPage(c, echo.NewHTTPError(http.StatusForbidden, a.i18n.T("users.invalidLogin")))
+	}
+
 	// Update the user login state (avatar, logged in date) in the DB.
 	if err := a.core.UpdateUserLogin(user.ID, claims.Picture); err != nil {
 		return a.renderLoginPage(c, err)
@@ -291,18 +296,12 @@ func (a *App) ResetPage(c echo.Context) error {
 	)
 
 	// Validate token and email (don't delete it yet, as we may need it for POST).
-	data, err := tmptokens.Check(email)
-	if err != nil {
-		return c.Render(http.StatusBadRequest, tplMessage, makeMsgTpl(a.i18n.T("users.resetPassword"), "", a.i18n.T("users.invalidResetLink")))
-	}
-
-	tk, ok := data.(string)
-	if !ok || tk != token {
+	if !tmptokens.Match(email, token, false) {
 		return c.Render(http.StatusBadRequest, tplMessage, makeMsgTpl(a.i18n.T("users.resetPassword"), "", a.i18n.T("users.invalidResetLink")))
 	}
 
 	// Validate that the user exists.
-	_, err = a.core.GetUser(0, "", email)
+	_, err := a.core.GetUser(0, "", email)
 	if err != nil {
 		return c.Render(http.StatusBadRequest, tplMessage, makeMsgTpl(a.i18n.T("users.resetPassword"), "", a.i18n.T("users.invalidResetLink")))
 	}
@@ -474,6 +473,15 @@ func (a *App) doLogin(c echo.Context) error {
 		return err
 	}
 
+	return a.finishPasswordLogin(c, user, c.FormValue("next"))
+}
+
+// finishPasswordLogin handles the last step after a password has been auth'd.
+// If 2FA is enabled, that's prompted, otherwise, the session is set and the user
+// is redirected to the next page.
+func (a *App) finishPasswordLogin(c echo.Context, user auth.User, next string) error {
+	next = utils.SanitizeURI(next)
+
 	// If TOTP is enabled for the user, create a temp token and redirect to the 2FA page.
 	if user.TwofaType == models.TwofaTypeTOTP {
 		// Generate a random token.
@@ -487,7 +495,6 @@ func (a *App) doLogin(c echo.Context) error {
 		tmptokens.Set(token, twofaTokenTTL, user.ID)
 
 		// Redirect to 2FA page.
-		next := utils.SanitizeURI(c.FormValue("next"))
 		return c.Redirect(http.StatusFound, fmt.Sprintf("%s/login/twofa?token=%s&next=%s", uriAdmin, token, url.QueryEscape(next)))
 	}
 
@@ -496,7 +503,7 @@ func (a *App) doLogin(c echo.Context) error {
 		return err
 	}
 
-	return nil
+	return c.Redirect(http.StatusFound, next)
 }
 
 // doFirstTimeSetup sets a user up for the first time.
@@ -606,8 +613,8 @@ func (a *App) doForgotPassword(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError"))
 	}
 
-	// Store the reset token in tmptokens.
-	tmptokens.Set(email, passwordResetTTL, token)
+	// Preserve pending reset links and their original expiry on repeat requests.
+	token = tmptokens.SetNX(email, passwordResetTTL, token).(string)
 
 	// Prepare the reset URL.
 	resetURL := fmt.Sprintf("%s/admin/reset?token=%s&email=%s", a.urlCfg.RootURL, token, url.QueryEscape(email))
@@ -659,14 +666,8 @@ func (a *App) doResetPassword(c echo.Context, token, email string) error {
 		return a.renderResetPasswordPage(c, token, email, a.i18n.T("users.passwordMismatch"))
 	}
 
-	// Validate and consume the token (this deletes it).
-	data, err := tmptokens.Get(email)
-	if err != nil {
-		return c.Render(http.StatusBadRequest, tplMessage, makeMsgTpl(a.i18n.T("users.resetPassword"), "", a.i18n.T("users.invalidResetLink")))
-	}
-
-	tk, ok := data.(string)
-	if !ok || tk != token {
+	// Atomically consume only the matching token.
+	if !tmptokens.Match(email, token, true) {
 		return c.Render(http.StatusBadRequest, tplMessage, makeMsgTpl(a.i18n.T("users.resetPassword"), "", a.i18n.T("users.invalidResetLink")))
 	}
 
@@ -692,13 +693,7 @@ func (a *App) doResetPassword(c echo.Context, token, email string) error {
 		a.log.Printf("error destroying sessions after password reset for user_id=%d: %v", user.ID, err)
 	}
 
-	// Log the user in directly without forcing a manual login right after password change.
-	if err := a.auth.SaveSession(user, "", c); err != nil {
-		return err
-	}
-
-	// Redirect to the admin page.
-	return c.Redirect(http.StatusFound, uriAdmin)
+	return a.finishPasswordLogin(c, user, uriAdmin)
 }
 
 // renderTwofaPage renders the 2FA verification page.
@@ -715,6 +710,14 @@ func (a *App) renderTwofaPage(c echo.Context, token, next, errMsg string) error 
 
 // doTwofaVerify handles the 2FA verification form submission.
 func (a *App) doTwofaVerify(c echo.Context, token string, userID int, next string) error {
+	// Share a budget across all login tokens for this user. Only requests with a
+	// valid password-authenticated token reach here. New logins do not reset it.
+	attemptKey := fmt.Sprintf("twofa-attempts:%d", userID)
+	tmptokens.SetNX(attemptKey, twofaTokenTTL, nil)
+	if _, err := tmptokens.Check(attemptKey); err != nil {
+		return echo.NewHTTPError(http.StatusTooManyRequests, a.i18n.T("globals.messages.invalidValue"))
+	}
+
 	totpCode := strings.TrimSpace(c.FormValue("totp_code"))
 
 	// Validate.
@@ -739,8 +742,10 @@ func (a *App) doTwofaVerify(c echo.Context, token string, userID int, next strin
 		return a.renderTwofaPage(c, token, next, a.i18n.T("globals.messages.invalidValue"))
 	}
 
-	// Invalidate the token.
-	tmptokens.Delete(token)
+	// Invalidate the token atomically to prevent concurrency/replay.
+	if _, err := tmptokens.Get(token); err != nil {
+		return c.Redirect(http.StatusFound, uriAdmin)
+	}
 
 	// Set the session.
 	if err := a.auth.SaveSession(user, "", c); err != nil {
