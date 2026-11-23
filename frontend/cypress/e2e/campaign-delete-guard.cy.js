@@ -31,7 +31,7 @@ describe('Campaign delete guard', () => {
 
   beforeEach(() => {
     cy.viewport(1440, 1000);
-    cy.intercept('DELETE', '/api/campaigns**').as('deleteCall');
+    cy.intercept('DELETE', /\/api\/campaigns/).as('deleteCall');
   });
 
   it('dims the trash icon of a running campaign and gives the reason in a tooltip', () => {
