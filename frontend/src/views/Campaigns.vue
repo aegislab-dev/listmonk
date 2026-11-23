@@ -264,8 +264,17 @@
               <b-icon icon="format-list-bulleted-square" size="is-small" />
             </b-tooltip>
           </a>
-          <a v-if="$can('campaigns:manage')" href="#"
-            @click.prevent="confirmDeleteCampaign(props.row)"
+          <!-- A campaign that is sending cannot be deleted (LST-55): the icon is dimmed and the
+               reason shows on hover and focus. No click action. -->
+          <b-tooltip v-if="$can('campaigns:manage') && isSending(props.row)" :label="$t('campaigns.axmDeleteSendingHint')"
+            :triggers="['hover', 'focus']" type="is-dark" multilined>
+            <a href="#" @click.prevent class="delete-blocked" aria-disabled="true"
+              data-cy="btn-delete-blocked" :aria-label="$t('campaigns.axmDeleteSendingHint')">
+              <b-icon icon="trash-can-outline" size="is-small" />
+            </a>
+          </b-tooltip>
+          <a v-else-if="$can('campaigns:manage')" href="#"
+            @click.prevent="$utils.confirm($t('campaigns.confirmDelete', { name: props.row.name }), () => deleteCampaign(props.row))"
             data-cy="btn-delete" :aria-label="$t('globals.buttons.delete')">
             <b-icon icon="trash-can-outline" size="is-small" />
           </a>
@@ -578,17 +587,9 @@ export default Vue.extend({
       });
     },
 
-    // A campaign that is sending cannot be deleted: say so instead of asking (LST-55). The
-    // server refuses it too, and also one that has sent mail (409, shown in a dialog).
-    confirmDeleteCampaign(c) {
-      if (['running', 'paused'].includes(c.status)) {
-        this.$utils.notice(
-          this.$t('campaigns.axmDeleteBlockedTitle'),
-          this.$t('campaigns.axmDeleteSending', { name: c.name, status: this.$t(`campaigns.status.${c.status}`) }),
-        );
-        return;
-      }
-      this.$utils.confirm(this.$t('campaigns.confirmDelete', { name: c.name }), () => this.deleteCampaign(c));
+    // Running and paused campaigns cannot be deleted (the server refuses too, LST-55).
+    isSending(c) {
+      return ['running', 'paused'].includes(c.status);
     },
 
     deleteCampaign(c) {

@@ -1182,7 +1182,7 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 ### 구현
 - `queries/axm_audit.sql` 의 `axm-delete-campaigns-guarded` 한 문장이 대상 행을 `FOR UPDATE` 로 잡고, 걸린 행이 없을 때만 같은 문장에서 `DELETE` 한다. 대상 조건은 upstream 의 `delete-campaigns` 와 같다. 확인과 삭제가 한 문장이라 그 사이에 상태가 바뀌지 않는다. upstream 의 `Core.DeleteCampaign(s)` 와 `queries/campaigns.sql` 은 그대로 두었고 이 포크는 쓰지 않는다.
 - `internal/core/axm_audit.go` 의 `DeleteCampaignsGuarded` → `cmd/campaigns.go` 의 `DeleteCampaign`·`DeleteCampaigns`. 거절 문구는 i18n `campaigns.axmDeleteSending`·`axmDeleteSent`·`axmDeleteBlockedMany`.
-- 화면(`frontend/src/views/Campaigns.vue`): 행의 휴지통이 running·paused 이면 확인 창 대신 안내 창만 띄우고 요청을 보내지 않는다. 그 밖에는 지금의 확인 창이고, 서버가 409 를 주면 그 문구를 안내 창으로 보인다(`api` 의 `disableToast`). 다른 오류는 토스트.
+- 화면(`frontend/src/views/Campaigns.vue`): 행의 휴지통이 running·paused 이면 흐리게(`delete-blocked`) 두고 호버·포커스 툴팁(`campaigns.axmDeleteSendingHint`)으로 이유를 보인다. 클릭 동작은 없다. 그 밖에는 지금의 확인 창이고, 서버가 409 를 주면 그 문구를 안내 창으로 보인다(`api` 의 `disableToast`, 일괄 삭제 포함). 다른 오류는 토스트.
 
 ### 삭제 감사 행
 `campaign.delete` 행이 삭제 시점의 값을 남긴다. `count` = 보낸 수, `detail` = `{status, sent, to_send}`(감사 화면에는 상태·보낸 수·보낼 대상 수로 보인다). 값은 삭제 문장이 돌려준 것이라 삭제 시점의 값이다. 감사 행 쓰기는 삭제와 별도 문장이라 실패하면 로그만 남는다(이전과 같다). 거절된 시도는 감사에 남기지 않는다.

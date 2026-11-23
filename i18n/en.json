@@ -327,6 +327,7 @@
     "campaigns.axmDeleteSending": "\"{name}\" is sending ({status}). Cancel it first, then try again. If it has sent mail, it cannot be deleted even after it is cancelled.",
     "campaigns.axmDeleteSent": "\"{name}\" has already sent mail. Its send records are used by \"Exclude recent sends\" and the reaction counts, so they are kept for 12 months.",
     "campaigns.axmDeleteBlockedMany": "{num} of the selected campaigns are sending or have send records, so nothing was deleted: {names}. Take them out of the selection and try again.",
+    "campaigns.axmDeleteSendingHint": "A campaign that is sending cannot be deleted. Cancel it first.",
     "campaigns.axmDeleteBlockedTitle": "Campaign cannot be deleted",
     "campaigns.axmDeleteBlockedManyTitle": "Some campaigns cannot be deleted",
     "campaigns.confirmSchedule": "This campaign will start automatically at the scheduled date and time. Schedule now?",

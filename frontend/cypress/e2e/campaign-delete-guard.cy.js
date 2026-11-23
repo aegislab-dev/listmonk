@@ -1,4 +1,4 @@
-// LST-55: a campaign that is sending (running, paused) is not deleted from the list, one that has
+// LST-55: a campaign that is sending (running, paused) has a dimmed trash icon with the reason in a tooltip, one that has
 // sent mail is refused by the server (409), and a delete writes its status and counts to the
 // activity log. CI has no mail server, so a real send is covered by the Go DB tests: here the
 // list response is rewritten to show a running campaign and the 409 is stubbed.
@@ -32,7 +32,7 @@ describe('Campaign delete guard', () => {
     cy.intercept('DELETE', '/api/campaigns*', cy.spy().as('deleteSpy')).as('deleteCall');
   });
 
-  it('explains instead of asking for a running campaign, and sends no request', () => {
+  it('dims the trash icon of a running campaign and gives the reason in a tooltip', () => {
     cy.intercept('GET', '/api/campaigns?*', (req) => {
       req.continue((res) => {
         res.body.data.results.forEach((c) => { if (c.name === keep) { c.status = 'running'; } });
@@ -41,10 +41,13 @@ describe('Campaign delete guard', () => {
     cy.visit('/admin/campaigns');
     cy.wait('@rewritten');
     search(keep);
-    rowOf(keep).find('[data-cy=btn-delete]').click();
-    cy.get('.modal [data-cy=warn-box]').should('contain', keep).and('contain', 'Running');
-    cy.get('.modal-card-title').should('contain', 'cannot be deleted');
-    cy.get('.modal button.is-primary').click();
+    rowOf(keep).find('[data-cy=btn-delete]').should('not.exist');
+    rowOf(keep).find('[data-cy=btn-delete-blocked]').should('have.attr', 'aria-disabled', 'true')
+      .and('have.css', 'cursor', 'not-allowed');
+    // Hover shows the reason; a click does nothing (no dialog, no request).
+    rowOf(keep).find('[data-cy=btn-delete-blocked]').trigger('mouseenter', { force: true });
+    cy.get('.b-tooltip .tooltip-content').should('contain', 'cannot be deleted');
+    rowOf(keep).find('[data-cy=btn-delete-blocked]').click({ force: true });
     cy.get('.modal').should('not.exist');
     cy.get('@deleteSpy').should('not.have.been.called');
   });

@@ -332,6 +332,7 @@
     "campaigns.axmDeleteSending": "「{name}」은(는) 발송 중입니다({status}). 먼저 취소한 뒤 다시 시도하세요. 발송한 기록이 있으면 취소한 뒤에도 삭제할 수 없습니다.",
     "campaigns.axmDeleteSent": "「{name}」은(는) 이미 발송한 캠페인입니다. 발송 기록은 「최근 발송 제외」와 반응 집계에 쓰이므로 12개월 동안 보관합니다.",
     "campaigns.axmDeleteBlockedMany": "고른 캠페인 중 {num}개가 발송 중이거나 발송 기록이 있어 아무것도 삭제하지 않았습니다: {names}. 이 캠페인을 선택에서 빼고 다시 시도하세요.",
+    "campaigns.axmDeleteSendingHint": "발송 중인 캠페인은 삭제할 수 없습니다. 먼저 취소하세요.",
     "campaigns.axmDeleteBlockedTitle": "삭제할 수 없는 캠페인",
     "campaigns.axmDeleteBlockedManyTitle": "삭제할 수 없는 캠페인이 있습니다",
     "campaigns.confirmOverwriteContent": "이 작업은 모든 내용을 덮어씁니다. 계속하시겠습니까?",
