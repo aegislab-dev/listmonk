@@ -46,6 +46,10 @@ type addrCheckImportResp struct {
 	// Suggest maps the position of an address with a misspelled domain to the corrected
 	// address. It is a suggestion only; the import refuses the row and does not change it.
 	Suggest map[int]string `json:"suggest"`
+	// Gate is how strict the server's address gate is (full, nodns, basic). The column mapping
+	// leaves out the rows the server would refuse, so it needs to know: with basic a disposable
+	// domain is only a warning.
+	Gate string `json:"gate"`
 }
 
 type addrCheckListReq struct {
@@ -90,7 +94,7 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 	}
 
 	verdicts := a.addrCheck.Check(c.Request().Context(), req.Emails, addrCheckBudget)
-	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}, Suggest: map[int]string{}}
+	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}, Suggest: map[int]string{}, Gate: a.gateStrength()}
 	// What the database knows (LST-56): the column mapping screen shows the rows the server
 	// would refuse for these reasons, and the numbers of Summary are not changed by them.
 	var facts map[string]addrcheck.Facts

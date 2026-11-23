@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/knadh/listmonk/internal/i18n"
 )
 
 // LST-53: what the importer keeps of the rows it refuses.
@@ -172,10 +174,14 @@ func TestGateBatchesKeepOrderAndRows(t *testing.T) {
 			t.Fatal(err)
 		}
 		var got []string
+		warned := map[string]int{}
 		done := make(chan struct{})
 		go func() {
 			for sub := range s.subQueue {
 				got = append(got, sub.Email)
+				if sub.AxmWarn != "" {
+					warned[sub.AxmWarn]++
+				}
 			}
 			close(done)
 		}()
@@ -191,8 +197,10 @@ func TestGateBatchesKeepOrderAndRows(t *testing.T) {
 			st.AxmRejectedTotal != wantDead+wantTyo {
 			t.Fatalf("n=%d: stats %+v", n, st)
 		}
-		if st.AxmWarned["role"] != wantRole || st.AxmWarned["unknown"] != wantSlow || st.AxmWarnedTotal != wantRole+wantSlow {
-			t.Fatalf("n=%d: warned %+v", n, st.AxmWarned)
+		// The rows carry their warning to the commit, which counts them (a row that is rolled
+		// back is not counted); nothing is counted before that.
+		if warned["role"] != wantRole || warned["unknown"] != wantSlow || st.AxmWarnedTotal != 0 {
+			t.Fatalf("n=%d: warned %+v, counted %d", n, warned, st.AxmWarnedTotal)
 		}
 		for _, sz := range sizes[:max(0, len(sizes)-1)] {
 			if sz != gateBatch {
@@ -233,5 +241,77 @@ func TestNoGateKeepsTheRulesOfStepOne(t *testing.T) {
 	}
 	if st := im.GetStats(); st.AxmRejected[RejectTypo] != 1 || st.AxmRejectedTotal != 1 || st.AxmWarnedTotal != 0 {
 		t.Fatalf("%+v", st)
+	}
+}
+
+// The refused rows of the download keep the order of the file when malformed rows and rows the
+// gate refuses are mixed (the malformed ones are kept in the batch, in order).
+func TestGateKeepsRefusedRowsInFileOrder(t *testing.T) {
+	lang, err := i18n.New([]byte(`{"_.code":"en","_.name":"English","subscribers.invalidEmail":"invalid"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	im := &Importer{status: Status{Status: StatusNone}, importSeq: 1, i18n: lang}
+	im.SetAxmVerify(func(emails []string) []AxmVerdict {
+		out := make([]AxmVerdict, len(emails))
+		for i, e := range emails {
+			if strings.HasPrefix(e, "dead") {
+				out[i].Reject = RejectDead
+			}
+		}
+		return out
+	})
+	path := filepath.Join(t.TempDir(), "in.csv")
+	body := "email,name\ndead1@example.org,A\nnot-an-address,B\ndead2@example.org,C\nbroken,D\nok@example.org,E\ndead3@example.org,F\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := im.NewSession(SessionOpt{Mode: ModeSubscribe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range s.subQueue {
+		}
+	}()
+	if err := s.LoadCSV(path, ','); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := im.GetRejected(im.GetStats().AxmImportID, 0, true)
+	var got []int
+	for _, r := range rows {
+		got = append(got, r.Row)
+	}
+	if want := []int{2, 3, 4, 5, 7}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rows %v, want %v", got, want)
+	}
+}
+
+// A stop request that comes after the last batch was read does not cancel the next import.
+func TestStopAfterTheFileWasReadDoesNotLeak(t *testing.T) {
+	im := &Importer{status: Status{Status: StatusNone}, importSeq: 1, stop: make(chan bool, 1)}
+	im.SetAxmVerify(func(emails []string) []AxmVerdict {
+		im.stop <- true // Stop() while the last batch waits for DNS
+		return make([]AxmVerdict, len(emails))
+	})
+	path := filepath.Join(t.TempDir(), "in.csv")
+	if err := os.WriteFile(path, []byte("email,name\na@example.org,A\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := im.NewSession(SessionOpt{Mode: ModeSubscribe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range s.subQueue {
+		}
+	}()
+	if err := s.LoadCSV(path, ','); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-im.stop:
+		t.Fatal("the stop request is still waiting for the next import")
+	default:
 	}
 }

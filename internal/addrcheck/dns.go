@@ -32,7 +32,10 @@ const (
 // Resolver is the part of net.Resolver the checker uses. Tests replace it.
 type Resolver interface {
 	LookupMX(ctx context.Context, name string) ([]*net.MX, error)
-	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+	// LookupIP is asked for "ip4" and "ip6" one at a time: the Go resolver's LookupIPAddr
+	// reports "not found" when one family has no records and the other failed, which would
+	// make a domain that only had a hiccup look dead.
+	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
 }
 
 // Options sets the limits of a Checker. Zero values take the defaults.
@@ -216,7 +219,9 @@ func (c *Checker) work() {
 // times a second in all, so that a big import cannot flood the resolver of the host. The
 // limit is on the start of a lookup; Concurrency still limits how many run at once.
 func (c *Checker) waitSlot() {
-	gap := time.Second / time.Duration(c.opt.MaxPerSecond)
+	// A millisecond more than the even gap: any second, both ends counted, then holds at most
+	// MaxPerSecond starts.
+	gap := time.Second/time.Duration(c.opt.MaxPerSecond) + time.Millisecond
 	c.rateMu.Lock()
 	now := time.Now()
 	at := c.nextSlot
@@ -282,18 +287,27 @@ func (c *Checker) resolve(domain string) DomainStatus {
 		return StatusUnknown
 	}
 
-	// No MX: mail goes to the domain's own address, if it has one.
-	ctx, cancel = context.WithTimeout(context.Background(), c.opt.LookupTimeout)
-	ips, err := c.opt.Resolver.LookupIPAddr(ctx, name)
-	cancel()
-	switch {
-	case len(ips) > 0:
-		return StatusOK
-	case err == nil || notFound(err):
-		return StatusDead
-	default:
+	// No MX: mail goes to the domain's own address (A or AAAA), if it has one. Each family is
+	// asked on its own: the domain is dead only when both say the name has no such record, and
+	// unknown when one family failed and the other has none.
+	failed := 0
+	for _, network := range []string{"ip4", "ip6"} {
+		ctx, cancel = context.WithTimeout(context.Background(), c.opt.LookupTimeout)
+		ips, err := c.opt.Resolver.LookupIP(ctx, network, name)
+		cancel()
+		switch {
+		case len(ips) > 0:
+			return StatusOK
+		case err == nil || notFound(err):
+			// no record of this family
+		default:
+			failed++
+		}
+	}
+	if failed > 0 {
 		return StatusUnknown
 	}
+	return StatusDead
 }
 
 // notFound reports whether DNS answered that the name or the record type does not exist,

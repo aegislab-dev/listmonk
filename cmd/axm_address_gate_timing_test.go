@@ -40,7 +40,7 @@ func (f *timingDNS) LookupMX(ctx context.Context, name string) ([]*net.MX, error
 	return []*net.MX{{Host: "mx." + name, Pref: 10}}, nil
 }
 
-func (f *timingDNS) LookupIPAddr(ctx context.Context, name string) ([]net.IPAddr, error) {
+func (f *timingDNS) LookupIP(ctx context.Context, network, name string) ([]net.IP, error) {
 	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
 }
 
@@ -91,7 +91,7 @@ func TestGateImportTiming(t *testing.T) {
 	t.Logf("TIMING rows=%d domains=%d total=%s worst_batch=%s lookups=%d max_concurrent=%d max_started_per_second=%d warned=%d rejected=%d",
 		rows, domains, total.Round(time.Millisecond), worst.Round(time.Millisecond), len(dns.starts), dns.maxRun, maxPerSec, warned, rejected)
 	dns.mu.Unlock()
-	if dns.maxRun > 8 || maxPerSec > 51 {
+	if dns.maxRun > 8 || maxPerSec > 50 {
 		t.Fatalf("limits broken: %d concurrent, %d per second", dns.maxRun, maxPerSec)
 	}
 }

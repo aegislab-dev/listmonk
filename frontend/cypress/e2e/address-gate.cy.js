@@ -393,7 +393,9 @@ describe('Address rules', () => {
       data: {
         total: 6, risky: 0, confirmed: 0, warning: 0, unknown: 1, pending: 0, classes: {},
         issues: {
-          1: ['suppressed'], 2: ['bounced'], 3: ['disposable'], 4: ['role'], 5: ['unknown'],
+          // The blocklisted row is also a role address on a silent domain: it is shown under its
+          // refusal only, not also as a warning or as imported as it is.
+          1: ['suppressed', 'role', 'unknown'], 2: ['bounced'], 3: ['disposable'], 4: ['role'], 5: ['unknown'],
         },
         suggest: {},
       },
@@ -411,6 +413,11 @@ describe('Address rules', () => {
     cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
     // The counts come from the rows, not from the server's summary (which says 0 here).
     cy.get('[data-cy=map-address-summary]').should('contain', '4');
+    cy.get('[data-cy=map-address-role]').should('contain', `5 (${rows[4]})`).and('not.contain', `2 (${rows[1]})`)
+      .and('contain', 'only marked');
+    cy.get('[data-cy=map-address-unknown]').should('contain', `6 (${rows[5]})`).and('not.contain', `2 (${rows[1]})`);
+    // Unknown counts the open rows only: the blocklisted row is not counted again.
+    cy.get('[data-cy=map-address-summary]').should('contain', '1 unknown');
     ['suppressed', 'bounced', 'disposable'].forEach((name) => {
       cy.get(`[data-cy=map-address-${name}]`).should('contain', '1');
     });
@@ -428,5 +435,32 @@ describe('Address rules', () => {
     cy.get('[data-cy=import-rejected-bounced]').should('contain', '1');
     cy.get('[data-cy=import-rejected-disposable]').should('contain', '1');
     cy.get('[data-cy=map-mismatch]').should('not.exist');
+  });
+
+  // The server's gate can be set to basic (step 1 rules only): it then does not refuse a disposable
+  // domain, so the column mapping must not leave such a row out either.
+  it('treats a disposable domain as a warning in the review when the gate is basic', () => {
+    const stamp = Date.now();
+    const rows = [`gate-basic-a-${stamp}@example.invalid`, `gate-basic-b-${stamp}@mailinator.com`];
+    cy.intercept('POST', '/api/subscribers/address-check', (req) => req.reply({
+      data: {
+        total: 2, risky: 0, confirmed: 0, warning: 0, unknown: 0, pending: 0, classes: {}, issues: { 1: ['disposable'] }, suggest: {}, gate: 'basic',
+      },
+    }));
+    cy.loginAndVisit('/admin/subscribers/import');
+    cy.request('DELETE', '/api/import/subscribers');
+    cy.visit('/admin/subscribers/import');
+    cy.get('.list-selector input').type(listName);
+    cy.contains('.list-selector .autocomplete a', listName).click();
+    cy.get('input[type=file]').selectFile({
+      contents: Cypress.Buffer.from(`email,name\n${rows.map((e, n) => `${e},Basic ${n}`).join('\n')}\n`), fileName: 'basic.csv', mimeType: 'text/csv',
+    }, { force: true });
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-mode-mapping]').click();
+    cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
+    cy.get('[data-cy=map-address-disposable] .map-address-chip').should('have.class', 'is-warning');
+    cy.get('[data-cy=map-address-fixed]').should('not.exist');
+    cy.get('[data-cy=map-address-exclude-warning]').should('contain', 'role or disposable');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
   });
 });

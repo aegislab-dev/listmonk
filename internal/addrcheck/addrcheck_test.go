@@ -18,6 +18,9 @@ type fakeDNS struct {
 	mxErr map[string]error
 	ip    map[string]bool
 	ipErr map[string]error
+	ip6Err map[string]error // only the AAAA lookup fails
+	ipErr4 map[string]error // only the A lookup fails
+	ip6    map[string]bool  // has an AAAA record
 	hold  chan struct{} // when set, every MX lookup waits for it
 	mxN   map[string]int
 	ipN   map[string]int
@@ -31,7 +34,7 @@ var (
 
 func newFake() *fakeDNS {
 	return &fakeDNS{
-		mx: map[string][]*net.MX{}, mxErr: map[string]error{}, ip: map[string]bool{}, ipErr: map[string]error{},
+		mx: map[string][]*net.MX{}, mxErr: map[string]error{}, ip: map[string]bool{}, ipErr: map[string]error{}, ip6Err: map[string]error{}, ipErr4: map[string]error{}, ip6: map[string]bool{},
 		mxN: map[string]int{}, ipN: map[string]int{},
 	}
 }
@@ -55,15 +58,27 @@ func (f *fakeDNS) LookupMX(ctx context.Context, name string) ([]*net.MX, error) 
 	return nil, errNX
 }
 
-func (f *fakeDNS) LookupIPAddr(ctx context.Context, name string) ([]net.IPAddr, error) {
+func (f *fakeDNS) LookupIP(ctx context.Context, network, name string) ([]net.IP, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ipN[name]++
 	if err := f.ipErr[name]; err != nil {
 		return nil, err
 	}
+	if network == "ip6" {
+		if err := f.ip6Err[name]; err != nil {
+			return nil, err
+		}
+		if f.ip6[name] {
+			return []net.IP{net.ParseIP("2001:db8::1")}, nil
+		}
+		return nil, errNX
+	}
+	if err := f.ipErr4[name]; err != nil {
+		return nil, err
+	}
 	if f.ip[name] {
-		return []net.IPAddr{{IP: net.IPv4(192, 0, 2, 1)}}, nil
+		return []net.IP{net.IPv4(192, 0, 2, 1)}, nil
 	}
 	return nil, errNX
 }
@@ -144,17 +159,27 @@ func TestResolve(t *testing.T) {
 	f.mxErr["broken.test."] = errServer
 	f.mxErr["plain.test."] = errors.New("connection refused")
 	f.ipErr["ipslow.test."] = errTimeout
+	// No MX, no A, and the AAAA lookup failed: that is a hiccup, not a dead domain, whichever
+	// family fails (the Go resolver would call it "not found").
+	f.ip6Err["half.test."] = errServer
+	f.ipErr4["half4.test."] = errServer
+	f.ip["v6only.test."] = false
+	f.ip6["v6only.test."] = true
+	f.ip6Err["a-ok.test."] = errServer
+	f.ip["a-ok.test."] = true
 	c := NewChecker(Options{Resolver: f})
 
 	got := c.CheckDomains(context.Background(), []string{
 		"ok.test", "null.test", "mixed.test", "aonly.test", "gone.test",
 		"slow.test", "broken.test", "plain.test", "ipslow.test", "ok.test",
+		"half.test", "half4.test", "v6only.test", "a-ok.test",
 	}, time.Second)
 	want := map[string]DomainStatus{
 		"ok.test": StatusOK, "null.test": StatusNullMX, "mixed.test": StatusOK,
 		"aonly.test": StatusOK, "gone.test": StatusDead,
 		"slow.test": StatusUnknown, "broken.test": StatusUnknown, "plain.test": StatusUnknown,
 		"ipslow.test": StatusUnknown,
+		"half.test": StatusUnknown, "half4.test": StatusUnknown, "v6only.test": StatusOK, "a-ok.test": StatusOK,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("statuses\n got %v\nwant %v", got, want)
@@ -163,7 +188,7 @@ func TestResolve(t *testing.T) {
 	if m, i := f.counts("ok.test."); m != 1 || i != 0 {
 		t.Errorf("ok.test looked up %d MX, %d IP", m, i)
 	}
-	if m, i := f.counts("gone.test."); m != 1 || i != 1 {
+	if m, i := f.counts("gone.test."); m != 1 || i != 2 { // both families are asked
 		t.Errorf("gone.test looked up %d MX, %d IP", m, i)
 	}
 	// A failed MX lookup is not turned into a verdict by an address lookup.
@@ -497,8 +522,9 @@ func TestLookupsAreRateLimited(t *testing.T) {
 			t.Fatalf("%s: %s", d, got[d])
 		}
 	}
-	// 60 lookups at 100 a second: the last one starts 590ms after the first.
-	if took < 550*time.Millisecond {
+	// 60 lookups at 100 a second (a millisecond more than the even gap): the last one starts
+	// about 650ms after the first.
+	if took < 600*time.Millisecond {
 		t.Fatalf("60 lookups took %v, want at least 550ms at 100 a second", took)
 	}
 	if took > 5*time.Second {

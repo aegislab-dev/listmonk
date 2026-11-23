@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -63,16 +64,27 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.Ts("globals.messages.invalidData")+": "+b.Type)
 	}
 
-	// A hard bounce or a complaint keeps the address out of future imports and additions
-	// (LST-56). It is written first: the delete action removes the subscriber, and with them the
-	// bounce rows, in the statement below. A failure here must not lose the bounce.
+	// One transaction: the address of a hard bounce or a complaint is kept out of future imports
+	// and additions (LST-56) only when the bounce itself is recorded. The address is written
+	// first: the delete action removes the subscriber, and with them the bounce rows, in the
+	// statement below.
+	tx, err := c.db.BeginTxx(context.Background(), nil)
+	if err != nil {
+		c.log.Printf("error recording bounce: %v", err)
+		return err
+	}
+	defer tx.Rollback()
 	if b.Type == models.BounceTypeHard || b.Type == models.BounceTypeComplaint {
-		if _, err := c.q.AxmBouncedRecord.Exec(b.SubscriberUUID, b.Email, b.Type); err != nil {
-			c.log.Printf("error remembering a bounced address: %v", err)
+		// A failure to remember the address must not lose the bounce: a savepoint takes it back.
+		if _, err := tx.Exec("SAVEPOINT axm_bounced"); err == nil {
+			if _, err := tx.Stmtx(c.q.AxmBouncedRecord).Exec(b.SubscriberUUID, b.Email, b.Type); err != nil {
+				c.log.Printf("error remembering a bounced address: %v", err)
+				_, _ = tx.Exec("ROLLBACK TO SAVEPOINT axm_bounced")
+			}
 		}
 	}
 
-	_, err := c.q.RecordBounce.Exec(b.SubscriberUUID,
+	_, err = tx.Stmtx(c.q.RecordBounce).Exec(b.SubscriberUUID,
 		b.Email,
 		b.CampaignUUID,
 		b.Type,
@@ -81,6 +93,9 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		b.CreatedAt,
 		action.Count,
 		action.Action)
+	if err == nil {
+		err = tx.Commit()
+	}
 
 	if err != nil {
 		// Ignore the error if it complained of no subscriber.

@@ -407,9 +407,19 @@ export function rememberMapping(storage, columns, mapping, old = readMemory(stor
 export const ADDRESS_CONFIRMED = ['format', 'provider', 'typo', 'suppressed', 'bounced', 'disposable', 'dead', 'nullmx'];
 export const ADDRESS_WARNING = ['role'];
 
+// The classes by how strict the server's gate is: with the gate at basic (step 1 rules only) the
+// server does not refuse a disposable domain, so it is a warning there, as it was before LST-56.
+export function addressClasses(gate) {
+  if (gate === 'basic') {
+    return { confirmed: ADDRESS_CONFIRMED.filter((c) => c !== 'disposable'), warning: ['disposable', ...ADDRESS_WARNING] };
+  }
+  return { confirmed: ADDRESS_CONFIRMED, warning: ADDRESS_WARNING };
+}
+
 // The source rows the address check leaves out. rowIssues maps a source row to its classes.
-export function addressExcludedRows(rowIssues, { confirmed = true, warning = false } = {}) {
-  const drop = [...(confirmed ? ADDRESS_CONFIRMED : []), ...(warning ? ADDRESS_WARNING : [])];
+export function addressExcludedRows(rowIssues, { confirmed = true, warning = false, gate = '' } = {}) {
+  const classes = addressClasses(gate);
+  const drop = [...(confirmed ? classes.confirmed : []), ...(warning ? classes.warning : [])];
   return Object.keys(rowIssues).map(Number).filter((row) => rowIssues[row].some((c) => drop.includes(c))).sort((a, b) => a - b);
 }
 

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"encoding/csv"
 	"encoding/json"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/migrations"
+	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 )
@@ -344,6 +347,80 @@ func TestGateBouncedRelease(t *testing.T) {
 	_ = d
 }
 
+func (e *gateEnv) uuidOf(id int) string {
+	var u string
+	e.get(&u, `SELECT uuid::TEXT FROM subscribers WHERE id = $1`, id)
+	return u
+}
+
+// The address a bounce is for is the one the bounce names, not the subscriber's current one:
+// a subscriber edited since the mail was sent bounced at the old address.
+func TestGateBounceOfAnEditedSubscriberIsForTheOldAddress(t *testing.T) {
+	e := newGateEnv(t)
+	e.a.core = core.New(&core.Opt{DB: e.db, Queries: e.q, Log: e.a.log, I18n: e.a.i18n, Constants: core.Constants{
+		BounceActions: map[string]struct {
+			Count  int
+			Action string
+		}{"hard": {100, "none"}, "soft": {100, "none"}, "complaint": {100, "none"}},
+	}}, nil)
+	var id int
+	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'was@ok.test', 'P', 'enabled') RETURNING id`)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, id, e.aList)
+	// The person fixes the address, then the bounce of the mail sent to the old one arrives.
+	if r := e.do(e.a.PatchSubscriber, "PATCH", id, `{"email":"now@ok.test"}`); r.code != 200 {
+		t.Fatalf("%+v", r)
+	}
+	if err := e.a.core.RecordBounce(models.Bounce{Email: "was@ok.test", SubscriberUUID: e.uuidOf(id), Type: "hard", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if !e.isBounced("was@ok.test") || e.isBounced("now@ok.test") {
+		t.Fatalf("old bounced %v, new bounced %v", e.isBounced("was@ok.test"), e.isBounced("now@ok.test"))
+	}
+	if r := e.add("now2@ok.test"); r.code != 200 {
+		t.Fatalf("%+v", r)
+	}
+	// With no address in the bounce, the subscriber's own is the one.
+	if err := e.a.core.RecordBounce(models.Bounce{SubscriberUUID: e.uuidOf(id), Type: "hard", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if !e.isBounced("now@ok.test") {
+		t.Fatal("a bounce with no address is for the current address")
+	}
+	// Deleting the subscriber's bounce records releases the addresses they were for.
+	if err := e.a.core.DeleteSubscriberBounces(id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("was@ok.test") || e.isBounced("now@ok.test") {
+		t.Fatal("not released after the bounce records of the edited subscriber were deleted")
+	}
+}
+
+// The address is remembered only when the bounce is recorded.
+func TestGateBouncedAddressNeedsTheBounceRecord(t *testing.T) {
+	e := newGateEnv(t)
+	e.a.core = core.New(&core.Opt{DB: e.db, Queries: e.q, Log: e.a.log, I18n: e.a.i18n, Constants: core.Constants{
+		BounceActions: map[string]struct {
+			Count  int
+			Action string
+		}{"hard": {100, "none"}, "soft": {100, "none"}, "complaint": {100, "none"}},
+	}}, nil)
+	var id int
+	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'fail@ok.test', 'P', 'enabled') RETURNING id`)
+	// A campaign UUID that is not one: record-bounce fails.
+	err := e.a.core.RecordBounce(models.Bounce{Email: "fail@ok.test", CampaignUUID: "not-a-uuid", Type: "hard", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()})
+	if err == nil {
+		t.Fatal("the bounce should have failed")
+	}
+	var n int
+	e.get(&n, `SELECT COUNT(*) FROM bounces WHERE subscriber_id = $1`, id)
+	if n != 0 || e.isBounced("fail@ok.test") {
+		t.Fatalf("bounce rows %d, bounced %v", n, e.isBounced("fail@ok.test"))
+	}
+}
+
 // The public form is not a way to find out who is blocklisted or bounced.
 func TestGatePublicFormDoesNotRevealDatabaseFacts(t *testing.T) {
 	e := newGateEnv(t)
@@ -536,13 +613,16 @@ func TestGateMigrationTwice(t *testing.T) {
 	e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source) VALUES ($1, 'hard', 't'), ($1, 'hard', 't'), ($1, 'soft', 't')`, id)
 	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'only.soft@ok.test', 'P', 'enabled') RETURNING id`)
 	e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source) VALUES ($1, 'soft', 't')`, id)
+	// A subscriber edited after its last bounce may have another address now: not taken in.
+	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'edited.now@ok.test', 'P', 'enabled') RETURNING id`)
+	e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source, created_at) VALUES ($1, 'hard', 't', NOW() - INTERVAL '2 days')`, id)
 	e.db.MustExec(`DELETE FROM axm_bounced_emails`)
 
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
-		if n := e.bouncedRows(); n != 1 || !e.isBounced("old.hard@ok.test") || e.isBounced("only.soft@ok.test") {
+		if n := e.bouncedRows(); n != 1 || !e.isBounced("old.hard@ok.test") || e.isBounced("only.soft@ok.test") || e.isBounced("edited.now@ok.test") {
 			t.Fatalf("run %d: %d rows", i+1, n)
 		}
 	}
@@ -555,5 +635,50 @@ func TestGateMigrationTwice(t *testing.T) {
 	e.get(&trg, `SELECT COUNT(*) FROM pg_trigger WHERE tgrelid = 'bounces'::regclass AND tgname = 'axm_bounced_release' AND NOT tgisinternal`)
 	if trg != 1 {
 		t.Fatalf("%d triggers", trg)
+	}
+}
+
+// A row that is rolled back is not counted as imported with a warning.
+func TestGateWarningIsCountedWhenCommitted(t *testing.T) {
+	e := newGateEnv(t)
+	// A NUL in an attribute cannot be stored in JSONB: the transaction of the batch fails.
+	bad := "bad@ok.test,Bad,\"{\"\"a\"\":\"\"\\u0000\"\"}\"\n"
+	csvIn := "email,name,attributes\ninfo@ok.test,Role,\n" + bad
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	w.WriteField("params", `{"mode":"subscribe","subscription_status":"confirmed","delim":",","lists":[`+itoa(e.aList)+`]}`)
+	f, _ := w.CreateFormFile("file", "people.csv")
+	f.Write([]byte(csvIn))
+	w.Close()
+	req := httptest.NewRequest("POST", "/api/import/subscribers", body)
+	req.Header.Set(echo.HeaderContentType, w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(req, rec)
+	c.Set(auth.UserHTTPCtxKey, e.as(e.superAdmin))
+	if err := e.a.ImportSubscribers(c); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the import to end", func() bool {
+		s := e.a.importer.GetStats().Status
+		return s == subimporter.StatusFinished || s == subimporter.StatusFailed
+	})
+	st := e.a.importer.GetStats()
+	if st.Status != subimporter.StatusFailed || st.Imported != 0 || st.AxmWarnedTotal != 0 || e.count("info@ok.test") != 0 {
+		t.Fatalf("status %s imported %d warned %d (%v), stored %d", st.Status, st.Imported, st.AxmWarnedTotal, st.AxmWarned, e.count("info@ok.test"))
+	}
+	e.a.importer.Stop()
+}
+
+// The log of an import never holds an address, also when the attributes of a row the gate
+// refuses are malformed.
+func TestGateImportLogHasNoAddress(t *testing.T) {
+	e := newGateEnv(t)
+	csvIn := "email,name,attributes\nsecret.typo@gmail.con,Typo,{not json\nsecret.ok@ok.test,Ok,{not json\n"
+	params := `{"mode":"subscribe","subscription_status":"confirmed","delim":",","lists":[` + itoa(e.aList) + `]}`
+	if code := e.importAs(e.as(e.superAdmin), params, csvIn); code != 200 {
+		t.Fatal(code)
+	}
+	if log := string(e.a.importer.GetLogs()); strings.Contains(log, "secret.") {
+		t.Fatalf("the log names an address:\n%s", log)
 	}
 }

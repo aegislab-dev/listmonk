@@ -109,6 +109,8 @@
     "import.addr.unknownHelp": "DNS did not answer. These are imported as they are.",
     "import.addr.excludeConfirmed": "Leave out the {count} rows with confirmed-risk addresses",
     "import.addr.excludeWarning": "Also leave out the {count} rows with role addresses",
+    "import.addr.help.role": "Addresses such as info@ or booking@ can be real contact points. They are imported and only marked for a look.",
+    "import.addr.excludeWarningBasic": "Also leave out the {count} rows with role or disposable addresses",
     "import.addr.help.suppressed": "Blocklisted before. It is not added again.",
     "import.addr.help.bounced": "A hard bounce or a complaint is on record for this address. Deleting the bounce records releases it.",
     "import.addr.help.disposable": "A throwaway mailbox that soon disappears.",

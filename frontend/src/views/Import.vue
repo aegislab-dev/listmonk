@@ -200,7 +200,7 @@ import LogView from '../components/LogView.vue';
 import ImportColumnMapper from '../components/ImportColumnMapper.vue';
 import AddressCheck from '../components/AddressCheck.vue';
 import {
-  LIMITS, readMemory, rememberMapping, ADDRESS_CONFIRMED, ADDRESS_WARNING, addressExcludedRows, excludedRowsCSV,
+  LIMITS, readMemory, rememberMapping, addressClasses, addressExcludedRows, excludedRowsCSV,
 } from '../lib/csv-import';
 
 // While DNS lookups are unfinished the address check is asked again, this often and this many times.
@@ -404,7 +404,7 @@ export default Vue.extend({
         });
         const polls = this.addr.polls + (result.pending > 0 ? 1 : 0);
         this.addr = {
-          state: 'done', result, issues: Object.freeze(issues), emails: Object.freeze(shown), suggest: Object.freeze(suggest), polls,
+          state: 'done', result, issues: Object.freeze(issues), emails: Object.freeze(shown), suggest: Object.freeze(suggest), polls, gate: result.gate || '',
         };
         this.applyAddressExclusion();
         if (result.pending > 0 && polls <= ADDRESS_MAX_POLLS) {
@@ -421,7 +421,7 @@ export default Vue.extend({
 
     // Rebuilds the upload when the rows the address check leaves out have changed.
     applyAddressExclusion() {
-      const rows = addressExcludedRows(this.addr.issues, this.addrExclude);
+      const rows = addressExcludedRows(this.addr.issues, { ...this.addrExclude, gate: this.addr.gate });
       const key = rows.join(',');
       if (key === (this.csvExcludeKey || '')) return;
       this.csvExclude = rows;
@@ -441,7 +441,7 @@ export default Vue.extend({
       const out = (this.csvExclude || []).map((row) => ({
         row,
         email: this.addr.emails[row] || '',
-        reason: ADDRESS_CONFIRMED.find((c) => (this.addr.issues[row] || []).includes(c)),
+        reason: addressClasses(this.addr.gate).confirmed.find((c) => (this.addr.issues[row] || []).includes(c)),
         suggest: (this.addr.suggest || {})[row] || '',
       })).filter((x) => x.reason);
       (this.csvInvalidRows || []).forEach(({ row, email }) => out.push({
@@ -454,7 +454,8 @@ export default Vue.extend({
     // the address check's rows and the rows that are not an address at all, by source row. The
     // same rows the box that ends the import counts.
     excludedRows() {
-      const reasons = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING];
+      const classes = addressClasses(this.addr.gate);
+      const reasons = [...classes.confirmed, ...classes.warning];
       const format = [this.$t('addressCheck.class.format')];
       return [
         ...(this.csvExclude || []).map((row) => ({
@@ -936,20 +937,28 @@ export default Vue.extend({
       if (state !== 'done') return { state, busy: this.addressBusy };
       const rows = Object.keys(issues).map(Number).sort((a, b) => a - b);
       const has = (row, classes) => issues[row].some((c) => classes.includes(c));
-      const confirmed = rows.filter((row) => has(row, ADDRESS_CONFIRMED));
+      const classes = addressClasses(this.addr.gate);
+      const confirmed = rows.filter((row) => has(row, classes.confirmed));
       const confirmedSet = new Set(confirmed);
-      const warningOnly = rows.filter((row) => !confirmedSet.has(row) && has(row, ADDRESS_WARNING));
+      const warningOnly = rows.filter((row) => !confirmedSet.has(row) && has(row, classes.warning));
+      // A row the server refuses is shown under its refusal only: it is not also "imported with
+      // a warning" or "imported as it is".
+      const open = rows.filter((row) => !confirmedSet.has(row));
+      const unknownRows = open.filter((row) => issues[row].includes('unknown'));
+      const pendingRows = open.filter((row) => issues[row].includes('pending'));
       const polling = this.addressPolling;
       // A misspelled domain is shown with the address it should be.
       const shownAddress = (row) => (suggest[row] ? `${emails[row]} → ${suggest[row]}` : emails[row]);
-      const lines = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING, 'unknown'].map((name) => {
-        const found = rows.filter((row) => issues[row].includes(name));
+      const lines = [...classes.confirmed, ...classes.warning, 'unknown'].map((name) => {
+        const inLine = (row) => issues[row].includes(name) && (classes.confirmed.includes(name) || !confirmedSet.has(row));
+        const found = rows.filter(inLine);
         let kind = 'unknown';
-        if (ADDRESS_CONFIRMED.includes(name)) kind = 'confirmed';
-        else if (ADDRESS_WARNING.includes(name)) kind = 'warning';
+        if (classes.confirmed.includes(name)) kind = 'confirmed';
+        else if (classes.warning.includes(name)) kind = 'warning';
         let help = '';
-        if (['role', 'provider', 'typo'].includes(name)) help = this.$t(`addressCheck.classHelp.${name}`);
-        else if (['suppressed', 'bounced', 'disposable', 'dead', 'nullmx'].includes(name)) help = this.$t(`import.addr.help.${name}`);
+        if (['provider', 'typo'].includes(name)) help = this.$t(`addressCheck.classHelp.${name}`);
+        else if (['suppressed', 'bounced', 'disposable', 'dead', 'nullmx'].includes(name) && kind === 'confirmed') help = this.$t(`import.addr.help.${name}`);
+        else if (name === 'role') help = this.$t('import.addr.help.role');
         else if (name === 'unknown') help = this.$t('import.addr.unknownHelp');
         return {
           name,
@@ -968,14 +977,16 @@ export default Vue.extend({
         risky: confirmed.length + warningOnly.length,
         confirmed: confirmed.length,
         warning: warningOnly.length,
-        pending: polling ? result.pending : 0,
-        unknown: result.unknown + (polling ? 0 : result.pending),
+        pending: polling ? pendingRows.length : 0,
+        unknown: unknownRows.length + (polling ? 0 : pendingRows.length),
         busy: this.addressBusy,
         confirmedRows: confirmed.length,
         // What the second switch adds: with the first one on, rows it already leaves out are not counted again.
-        warningRows: rows.filter((row) => has(row, ADDRESS_WARNING) && !(this.addrExclude.confirmed && confirmedSet.has(row))).length,
+        warningRows: rows.filter((row) => has(row, classes.warning) && !(this.addrExclude.confirmed && confirmedSet.has(row))).length,
         excludeConfirmed: this.addrExclude.confirmed,
         excludeWarning: this.addrExclude.warning,
+        // With the gate at basic a disposable domain is a warning row too.
+        warningKey: this.addr.gate === 'basic' ? 'import.addr.excludeWarningBasic' : 'import.addr.excludeWarning',
       };
     },
     // Rows the server refused because of the address rules (LST-53): counted by reason.

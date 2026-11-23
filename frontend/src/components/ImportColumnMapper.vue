@@ -201,7 +201,7 @@
             <div v-if="address.warningRows" class="map-address-switches">
               <b-switch :value="address.excludeWarning" :disabled="!address.warningRows" data-cy="map-address-exclude-warning"
                 @input="$emit('address-exclude', { warning: $event })">
-                {{ $t('import.addr.excludeWarning', { count: address.warningRows }) }}
+                {{ $t(address.warningKey, { count: address.warningRows }) }}
               </b-switch>
             </div>
             <p v-if="address.confirmedRows || address.warningRows" class="map-address-result" data-cy="map-address-result">
