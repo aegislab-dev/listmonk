@@ -127,7 +127,8 @@ func auditEntry(user *auth.User, action string, t auditTarget, count int) models
 	e := models.AuditEntry{
 		Action:     action,
 		TargetType: t.Type,
-		TargetName: cutName(t.Name),
+		// Names (of a campaign, a list) can hold an address: hidden as in every audit text.
+		TargetName: cutName(scrubAuditText(t.Name)),
 	}
 	if t.ID > 0 {
 		e.TargetID = null.IntFrom(t.ID)

@@ -1492,6 +1492,9 @@ func TestFollowupCheckIsAudited(t *testing.T) {
 	// A parent whose name holds an address: the audit row must not keep it.
 	e.db.MustExec(`UPDATE campaigns SET name = 'November invite eli-followup@example.invalid' WHERE id = $1`, e.campID)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true,"name":"Followup list"}`)
+	if !strings.Contains(got.Followup.Name, "eli-followup@example.invalid") {
+		t.Fatalf("the draft has its default name: %s", got.Followup.Name)
+	}
 	camp := got.Followup.ID
 	e.db.MustExec(`UPDATE campaigns SET name = 'Follow-up for eli-followup@example.invalid' WHERE id = $1`, camp)
 	run := func() {
@@ -1515,6 +1518,12 @@ func TestFollowupCheckIsAudited(t *testing.T) {
 	if err := e.db.Select(&rows, `SELECT user_type, count, detail::TEXT AS detail, row_to_json(l)::TEXT AS row FROM axm_audit_log l
 		WHERE action = $1 AND target_type = 'campaign' AND target_id = $2 ORDER BY id`, auditCampaignFollowupCk, camp); err != nil {
 		t.Fatal(err)
+	}
+	// The row of making the draft too: its name is the default, "<parent> 후속".
+	var made string
+	e.get(&made, `SELECT row_to_json(l)::TEXT FROM axm_audit_log l WHERE action = $1 AND target_id = $2`, auditCampaignFollowup, camp)
+	if strings.Contains(made, "@") || strings.Contains(made, "eli-followup") || !strings.Contains(made, "[email]") {
+		t.Fatalf("an address in the row of making the draft: %s", made)
 	}
 	if len(rows) != 2 || rows[0].Count != 1 || rows[1].Count != 2 || rows[0].UserType != models.AuditUserTypeSystem {
 		t.Fatalf("audit rows: %+v", rows)
