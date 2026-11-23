@@ -155,8 +155,33 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	camps[0].LastSubscriberID = lastSubID
 
 	var out []models.Subscriber
-	if err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, camps[0].LastSubscriberID, camps[0].MaxSubscriberID, pq.Array(listIDs), limit); err != nil {
+	read := func() error {
+		out = out[:0]
+		return query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, camps[0].LastSubscriberID, camps[0].MaxSubscriberID, pq.Array(listIDs), limit)
+	}
+	if err := read(); err != nil {
 		return out, err
+	}
+
+	// AXM (LST-47): the people of a follow-up's batch are judged once more as it is read, after every
+	// reaction or send record of the original being written now is committed (see
+	// core.GuardFollowupBatch). Whoever it holds back is left out by reading the batch again (the
+	// query skips held people); that ends, as every round holds someone more.
+	for {
+		ids := make([]int, len(out))
+		for i, sub := range out {
+			ids[i] = sub.ID
+		}
+		held, err := s.core.GuardFollowupBatch(context.Background(), campID, ids)
+		if err != nil {
+			return nil, err
+		}
+		if held == 0 {
+			break
+		}
+		if err := read(); err != nil {
+			return out, err
+		}
 	}
 
 	// AXM (LST-47): a follow-up is sent only while its last check is for the campaign as it is now.

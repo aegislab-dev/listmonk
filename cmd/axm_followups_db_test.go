@@ -2024,3 +2024,53 @@ func TestFollowupOptOutWithALateSendRecordHolds(t *testing.T) {
 		t.Fatalf("held for %d, want 2 (opted out)", reason)
 	}
 }
+
+// Review 23: Daniel, added by hand, got the original; the transaction writing his send record has
+// judged him (still subscribed) but is not committed yet when he leaves the original's list and
+// the check runs. When the sender reads his batch it waits for that record, judges him again and
+// leaves him out.
+func TestFollowupBatchIsJudgedAfterPendingSendRecords(t *testing.T) {
+	e := newFollowupEnv(t)
+	daniel := e.ids[3]
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, daniel)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, daniel, got.List.ID)
+	send, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer send.Rollback()
+	if _, err := send.Exec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel); err != nil {
+		t.Fatal(err)
+	}
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, daniel, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "the check cannot see him yet", e.held(camp), nil)
+	type result struct {
+		subs []models.Subscriber
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		subs, err := e.store.NextSubscribers(camp, 0, 100)
+		done <- result{subs, err}
+	}()
+	waitFor(t, "the batch to wait for the send record", e.lockWaiting("%pg_advisory_xact_lock(4747%"))
+	if err := send.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	for _, s := range r.subs {
+		if s.ID == daniel {
+			t.Fatal("the batch has Daniel")
+		}
+	}
+	wantSame(t, "held", e.held(camp), []int{daniel})
+}

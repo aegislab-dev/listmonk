@@ -283,6 +283,47 @@ func (c *Core) NoteTracking(on bool) error {
 	return err
 }
 
+// GuardFollowupBatch judges the people of a batch the sender has just read for follow-up campaign
+// id, and holds back whoever the check's judgement says to (axm_followup_judge). It first takes
+// the original's lock exclusively, so the reactions and send records of the original being written
+// at this moment are committed and seen: a decision made earlier on data that was not committed
+// yet (a check, a trigger) cannot let someone through. It returns how many it held back now; the
+// caller reads the batch again then. Not a follow-up: 0.
+func (c *Core) GuardFollowupBatch(ctx context.Context, id int, subs []int) (int, error) {
+	if len(subs) == 0 {
+		return 0, nil
+	}
+	tx, err := c.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var g struct {
+		Parent int    `db:"parent_campaign_id"`
+		Locked string `db:"locked"`
+	}
+	if err := tx.Stmtx(c.q.AxmFollowupGuard).GetContext(ctx, &g, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if _, err := tx.Stmtx(c.q.AxmFollowupGuardRecipients).ExecContext(ctx, id, g.Parent, pq.Array(subs)); err != nil {
+		return 0, err
+	}
+	var held []int
+	if err := tx.Stmtx(c.q.AxmFollowupGuardHold).SelectContext(ctx, &held, id, pq.Array(subs), c.tracking()); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	if len(held) > 0 {
+		c.log.Printf("follow-up campaign %d: %d people held back as their batch was read", id, len(held))
+	}
+	return len(held), nil
+}
+
 // FollowupStale says whether the campaign is a follow-up whose last check is not for the campaign
 // as it is now; the sender must read no recipients for it then.
 func (c *Core) FollowupStale(id int) (bool, error) {

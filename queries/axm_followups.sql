@@ -154,6 +154,29 @@ ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
 -- then kept once the follow-up is committed, and makes the ones that come later wait to see it.
 SELECT pg_advisory_xact_lock(4747, $1);
 
+-- name: axm-followup-guard
+-- The original of follow-up $1, locked exclusively as a follow-up being made locks it: it waits
+-- for the reactions and send records of the original being written now (their triggers lock it
+-- shared). No row means the campaign is not a follow-up.
+SELECT f.parent_campaign_id, pg_advisory_xact_lock(4747, f.parent_campaign_id)::TEXT AS locked
+FROM axm_campaign_followups f WHERE f.campaign_id = $1;
+
+-- name: axm-followup-guard-recipients
+-- Keeps the people $3 of a batch who got original $2 for follow-up $1 (a send record of theirs that
+-- was written after the last check).
+INSERT INTO axm_campaign_followup_members (campaign_id, subscriber_id, made_for)
+SELECT $1::INT, cs.subscriber_id, FALSE FROM axm_campaign_sends cs
+WHERE cs.campaign_id = $2 AND cs.subscriber_id = ANY($3::INT[])
+ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
+
+-- name: axm-followup-guard-hold
+-- Holds back the people $2 of a batch of follow-up $1 that the check's judgement says to, with $3
+-- = opens and clicks recorded per subscriber now.
+INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
+SELECT $1::INT, j.subscriber_id, j.reason FROM axm_followup_judge($1, $2::INT[], $3) j WHERE j.reason <> 0
+ON CONFLICT (campaign_id, subscriber_id) DO NOTHING
+RETURNING subscriber_id;
+
 -- name: axm-followup-recipients-now
 -- Keeps for follow-up $1 the people of the send records of original $2 that are not kept yet (send
 -- records written after the follow-up was made, before axm_followup_recipients saw it).
