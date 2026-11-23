@@ -8,8 +8,10 @@ WHERE f.parent_campaign_id = $1;
 SELECT EXISTS (SELECT 1 FROM axm_campaign_followups WHERE campaign_id = $1);
 
 -- name: axm-followup-insert
-INSERT INTO axm_campaign_followups (campaign_id, parent_campaign_id, list_uuid, condition, counts, created_by)
-VALUES ($1, $2, $3::UUID, $4, $5, $6);
+-- $7 is TRUE when opens and clicks are not recorded per subscriber now, so the follow-up starts with
+-- a tracking gap then (reactions from now on cannot be seen).
+INSERT INTO axm_campaign_followups (campaign_id, parent_campaign_id, list_uuid, condition, counts, created_by, tracking_gap)
+VALUES ($1, $2, $3::UUID, $4, $5, $6, $7);
 
 -- name: axm-followup-get
 -- One row for the campaign on either side of a link. role is followup when the campaign is
@@ -121,9 +123,9 @@ judged AS (
             WHERE cl.campaign_id = $1 AND u.subscriber_id = sl.subscriber_id AND u.status = 'unsubscribed'
         ) THEN 2
         WHEN NOT (SELECT known FROM ev) THEN 4
-        -- A "did not" condition is broken by a reaction recorded for the follow-up since it was
-        -- made (kept when statistics are cleared or send records expire) or by any record of one
-        -- that is still there. A "did" condition held when the draft was made and stays held.
+        -- A "did not" condition is broken by a reaction kept for the follow-up (as it happened, or
+        -- found when the draft was made) or by any record of one that is still there. A "did"
+        -- condition held for the people the draft was made for; anyone else needs a record of it.
         WHEN ($2 = 'no' AND (
                 EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.opened)
                 OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = sl.subscriber_id)
@@ -132,6 +134,16 @@ judged AS (
                 EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.clicked)
                 OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = sl.subscriber_id)
                 OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))
+            OR (($2 = 'yes' OR $3 = 'yes')
+                AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = $5 AND m.subscriber_id = sl.subscriber_id)
+                AND (($2 = 'yes' AND NOT (
+                        EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.opened)
+                        OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = sl.subscriber_id)
+                        OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
+                    OR ($3 = 'yes' AND NOT (
+                        EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.clicked)
+                        OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = sl.subscriber_id)
+                        OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))))
             THEN -1
         ELSE 0
     END AS reason
@@ -144,18 +156,12 @@ judged AS (
         AND (EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = $5 AND m.subscriber_id = sl.subscriber_id)
             OR EXISTS (SELECT 1 FROM axm_campaign_sends cs WHERE cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id))
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $5 AND sent.subscriber_id = sl.subscriber_id)
-        AND NOT EXISTS (
-            SELECT 1 FROM campaign_lists cl JOIN lists ol ON ol.id = cl.list_id
-            WHERE cl.campaign_id = $5 AND NOT (cl.list_id = ANY($4::INT[])) AND (
-                (ol.axm_filter IS NULL AND EXISTS (
-                    SELECT 1 FROM subscriber_lists o WHERE o.list_id = ol.id AND o.subscriber_id = sl.subscriber_id
-                        AND CASE WHEN ol.optin = 'double' THEN o.status = 'confirmed' ELSE o.status != 'unsubscribed' END))
-                OR (ol.axm_filter IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM axm_dynamic_list_members(ol.id, sl.subscriber_id - 1, sl.subscriber_id, 1))))
-        )
+        AND NOT axm_followup_reaches_otherwise($5, sl.subscriber_id, $4::INT[])
 )
 INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
 SELECT $5, subscriber_id, reason FROM judged WHERE reason <> 0
+-- A reaction recorded meanwhile may have held the person already (axm_followup_reaction).
+ON CONFLICT (campaign_id, subscriber_id) DO NOTHING
 RETURNING reason;
 
 -- name: axm-followup-pending
@@ -177,9 +183,9 @@ judged AS (
             WHERE cl.campaign_id = $1 AND u.subscriber_id = sl.subscriber_id AND u.status = 'unsubscribed'
         ) THEN 2
         WHEN NOT (SELECT known FROM ev) THEN 4
-        -- A "did not" condition is broken by a reaction recorded for the follow-up since it was
-        -- made (kept when statistics are cleared or send records expire) or by any record of one
-        -- that is still there. A "did" condition held when the draft was made and stays held.
+        -- A "did not" condition is broken by a reaction kept for the follow-up (as it happened, or
+        -- found when the draft was made) or by any record of one that is still there. A "did"
+        -- condition held for the people the draft was made for; anyone else needs a record of it.
         WHEN ($2 = 'no' AND (
                 EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.opened)
                 OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = sl.subscriber_id)
@@ -188,6 +194,16 @@ judged AS (
                 EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.clicked)
                 OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = sl.subscriber_id)
                 OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))
+            OR (($2 = 'yes' OR $3 = 'yes')
+                AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = $5 AND m.subscriber_id = sl.subscriber_id)
+                AND (($2 = 'yes' AND NOT (
+                        EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.opened)
+                        OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = sl.subscriber_id)
+                        OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
+                    OR ($3 = 'yes' AND NOT (
+                        EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.clicked)
+                        OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = sl.subscriber_id)
+                        OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))))
             THEN -1
         ELSE 0
     END AS reason
@@ -200,15 +216,7 @@ judged AS (
         AND (EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = $5 AND m.subscriber_id = sl.subscriber_id)
             OR EXISTS (SELECT 1 FROM axm_campaign_sends cs WHERE cs.campaign_id = $1 AND cs.subscriber_id = sl.subscriber_id))
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $5 AND sent.subscriber_id = sl.subscriber_id)
-        AND NOT EXISTS (
-            SELECT 1 FROM campaign_lists cl JOIN lists ol ON ol.id = cl.list_id
-            WHERE cl.campaign_id = $5 AND NOT (cl.list_id = ANY($4::INT[])) AND (
-                (ol.axm_filter IS NULL AND EXISTS (
-                    SELECT 1 FROM subscriber_lists o WHERE o.list_id = ol.id AND o.subscriber_id = sl.subscriber_id
-                        AND CASE WHEN ol.optin = 'double' THEN o.status = 'confirmed' ELSE o.status != 'unsubscribed' END))
-                OR (ol.axm_filter IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM axm_dynamic_list_members(ol.id, sl.subscriber_id - 1, sl.subscriber_id, 1))))
-        )
+        AND NOT axm_followup_reaches_otherwise($5, sl.subscriber_id, $4::INT[])
 )
 SELECT COUNT(*) FILTER (WHERE reason = -1) AS reacted,
     COUNT(*) FILTER (WHERE reason = 2) AS opted_out,
@@ -225,6 +233,23 @@ FROM judged;
 -- Keeps who the draft was made for, everyone on the new follow-up list.
 INSERT INTO axm_campaign_followup_members (campaign_id, subscriber_id)
 SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id = $2;
+
+-- name: axm-followup-reactions-now
+-- Keeps for the new follow-up $1 the reactions to original $2 that are on record now for the
+-- people it was made for (also only in the send record), so that they still count once that
+-- record is gone.
+INSERT INTO axm_campaign_followup_reactions (campaign_id, subscriber_id, opened, clicked)
+SELECT x.campaign_id, x.subscriber_id, x.opened, x.clicked FROM (
+    SELECT m.campaign_id, m.subscriber_id,
+        EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = $2 AND v.subscriber_id = m.subscriber_id)
+            OR EXISTS (SELECT 1 FROM axm_campaign_sends cs WHERE cs.campaign_id = $2 AND cs.subscriber_id = m.subscriber_id AND cs.opened_at IS NOT NULL) AS opened,
+        EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $2 AND k.subscriber_id = m.subscriber_id)
+            OR EXISTS (SELECT 1 FROM axm_campaign_sends cs WHERE cs.campaign_id = $2 AND cs.subscriber_id = m.subscriber_id AND cs.clicked_at IS NOT NULL) AS clicked
+    FROM axm_campaign_followup_members m WHERE m.campaign_id = $1
+) x WHERE x.opened OR x.clicked
+ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
+    opened = axm_campaign_followup_reactions.opened OR EXCLUDED.opened,
+    clicked = axm_campaign_followup_reactions.clicked OR EXCLUDED.clicked;
 
 -- name: axm-followup-tracking-gap
 -- Opens and clicks are not recorded per subscriber now, so the follow-ups still to be sent cannot

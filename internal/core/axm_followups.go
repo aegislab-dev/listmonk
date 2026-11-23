@@ -152,7 +152,7 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 	if d.UserID > 0 {
 		by = d.UserID
 	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupInsert).ExecContext(ctx, id, out.Campaign.ID, out.List.UUID, cond, counts, by); err != nil {
+	if _, err := tx.Stmtx(c.q.AxmFollowupInsert).ExecContext(ctx, id, out.Campaign.ID, out.List.UUID, cond, counts, by, !c.tracking()); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pgUniqueViolation {
 			return c.followupExistsError(ctx, out.Campaign.ID)
@@ -160,6 +160,9 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 		return err
 	}
 	if _, err := tx.Stmtx(c.q.AxmFollowupMembers).ExecContext(ctx, id, out.List.ID); err != nil {
+		return err
+	}
+	if _, err := tx.Stmtx(c.q.AxmFollowupReactionsNow).ExecContext(ctx, id, out.Campaign.ID); err != nil {
 		return err
 	}
 	out.Followup = &models.FollowupRef{ID: id, Name: o.Name, Status: models.CampaignStatusDraft}

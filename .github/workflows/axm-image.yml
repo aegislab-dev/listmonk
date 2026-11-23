@@ -104,7 +104,8 @@ jobs:
         run: |
           set -euo pipefail
           docker exec ${{ job.services.postgres.id }} createdb -U listmonk listmonk_dynamic_tests
-          go test ./... -timeout 180s
+          # The cmd package's DB tests took about 100-150 s; 180 s left no room on a slow runner (LST-47).
+          go test ./... -timeout 300s
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 

@@ -60,6 +60,9 @@ ORDER BY t.id`
 
 var initTestNotifs sync.Once
 
+// schemaSeq keeps the schema names of tests that run in parallel apart.
+var schemaSeq atomic.Int64
+
 // syncBuffer is a log sink that several goroutines write to.
 type syncBuffer struct {
 	mu sync.Mutex
@@ -132,7 +135,7 @@ func newSendsEnv(t *testing.T, n int) *sendsEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := fmt.Sprintf("axm_sends_%d", time.Now().UnixNano())
+	name := fmt.Sprintf("axm_sends_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
 	// internal/core's DB tests set up the same database at the same time. The lock (one
 	// implicit transaction for the whole string) keeps the two from creating the extension at once.
 	db.MustExec("SELECT pg_advisory_xact_lock(741919); CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public")

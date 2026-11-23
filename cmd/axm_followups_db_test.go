@@ -80,6 +80,7 @@ func (e *followupEnv) makeFollowup(user auth.User, body string) models.ReactionR
 }
 
 func TestFollowupMakeCopiesCampaignAndLinks(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	parent := e.campID
 	e.db.MustExec(`UPDATE campaigns SET altbody = 'alt', tags = '{promo}', subject = 'Hello {{ .Subscriber.FirstName }}' WHERE id = $1`, parent)
@@ -156,6 +157,7 @@ func TestFollowupMakeCopiesCampaignAndLinks(t *testing.T) {
 }
 
 func TestFollowupRefusals(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	counts := func() [3]int {
 		return [3]int{e.count(`SELECT COUNT(*) FROM lists`), e.count(`SELECT COUNT(*) FROM campaigns`), e.count(`SELECT COUNT(*) FROM axm_campaign_followups`)}
@@ -208,6 +210,7 @@ func TestFollowupRefusals(t *testing.T) {
 }
 
 func TestFollowupOffer(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	offer := func(user auth.User) *models.ReactionFollowup {
 		t.Helper()
@@ -257,6 +260,7 @@ func (e *followupEnv) subscriptions() string {
 }
 
 func TestFollowupRecheckHoldsWhoReactedOrOptedOut(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got, manual := e.followupWithManualMember(`{"open":"no","no_team":true,"followup":true}`)
 	camp, list := got.Followup.ID, got.List.ID
@@ -285,17 +289,18 @@ func TestFollowupRecheckHoldsWhoReactedOrOptedOut(t *testing.T) {
 	run()
 	state("paused", "NULL")
 	run()
-	wantSame(t, "nobody held yet", e.held(camp), nil)
+	// Daniel's open holds him at once (axm_followup_reaction); the opt-out waits for a check.
+	wantSame(t, "only the open is held yet", e.held(camp), []int{daniel})
 	state("running", "NULL")
 	if _, err := e.store.NextCampaigns([]int64{int64(camp)}); err != nil {
 		t.Fatal(err)
 	}
-	wantSame(t, "nobody held by a sender that holds the campaign", e.held(camp), nil)
+	wantSame(t, "no check by a sender that holds the campaign", e.held(camp), []int{daniel})
 	state("draft", "NULL")
 	if code, info := e.callGet(e.admin, camp); code != 200 || info.Pending == nil || info.Pending.Reacted != 1 || info.Pending.OptedOut != 1 || info.Pending.Blocked != 0 {
 		t.Fatalf("pending: %d %+v", code, info.Pending)
 	}
-	wantSame(t, "reading holds nobody", e.held(camp), nil)
+	wantSame(t, "reading holds nobody more", e.held(camp), []int{daniel})
 
 	// A schedule that is due runs it, once. The list stays as it is.
 	subs := e.subscriptions()
@@ -331,6 +336,7 @@ func TestFollowupRecheckHoldsWhoReactedOrOptedOut(t *testing.T) {
 // same status), and never sends to someone who unsubscribed from the follow-up list meanwhile,
 // whether the row changed or not (a bulk change that sets the status it already had).
 func TestFollowupHeldPeopleAreGivenBackOrKept(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	camp, list := got.Followup.ID, got.List.ID
@@ -369,6 +375,7 @@ func TestFollowupHeldPeopleAreGivenBackOrKept(t *testing.T) {
 }
 
 func TestFollowupConditionsStayTrue(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	// Opened and did not click: Alice. Brenda clicked and Charlie never opened.
 	got := e.makeFollowup(e.admin, `{"open":"yes","click":"no","no_team":true,"followup":true}`)
@@ -391,6 +398,7 @@ func TestFollowupConditionsStayTrue(t *testing.T) {
 }
 
 func TestFollowupCheckFailureStartsNothing(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
@@ -410,6 +418,7 @@ func (e *followupEnv) addRunning() int {
 // The whole way, with the real sender: the follow-up goes to the people left on the list after
 // the check, and not to the one who opened the campaign in between.
 func TestFollowupSendsToWhoIsLeft(t *testing.T) {
+	t.Parallel()
 	e := newScanningFollowupEnv(t, true)
 	got, manual := e.followupWithManualMember(`{"open":"no","no_team":true,"followup":true}`)
 	charlie, daniel := e.ids[2], e.ids[3]
@@ -431,6 +440,7 @@ func TestFollowupSendsToWhoIsLeft(t *testing.T) {
 }
 
 func TestFollowupUnsubscribeAlsoCoversTheOriginal(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	charlie := e.ids[2]
@@ -468,6 +478,7 @@ func TestFollowupUnsubscribeAlsoCoversTheOriginal(t *testing.T) {
 }
 
 func TestFollowupDeletesAndInfo(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	if code, info := e.callGet(e.admin, e.campID); code != 200 || info.Role != "none" {
 		t.Fatalf("no link: %d %+v", code, info)
@@ -517,6 +528,7 @@ func TestFollowupDeletesAndInfo(t *testing.T) {
 }
 
 func TestFollowupMemberMakesForOwnTeam(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.member, `{"team":"팀:나","followup":true}`)
 	if !sameSet(got.List.Tags, []string{models.ReactionListTag, "팀:가"}) {
@@ -530,6 +542,7 @@ func TestFollowupMemberMakesForOwnTeam(t *testing.T) {
 }
 
 func TestFollowupConcurrentMakeCreatesOne(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	lists, campaigns := e.count(`SELECT COUNT(*) FROM lists`), e.count(`SELECT COUNT(*) FROM campaigns`)
 	var wg sync.WaitGroup
@@ -562,6 +575,7 @@ func TestFollowupConcurrentMakeCreatesOne(t *testing.T) {
 }
 
 func TestFollowupSchemaAndMigration(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	root := repoRoot(t)
 	schema, _ := os.ReadFile(filepath.Join(root, "schema.sql"))
@@ -593,6 +607,7 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 
 // A reader who cannot open the other campaign of a link learns nothing about it.
 func TestFollowupHidesWhatTheReaderCannotOpen(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	// The reader reaches the follow-up and its list only: the original is out of reach.
@@ -693,6 +708,7 @@ func TestFollowupScheduleDueDuringAnotherCheckIsStillChecked(t *testing.T) {
 // A follow-up list that went to the trash and came back is still checked, and only that list is:
 // someone the campaign also reaches through a newsletter added to it by hand is not held back.
 func TestFollowupListRestoredFromTrashIsStillChecked(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	var newsletter int
@@ -793,6 +809,7 @@ func TestFollowupWithNobodyLeftEnds(t *testing.T) {
 // What the editor copies includes the campaign's own attributes (a body may read them), but
 // not the time zone of a send time the copy does not have, and the parent is left as it was.
 func TestFollowupCopiesAttributesAndArchiveSettings(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	var tpl1, tpl2 int
 	e.get(&tpl1, `INSERT INTO templates (name, type, subject, body, is_default) VALUES ('send', 'campaign', '', '{{ template "content" . }}', false) RETURNING id`)
@@ -827,6 +844,7 @@ func TestFollowupCopiesAttributesAndArchiveSettings(t *testing.T) {
 
 // An opt-in campaign has no follow-up draft: the dialog is not offered one and a request is refused.
 func TestFollowupOnlyForRegularCampaigns(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	e.db.MustExec(`UPDATE campaigns SET type = 'optin' WHERE id = $1`, e.campID)
 	if o := e.preview(e.admin, `{"open":"no"}`).Followup; o == nil || o.Available || o.Reason != "not_regular" {
@@ -844,6 +862,7 @@ func TestFollowupOnlyForRegularCampaigns(t *testing.T) {
 // The dialog shows what the existing follow-up was made with, and the reading of a link names
 // when the original was sent and when the follow-up is scheduled.
 func TestFollowupExistingCarriesConditionAndInfoCarriesDates(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	o := e.preview(e.admin, `{"open":"yes","click":"yes"}`).Followup
@@ -863,6 +882,7 @@ func TestFollowupExistingCarriesConditionAndInfoCarriesDates(t *testing.T) {
 // Someone who left the follow-up list on purpose keeps that record: the check does not delete it
 // (the list may be used again) and does not count that person as one who will leave.
 func TestFollowupKeepsExplicitUnsubscribes(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	charlie, daniel := e.ids[2], e.ids[3]
@@ -889,7 +909,8 @@ func TestFollowupKeepsExplicitUnsubscribes(t *testing.T) {
 func TestFollowupPostponedWhileCheckWaitsKeepsItsList(t *testing.T) {
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
-	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[2])
+	// An opt-out (an open would hold at once, without a check).
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, e.ids[2], e.aList)
 	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, got.Followup.ID)
 	// The editor is saving the new time: it holds the campaign row.
 	tx, err := e.db.Begin()
@@ -1190,6 +1211,7 @@ func TestFollowupWithEmptyListEnds(t *testing.T) {
 // Review 9 (3): the follow-up list was replaced by another list. The check holds nobody back and
 // nothing is reported as left out.
 func TestFollowupReplacedListIsNotChecked(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	camp := got.Followup.ID
@@ -1215,6 +1237,7 @@ func TestFollowupReplacedListIsNotChecked(t *testing.T) {
 // Review 9 (4): after everyone on the follow-up reacted, asking again still answers with the
 // existing follow-up (409), not "nobody matches".
 func TestFollowupRetryAfterEveryoneReactedPointsAtTheFollowup(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	for _, id := range []int{e.ids[2], e.ids[3]} {
@@ -1378,6 +1401,7 @@ func TestFollowupListPutBackDuringAnotherCheckIsChecked(t *testing.T) {
 // pipe's first read must not send to them: the batch is dropped, the pipe stops without finishing,
 // and the next scan checks the campaign again.
 func TestFollowupPausedAndResumedBeforeTheFirstReadIsCheckedAgain(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	camp := got.Followup.ID
@@ -1419,6 +1443,7 @@ func TestFollowupPausedAndResumedBeforeTheFirstReadIsCheckedAgain(t *testing.T) 
 
 // Saving progress while sending, and the sender starting a due schedule, do not make the check stale.
 func TestFollowupProgressDoesNotMakeTheCheckStale(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	camp := got.Followup.ID
@@ -1488,6 +1513,7 @@ func TestFollowupListRestoredDuringTheCheckIsChecked(t *testing.T) {
 // Review 12 (2): every check before a send is in the audit log, with who it left out by reason
 // and no person.
 func TestFollowupCheckIsAudited(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	// A parent whose name holds an address: the audit row must not keep it.
 	e.db.MustExec(`UPDATE campaigns SET name = 'November invite eli-followup@example.invalid' WHERE id = $1`, e.campID)
@@ -1549,6 +1575,7 @@ func TestFollowupCheckIsAudited(t *testing.T) {
 // took a person off the follow-up list and put them back. Who the draft was made for is still
 // judged, and an open still counts.
 func TestFollowupJudgedAfterTheSendRecordsExpired(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	camp, charlie := got.Followup.ID, e.ids[2]
@@ -1580,6 +1607,7 @@ func TestFollowupJudgedAfterTheSendRecordsExpired(t *testing.T) {
 // opened the original; then someone else opens it. Charlie's open was kept for the follow-up
 // when it happened, so he stays held back, and Daniel, who never opened it, is sent to.
 func TestFollowupJudgedAfterTheStatisticsWereCleared(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	camp, charlie := got.Followup.ID, e.ids[2]
@@ -1609,6 +1637,7 @@ func TestFollowupJudgedAfterTheStatisticsWereCleared(t *testing.T) {
 // recorded then, so nobody's reaction can be seen: everyone is held back, also after tracking is
 // on again (the app notes the gap when it starts with tracking off).
 func TestFollowupHeldWhileTrackingIsOff(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	camp, charlie, daniel := got.Followup.ID, e.ids[2], e.ids[3]
@@ -1643,6 +1672,7 @@ func TestFollowupHeldWhileTrackingIsOff(t *testing.T) {
 // Review 15 (3): the pre-send confirmation of a follow-up that the check would leave with nobody
 // stops it, as it stops any campaign that reaches nobody.
 func TestFollowupPreflightLeavesOutWhoWouldBeHeld(t *testing.T) {
+	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	camp := got.Followup.ID
@@ -1678,4 +1708,91 @@ func TestFollowupPreflightLeavesOutWhoWouldBeHeld(t *testing.T) {
 	if n, zero := read(); n != 0 || zero != models.PreflightBlock {
 		t.Fatalf("both opened: %d %q", n, zero)
 	}
+}
+
+// Review 17 (1): two follow-ups fall due together. The first is checked and then waits while the
+// sender checks the second; meanwhile Charlie opens the first one's original. He is held back at
+// once, so the first follow-up does not go to him.
+func TestFollowupReactionAfterTheCheckHoldsAtOnce(t *testing.T) {
+	e := newFollowupEnv(t)
+	a, b, _ := e.twoFollowups()
+	charlie := e.ids[2]
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::INT[])`, pq.Array([]int{a.Followup.ID, b.Followup.ID}))
+	row, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer row.Rollback()
+	if _, err := row.Exec(`SELECT 1 FROM campaigns WHERE id = $1 FOR UPDATE`, b.Followup.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := e.store.NextCampaigns([]int64{}); done <- err }()
+	waitFor(t, "the second check to wait", e.lockWaiting("SELECT c.id FROM campaigns c%FOR UPDATE OF c%"))
+	wantSame(t, "held from the first one after its check", e.held(a.Followup.ID), nil)
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
+	wantSame(t, "held at once", e.held(a.Followup.ID), []int{charlie})
+	row.Rollback()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	subs, err := e.store.NextSubscribers(a.Followup.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range subs {
+		if s.ID == charlie {
+			t.Fatal("the first follow-up reads Charlie")
+		}
+	}
+}
+
+// Review 17 (2): the draft is made while tracking is switched off; tracking comes back on. The
+// reactions of the time without tracking cannot be seen, so everyone is held back.
+func TestFollowupMadeWhileTrackingIsOffHoldsEveryone(t *testing.T) {
+	t.Parallel()
+	e := newFollowupEnv(t)
+	e.a.cfg.Privacy.DisableTracking = true
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	e.a.cfg.Privacy.DisableTracking = false
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(got.Followup.ID), []int{e.ids[2], e.ids[3]})
+}
+
+// Review 17 (3): Charlie's open is only in the original's send record when the draft is made (the
+// view rows were cleared); then that record expires. The open was kept for the follow-up when it
+// was made, so he stays held back.
+func TestFollowupOpenOnlyInTheSendRecordIsKept(t *testing.T) {
+	t.Parallel()
+	e := newFollowupEnv(t)
+	charlie := e.ids[2]
+	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NOW() WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	wantSame(t, "made for", e.members(got.List.ID), []int{charlie, e.ids[3]})
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(got.Followup.ID), []int{charlie})
+}
+
+// Review 17 (4): on an "opened and did not click" follow-up, someone added by hand who got the
+// original but never opened it does not meet "opened": he is held back. Alice, whom the draft was
+// made for, is sent to.
+func TestFollowupAddedByHandMustMeetADidCondition(t *testing.T) {
+	t.Parallel()
+	e := newFollowupEnv(t)
+	got := e.makeFollowup(e.admin, `{"open":"yes","click":"no","no_team":true,"followup":true}`)
+	wantSame(t, "made for", e.members(got.List.ID), []int{e.ids[0]})
+	charlie := e.ids[2]
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, charlie, got.List.ID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(got.Followup.ID), []int{charlie})
 }
