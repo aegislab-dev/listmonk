@@ -917,10 +917,17 @@ func TestCampaignStatusSeenUpdatedAt(t *testing.T) {
 		t.Fatalf("fresh: %d %s", code, s)
 	}
 
-	// Without the value it behaves as before.
-	e.db.MustExec(`UPDATE campaigns SET status='draft', updated_at=updated_at + INTERVAL '5 microseconds' WHERE id=$1`, e.campID)
-	if code, s := status(`{"status":"running"}`); code != http.StatusOK || (s != "running" && s != "finished") {
-		t.Fatalf("no value: %d %s", code, s)
+	// Without the value it behaves as before. A campaign of its own: the sender of the test app
+	// (a 20ms scan) may still be running the one above, and putting that one back to draft raced
+	// it (a 400 "running" once in a local check).
+	plain := e.pfCampaign("regular", "draft", e.aList)
+	if code, _ := e.call(e.a.UpdateCampaignStatus, member, http.MethodPut, "/", strconv.Itoa(plain), `{"status":"running"}`); code != http.StatusOK {
+		t.Fatalf("no value: %d", code)
+	}
+	var plainStatus string
+	e.get(&plainStatus, `SELECT status FROM campaigns WHERE id=$1`, plain)
+	if plainStatus != "running" && plainStatus != "finished" {
+		t.Fatalf("no value: %s", plainStatus)
 	}
 
 	// A schedule that was taken off while the window was open is a 409 too, not the refusal
