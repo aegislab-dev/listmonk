@@ -815,8 +815,9 @@ func TestGateMigrationTwice(t *testing.T) {
 	e.db.MustExec(`DELETE FROM subscribers WHERE id = $1`, recreatedOld)
 	e.db.MustExec(`INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'recreated@ok.test', 'P', 'enabled')`)
 	// SendGrid: a person deleted a subscriber's hard bounce record (to let the address go) and then
-	// changed their address: the old address is not kept again. The subscriber was added before the
-	// bounce and got its campaign.
+	// changed their address. Nothing before the migration tells this from a deleted subscriber, and
+	// the old address is kept (decided 2026-11-23; let go by SQL, FORK.md). A subscriber of the same
+	// campaign whose name only was edited changes nothing.
 	var cleared, clearedOther, campC int
 	e.get(&campC, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'C','S','test@example.invalid','b','email') RETURNING id`)
 	var uuidC string
@@ -831,6 +832,7 @@ func TestGateMigrationTwice(t *testing.T) {
 	e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700005000))`, clearedOther, campC, clearedBatch)
 	e.db.MustExec(`DELETE FROM bounces WHERE id = $1`, clearedRecord)
 	e.db.MustExec(`UPDATE subscribers SET email = 'cleared-new@ok.test' WHERE id = $1`, cleared)
+	e.db.MustExec(`UPDATE subscribers SET name = 'Edited', updated_at = NOW() WHERE id = $1`, clearedOther)
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -844,13 +846,13 @@ func TestGateMigrationTwice(t *testing.T) {
 		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address", "ses-bad", "sg1", "sg2", "sg.own",
 			"multi-bad1", "multi-bad2", "single-bad", "same1", "same2", "either.one", "either.two",
 			"later", "sg.other", "deleted", "kept", "failed", "twice-bad",
-			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other"} {
+			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other", "cleared-old"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
 		}
 		for _, a := range []string{"delivered", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered",
-			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-old", "cleared-new", "single-first", "same.delivered", "same1.now", "same2.now"} {
+			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "single-first", "same.delivered", "same1.now", "same2.now"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}

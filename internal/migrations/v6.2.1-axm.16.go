@@ -489,20 +489,12 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 			}
 		}
 	}
-	// A hard bounce of the batch that no record is left for. Either its subscriber was deleted
-	// (with their bounce records) or there was none: the address bounced all the same and is
-	// kept. Or a person deleted the record to let the address go: it is not kept. What is left
-	// tells them apart as far as it can:
-	//   - A subscriber has the address now: kept when they were added after the bounce (it was a
-	//     deleted subscriber's), else left to that subscriber's own records.
-	//   - Nobody has it: not kept when a subscriber may be the one whose record was deleted: one
-	//     added before the bounce, whose address changed since, with no record in this batch and
-	//     no hard bounce or complaint on record, and who got the campaign of the bounce (when its
-	//     sends are on record). Else kept.
-	subs := make(pq.Int64Array, 0, len(rows))
-	for _, b := range rows {
-		subs = append(subs, int64(b.SubID))
-	}
+	// A hard bounce of the batch that no record is left for: its subscriber was deleted (with
+	// their bounce records), or there was none, or a person deleted the record. Which one is not
+	// on record before this migration, and the address is kept (decided 2026-11-23: an address a
+	// person let go and then changed is let go again by SQL, FORK.md). An address a subscriber
+	// has now is kept when they were added after the bounce (it was a deleted subscriber's), and
+	// else left to that subscriber's own records.
 	for _, e := range events {
 		a := axm16Clean(e.Email)
 		if a == "" || accounted[a] || e.typ() != "hard" {
@@ -520,22 +512,6 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 		}
 		if owner.ID.Valid && !owner.Newer {
 			continue
-		}
-		if !owner.ID.Valid {
-			var maybe bool
-			if err := db.Get(&maybe, `SELECT EXISTS (
-				SELECT 1 FROM subscribers s JOIN axm_email_changes c ON c.subscriber_id = s.id
-				WHERE s.created_at <= to_timestamp($1) AND c.changed_at >= to_timestamp($1)
-					AND NOT (s.id = ANY($2::INT[]))
-					AND NOT EXISTS (SELECT 1 FROM bounces x WHERE x.subscriber_id = s.id AND x.type IN ('hard', 'complaint'))
-					AND (NOT EXISTS (SELECT 1 FROM axm_campaign_sends x JOIN campaigns k ON k.id = x.campaign_id WHERE k.uuid::TEXT = lower($3))
-						OR EXISTS (SELECT 1 FROM axm_campaign_sends x JOIN campaigns k ON k.id = x.campaign_id
-							WHERE k.uuid::TEXT = lower($3) AND x.subscriber_id = s.id)))`, at, subs, strings.TrimSpace(e.Camp)); err != nil {
-				return err
-			}
-			if maybe {
-				continue
-			}
 		}
 		if _, err := db.Exec(axm16Unlinked, a, "hard"); err != nil {
 			return err
