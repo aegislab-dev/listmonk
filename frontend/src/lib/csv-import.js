@@ -404,7 +404,7 @@ export function rememberMapping(storage, columns, mapping, old = readMemory(stor
 // The address check: which classes the server refuses at the import (the same table as the
 // address gate, LST-56), and which only warn. A blocklisted or bounced address and a disposable
 // domain are refused too; a role address comes in with a warning.
-export const ADDRESS_CONFIRMED = ['format', 'provider', 'typo', 'suppressed', 'bounced', 'disposable', 'dead', 'nullmx'];
+export const ADDRESS_CONFIRMED = ['format', 'provider', 'typo', 'suppressed', 'bounced', 'disposable', 'nullmx', 'dead'];
 export const ADDRESS_WARNING = ['role'];
 
 // The classes by how strict the server's gate is: with the gate at basic (step 1 rules only) the

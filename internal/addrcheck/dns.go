@@ -81,7 +81,7 @@ type Checker struct {
 	workers  int
 
 	rateMu   sync.Mutex
-	nextSlot time.Time // the earliest time the next lookup may start
+	starts   []time.Time // when the last MaxPerSecond lookups started, oldest first
 }
 
 // NewChecker returns a checker with the given limits.
@@ -215,23 +215,28 @@ func (c *Checker) work() {
 	}
 }
 
-// waitSlot blocks until the caller may start a lookup: lookups start at most MaxPerSecond
-// times a second in all, so that a big import cannot flood the resolver of the host. The
-// limit is on the start of a lookup; Concurrency still limits how many run at once.
+// waitSlot blocks until the caller may start a lookup: at most MaxPerSecond lookups start in
+// any second, all callers together, so that a big import cannot flood the resolver of the host.
+// The start times of the last MaxPerSecond lookups are kept, and a lookup starts only when the
+// oldest of them is a second old (a millisecond more, so that both ends of a second are not
+// counted): this holds also after the process was paused and many callers wake together.
+// Concurrency still limits how many run at once.
 func (c *Checker) waitSlot() {
-	// A millisecond more than the even gap: any second, both ends counted, then holds at most
-	// MaxPerSecond starts.
-	gap := time.Second/time.Duration(c.opt.MaxPerSecond) + time.Millisecond
-	c.rateMu.Lock()
-	now := time.Now()
-	at := c.nextSlot
-	if at.Before(now) {
-		at = now
-	}
-	c.nextSlot = at.Add(gap)
-	c.rateMu.Unlock()
-	if d := at.Sub(now); d > 0 {
-		time.Sleep(d)
+	window := time.Second + time.Millisecond
+	for {
+		c.rateMu.Lock()
+		now := time.Now()
+		if len(c.starts) < c.opt.MaxPerSecond || now.Sub(c.starts[0]) >= window {
+			if len(c.starts) >= c.opt.MaxPerSecond {
+				c.starts = c.starts[1:]
+			}
+			c.starts = append(c.starts, now)
+			c.rateMu.Unlock()
+			return
+		}
+		wait := window - now.Sub(c.starts[0])
+		c.rateMu.Unlock()
+		time.Sleep(wait)
 	}
 }
 

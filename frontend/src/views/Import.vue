@@ -461,13 +461,21 @@ export default Vue.extend({
         ...(this.csvExclude || []).map((row) => ({
           row,
           email: this.addr.emails[row] || '',
-          reasons: (this.addr.issues[row] || []).filter((c) => reasons.includes(c)).map((c) => this.$t(`addressCheck.class.${c}`)),
+          // The reason of the server is the first of the classes it refuses; a row it takes in
+          // shows its warnings.
+          reasons: this.excludedReasons(row, classes, reasons).map((c) => this.$t(`addressCheck.class.${c}`)),
           suggest: (this.addr.suggest || {})[row] || '',
         })),
         ...(this.csvInvalidRows || []).map(({ row, email }) => ({
           row, email, reasons: format, suggest: '',
         })),
       ].sort((a, b) => a.row - b.row);
+    },
+
+    excludedReasons(row, classes, all) {
+      const found = this.addr.issues[row] || [];
+      const first = classes.confirmed.find((c) => found.includes(c));
+      return first ? [first] : found.filter((c) => all.includes(c));
     },
 
     saveCSV(csv, name) {

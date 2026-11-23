@@ -214,11 +214,6 @@ func TestGateBouncedAddressIsKept(t *testing.T) {
 	if !e.isBounced("comp@ok.test") {
 		t.Fatal("a complaint was not remembered")
 	}
-	var hits int
-	e.get(&hits, `SELECT hits FROM axm_bounced_emails WHERE email_hash = axm_email_hash('hard@ok.test')`)
-	if hits != 1 {
-		t.Fatalf("hits %d", hits)
-	}
 	// Another address edited to a bounced one is refused; an unchanged address is not looked at.
 	other := person("other@ok.test")
 	if r := e.do(e.a.UpdateSubscriber, "PUT", other, `{"email":"hard@ok.test","name":"P","status":"enabled","lists":[`+itoa(e.aList)+`]}`); r.code != 400 || r.rule != "bounced" {
@@ -290,11 +285,6 @@ func TestGateBouncedRelease(t *testing.T) {
 	if len(ids) != 3 || !e.isBounced("rel@ok.test") {
 		t.Fatalf("ids %v bounced %v", ids, e.isBounced("rel@ok.test"))
 	}
-	var hits int
-	e.get(&hits, `SELECT hits FROM axm_bounced_emails WHERE email_hash = axm_email_hash('rel@ok.test')`)
-	if hits != 2 {
-		t.Fatalf("hits %d", hits)
-	}
 	// One of the two hard bounces deleted: the other remains, so does the address.
 	if err := e.a.core.DeleteBounces([]int{ids[0]}, false); err != nil {
 		t.Fatal(err)
@@ -353,47 +343,117 @@ func (e *gateEnv) uuidOf(id int) string {
 	return u
 }
 
-// The address a bounce is for is the one the bounce names, not the subscriber's current one:
-// a subscriber edited since the mail was sent bounced at the old address.
-func TestGateBounceOfAnEditedSubscriberIsForTheOldAddress(t *testing.T) {
-	e := newGateEnv(t)
+func (e *gateEnv) noActionCore() {
 	e.a.core = core.New(&core.Opt{DB: e.db, Queries: e.q, Log: e.a.log, I18n: e.a.i18n, Constants: core.Constants{
 		BounceActions: map[string]struct {
 			Count  int
 			Action string
 		}{"hard": {100, "none"}, "soft": {100, "none"}, "complaint": {100, "none"}},
 	}}, nil)
+}
+
+func (e *gateEnv) hardBounce(email, uuid string) {
+	e.t.Helper()
+	if err := e.a.core.RecordBounce(models.Bounce{Email: email, SubscriberUUID: uuid, Type: "hard", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func (e *gateEnv) person2(email string) int {
 	var id int
-	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'was@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), $1, 'P', 'enabled') RETURNING id`, email)
 	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, id, e.aList)
-	// The person fixes the address, then the bounce of the mail sent to the old one arrives.
+	return id
+}
+
+// The address a bounce is for is the one the bounce names, not the subscriber's current one: a
+// subscriber edited since the mail was sent bounced at the old address. A bounce that names none
+// of its address is not kept for a subscriber whose address changed lately: it may be the old one.
+func TestGateBounceOfAnEditedSubscriberIsForTheOldAddress(t *testing.T) {
+	e := newGateEnv(t)
+	e.noActionCore()
+	id := e.person2("was@ok.test")
 	if r := e.do(e.a.PatchSubscriber, "PATCH", id, `{"email":"now@ok.test"}`); r.code != 200 {
 		t.Fatalf("%+v", r)
 	}
-	if err := e.a.core.RecordBounce(models.Bounce{Email: "was@ok.test", SubscriberUUID: e.uuidOf(id), Type: "hard", Source: "t",
-		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
+	// Address and UUID: the old address.
+	e.hardBounce("was@ok.test", e.uuidOf(id))
 	if !e.isBounced("was@ok.test") || e.isBounced("now@ok.test") {
 		t.Fatalf("old bounced %v, new bounced %v", e.isBounced("was@ok.test"), e.isBounced("now@ok.test"))
 	}
-	if r := e.add("now2@ok.test"); r.code != 200 {
+	// UUID only: nothing is known of the address, so nothing is kept.
+	e.hardBounce("", e.uuidOf(id))
+	if e.isBounced("now@ok.test") {
+		t.Fatal("a bounce with a UUID only marked the new address")
+	}
+	// The address alone, which no subscriber has any more: kept all the same.
+	e.hardBounce("gone@ok.test", "")
+	if !e.isBounced("gone@ok.test") {
+		t.Fatal("a bounce for an address that was changed was not kept")
+	}
+	if r := e.add("gone@ok.test"); r.code != 400 || r.rule != "bounced" {
 		t.Fatalf("%+v", r)
 	}
-	// With no address in the bounce, the subscriber's own is the one.
-	if err := e.a.core.RecordBounce(models.Bounce{SubscriberUUID: e.uuidOf(id), Type: "hard", Source: "t",
-		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
+	// A subscriber whose address did not change: the UUID is enough.
+	other := e.person2("steady@ok.test")
+	e.hardBounce("", e.uuidOf(other))
+	if !e.isBounced("steady@ok.test") {
+		t.Fatal("a bounce with a UUID only was not kept for an unchanged address")
 	}
-	if !e.isBounced("now@ok.test") {
-		t.Fatal("a bounce with no address is for the current address")
-	}
-	// Deleting the subscriber's bounce records releases the addresses they were for.
+	// Deleting the bounce records of the edited subscriber releases the address they were for.
 	if err := e.a.core.DeleteSubscriberBounces(id, ""); err != nil {
 		t.Fatal(err)
 	}
-	if e.isBounced("was@ok.test") || e.isBounced("now@ok.test") {
-		t.Fatal("not released after the bounce records of the edited subscriber were deleted")
+	if e.isBounced("was@ok.test") || !e.isBounced("gone@ok.test") {
+		t.Fatal("release of the edited subscriber's address")
+	}
+}
+
+// One bounce record, one address: another subscriber's bounce for the same address, and another
+// address of the same subscriber, keep their own.
+func TestGateBouncedReleaseIsPerBounce(t *testing.T) {
+	e := newGateEnv(t)
+	e.noActionCore()
+	ids := func(id int) []int {
+		var out []int
+		if err := e.db.Select(&out, `SELECT id FROM bounces WHERE subscriber_id = $1 ORDER BY id`, id); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	// Two subscribers with a hard bounce for the same address.
+	a := e.person2("a@ok.test")
+	e.hardBounce("shared@ok.test", e.uuidOf(a))
+	b := e.person2("b@ok.test")
+	e.hardBounce("shared@ok.test", e.uuidOf(b))
+	if err := e.a.core.DeleteBounces(ids(b), false); err != nil {
+		t.Fatal(err)
+	}
+	if !e.isBounced("shared@ok.test") {
+		t.Fatal("the other subscriber's bounce was lost")
+	}
+	// One subscriber, two addresses.
+	c := e.person2("first@ok.test")
+	e.hardBounce("first@ok.test", e.uuidOf(c))
+	e.db.MustExec(`UPDATE subscribers SET email = 'second@ok.test' WHERE id = $1`, c)
+	e.hardBounce("second@ok.test", e.uuidOf(c))
+	first := ids(c)[0]
+	if err := e.a.core.DeleteBounces([]int{first}, false); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("first@ok.test") || !e.isBounced("second@ok.test") {
+		t.Fatalf("first %v second %v", e.isBounced("first@ok.test"), e.isBounced("second@ok.test"))
+	}
+	if r := e.add("first@ok.test"); r.code != 200 {
+		t.Fatalf("%+v", r)
+	}
+	// A subscriber who is already blocklisted gets no bounce record, so there is nothing to release.
+	d := e.person2("blocked@ok.test")
+	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, d)
+	e.hardBounce("blocked@ok.test", e.uuidOf(d))
+	if e.isBounced("blocked@ok.test") {
+		t.Fatal("an address was kept with no bounce record to release it")
 	}
 }
 
@@ -605,36 +665,34 @@ func TestGateImport(t *testing.T) {
 	}
 }
 
-// The migration can run twice, and an upgrade fills the table from the bounce records there are.
+// The migration can run twice, and takes nothing in from the bounce records there are: they do
+// not say which address they were for.
 func TestGateMigrationTwice(t *testing.T) {
 	e := newGateEnv(t)
 	var id int
 	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'Old.Hard@ok.test', 'P', 'enabled') RETURNING id`)
-	e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source) VALUES ($1, 'hard', 't'), ($1, 'hard', 't'), ($1, 'soft', 't')`, id)
-	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'only.soft@ok.test', 'P', 'enabled') RETURNING id`)
-	e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source) VALUES ($1, 'soft', 't')`, id)
-	// A subscriber edited after its last bounce may have another address now: not taken in.
-	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'edited.now@ok.test', 'P', 'enabled') RETURNING id`)
-	e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source, created_at) VALUES ($1, 'hard', 't', NOW() - INTERVAL '2 days')`, id)
+	e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source) VALUES ($1, 'hard', 't')`, id)
 	e.db.MustExec(`DELETE FROM axm_bounced_emails`)
-
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
-		if n := e.bouncedRows(); n != 1 || !e.isBounced("old.hard@ok.test") || e.isBounced("only.soft@ok.test") || e.isBounced("edited.now@ok.test") {
+		if n := e.bouncedRows(); n != 0 {
 			t.Fatalf("run %d: %d rows", i+1, n)
 		}
 	}
-	var hits int
-	e.get(&hits, `SELECT hits FROM axm_bounced_emails`)
-	if hits != 2 {
-		t.Fatalf("hits %d", hits)
-	}
 	var trg int
-	e.get(&trg, `SELECT COUNT(*) FROM pg_trigger WHERE tgrelid = 'bounces'::regclass AND tgname = 'axm_bounced_release' AND NOT tgisinternal`)
-	if trg != 1 {
+	e.get(&trg, `SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('axm_bounced_release', 'axm_bounced_record', 'axm_note_email_change') AND NOT tgisinternal AND tgrelid IN ('bounces'::regclass, 'subscribers'::regclass)`)
+	if trg != 3 {
 		t.Fatalf("%d triggers", trg)
+	}
+	// A hard bounce recorded after the upgrade is kept, and a change of address is noted.
+	e.db.MustExec(`SELECT set_config('axm.bounce_email', '', false)`)
+	e.db.MustExec(`UPDATE subscribers SET email = 'new.hard@ok.test' WHERE id = $1`, id)
+	var changes int
+	e.get(&changes, `SELECT COUNT(*) FROM axm_email_changes WHERE subscriber_id = $1`, id)
+	if changes != 1 {
+		t.Fatalf("%d changes noted", changes)
 	}
 }
 
@@ -680,5 +738,42 @@ func TestGateImportLogHasNoAddress(t *testing.T) {
 	}
 	if log := string(e.a.importer.GetLogs()); strings.Contains(log, "secret.") {
 		t.Fatalf("the log names an address:\n%s", log)
+	}
+}
+
+// The column mapping asks what the import would do: with the gate at nodns or basic the import
+// does not look at DNS, so the check does not either, and says how strict the gate is.
+func TestGateAddressCheckFollowsTheStrength(t *testing.T) {
+	e := newGateEnv(t)
+	ask := func() (map[string][]string, string) {
+		req := httptest.NewRequest("POST", "/api/subscribers/address-check", strings.NewReader(`{"emails":["kim@nowhere.test","kim@ok.test","kim@mailinator.com"]}`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(req, rec)
+		c.Set(auth.UserHTTPCtxKey, e.as(e.superAdmin))
+		if err := e.a.CheckImportAddresses(c); err != nil {
+			t.Fatal(err)
+		}
+		var resp struct {
+			Data struct {
+				Issues map[string][]string `json:"issues"`
+				Gate   string              `json:"gate"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp.Data.Issues, resp.Data.Gate
+	}
+	if issues, gate := ask(); gate != "full" || strings.Join(issues["0"], ",") != "dead" {
+		t.Fatalf("full: %v %s", issues, gate)
+	}
+	for _, mode := range []string{"nodns", "basic"} {
+		e.a.addrGate = mode
+		e.dns.calls = 0
+		issues, gate := ask()
+		if gate != mode || len(issues["0"]) != 0 || strings.Join(issues["2"], ",") != "disposable" || e.dns.calls != 0 {
+			t.Fatalf("%s: %v %s, %d lookups", mode, issues, gate, e.dns.calls)
+		}
 	}
 }

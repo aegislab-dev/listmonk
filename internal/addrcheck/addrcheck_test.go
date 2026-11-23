@@ -23,6 +23,7 @@ type fakeDNS struct {
 	ip6    map[string]bool  // has an AAAA record
 	hold  chan struct{} // when set, every MX lookup waits for it
 	mxN   map[string]int
+	times []time.Time // when each MX lookup started
 	ipN   map[string]int
 }
 
@@ -42,6 +43,7 @@ func newFake() *fakeDNS {
 func (f *fakeDNS) LookupMX(ctx context.Context, name string) ([]*net.MX, error) {
 	f.mu.Lock()
 	f.mxN[name]++
+	f.times = append(f.times, time.Now())
 	hold := f.hold
 	f.mu.Unlock()
 	if hold != nil {
@@ -513,7 +515,7 @@ func TestLookupsAreRateLimited(t *testing.T) {
 		domains[i] = "d" + string(rune('a'+i/26)) + string(rune('a'+i%26)) + ".test"
 		f.mx[domains[i]+"."] = mx("mx.test.")
 	}
-	c := NewChecker(Options{Resolver: f, MaxPerSecond: 100, Concurrency: 8})
+	c := NewChecker(Options{Resolver: f, MaxPerSecond: 20, Concurrency: 8})
 	start := time.Now()
 	got := c.CheckDomains(context.Background(), domains, 10*time.Second)
 	took := time.Since(start)

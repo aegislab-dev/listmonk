@@ -74,11 +74,14 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		return err
 	}
 	defer tx.Rollback()
-	if b.Type == models.BounceTypeHard || b.Type == models.BounceTypeComplaint {
-		// A failure to remember the address must not lose the bounce: a savepoint takes it back.
+	permanent := b.Type == models.BounceTypeHard || b.Type == models.BounceTypeComplaint
+	if permanent {
+		// The trigger on bounces keeps the address of the record it sees. A failure to name the
+		// address must not lose the bounce: a savepoint takes it back.
 		if _, err := tx.Exec("SAVEPOINT axm_bounced"); err == nil {
-			if _, err := tx.Stmtx(c.q.AxmBouncedRecord).Exec(b.SubscriberUUID, b.Email, b.Type); err != nil {
-				c.log.Printf("error remembering a bounced address: %v", err)
+			var set string
+			if err := tx.Stmtx(c.q.AxmBounceAddress).Get(&set, b.SubscriberUUID, b.Email); err != nil {
+				c.log.Printf("error naming the address of a bounce: %v", err)
 				_, _ = tx.Exec("ROLLBACK TO SAVEPOINT axm_bounced")
 			}
 		}
@@ -101,6 +104,12 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		// Ignore the error if it complained of no subscriber.
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Column == "subscriber_id" {
 			c.log.Printf("bounced subscriber (%s / %s) not found", b.SubscriberUUID, b.Email)
+			// A bounce for an address that was changed since is still a bounce for that address.
+			if em := strings.TrimSpace(b.Email); permanent && em != "" {
+				if _, err := c.q.AxmBouncedOrphan.Exec(em, b.Type); err != nil {
+					c.log.Printf("error remembering a bounced address: %v", err)
+				}
+			}
 			return nil
 		}
 

@@ -7,15 +7,17 @@ SELECT e AS email,
     EXISTS (SELECT 1 FROM axm_bounced_emails WHERE email_hash = axm_email_hash(e)) AS bounced
 FROM UNNEST($1::TEXT[]) AS e;
 
--- name: axm-bounced-record
--- Remember the address that has just bounced for good ($3: hard or complaint). The subscriber is
--- found by UUID or by e-mail as record-bounce finds it; the address is the e-mail the bounce
--- names ($2), or the subscriber's own when it names none: a subscriber edited since the mail
--- was sent has another address now, and the bounce is for the one it was sent to. It runs in
--- the transaction of record-bounce, before it (which can delete the subscriber).
-INSERT INTO axm_bounced_emails (email_hash, kind, hits, last_at, subscriber_id)
-SELECT axm_email_hash(COALESCE(NULLIF($2, ''), email)), $3::TEXT, 1, NOW(), id FROM subscribers
-WHERE CASE WHEN $1 != '' THEN uuid = $1::UUID ELSE email = $2 END
-ON CONFLICT (email_hash) DO UPDATE SET hits = axm_bounced_emails.hits + 1, last_at = NOW(),
-    subscriber_id = EXCLUDED.subscriber_id,
-    kind = CASE WHEN EXCLUDED.kind = 'complaint' THEN 'complaint' ELSE axm_bounced_emails.kind END;
+-- name: axm-bounce-address
+-- Names the address a bounce is for in the setting axm.bounce_email of the transaction, for the
+-- trigger on bounces: the address the bounce gives ($2), else the address of the subscriber
+-- ($1: UUID) unless it was changed in the last 14 days (the mail may have gone to the old one:
+-- then none, and no address is kept). Returns what was set.
+SELECT set_config('axm.bounce_email', COALESCE(NULLIF(lower(btrim($2)), ''), (
+    SELECT s.email FROM subscribers s
+    WHERE s.uuid = NULLIF($1, '')::UUID
+        AND NOT EXISTS (SELECT 1 FROM axm_email_changes c WHERE c.subscriber_id = s.id AND c.changed_at > NOW() - INTERVAL '14 days')
+), ''), true);
+
+-- name: axm-bounced-orphan
+-- A hard bounce or a complaint for an address no subscriber has (it was changed): kept all the same.
+INSERT INTO axm_bounced_emails (email_hash, kind) VALUES (axm_email_hash($1), $2::TEXT);

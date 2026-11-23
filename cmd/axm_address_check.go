@@ -93,7 +93,18 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("addressCheck.invalid"))
 	}
 
-	verdicts := a.addrCheck.Check(c.Request().Context(), req.Emails, addrCheckBudget)
+	// The review shows what the import would do. With the gate at nodns or basic the import does
+	// not look at DNS, so neither does this: dead domains would be left out of the review that
+	// the import takes in.
+	var verdicts []addrcheck.Verdict
+	if a.gateStrength() == gateFull && a.addrCheck != nil {
+		verdicts = a.addrCheck.Check(c.Request().Context(), req.Emails, addrCheckBudget)
+	} else {
+		verdicts = make([]addrcheck.Verdict, len(req.Emails))
+		for i, e := range req.Emails {
+			verdicts[i].Result = addrcheck.Classify(e)
+		}
+	}
 	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}, Suggest: map[int]string{}, Gate: a.gateStrength()}
 	// What the database knows (LST-56): the column mapping screen shows the rows the server
 	// would refuse for these reasons, and the numbers of Summary are not changed by them.
