@@ -259,8 +259,10 @@ u AS (
             AND NOT EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = camps.id AND cl.is_dynamic)
     ) co
     WHERE ca.id = co.campaign_id
-        -- AXM (LST-47) a schedule moved to a later time while this ran is not started.
-        AND (ca.status = 'running' OR (ca.status = 'scheduled' AND NOW() >= ca.send_at))
+        -- AXM (LST-47) a schedule moved to a later time while this ran is not started. Only that
+        -- case is left out (a campaign paused meanwhile is updated as before, so a resume right after
+        -- reads with its new upper bound).
+        AND NOT (ca.status = 'scheduled' AND NOW() < ca.send_at)
 )
 SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);
 
