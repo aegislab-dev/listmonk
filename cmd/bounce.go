@@ -184,12 +184,12 @@ func (a *App) BounceWebhook(c echo.Context) error {
 
 		// Bounce notification.
 		case "Notification":
-			b, err := a.bounce.SES.ProcessBounce(rawReq)
+			bs, err := a.bounce.SES.ProcessBounce(rawReq)
 			if err != nil {
 				a.log.Printf("error processing SES notification: %v", err)
 				return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("globals.messages.invalidData"))
 			}
-			bounces = append(bounces, b)
+			bounces = append(bounces, bs...)
 
 		default:
 			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("globals.messages.invalidData"))

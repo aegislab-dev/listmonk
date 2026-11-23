@@ -1,11 +1,16 @@
 package migrations
 
 import (
+	"database/sql"
+	"encoding/json"
 	"log"
+	"strconv"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/koanf/v2"
 	"github.com/knadh/stuffbin"
+	"github.com/lib/pq"
 )
 
 // V6_2_1_axm_16 adds the table of addresses that had a hard bounce or a complaint (LST-56), the
@@ -77,45 +82,19 @@ RETURNS TEXT LANGUAGE sql STABLE AS $$
 $$;
 
 -- The bounces recorded before: the webhooks say in their payload which address a bounce was for,
--- each in its own field. SES names the bounced (complaining) recipients apart from the mail's
--- recipients: the first of them, else the mail's only recipient. SendGrid's payload is the whole
--- batch of events, and the bounce is the event of its time, type and campaign; when several
--- addresses match, the subscriber's own one if it did not change since the bounce (the bounce
--- found the subscriber by it), else none. The others are taken in by axm_mailed_email.
+-- each in its own field. The others are taken in by axm_mailed_email. SES and SendGrid are taken
+-- in by the migration's Go code (V6_2_1_axm_16): an SES notification can name several bounced
+-- recipients, and SendGrid's payload is a whole batch of events.
 INSERT INTO axm_bounced_emails (email_hash, kind, bounce_id, subscriber_id)
     SELECT axm_email_hash(a.addr), b.type::TEXT, b.id, b.subscriber_id
     FROM bounces b
-    CROSS JOIN LATERAL (SELECT
-        (SELECT c.uuid::TEXT FROM campaigns c WHERE c.id = b.campaign_id) AS camp,
-        (SELECT s.email FROM subscribers s WHERE s.id = b.subscriber_id AND NOT EXISTS (
-            SELECT 1 FROM axm_email_changes x WHERE x.subscriber_id = s.id AND x.changed_at >= b.created_at)) AS own) k
     CROSS JOIN LATERAL (SELECT COALESCE(CASE b.source
         WHEN 'postmark' THEN NULLIF(b.meta->>'Email', '')
         WHEN 'forwardemail' THEN NULLIF(b.meta->>'recipient', '')
         WHEN 'lettermint' THEN NULLIF(b.meta->'data'->>'recipient', '')
         WHEN 'azure' THEN NULLIF(b.meta->'data'->>'recipient', '')
-        WHEN 'ses' THEN COALESCE(
-            (SELECT lower(btrim(r->>'emailAddress'))
-                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.meta->'bounce'->'bouncedRecipients') = 'array'
-                    THEN b.meta->'bounce'->'bouncedRecipients' ELSE '[]'::JSONB END) WITH ORDINALITY AS t(r, n)
-                WHERE COALESCE(btrim(r->>'emailAddress'), '') <> '' ORDER BY n LIMIT 1),
-            (SELECT lower(btrim(r->>'emailAddress'))
-                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.meta->'complaint'->'complainedRecipients') = 'array'
-                    THEN b.meta->'complaint'->'complainedRecipients' ELSE '[]'::JSONB END) WITH ORDINALITY AS t(r, n)
-                WHERE COALESCE(btrim(r->>'emailAddress'), '') <> '' ORDER BY n LIMIT 1),
-            CASE WHEN jsonb_typeof(b.meta->'mail'->'destination') = 'array' AND jsonb_array_length(b.meta->'mail'->'destination') = 1
-                THEN NULLIF(b.meta->'mail'->'destination'->>0, '') END)
-        WHEN 'sendgrid' THEN (
-            SELECT CASE WHEN COUNT(DISTINCT m.addr) = 1 THEN MIN(m.addr)
-                WHEN bool_or(m.addr = k.own) THEN k.own END
-            FROM (SELECT lower(btrim(e->>'email')) AS addr
-                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.meta) = 'array' THEN b.meta ELSE '[]'::JSONB END) e
-                WHERE e->>'event' = 'bounce' AND COALESCE(btrim(e->>'email'), '') <> ''
-                    AND e->>'timestamp' = EXTRACT(EPOCH FROM b.created_at)::BIGINT::TEXT
-                    AND (CASE WHEN e->>'bounce_classification' IN ('technical', 'content') THEN 'soft' ELSE 'hard' END) = b.type::TEXT
-                    AND (k.camp IS NULL OR lower(COALESCE(e->>'XListmonkCampaign', '')) = k.camp)) m)
         END, axm_mailed_email(b.subscriber_id, b.campaign_id)) AS addr) a
-    WHERE b.type IN ('hard', 'complaint') AND a.addr LIKE '%@%'
+    WHERE b.type IN ('hard', 'complaint') AND b.source NOT IN ('ses', 'sendgrid') AND a.addr LIKE '%@%'
     ON CONFLICT (bounce_id) WHERE bounce_id IS NOT NULL DO NOTHING;
 
 CREATE OR REPLACE FUNCTION axm_bounced_record()
@@ -159,5 +138,281 @@ CREATE TRIGGER axm_bounced_release AFTER DELETE ON bounces
     FOR EACH ROW WHEN (OLD.type IN ('hard', 'complaint'))
     EXECUTE FUNCTION axm_bounced_release();
 -- End of AXM bounced addresses.`)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := axm16SES(db); err != nil {
+		return err
+	}
+	return axm16Sendgrid(db)
+}
+
+// The SES and SendGrid bounces recorded before LST-56 are taken in here, in Go: rows are read a
+// page at a time and written after, so that this also runs on a pool of one connection.
+
+const (
+	// axm16Link keeps an address for a bounce record.
+	axm16Link = `INSERT INTO axm_bounced_emails (email_hash, kind, bounce_id, subscriber_id)
+		VALUES (axm_email_hash($1::TEXT), $2::TEXT, $3::INT, $4::INT) ON CONFLICT (bounce_id) WHERE bounce_id IS NOT NULL DO NOTHING`
+	// axm16Unlinked keeps an address that no bounce record of its own stands for, for the
+	// subscriber who has it now (it goes with their bounce records), or for nobody (only SQL lets
+	// it go). Once per address and subscriber.
+	axm16Unlinked = `INSERT INTO axm_bounced_emails (email_hash, kind, subscriber_id)
+		SELECT axm_email_hash($1::TEXT), $2::TEXT, (SELECT id FROM subscribers WHERE email = $1::TEXT)
+		WHERE NOT EXISTS (SELECT 1 FROM axm_bounced_emails b WHERE b.email_hash = axm_email_hash($1) AND b.bounce_id IS NULL
+			AND b.subscriber_id IS NOT DISTINCT FROM (SELECT id FROM subscribers WHERE email = $1))`
+	// axm16Mailed keeps the subscriber's own address when it surely is the one the mail went to.
+	axm16Mailed = `INSERT INTO axm_bounced_emails (email_hash, kind, bounce_id, subscriber_id)
+		SELECT axm_email_hash(a), $1::TEXT, $2::INT, $3::INT FROM (SELECT axm_mailed_email($3::INT, $4::INT) AS a) x WHERE a LIKE '%@%'
+		ON CONFLICT (bounce_id) WHERE bounce_id IS NOT NULL DO NOTHING`
+)
+
+type axm16Bounce struct {
+	ID         int            `db:"id"`
+	SubID      int            `db:"subscriber_id"`
+	CampaignID sql.NullInt64  `db:"campaign_id"`
+	Camp       sql.NullString `db:"camp"`
+	Type       string         `db:"type"`
+	Meta       []byte         `db:"meta"`
+	Epoch      int64          `db:"epoch"`
+	CreatedAt  string         `db:"created_at"`
+	// Own is the subscriber's address when it did not change since the bounce: the webhooks
+	// that give an address found the subscriber by it.
+	Own sql.NullString `db:"own"`
+}
+
+const axm16Columns = `b.id, b.subscriber_id, b.campaign_id, (SELECT c.uuid::TEXT FROM campaigns c WHERE c.id = b.campaign_id) AS camp,
+	b.type::TEXT AS type, b.meta, EXTRACT(EPOCH FROM b.created_at)::BIGINT AS epoch, b.created_at::TEXT AS created_at,
+	(SELECT s.email FROM subscribers s WHERE s.id = b.subscriber_id AND NOT EXISTS (
+		SELECT 1 FROM axm_email_changes x WHERE x.subscriber_id = s.id AND x.changed_at >= b.created_at)) AS own`
+
+func axm16Permanent(typ string) bool { return typ == "hard" || typ == "complaint" }
+
+// axm16SES: an SES notification names its bounced (complaining) recipients apart from the mail's
+// recipients, and the collector before LST-56 recorded it for the subscriber of the mail's first
+// recipient, whoever bounced. Each named recipient is kept: the first recipient with that record;
+// another one that a subscriber has now with a record of its own for that subscriber (a copy of
+// the notification marked axm_recipient, so that deleting it lets the address go, and deleting the
+// first recipient's record does not); one nobody has as an address of nobody's.
+func axm16SES(db *sqlx.DB) error {
+	last := 0
+	for {
+		var rows []axm16Bounce
+		if err := db.Select(&rows, `SELECT `+axm16Columns+` FROM bounces b
+			WHERE b.source = 'ses' AND b.type IN ('hard', 'complaint') AND b.id > $1 ORDER BY b.id LIMIT 500`, last); err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, b := range rows {
+			last = b.ID
+			if err := axm16OneSES(db, b); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func axm16OneSES(db *sqlx.DB, b axm16Bounce) error {
+	var m struct {
+		Recipient string `json:"axm_recipient"`
+		Bounce    struct {
+			Recipients []struct {
+				Email string `json:"emailAddress"`
+			} `json:"bouncedRecipients"`
+		} `json:"bounce"`
+		Complaint struct {
+			Recipients []struct {
+				Email string `json:"emailAddress"`
+			} `json:"complainedRecipients"`
+		} `json:"complaint"`
+		Mail struct {
+			Destination []string `json:"destination"`
+		} `json:"mail"`
+	}
+	if err := json.Unmarshal(b.Meta, &m); err != nil {
+		// Not a notification: the subscriber's own address if it is surely the one.
+		_, err := db.Exec(axm16Mailed, b.Type, b.ID, b.SubID, b.CampaignID)
+		return err
+	}
+	if r := axm16Clean(m.Recipient); r != "" {
+		_, err := db.Exec(axm16Link, r, b.Type, b.ID, b.SubID)
+		return err
+	}
+	var named []string
+	seen := map[string]bool{}
+	for _, r := range m.Bounce.Recipients {
+		if e := axm16Clean(r.Email); e != "" && !seen[e] {
+			seen[e] = true
+			named = append(named, e)
+		}
+	}
+	for _, r := range m.Complaint.Recipients {
+		if e := axm16Clean(r.Email); e != "" && !seen[e] {
+			seen[e] = true
+			named = append(named, e)
+		}
+	}
+	first := ""
+	if len(m.Mail.Destination) > 0 {
+		first = axm16Clean(m.Mail.Destination[0])
+	}
+	if len(named) == 0 {
+		if len(m.Mail.Destination) == 1 && first != "" {
+			_, err := db.Exec(axm16Link, first, b.Type, b.ID, b.SubID)
+			return err
+		}
+		_, err := db.Exec(axm16Mailed, b.Type, b.ID, b.SubID, b.CampaignID)
+		return err
+	}
+	for _, r := range named {
+		if r == first {
+			if _, err := db.Exec(axm16Link, r, b.Type, b.ID, b.SubID); err != nil {
+				return err
+			}
+			continue
+		}
+		var owner sql.NullInt64
+		if err := db.Get(&owner, `SELECT (SELECT id FROM subscribers WHERE email = $1)`, r); err != nil {
+			return err
+		}
+		if !owner.Valid || int(owner.Int64) == b.SubID {
+			if _, err := db.Exec(axm16Unlinked, r, b.Type); err != nil {
+				return err
+			}
+			continue
+		}
+		// The record of its own, made once.
+		var id int
+		err := db.Get(&id, `SELECT id FROM bounces WHERE subscriber_id = $1 AND source = 'ses' AND created_at = $2::TIMESTAMPTZ
+			AND meta->>'axm_recipient' = $3 ORDER BY id LIMIT 1`, owner.Int64, b.CreatedAt, r)
+		if err == sql.ErrNoRows {
+			err = db.Get(&id, `INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at)
+				SELECT $1, campaign_id, type, source, meta || jsonb_build_object('axm_recipient', $2::TEXT), created_at
+				FROM bounces WHERE id = $3 RETURNING id`, owner.Int64, r, b.ID)
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := db.Exec(axm16Link, r, b.Type, id, owner.Int64); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func axm16Clean(e string) string {
+	e = strings.ToLower(strings.TrimSpace(e))
+	if !strings.Contains(e, "@") {
+		return ""
+	}
+	return e
+}
+
+// axm16Sendgrid: SendGrid's webhook keeps the whole batch of events with each bounce it records.
+// A record's address is the bounce event of its time, type and campaign. When several match (the
+// same second and campaign), the records of one batch were written in the order of its bounce
+// events, so when the batch left as many records as it has bounce events, the record's place says
+// which event it is. Else the subscriber's own address when it did not change since; else every
+// matching address is kept (they all bounced), for whoever has it now.
+func axm16Sendgrid(db *sqlx.DB) error {
+	type group struct {
+		Key  string        `db:"k"`
+		Meta []byte        `db:"meta"`
+		IDs  pq.Int64Array `db:"ids"`
+	}
+	last := ""
+	for {
+		var groups []group
+		if err := db.Select(&groups, `SELECT md5(b.meta::TEXT) AS k, b.meta, array_agg(b.id ORDER BY b.id) AS ids
+			FROM bounces b WHERE b.source = 'sendgrid' AND md5(b.meta::TEXT) > $1
+			GROUP BY 1, 2 ORDER BY 1 LIMIT 200`, last); err != nil {
+			return err
+		}
+		if len(groups) == 0 {
+			return nil
+		}
+		for _, g := range groups {
+			last = g.Key
+			if err := axm16OneBatch(db, g.Meta, g.IDs); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+type axm16Event struct {
+	Email string          `json:"email"`
+	Event string          `json:"event"`
+	TS    json.RawMessage `json:"timestamp"`
+	Class string          `json:"bounce_classification"`
+	Camp  string          `json:"XListmonkCampaign"`
+}
+
+func (e axm16Event) typ() string {
+	if e.Class == "technical" || e.Class == "content" {
+		return "soft"
+	}
+	return "hard"
+}
+
+func (e axm16Event) matches(b axm16Bounce) bool {
+	ts := strings.Trim(string(e.TS), `"`)
+	return axm16Clean(e.Email) != "" && ts == strconv.FormatInt(b.Epoch, 10) && e.typ() == b.Type &&
+		(!b.Camp.Valid || strings.EqualFold(strings.TrimSpace(e.Camp), b.Camp.String))
+}
+
+func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
+	var rows []axm16Bounce
+	if err := db.Select(&rows, `SELECT `+axm16Columns+` FROM bounces b WHERE b.id = ANY($1) ORDER BY b.id`, ids); err != nil {
+		return err
+	}
+	var all []axm16Event
+	_ = json.Unmarshal(meta, &all) // not a list: no events, each record falls back below
+	var events []axm16Event
+	for _, e := range all {
+		if e.Event == "bounce" {
+			events = append(events, e)
+		}
+	}
+	for i, b := range rows {
+		if !axm16Permanent(b.Type) {
+			continue
+		}
+		var match []string
+		seen := map[string]bool{}
+		for _, e := range events {
+			if a := axm16Clean(e.Email); e.matches(b) && !seen[a] {
+				seen[a] = true
+				match = append(match, a)
+			}
+		}
+		addr := ""
+		switch {
+		case len(match) == 0:
+			if _, err := db.Exec(axm16Mailed, b.Type, b.ID, b.SubID, b.CampaignID); err != nil {
+				return err
+			}
+			continue
+		case len(match) == 1:
+			addr = match[0]
+		case len(rows) == len(events) && events[i].matches(b):
+			addr = axm16Clean(events[i].Email)
+		case b.Own.Valid && seen[strings.ToLower(b.Own.String)]:
+			addr = strings.ToLower(b.Own.String)
+		}
+		if addr != "" {
+			if _, err := db.Exec(axm16Link, addr, b.Type, b.ID, b.SubID); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, a := range match {
+			if _, err := db.Exec(axm16Unlinked, a, b.Type); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

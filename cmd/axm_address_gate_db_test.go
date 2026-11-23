@@ -750,28 +750,75 @@ func TestGateMigrationTwice(t *testing.T) {
 	e.get(&own, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'sg.own@ok.test', 'P', 'enabled') RETURNING id`)
 	bounce(own, "hard", "sendgrid", `[{"email":"sg.other@ok.test","event":"bounce","timestamp":1700002000},`+
 		`{"email":"sg.own@ok.test","event":"bounce","timestamp":1700002000}]`, "to_timestamp(1700002000)")
+	// SES: one notification that names two bounced recipients, neither the mail's first one.
+	bounce(id, "hard", "ses", `{"bounce":{"bounceType":"Permanent","bouncedRecipients":[{"emailAddress":"multi-bad1@ok.test","status":"5.1.1"},{"emailAddress":"multi-bad2@ok.test","status":"5.1.1"}]},"mail":{"destination":["multi-fine@ok.test","multi-bad1@ok.test","multi-bad2@ok.test"]}}`, "NOW()")
+	// SES: the collector before recorded the bounce of single-bad for single-first's subscriber.
+	var singleFirst, singleBad int
+	e.get(&singleFirst, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'single-first@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&singleBad, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'single-bad@ok.test', 'P', 'enabled') RETURNING id`)
+	bounce(singleFirst, "hard", "ses", `{"bounce":{"bounceType":"Permanent","bouncedRecipients":[{"emailAddress":"single-bad@ok.test"}]},"mail":{"destination":["single-first@ok.test","single-bad@ok.test"]}}`, "NOW()")
+	// SendGrid: two subscribers bounced in the same second for the same campaign, and then changed
+	// their addresses. The two records of the batch are in the order of its bounce events.
+	var same1, same2 int
+	e.get(&same1, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'same1@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&same2, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'same2@ok.test', 'P', 'enabled') RETURNING id`)
+	sameBatch := `[{"email":"same.delivered@ok.test","event":"delivered","timestamp":1700003000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"same1@ok.test","event":"bounce","timestamp":1700003000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"same2@ok.test","event":"bounce","timestamp":1700003000,"XListmonkCampaign":"` + uuidA + `"}]`
+	for _, sub := range []int{same1, same2} {
+		e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700003000))`, sub, campA, sameBatch)
+	}
+	e.db.MustExec(`UPDATE subscribers SET email = 'same1.now@ok.test' WHERE id = $1`, same1)
+	e.db.MustExec(`UPDATE subscribers SET email = 'same2.now@ok.test' WHERE id = $1`, same2)
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	bounce(id, "soft", "postmark", `{"Email":"legacy.soft@ok.test"}`, "NOW()")
 	e.db.MustExec(`DELETE FROM axm_bounced_emails`)
+	var rows1, records1 int
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
-		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address", "ses-bad", "sg1", "sg2", "sg.own"} {
+		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address", "ses-bad", "sg1", "sg2", "sg.own",
+			"multi-bad1", "multi-bad2", "single-bad", "same1", "same2", "either.one", "either.two"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
 		}
-		for _, a := range []string{"delivered", "later", "legacy.soft", "legacy.soft2", "either.one", "either.two", "now.address", "was.address", "ses-first", "sg.delivered", "sg.other"} {
+		for _, a := range []string{"delivered", "later", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered", "sg.other",
+			"multi-fine", "single-first", "same.delivered", "same1.now", "same2.now"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}
 		}
-		if n := e.bouncedRows(); n != 11 {
-			t.Fatalf("run %d: %d rows", i+1, n)
+		// The second run adds nothing: no row, no copied SES record.
+		n := e.bouncedRows()
+		var records int
+		e.get(&records, `SELECT COUNT(*) FROM bounces`)
+		if i == 0 {
+			rows1, records1 = n, records
+		} else if n != rows1 || records != records1 {
+			t.Fatalf("run 2: %d rows, %d records; run 1: %d, %d", n, records, rows1, records1)
 		}
+	}
+	// single-bad's address goes with single-bad's own bounce record, not with single-first's.
+	if err := e.a.core.DeleteSubscriberBounces(singleFirst, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !e.isBounced("single-bad@ok.test") {
+		t.Fatal("deleting the first recipient's record let the bounced address go")
+	}
+	var badRecords int
+	e.get(&badRecords, `SELECT COUNT(*) FROM bounces WHERE subscriber_id = $1`, singleBad)
+	if badRecords != 1 {
+		t.Fatalf("%d records of the bounced recipient", badRecords)
+	}
+	if err := e.a.core.DeleteSubscriberBounces(singleBad, ""); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("single-bad@ok.test") {
+		t.Fatal("deleting the bounced recipient's own record did not let the address go")
 	}
 	var n int
 	e.get(&n, `SELECT COUNT(*) FROM axm_bounced_emails WHERE bounce_id = $1`, edited)

@@ -112,10 +112,11 @@ func (s *SES) ProcessSubscription(b []byte) error {
 	return nil
 }
 
-// ProcessBounce processes an SES bounce notification and returns a Bounce object.
-func (s *SES) ProcessBounce(b []byte) (models.Bounce, error) {
+// ProcessBounce processes an SES bounce notification and returns a Bounce object for each
+// recipient it names as bounced (or complaining) (LST-56).
+func (s *SES) ProcessBounce(b []byte) ([]models.Bounce, error) {
 	var (
-		bounce models.Bounce
+		bounce []models.Bounce
 		n      sesNotif
 	)
 	if err := json.Unmarshal(b, &n); err != nil {
@@ -170,14 +171,18 @@ func (s *SES) ProcessBounce(b []byte) (models.Bounce, error) {
 		}
 	}
 
-	return models.Bounce{
-		Email:        sesRecipient(m),
-		CampaignUUID: campUUID,
-		Type:         typ,
-		Source:       "ses",
-		Meta:         json.RawMessage(n.Message),
-		CreatedAt:    time.Time(m.Mail.Timestamp),
-	}, nil
+	out := make([]models.Bounce, 0, 1)
+	for _, email := range sesRecipients(m) {
+		out = append(out, models.Bounce{
+			Email:        email,
+			CampaignUUID: campUUID,
+			Type:         typ,
+			Source:       "ses",
+			Meta:         json.RawMessage(n.Message),
+			CreatedAt:    time.Time(m.Mail.Timestamp),
+		})
+	}
+	return out, nil
 }
 
 func (s *SES) buildSignature(n sesNotif) []byte {
@@ -288,20 +293,28 @@ func (st *sesTimestamp) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// sesRecipient is the address the notification is about: the first recipient SES names as
-// bounced (or as complaining), else the first of the mail's recipients. A mail sent to several
-// recipients bounces for some of them only, and the address of a hard bounce is refused for good
-// where subscribers are added (LST-56). Keep in step with the migration V6_2_1_axm_16.
-func sesRecipient(m sesMail) string {
-	for _, r := range m.Bounce.BouncedRecipients {
-		if e := strings.TrimSpace(r.EmailAddress); e != "" {
-			return strings.ToLower(e)
+// sesRecipients are the addresses the notification is about: each recipient SES names as bounced
+// (or as complaining), else the first of the mail's recipients. A mail sent to several recipients
+// bounces for some of them only, and the address of a hard bounce is refused for good where
+// subscribers are added (LST-56). Keep in step with the migration V6_2_1_axm_16.
+func sesRecipients(m sesMail) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(e string) {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e != "" && !seen[e] {
+			seen[e] = true
+			out = append(out, e)
 		}
+	}
+	for _, r := range m.Bounce.BouncedRecipients {
+		add(r.EmailAddress)
 	}
 	for _, r := range m.Complaint.ComplainedRecipients {
-		if e := strings.TrimSpace(r.EmailAddress); e != "" {
-			return strings.ToLower(e)
-		}
+		add(r.EmailAddress)
 	}
-	return strings.ToLower(m.Mail.Destination[0])
+	if len(out) == 0 {
+		add(m.Mail.Destination[0])
+	}
+	return out
 }
