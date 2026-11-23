@@ -61,7 +61,7 @@
     "import.rejected.reason.dead": "도메인·메일 서버 없음",
     "import.rejected.reason.nullmx": "메일을 받지 않는 도메인",
     "import.rejected.domain": "설정에서 허용하지 않는 도메인",
-    "import.rejected.csvRow": "줄 번호 (헤더 = 1)",
+    "import.rejected.csvRow": "행 (헤더 = 1)",
     "import.rejected.gone": "이 가져오기의 실패 행은 더 이상 없습니다. 새 가져오기가 시작되어 바뀌었습니다.",
     "import.rejected.csvEmail": "이메일",
     "import.rejected.csvReason": "사유",

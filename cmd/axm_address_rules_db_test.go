@@ -172,7 +172,7 @@ func TestAddressRulesEdit(t *testing.T) {
 func TestAddressRulesImport(t *testing.T) {
 	e := newRulesEnv(t)
 	csvIn := "email,name\n" +
-		"good.one@example.invalid,Good One\n" +
+		"good.one@example.invalid,\"Good\nOne\"\n" + // a cell with a line break is one row
 		"\n" + // a blank line: the reader skips it, the file line numbers do not
 		"kimlee@gmail.con,Typo One\n" +
 		"kimlee@gmaii.com,Typo Two\n" +
@@ -227,14 +227,14 @@ func TestAddressRulesImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 8 || rows[0][0] != "Line (header = 1)" {
+	if len(rows) != 8 || rows[0][0] != "Row (header = 1)" {
 		t.Fatalf("csv: %v", rows)
 	}
 	if got := strings.Join(rows[1], "|"); got != "50|x@gone.invalid|No domain or mail server|" {
 		t.Fatalf("the row the column mapping left out comes first: %s", got)
 	}
 	if got := strings.Join(rows[2], "|"); got != "4|kimlee@gmail.con|Misspelled domain|kimlee@gmail.com" {
-		t.Fatalf("first refused row (line 4 of the file, after a blank line): %s", got)
+		t.Fatalf("first refused row (row 4: the blank line counts, the cell with a line break does not): %s", got)
 	}
 	if got := strings.Join(rows[7], "|"); got != "9|not-an-address|Malformed address|" {
 		t.Fatalf("last refused row: %s", got)

@@ -13,6 +13,7 @@ func TestRejectedRowsBelongToTheirImport(t *testing.T) {
 	im.importSeq = 8
 	im.owner = 5
 	im.status = Status{AxmRejected: map[string]int{}}
+	im.rejected = nil
 	im.reject(7, RejectedRow{Row: 3, Email: "old@gmail.con", Reason: RejectTypo})
 	if im.status.AxmRejectedTotal != 0 || len(im.rejected) != 0 {
 		t.Fatalf("a replaced session counted a row: %+v %v", im.status, im.rejected)

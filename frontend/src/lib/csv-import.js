@@ -105,14 +105,7 @@ export function parseCSV(text, { delimiter = '', header = true } = {}) {
   // A quote error can consume all later physical lines as one logical record.
   // Their boundaries/count cannot be recovered safely; reject the whole file.
   if (result.errors.some((error) => error.type === 'Quotes')) throw new ImportError('quotes');
-  // The row is the line of the file the record starts on (a quoted cell can hold line breaks),
-  // the header being line 1: the number a spreadsheet and the server's download show.
-  let line = 1;
-  const nonempty = result.data.map((cells) => {
-    const entry = { cells, row: line };
-    line += 1 + cells.reduce((count, cell) => count + (cell.match(/\n/g) || []).length, 0);
-    return entry;
-  })
+  const nonempty = result.data.map((cells, index) => ({ cells, row: index + 1 }))
     .filter(({ cells }) => !(cells.length === 1 && cells[0].trim() === ''));
   const first = nonempty[0];
   if (!first) throw new ImportError('empty');

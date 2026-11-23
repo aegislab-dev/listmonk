@@ -160,8 +160,9 @@ const (
 // MaxRejectedRows is how many refused rows an import keeps for the download.
 const MaxRejectedRows = 50000
 
-// RejectedRow is one refused row of the file. Row is the line of the uploaded file, the
-// header being line 1, so that a spreadsheet shows the same number.
+// RejectedRow is one refused row of the file. Row is the row of the uploaded file as a
+// spreadsheet numbers it (the header is row 1, blank lines count, a cell with line breaks is
+// one row), so that it is the same number the column mapping screen shows.
 type RejectedRow struct {
 	Row     int
 	Email   string
@@ -643,6 +644,9 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		s.log.Printf("error reading header from '%s': '%v'", srcPath, err)
 		return err
 	}
+	// Line breaks inside quoted cells so far: a record's row is its starting line less these,
+	// which is how a spreadsheet numbers rows (blank lines count, a cell with line breaks is one).
+	embedded := countLineBreaks(csvHdr)
 
 	hdrKeys := s.mapCSVHeaders(csvHdr, csvHeaders)
 	// email is a required header.
@@ -676,6 +680,8 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		fileLine := 0
 		if err == nil {
 			fileLine, _ = rd.FieldPos(0)
+			fileLine -= embedded
+			embedded += countLineBreaks(cols)
 		}
 		if err == io.EOF {
 			break
@@ -755,8 +761,17 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 	return nil
 }
 
+// countLineBreaks counts the line breaks inside the cells of a record.
+func countLineBreaks(cols []string) int {
+	n := 0
+	for _, c := range cols {
+		n += strings.Count(c, "\n")
+	}
+	return n
+}
+
 // rowOf is the row number a refused record is reported under: its row in the file the person
-// chose when the column mapping sent that, else its line in the uploaded file.
+// chose when the column mapping sent that, else its row in the uploaded file.
 func (s *Session) rowOf(record, fileLine int) int {
 	if record >= 1 && record <= len(s.opt.AxmSourceRows) {
 		return s.opt.AxmSourceRows[record-1]

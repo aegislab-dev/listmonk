@@ -61,7 +61,7 @@
     "import.rejected.reason.dead": "No domain or mail server",
     "import.rejected.reason.nullmx": "Domain accepts no mail",
     "import.rejected.domain": "Domain not allowed by the settings",
-    "import.rejected.csvRow": "Line (header = 1)",
+    "import.rejected.csvRow": "Row (header = 1)",
     "import.rejected.gone": "The rejected rows of this import are no longer available: a newer import has replaced them.",
     "import.rejected.csvEmail": "E-mail",
     "import.rejected.csvReason": "Reason",
