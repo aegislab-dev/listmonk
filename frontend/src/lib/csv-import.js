@@ -100,7 +100,9 @@ export function parseCSV(text, { delimiter = '', header = true } = {}) {
   // Only a line with nothing on it is skipped, as the server's reader does: a quoted empty
   // field ("") or a line of spaces is a record, so in a one-column file it is an empty address.
   // Papa gives both as [''], so each record's own text tells them apart.
-  const result = { data: [], blank: [], errors: [], meta: {} };
+  const result = {
+    data: [], blank: [], errors: [], meta: {},
+  };
   let cursor = 0;
   Papa.parse(source, {
     header: false,
