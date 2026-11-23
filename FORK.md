@@ -1254,3 +1254,50 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 마이그레이션 `v6.2.1-axm.15`는 설정 행 하나를 넣을 뿐이고 새 테이블·시퀀스는 없다. 이전 이미지로 되돌리면 행은 남고 이전 이미지는 읽지 않는다(From 검사만 사라진다).
 
 업스트림 v7로 옮길 때: v7은 From을 여러 개 두고 자동완성하는 자유 입력이다. 그 입력을 이 목록에 맞춰 제한하는 화면 연결과 서버 검사를 다시 붙인다. 운영 반영 때는 목록에 실제 쓰는 주소를 먼저 넣고, `app.from_email`(기본 `aegislab_korea@`)을 팀이 쓰는 주소로 바꿀지 정한다. 목록 밖 기존 초안은 열 때 경고가 뜬다.
+
+## 구독자 추가 전 주소 규칙 (LST-53)
+
+운영 반송 조사(2026-11-21)에서 발송 직전에 붙인 스크래핑 주소가 92~94% 반송됐고, 형식부터 틀린 주소(오타 도메인 `gmail.con`·`gmaii.com`·`gmal.com`·`gmail.co`, Gmail에 없는 로컬파트 `-`·`_`·6자 미만)는 전부 hard였다. 그래서 구독자가 들어오는 길에서 서버가 주소를 거절한다. 세 단계로 나눠 넣는다: **1단계(이 절의 구현)** 문법·제공자 규칙·오타 도메인, **2단계** DNS(MX/A)·차단 목록·hard 반송 이력·검증 상태 표·강도 스위치, **3단계** 이미 있는 구독자 일괄 검증·발송 전 경고·리스트 만들기 경로. 계획 전문은 태스크 LST-53의 plan.md.
+
+### 1단계 규칙 (`internal/addrcheck/rules.go`, `typo_domains.json`) — DB·네트워크 없음
+
+- **제공자 규칙 (`provider`)**: 대상은 `gmail.com`·`googlemail.com`뿐(Google Workspace 도메인에는 적용하지 않는다). `+태그`를 뗀 로컬파트가 `a-z 0-9 .` 밖의 글자를 가지거나, 점으로 시작·끝나거나 점이 연속이거나, 6자 미만(점 포함)이거나 30자 초과(점 제외)이면 거절한다. 근거는 Google 도움말 "Create a username"(https://support.google.com/mail/answer/9211434): 영문·숫자·마침표만, 6~30자, 마침표 연속·처음·끝 불가. **도움말은 마침표가 길이에 들어가는지 말하지 않으므로**(2026-11-21 aside 확인) 잘못 거절하지 않는 쪽으로, 점을 넣어도 6 미만이거나 점을 빼도 30 초과일 때만 거절한다. 2004년 이전의 짧은 Gmail 주소가 있을 수 있어 6자 미만 거절은 오탐 가능성이 작게 남는다. 네이버·야후·아웃룩 규칙은 근거를 확인하지 못해 넣지 않았다(후보).
+- **오타 도메인 (`typo`)**: `typo_domains.json`의 표에 **정확히 일치**할 때만, 그리고 `.con .cmo .comm .coom .ocm .vom .xom` 같은 실재하지 않는 최상위 라벨일 때만 거절하고 고친 주소를 제안한다. 편집 거리 추측은 하지 않는다(`gmail.co`처럼 실제로 있는 도메인을 규칙이 모르는 채 오판하지 않으려고). 오타 주소를 자동으로 고쳐 넣지는 않는다: 고친 주소가 남의 사서함일 수 있어 사람이 확인한다.
+- 규칙을 바꾸면 `RulesVersion`(`rules.go`)을 올린다(2단계의 저장된 검증 상태가 옛 규칙의 것인지 가린다). 같은 JSON을 BASIS 크롤러가 읽을 수 있다(아래).
+- `s.com` 같은 가짜 도메인은 이 규칙이 아니라 2단계의 DNS(메일 서버 없음)로 걸린다.
+
+### 걸리는 길 (`cmd/axm_address_rules.go`)
+
+| 길 | 동작 |
+|---|---|
+| 관리자·API 단건 추가 `POST /api/subscribers` | 400, 메시지에 사유와 제안 주소. 헤더 `X-Axm-Address-Rule`(`provider`·`typo`)과 `X-Axm-Suggest`(제안 주소, 퍼센트 인코딩: ASCII 밖의 바이트·제어 문자·`%`만 `%XX`로 바꾼다. `decodeURIComponent`로 읽는다. 폼은 제안의 도메인만 가져와 입력한 이름 앞부분은 그대로 둔다) |
+| 주소 수정 `PUT`·`PATCH /api/subscribers/:id` | **주소가 바뀔 때만** 검사. 이름 등 다른 항목만 고치는 저장은 막지 않는다(옛 주소가 규칙에 걸려도 편집 가능) |
+| 공개 구독 폼 | 400(규칙에 걸린 주소는 사람이 고칠 수 있게 이유를 알린다) |
+| 대량 가져오기 (구독 모드) | 그 행을 넣지 않고 사유별로 센다. 차단 모드는 형식만(무엇이든 차단할 수 있어야 한다) |
+
+`Importer.SanitizeEmail`은 그대로다(`cmd/bounce.go`·`cmd/tx.go`·캠페인 From 검사가 같이 쓴다). `POST /api/subscribers/address-check`의 응답 분류에도 `provider`·`typo`가 들어간다.
+
+### 가져오기 결과
+
+- 가져오기 상태(`GET /api/import/subscribers`)에 `axm_rejected`(사유별: `format` `domain` `provider` `typo`, 열 맞춤이 뺀 행의 `dead` `nullmx` 포함)와 `axm_rejected_total`, 열 맞춤이 업로드 전에 뺀 행 수 `axm_excluded`, 이 가져오기의 번호 `axm_import_id`. 사유 `domain`은 설정의 도메인 허용·차단 목록에 걸린 행이다. `total`은 파일을 다 읽은 뒤 파일의 레코드 수가 된다(셀 안 줄바꿈은 한 레코드, 빈 줄은 세지 않고 칸 수가 맞지 않는 행은 센다. 읽는 동안에는 줄 수로 어림한 값). 열 맞춤 업로드는 사람이 고른 파일의 레코드 수(`axm_file_rows`)를 쓰므로, 같은 파일을 원본으로 올린 것과 같다.
+- 열 맞춤 업로드는 요청 매개변수에 `axm_excluded`(뺀 행: 원본 행 번호·주소·사유·제안), `axm_source_rows`(변환된 행마다의 원본 행 번호), `axm_file_rows`(고른 파일의 레코드 수, 헤더 제외)를 함께 보낸다. 서버는 뺀 행을 거절 행과 함께 세고, 서버가 거절한 행도 원본 행 번호로 적는다. 행 번호는 스프레드시트 기준(헤더 = 1, 빈 줄도 센다, 셀 안 줄바꿈은 한 행)이다.
+- `GET /api/import/subscribers/rejected?id=<axm_import_id>`(`subscribers:import`): 그 가져오기의 거절된 행을 CSV(행 번호·이메일·사유·제안 주소, UTF-8 BOM)로 준다. `id`는 필수이고 가져오기 상태의 `axm_import_id`를 쓴다. 번호가 없거나 마지막 가져오기의 번호가 아니면(다음 가져오기가 시작됐거나 앱이 다시 켜졌으면) 410, 가져오기를 시작한 사용자가 아니고 `subscribers:get_all`도 없으면 403. 서버는 마지막 가져오기의 거절 행을 최대 50,000개 메모리에 두고 다음 가져오기가 시작되면 버린다. 건수는 전체를 센다. 값이 `=+-@`로 시작하면 앞에 `'`를 붙여 스프레드시트가 수식으로 읽지 않게 한다.
+- 감사 기록 `import.finish`의 detail에 `rejected`(사유별 건수)가 들어간다. 거절된 주소는 쓰지 않는다.
+- 이미 있는 구독자의 행도 규칙에 걸리면 적용하지 않는다(새 리스트에 붙지 않는다).
+
+### 외부 유료 검증 서비스 — 넣지 않고 후보만
+
+ZeroBounce, NeverBounce, Kickbox, Bouncer, Emailable, Mailgun Validate, AWS SES 계열(사서함 존재까지 확인). 가격·약관은 확인하지 않았다 — 도입을 검토할 때 조사한다. SMTP RCPT 확인은 하지 않는다(발송 IP 평판을 깎고 Gmail 등은 거짓 응답을 준다).
+
+### BASIS 크롤러(`creator_emails`)에도 같은 규칙을 두는 것을 권한다 (구현은 별도)
+
+스크래핑 주소가 반송의 원천이므로 listmonk에서 거절되기 전에 추출 단계에서 걸러야 수집량 지표가 맞는다. 방법은 둘이다. (가) BASIS가 `POST /api/subscribers/address-check`를 호출한다 — 규칙이 한 곳이지만 API 사용자와 네트워크가 필요하다. (나) `internal/addrcheck/typo_domains.json`과 Gmail 규칙(위 문단)을 BASIS가 같이 읽는다 — 이 JSON이 (나)를 위해 `go:embed` 파일로 분리돼 있다.
+
+### 운영에서 알 것
+
+- DB 변경이 없어 이전 이미지로 그대로 되돌릴 수 있다. 되돌리면 거절이 사라진다.
+- 1단계에는 강도 스위치가 없다(2단계에서 `AXM_ADDRESS_GATE`·설정 `axm.address_gate`를 넣는다).
+
+### 검증
+
+`go test ./internal/addrcheck/`(운영에서 본 틀린 주소 꼴 포함), `cmd/axm_address_rules_db_test.go`(단건·수정·PATCH·가져오기 사유별 건수·거절 CSV·차단 모드).

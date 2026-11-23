@@ -25,10 +25,18 @@ type Result struct {
 	// Literal: the domain is an address literal such as [192.0.2.17] (RFC 5321 §4.1.3).
 	// Mail to it goes to that host without DNS, so DNS says nothing about it.
 	Literal bool
+	// Provider: the mailbox name breaks the rules of the provider, e.g. a Gmail name with
+	// an underscore or under 6 characters. No such mailbox can exist.
+	Provider bool
+	// Typo: the domain is a known misspelling such as gmail.con. Suggest is the address
+	// with the domain corrected. It is a suggestion only: it can be somebody else's mailbox.
+	Typo    bool
+	Suggest string
 }
 
 // Classify cleans an address the way listmonk does when it stores one and reports
-// whether it is malformed, a role address or on a disposable domain.
+// whether it is malformed, breaks a provider rule, has a misspelled domain, is a role
+// address or is on a disposable domain.
 func Classify(email string) Result {
 	clean, err := utils.SanitizeEmail(email)
 	if err != nil {
@@ -40,12 +48,41 @@ func Classify(email string) Result {
 		return Result{Email: clean, Domain: strings.ToLower(host), Role: isRole(local), Literal: true}
 	}
 	domain := asciiDomain(host)
-	return Result{
+	if !validDomainLabels(domain) {
+		// RFC 5321 §4.1.2: labels are letters, digits and hyphens, none starting or ending with one.
+		return Result{Email: clean, Format: true}
+	}
+	r := Result{
 		Email:      clean,
 		Domain:     domain,
 		Role:       isRole(local),
 		Disposable: isDisposable(domain),
+		Provider:   providerIssue(local, domain),
 	}
+	if s := typoSuggestion(local, domain); s != "" {
+		r.Typo, r.Suggest = true, s
+	}
+	return r
+}
+
+// validDomainLabels reports whether every label of the ASCII domain is 1 to 63 letters,
+// digits or hyphens that neither start nor end with a hyphen.
+func validDomainLabels(domain string) bool {
+	if len(domain) > 253 {
+		return false // RFC 5321 §4.5.3.1.2: 255 octets with the dot and length of a path
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // asciiDomain turns an internationalised domain into the name that is looked up in DNS.

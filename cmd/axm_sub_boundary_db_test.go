@@ -654,6 +654,7 @@ func (e *teamsEnv) importAs(u auth.User, params, csv string) int {
 	if s := e.a.importer.GetStats().Status; s != subimporter.StatusFinished {
 		e.t.Fatalf("import %s: %s", s, e.a.importer.GetLogs())
 	}
+	e.lastImport = e.a.importer.GetStats()
 	e.a.importer.Stop()
 	time.Sleep(50 * time.Millisecond)
 	return rec.Code

@@ -277,13 +277,15 @@ export const blocklistBouncedSubscribers = async () => http.put(
 export const createSubscriber = (data) => http.post(
   '/api/subscribers',
   data,
-  { loading: models.subscribers },
+  { loading: models.subscribers, disableToast: true },
 );
 
+// The subscriber form shows an address-rule refusal under the address field and toasts the
+// other errors itself (disableToast).
 export const updateSubscriber = (data) => http.put(
   `/api/subscribers/${data.id}`,
   data,
-  { loading: models.subscribers },
+  { loading: models.subscribers, disableToast: true },
 );
 
 // Saves only the lists of a subscriber (the profile is left to the server as it is).

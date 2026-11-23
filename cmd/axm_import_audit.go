@@ -43,6 +43,8 @@ func (a *App) auditImportFinish(data any) {
 		Status   string
 		Imported int
 		Total    int
+		// AxmRejected: rows the address rules refused, by reason (LST-53).
+		AxmRejected map[string]int
 	}
 	if err := json.Unmarshal(b, &st); err != nil {
 		return
@@ -55,7 +57,10 @@ func (a *App) auditImportFinish(data any) {
 	if by.ok {
 		u = &by.user
 	}
-	a.auditAs(u, auditImportFinish, auditTarget{Type: auditTargetImport}, st.Imported, map[string]any{
-		"status": strings.ToLower(st.Status), "total": st.Total,
-	})
+	detail := map[string]any{"status": strings.ToLower(st.Status), "total": st.Total}
+	if len(st.AxmRejected) > 0 {
+		// Counts only: the refused addresses are not written to the audit log.
+		detail["rejected"] = st.AxmRejected
+	}
+	a.auditAs(u, auditImportFinish, auditTarget{Type: auditTargetImport}, st.Imported, detail)
 }

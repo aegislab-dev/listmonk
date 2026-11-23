@@ -147,6 +147,22 @@
       <p>{{ $t('import.recordsCount', { num: status.imported, total: status.total }) }}</p>
       <br />
 
+      <b-message v-if="rejectedTotal" type="is-warning" :closable="false" class="has-text-left" data-cy="import-rejected">
+        <strong>{{ $t('import.rejected.title', { count: rejectedTotal }) }}</strong>
+        <table class="rejected-table">
+          <tr v-for="r in rejectedLines" :key="r.reason" :data-cy="`import-rejected-${r.reason}`">
+            <td>{{ $t(`import.rejected.reason.${r.reason}`) }}</td>
+            <td class="has-text-right">{{ r.count }}</td>
+          </tr>
+        </table>
+        <p>
+          <a :href="`/api/import/subscribers/rejected?id=${status.axmImportId}`" download="rejected-rows.csv"
+            data-cy="import-rejected-download">
+            {{ $t('import.rejected.download') }}
+          </a>
+        </p>
+      </b-message>
+
       <p>
         <b-button @click="stopImport" :loading="isProcessing" icon-left="file-upload-outline" type="is-primary">
           {{ isDone() ? $t('import.importDone') : $t('import.stopImport') }}
@@ -369,13 +385,15 @@ export default Vue.extend({
         if (controller.signal.aborted || key !== this.addrKey) return;
         const issues = {};
         const shown = {};
+        const suggest = {};
+        Object.entries(result.suggest || {}).forEach(([index, address]) => { suggest[rows[index]] = address; });
         Object.entries(result.issues || {}).forEach(([index, classes]) => {
           issues[rows[index]] = classes;
           shown[rows[index]] = emails[index];
         });
         const polls = this.addr.polls + (result.pending > 0 ? 1 : 0);
         this.addr = {
-          state: 'done', result, issues: Object.freeze(issues), emails: Object.freeze(shown), polls,
+          state: 'done', result, issues: Object.freeze(issues), emails: Object.freeze(shown), suggest: Object.freeze(suggest), polls,
         };
         this.applyAddressExclusion();
         if (result.pending > 0 && polls <= ADDRESS_MAX_POLLS) {
@@ -406,21 +424,55 @@ export default Vue.extend({
     },
 
     // The rows the address check left out, with why: made here and never sent anywhere.
-    downloadExcluded() {
-      const reasons = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING];
-      const rows = (this.csvExclude || []).map((row) => ({
+    // The rows the column mapping leaves out for their address, with the reason the box shows:
+    // the address check's confirmed rows and the rows that are not an address at all.
+    excludedForServer() {
+      const out = (this.csvExclude || []).map((row) => ({
         row,
         email: this.addr.emails[row] || '',
-        reasons: (this.addr.issues[row] || []).filter((c) => reasons.includes(c)).map((c) => this.$t(`addressCheck.class.${c}`)),
+        reason: ADDRESS_CONFIRMED.find((c) => (this.addr.issues[row] || []).includes(c)),
+        suggest: (this.addr.suggest || {})[row] || '',
+      })).filter((x) => x.reason);
+      (this.csvInvalidRows || []).forEach(({ row, email }) => out.push({
+        row, email, reason: 'format', suggest: '',
       }));
-      const csv = excludedRowsCSV(rows, [this.$t('import.addr.csvRow'), this.$t('import.addr.csvEmail'), this.$t('import.addr.csvReason')]);
+      return out.slice(0, LIMITS.rows);
+    },
+
+    // The rows the review leaves out for their address, for the download on the review screen:
+    // the address check's rows and the rows that are not an address at all, by source row. The
+    // same rows the box that ends the import counts.
+    excludedRows() {
+      const reasons = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING];
+      const format = [this.$t('addressCheck.class.format')];
+      return [
+        ...(this.csvExclude || []).map((row) => ({
+          row,
+          email: this.addr.emails[row] || '',
+          reasons: (this.addr.issues[row] || []).filter((c) => reasons.includes(c)).map((c) => this.$t(`addressCheck.class.${c}`)),
+          suggest: (this.addr.suggest || {})[row] || '',
+        })),
+        ...(this.csvInvalidRows || []).map(({ row, email }) => ({
+          row, email, reasons: format, suggest: '',
+        })),
+      ].sort((a, b) => a.row - b.row);
+    },
+
+    saveCSV(csv, name) {
       const link = document.createElement('a');
       link.href = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' }));
-      link.download = `${this.form.file.name.replace(/\.csv$/i, '')}-excluded.csv`;
+      link.download = name;
       document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    },
+
+    downloadExcluded() {
+      this.saveCSV(
+        excludedRowsCSV(this.excludedRows(), [this.$t('import.addr.csvRow'), this.$t('import.addr.csvEmail'), this.$t('import.addr.csvReason'), this.$t('import.rejected.csvSuggest')]),
+        `${this.form.file.name.replace(/\.csv$/i, '')}-excluded.csv`,
+      );
     },
 
     async parseCSV(initial = false, manualDelimiter = false) {
@@ -491,6 +543,7 @@ export default Vue.extend({
           } else if (data.type === 'convert') {
             this.csvBytes = data.bytes;
             this.csvSourceRows = data.sourceRows;
+            this.csvInvalidRows = data.invalidRows || [];
             Object.assign(this.csv, {
               busy: false,
               ready: !!data.bytes && data.summary.imported > 0,
@@ -775,6 +828,12 @@ export default Vue.extend({
         lists: this.form.lists.map((l) => l.id),
         overwrite_userinfo: this.form.overwriteUserInfo,
         overwrite_subscription_status: this.form.overwriteSubStatus,
+        // The rows the column mapping left out: the server counts them with its own refusals.
+        axm_excluded: mapped && this.form.mode === 'subscribe' ? this.excludedForServer() : [],
+        // The row of the chosen file each uploaded row came from, for the numbers in the rejected rows.
+        axm_source_rows: mapped ? (this.csvSourceRows || []) : [],
+        // The records of the chosen file, for the total the end of the import shows.
+        axm_file_rows: mapped ? (this.csv.total || 0) : 0,
       }));
       params.set('file', file);
 
@@ -861,6 +920,7 @@ export default Vue.extend({
       const {
         state, result, issues, emails,
       } = this.addr;
+      const suggest = this.addr.suggest || {};
       if (state === 'idle' || this.form.mode !== 'subscribe') return null;
       if (state !== 'done') return { state, busy: this.addressBusy };
       const rows = Object.keys(issues).map(Number).sort((a, b) => a - b);
@@ -868,20 +928,22 @@ export default Vue.extend({
       const confirmed = rows.filter((row) => has(row, ADDRESS_CONFIRMED));
       const confirmedSet = new Set(confirmed);
       const polling = this.addressPolling;
+      // A misspelled domain is shown with the address it should be.
+      const shownAddress = (row) => (suggest[row] ? `${emails[row]} → ${suggest[row]}` : emails[row]);
       const lines = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING, 'unknown'].map((name) => {
         const found = rows.filter((row) => issues[row].includes(name));
         let kind = 'unknown';
         if (ADDRESS_CONFIRMED.includes(name)) kind = 'confirmed';
         else if (ADDRESS_WARNING.includes(name)) kind = 'warning';
         let help = '';
-        if (name === 'role') help = this.$t('addressCheck.classHelp.role');
+        if (['role', 'provider', 'typo'].includes(name)) help = this.$t(`addressCheck.classHelp.${name}`);
         else if (name === 'unknown') help = this.$t('import.addr.unknownHelp');
         return {
           name,
           kind,
           help,
           count: found.length,
-          examples: `${found.slice(0, 5).map((row) => `${row} (${emails[row]})`).join(', ')}${found.length > 5 ? ' …' : ''}`,
+          examples: `${found.slice(0, 5).map((row) => `${row} (${shownAddress(row)})`).join(', ')}${found.length > 5 ? ' …' : ''}`,
         };
       }).filter(({ count }) => count);
       return {
@@ -901,8 +963,21 @@ export default Vue.extend({
         excludeWarning: this.addrExclude.warning,
       };
     },
+    // Rows the server refused because of the address rules (LST-53): counted by reason.
+    // The server's refusals and the rows the column mapping left out (sent with the upload).
+    rejectedTotal() {
+      return (this.status && this.status.axmRejectedTotal) || 0;
+    },
+    // Rows the server itself refused: the ones the upload carried count as sent, not as missing.
+    serverRejected() {
+      return this.rejectedTotal - ((this.status && this.status.axmExcluded) || 0);
+    },
+    rejectedLines() {
+      const counts = (this.status && this.status.axmRejected) || {};
+      return ['typo', 'provider', 'format', 'dead', 'nullmx', 'domain'].filter((r) => counts[r]).map((r) => ({ reason: r, count: counts[r] }));
+    },
     countMismatch() {
-      return this.sentCount !== null && this.isDone() && this.status.imported !== this.sentCount;
+      return this.sentCount !== null && this.isDone() && this.status.imported + this.serverRejected !== this.sentCount;
     },
 
     // Import progress bar value.
@@ -934,3 +1009,8 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.rejected-table { width: 100%; margin: 0.4rem 0; border-collapse: collapse; }
+.rejected-table td { padding: 0.15rem 0.25rem; border-top: 1px solid rgba(97, 70, 0, 0.2); }
+</style>
