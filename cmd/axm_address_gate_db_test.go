@@ -19,6 +19,7 @@ import (
 	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 )
 
 // LST-56 step 2: what the gate lets in. The tests use a fake resolver, never real DNS:
@@ -899,6 +900,21 @@ func TestGateMigrationTwice(t *testing.T) {
 	e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700011000))`, swapB, campA, swapBatch)
 	e.db.MustExec(`UPDATE subscribers SET email = 'swap-b.new@ok.test' WHERE id = $1`, swapB)
 	e.db.MustExec(`UPDATE subscribers SET email = 'swap-b@ok.test' WHERE id = $1`, swapA)
+	// SendGrid: the same batch [A, B] delivered twice (A1, B1, A2, B2), then A1 and B2 deleted.
+	// Two records for two subscribers are left, but not in the order of the batch: each is still
+	// its own subscriber's, whose address did not change.
+	var retryA, retryB int
+	e.get(&retryA, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'retry-a@ok.test', 'P', 'enabled') RETURNING id`)
+	e.get(&retryB, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'retry-b@ok.test', 'P', 'enabled') RETURNING id`)
+	retryBatch := `[{"email":"retry-a@ok.test","event":"bounce","timestamp":1700012000,"XListmonkCampaign":"` + uuidA + `"},` +
+		`{"email":"retry-b@ok.test","event":"bounce","timestamp":1700012000,"XListmonkCampaign":"` + uuidA + `"}]`
+	var retryIDs []int
+	for _, sub := range []int{retryA, retryB, retryA, retryB} {
+		var rid int
+		e.get(&rid, `INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta, created_at) VALUES ($1, $2, 'hard', 'sendgrid', $3, to_timestamp(1700012000)) RETURNING id`, sub, campA, retryBatch)
+		retryIDs = append(retryIDs, rid)
+	}
+	e.db.MustExec(`DELETE FROM bounces WHERE id = ANY($1)`, pq.Array([]int{retryIDs[0], retryIDs[3]}))
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -914,7 +930,7 @@ func TestGateMigrationTwice(t *testing.T) {
 			"later", "sg.other", "deleted", "kept", "failed", "twice-bad",
 			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other", "cleared-old",
 			"replayed-kept", "replayed-gone", "current-peer", "control-peer", "deleted-edited-peer", "dep-holder",
-			"swap-a", "swap-b"} {
+			"swap-a", "swap-b", "retry-a", "retry-b"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
@@ -960,6 +976,13 @@ func TestGateMigrationTwice(t *testing.T) {
 	}
 	if !e.isBounced("twice-bad@ok.test") {
 		t.Fatal("deleting one of two bounces let the address go")
+	}
+	// Deleting A's record left of the batch delivered twice lets A's address go, not B's.
+	if err := e.a.core.DeleteBounces([]int{retryIDs[2]}, false); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("retry-a@ok.test") || !e.isBounced("retry-b@ok.test") {
+		t.Fatalf("retry: a %v, b %v", e.isBounced("retry-a@ok.test"), e.isBounced("retry-b@ok.test"))
 	}
 	// Deleting A's record lets A's old address go; B's address stays with B's record.
 	if err := e.a.core.DeleteBounces([]int{swapARecord}, false); err != nil {

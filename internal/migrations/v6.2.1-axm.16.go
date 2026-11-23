@@ -453,14 +453,15 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 	}
 	// A record's address, by what is surest first:
 	//   1. The one matching event.
-	//   2. The event in the record's place, when the batch left one record per bounce event, for
+	//   2. The subscriber's own address, when it is one of the matching events and is on record as
+	//      unchanged since the bounce (no edit since: the webhook found the subscriber by it). This
+	//      holds also when some records of a batch delivered twice were deleted, which leaves as
+	//      many records as events but not in their order.
+	//   3. The event in the record's place, when the batch left one record per bounce event, for
 	//      different subscribers: the bounces were recorded one after another from one queue, in
-	//      the order of the batch. (A batch delivered twice leaves two records per event, and one
-	//      subscriber's two records are not two events.) Addresses that changed hands since do not
-	//      matter here.
-	//   3. The subscriber's own address now, when it is one of the matching events: the webhook
-	//      found the subscriber by the address. (Before this migration an edit of the name only is
-	//      not told apart from a change of address, so "unchanged since" is not asked.)
+	//      the order of the batch. Addresses that changed hands since do not matter here.
+	//   4. The subscriber's own address now, when it is one of the matching events. (Before this
+	//      migration an edit of the name only is not told apart from a change of address.)
 	// Else nothing is linked to the record, and the matching addresses are left to the pass for
 	// the bounces no record is left for, below.
 	distinct := map[int]bool{}
@@ -491,6 +492,8 @@ func axm16OneBatch(db *sqlx.DB, meta []byte, ids pq.Int64Array) error {
 		switch cur := strings.ToLower(strings.TrimSpace(b.Cur)); {
 		case len(match) == 1:
 			addr = match[0]
+		case b.Own.Valid && seen[strings.ToLower(strings.TrimSpace(b.Own.String))]:
+			addr = strings.ToLower(strings.TrimSpace(b.Own.String))
 		case aligned && events[i].matches(b):
 			addr = axm16Clean(events[i].Email)
 		case seen[cur]:
