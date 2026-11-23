@@ -321,6 +321,9 @@ func main() {
 		// If there are no users, then the app needs to prompt for new user setup.
 		needsUserSetup: !hasUsers,
 	}
+	// AXM (LST-47): the check before a follow-up starts needs to know whether opens and clicks
+	// are recorded per subscriber now (settings can change it while the app runs).
+	app.core.SetIndividualTracking(func() bool { return app.cfg.Privacy.IndividualTracking })
 
 	importAuditHook = app.auditImportFinish
 

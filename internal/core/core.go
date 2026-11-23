@@ -33,7 +33,10 @@ type Core struct {
 	h *Hooks
 
 	consts Constants
-	i18n   *i18n.I18n
+	// individualTracking tells whether opens and clicks are recorded per subscriber now
+	// (LST-47). Unset means no: a follow-up is then judged as having no records.
+	individualTracking func() bool
+	i18n               *i18n.I18n
 	db     *sqlx.DB
 	q      *models.Queries
 	log    *log.Logger

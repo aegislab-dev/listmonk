@@ -242,11 +242,16 @@ func (c *Core) FollowupHeldNow(ctx context.Context, id int) (*models.FollowupPen
 		return nil, 0, errors.New("follow-up campaign " + strconv.Itoa(id) + " has no valid condition")
 	}
 	var p models.FollowupPending
-	if err := c.q.AxmFollowupPending.GetContext(ctx, &p, f.ParentID, s.Open, s.Click, f.ListIDs, f.CampaignID); err != nil {
+	if err := c.q.AxmFollowupPending.GetContext(ctx, &p, f.ParentID, s.Open, s.Click, f.ListIDs, f.CampaignID, c.tracking()); err != nil {
 		return nil, 0, err
 	}
 	return &p, int(f.ListIDs[0]), nil
 }
+
+// SetIndividualTracking gives the core the live setting of individual tracking.
+func (c *Core) SetIndividualTracking(f func() bool) { c.individualTracking = f }
+
+func (c *Core) tracking() bool { return c.individualTracking != nil && c.individualTracking() }
 
 // FollowupStale says whether the campaign is a follow-up whose last check is not for the campaign
 // as it is now; the sender must read no recipients for it then.
@@ -309,7 +314,7 @@ func (c *Core) recheckOne(ctx context.Context, f followupDue, s models.ReactionS
 	}
 	if len(f.ListIDs) > 0 {
 		var reasons []int
-		args := []any{f.ParentID, s.Open, s.Click, f.ListIDs, f.CampaignID}
+		args := []any{f.ParentID, s.Open, s.Click, f.ListIDs, f.CampaignID, c.tracking()}
 		if err := tx.Stmtx(c.q.AxmFollowupRecheck).SelectContext(ctx, &reasons, args...); err != nil {
 			return 0, false, err
 		}
@@ -397,7 +402,7 @@ func (c *Core) GetFollowupInfo(ctx context.Context, id int, withPending bool) (m
 	if row.Role == "followup" && withPending && out.Condition != nil && len(row.ListIDs) > 0 &&
 		(row.FollowupStatus == models.CampaignStatusDraft || row.FollowupStatus == models.CampaignStatusScheduled) {
 		var p models.FollowupPending
-		args := []any{row.ParentCampaignID, out.Condition.Open, out.Condition.Click, row.ListIDs, row.CampaignID}
+		args := []any{row.ParentCampaignID, out.Condition.Open, out.Condition.Click, row.ListIDs, row.CampaignID, c.tracking()}
 		if err := c.q.AxmFollowupPending.GetContext(ctx, &p, args...); err != nil {
 			return out, err
 		}

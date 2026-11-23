@@ -103,7 +103,8 @@ DELETE FROM axm_campaign_followup_holds WHERE campaign_id = $1;
 -- the list, and people the campaign also reaches through another of its lists.
 -- A reaction is any record of it, a view or click row or the open or click time of the send
 -- record (either can be removed, statistics by an admin and send records after their keeping time).
--- $1 original, $2 open, $3 click, $4 follow-up list ids, $5 follow-up campaign.
+-- $1 original, $2 open, $3 click, $4 follow-up list ids, $5 follow-up campaign, $6 individual
+-- tracking on now (the app's setting).
 -- Keep the judged part identical to axm-followup-pending.
 WITH ev AS (
     -- Whether the original campaign still has the records the condition is judged by. Without
@@ -115,7 +116,7 @@ WITH ev AS (
         AND ($3 = 'any' OR (tracking AND (
                 EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id IS NOT NULL)
                 OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.clicked_at IS NOT NULL)))) AS known
-    FROM (SELECT COALESCE((SELECT value = 'true'::JSONB FROM settings WHERE key = 'privacy.individual_tracking'), FALSE) AS tracking) t
+    FROM (SELECT $6::BOOLEAN AS tracking) t
 ),
 judged AS (
     SELECT sl.subscriber_id, sl.status AS sub_status, l.optin, CASE
@@ -171,7 +172,7 @@ WITH ev AS (
         AND ($3 = 'any' OR (tracking AND (
                 EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id IS NOT NULL)
                 OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.clicked_at IS NOT NULL)))) AS known
-    FROM (SELECT COALESCE((SELECT value = 'true'::JSONB FROM settings WHERE key = 'privacy.individual_tracking'), FALSE) AS tracking) t
+    FROM (SELECT $6::BOOLEAN AS tracking) t
 ),
 judged AS (
     SELECT sl.subscriber_id, sl.status AS sub_status, l.optin, CASE

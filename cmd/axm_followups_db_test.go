@@ -964,7 +964,7 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 		}
 		// Due a moment from now, so that the sender's first check of a round is the one that finds it.
 		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() + INTERVAL '500 milliseconds' WHERE id = $1`, camp)
-		waitFor(t, "the check to wait", waiting(e, "WITH reaction_candidates%"))
+		waitFor(t, "the check to wait", waiting(e, "WITH ev AS%"))
 		// The check has not locked the campaign yet, so the save does not wait for it.
 		cm, err := save(e, camp, time.Now().Add(3*time.Second))
 		if err != nil {
@@ -1009,7 +1009,7 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
-		waitFor(t, "the check to hold both", waiting(e, "WITH reaction_candidates%"))
+		waitFor(t, "the check to hold both", waiting(e, "WITH ev AS%"))
 		// Someone else has the campaign row, so the check, with both held, waits for it last.
 		row, err := e.db.Begin()
 		if err != nil {
@@ -1587,7 +1587,7 @@ func TestFollowupJudgedAfterTheStatisticsWereCleared(t *testing.T) {
 		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
 			t.Fatal(err)
 		}
-		e.db.MustExec(`UPDATE campaigns SET status = 'paused' WHERE id = $1`, camp)
+		e.db.MustExec(`UPDATE campaigns SET status = 'draft' WHERE id = $1`, camp)
 	}
 	run()
 	wantSame(t, "held by the send record's open", e.held(camp), []int{charlie})
@@ -1603,7 +1603,7 @@ func TestFollowupJudgedAfterTheStatisticsWereCleared(t *testing.T) {
 	}
 	// Individual tracking switched off: the same.
 	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
-	e.db.MustExec(`UPDATE settings SET value = 'false' WHERE key = 'privacy.individual_tracking'`)
+	e.a.cfg.Privacy.IndividualTracking = false
 	run()
 	wantSame(t, "held, tracking off", e.held(camp), []int{charlie, daniel})
 }
