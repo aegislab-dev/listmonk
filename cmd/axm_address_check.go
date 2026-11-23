@@ -42,6 +42,9 @@ type addrCheckImportResp struct {
 	// Issues maps the position of an address in the request to its classes. Addresses
 	// with nothing to report are left out. "pending" marks a lookup that has not finished.
 	Issues map[int][]string `json:"issues"`
+	// Suggest maps the position of an address with a misspelled domain to the corrected
+	// address. It is a suggestion only; the import refuses the row and does not change it.
+	Suggest map[int]string `json:"suggest"`
 }
 
 type addrCheckListReq struct {
@@ -86,7 +89,7 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 	}
 
 	verdicts := a.addrCheck.Check(c.Request().Context(), req.Emails, addrCheckBudget)
-	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}}
+	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}, Suggest: map[int]string{}}
 	for i, v := range verdicts {
 		classes := v.Classes()
 		if v.Status == addrcheck.StatusPending {
@@ -94,6 +97,9 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 		}
 		if len(classes) > 0 {
 			out.Issues[i] = classes
+		}
+		if v.Typo {
+			out.Suggest[i] = v.Suggest
 		}
 	}
 	return c.JSON(http.StatusOK, okResp{out})
@@ -181,6 +187,12 @@ func (a *App) CheckListAddresses(c echo.Context) error {
 		emails[i], ids[i], direct[i] = r.Email, r.ID, r.Direct
 	}
 	verdicts := a.addrCheck.Check(ctx, emails, addrCheckBudget)
+	// The campaign and list panels show what they showed before LST-53: the address rules
+	// (Gmail names, misspelled domains) are for the places a subscriber is added, and their
+	// screens come in a later step.
+	for i := range verdicts {
+		verdicts[i].Provider, verdicts[i].Typo, verdicts[i].Suggest = false, false, ""
+	}
 	out.Summary = addrcheck.Summarize(verdicts, ids, direct, out.Detail)
 	return c.JSON(http.StatusOK, okResp{out})
 }

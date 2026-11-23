@@ -16,10 +16,11 @@
   "campaign-tracking-check.cy.js",
   "analytics-proof.cy.js",
   "address-check.cy.js",
+  "address-gate.cy.js",
   "campaign-test-send.cy.js",
   "schedule-time.cy.js",
-  "campaign-delete-guard.cy.js",
-  "campaign-send-confirm.cy.js"
+  "campaign-send-confirm.cy.js",
+  "campaign-delete-guard.cy.js"
  ],
  "smoke": [
   "audit.cy.js",
@@ -63,10 +64,25 @@
    "paths": [
     "frontend/src/components/AddressCheck.vue",
     "cmd/axm_address_check.go",
-    "internal/addrcheck/**"
+    "cmd/axm_address_rules.go",
+    "internal/addrcheck/**",
+    "internal/subimporter/**"
    ],
    "specs": [
-    "address-check.cy.js"
+    "address-check.cy.js",
+    "address-gate.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/SubscriberForm.vue",
+    "frontend/src/views/SubscriberBulkList.vue",
+    "frontend/src/views/Subscribers.vue",
+    "frontend/src/views/Import.vue",
+    "frontend/src/components/ImportColumnMapper.vue"
+   ],
+   "specs": [
+    "address-gate.cy.js"
    ]
   },
   {
@@ -258,7 +274,8 @@
     "import-mapping.cy.js",
     "list-trash.cy.js",
     "campaign-test-send.cy.js",
-    "campaign-recent-exclude.cy.js"
+    "campaign-recent-exclude.cy.js",
+    "address-gate.cy.js"
    ]
   },
   {

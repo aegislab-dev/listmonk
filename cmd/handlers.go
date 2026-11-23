@@ -153,6 +153,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 
 		g.GET("/api/import/subscribers", pm(a.GetImportSubscribers, "subscribers:import"))
 		g.GET("/api/import/subscribers/logs", pm(a.GetImportSubscriberStats, "subscribers:import"))
+		g.GET("/api/import/subscribers/rejected", pm(a.GetImportRejected, "subscribers:import"))
 		g.POST("/api/import/subscribers", pm(a.ImportSubscribers, "subscribers:import"))
 		g.DELETE("/api/import/subscribers", pm(a.StopImportSubscribers, "subscribers:import"))
 		g.POST("/api/subscribers/address-check", pm(a.CheckImportAddresses, "subscribers:import"))

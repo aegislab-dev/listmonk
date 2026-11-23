@@ -21,8 +21,10 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gofrs/uuid/v5"
+	"github.com/knadh/listmonk/internal/addrcheck"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/utils"
 	"github.com/knadh/listmonk/models"
@@ -64,6 +66,14 @@ type Importer struct {
 
 	stop   chan bool
 	status Status
+	// rejected are the rows of the last import that the address rules refused (LST-53),
+	// at most MaxRejectedRows of them. The counts in status are complete.
+	rejected []RejectedRow
+	// importSeq numbers the imports of this process, so that a link to the rejected rows
+	// names the import it was shown for.
+	importSeq int
+	// owner is the user who started the import whose rejected rows are kept.
+	owner int
 	sync.RWMutex
 }
 
@@ -80,6 +90,9 @@ type Options struct {
 
 // Session represents a single import session.
 type Session struct {
+	// id is the number of the import this session runs (Status.AxmImportID): a session that
+	// has been replaced by a newer import writes nothing to the newer import's rejected rows.
+	id       int
 	im       *Importer
 	subQueue chan SubReq
 	log      *log.Logger
@@ -97,6 +110,30 @@ type SessionOpt struct {
 	OverwriteSubStatus bool   `json:"overwrite_subscription_status"`
 	Delim              string `json:"delim"`
 	ListIDs            []int  `json:"lists"`
+
+	// OwnerID is the user who starts the import (set by the handler, never read from the
+	// request): only that user, or one who reads every subscriber, gets the rejected rows.
+	OwnerID int `json:"-"`
+	// AxmExcluded are the rows the column mapping screen left out before the upload (a bad
+	// address, a dead domain, a misspelled one). They are counted with the rows the server
+	// refuses, so that the box that ends the import is complete and survives a reload.
+	AxmExcluded []ExcludedRow `json:"axm_excluded"`
+	// AxmSourceRows says, for each row of the converted file the column mapping uploads, the
+	// row it came from in the file the person chose. The rows the server refuses are then
+	// numbered by the file the person knows.
+	AxmSourceRows []int `json:"axm_source_rows"`
+	// AxmFileRows is the number of records of the file the person chose, when the column
+	// mapping uploads a converted file: the total of the import, as the raw upload of the
+	// same file would count it (rows of the wrong width and repeated rows included).
+	AxmFileRows int `json:"axm_file_rows"`
+}
+
+// ExcludedRow is a row the column mapping left out. Row is its row in the file the person chose.
+type ExcludedRow struct {
+	Row     int    `json:"row"`
+	Email   string `json:"email"`
+	Reason  string `json:"reason"`
+	Suggest string `json:"suggest"`
 }
 
 // Status represents statistics from an ongoing import session.
@@ -105,7 +142,36 @@ type Status struct {
 	Total    int    `json:"total"`
 	Imported int    `json:"imported"`
 	Status   string `json:"status"`
-	logBuf   *bytes.Buffer
+	// AxmRejected counts the rows that were not imported because the address was refused,
+	// by reason (the Reject* constants). AxmRejectedTotal is their sum. See FORK.md, LST-53.
+	AxmRejected      map[string]int `json:"axm_rejected,omitempty"`
+	AxmRejectedTotal int            `json:"axm_rejected_total"`
+	// AxmExcluded is how many of those rows the column mapping left out before the upload.
+	AxmExcluded int `json:"axm_excluded"`
+	// AxmImportID is the number of this import; the rejected rows are asked for by it.
+	AxmImportID int `json:"axm_import_id"`
+	logBuf           *bytes.Buffer
+}
+
+// The reasons a row is refused. format, provider and typo are the codes of addrcheck.
+const (
+	RejectFormat   = addrcheck.ClassFormat   // not an e-mail address
+	RejectDomain   = "domain"                // the domain is blocked or not allowed by the settings
+	RejectProvider = addrcheck.ClassProvider // breaks the mailbox name rules of the provider
+	RejectTypo     = addrcheck.ClassTypo     // the domain is a known misspelling
+)
+
+// MaxRejectedRows is how many refused rows an import keeps for the download.
+const MaxRejectedRows = 50000
+
+// RejectedRow is one refused row of the file. Row is the row of the uploaded file as a
+// spreadsheet numbers it (the header is row 1, blank lines count, a cell with line breaks is
+// one row), so that it is the same number the column mapping screen shows.
+type RejectedRow struct {
+	Row     int
+	Email   string
+	Reason  string
+	Suggest string
 }
 
 // SubReq is a wrapper over the Subscriber model.
@@ -121,6 +187,8 @@ type importStatusTpl struct {
 	Status   string
 	Imported int
 	Total    int
+	// AxmRejected: rows refused by the address rules, by reason (LST-53).
+	AxmRejected map[string]int
 }
 
 var (
@@ -146,6 +214,10 @@ func New(opt Options, db *sql.DB, i *i18n.I18n) *Importer {
 		domainAllowlist: make(map[string]struct{}, len(opt.DomainAllowlist)),
 		status:          Status{Status: StatusNone, logBuf: bytes.NewBuffer(nil)},
 		stop:            make(chan bool, 1),
+		// A number no earlier run of the app has used (milliseconds: a run numbers its imports
+		// one by one, far slower than that), so that a link kept from before a restart cannot
+		// name another import.
+		importSeq: int(time.Now().UnixMilli()),
 	}
 
 	// Domain blocklist.
@@ -179,15 +251,25 @@ func (im *Importer) NewSession(opt SessionOpt) (*Session, error) {
 
 	im.Lock()
 	im.status = Status{Status: StatusImporting,
-		Name:   opt.Filename,
-		logBuf: bytes.NewBuffer(nil)}
+		Name:        opt.Filename,
+		AxmRejected: map[string]int{},
+		logBuf:      bytes.NewBuffer(nil)}
+	im.rejected = nil
+	im.importSeq++
+	im.status.AxmImportID = im.importSeq
+	im.owner = opt.OwnerID
+	seq := im.importSeq
 	im.Unlock()
+	for _, r := range opt.AxmExcluded {
+		im.rejectExcluded(seq, r)
+	}
 
 	s := &Session{
 		im:       im,
 		log:      log.New(im.status.logBuf, "", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
 		subQueue: make(chan SubReq, commitBatchSize),
 		opt:      opt,
+		id:       seq,
 	}
 
 	s.log.Printf("processing '%s'", opt.Filename)
@@ -199,11 +281,74 @@ func (im *Importer) GetStats() Status {
 	im.RLock()
 	defer im.RUnlock()
 
+	var rejected map[string]int
+	if im.status.AxmRejectedTotal > 0 {
+		rejected = make(map[string]int, len(im.status.AxmRejected))
+		for k, v := range im.status.AxmRejected {
+			rejected[k] = v
+		}
+	}
 	return Status{
-		Name:     im.status.Name,
-		Status:   im.status.Status,
-		Total:    im.status.Total,
-		Imported: im.status.Imported,
+		Name:             im.status.Name,
+		Status:           im.status.Status,
+		Total:            im.status.Total,
+		Imported:         im.status.Imported,
+		AxmRejected:      rejected,
+		AxmRejectedTotal: im.status.AxmRejectedTotal,
+		AxmExcluded:      im.status.AxmExcluded,
+		AxmImportID:      im.importSeq,
+	}
+}
+
+// Why GetRejected gives no rows.
+var (
+	ErrRejectedGone   = errors.New("the rejected rows belong to a newer import")
+	ErrRejectedDenied = errors.New("the rejected rows belong to another user")
+)
+
+// GetRejected returns the rows that import number id refused. The owner and the number are
+// checked together with the rows, under one lock: a newer import cannot slip in between.
+// all lets a user who reads every subscriber take the rows of another user's import.
+func (im *Importer) GetRejected(id, userID int, all bool) ([]RejectedRow, error) {
+	im.RLock()
+	defer im.RUnlock()
+	if id != im.importSeq {
+		return nil, ErrRejectedGone
+	}
+	if !all && userID != im.owner {
+		return nil, ErrRejectedDenied
+	}
+	return append([]RejectedRow(nil), im.rejected...), nil
+}
+
+// rejectExcluded counts a row that the column mapping left out. Only the reasons the screen
+// gives are taken, and the values are cut to what a download can carry.
+func (im *Importer) rejectExcluded(session int, r ExcludedRow) {
+	switch r.Reason {
+	case RejectFormat, RejectProvider, RejectTypo, addrcheck.ClassDead, addrcheck.ClassNullMX:
+	default:
+		return
+	}
+	im.Lock()
+	im.status.AxmExcluded++
+	im.Unlock()
+	im.reject(session, RejectedRow{Row: r.Row, Email: clip(r.Email), Reason: r.Reason, Suggest: clip(r.Suggest)})
+}
+
+// reject counts a refused row and keeps it for the download.
+func (im *Importer) reject(session int, row RejectedRow) {
+	im.Lock()
+	defer im.Unlock()
+	if session != im.importSeq {
+		return // a newer import has started: this row is not its row
+	}
+	if im.status.AxmRejected == nil {
+		im.status.AxmRejected = map[string]int{}
+	}
+	im.status.AxmRejected[row.Reason]++
+	im.status.AxmRejectedTotal++
+	if len(im.rejected) < MaxRejectedRows {
+		im.rejected = append(im.rejected, row)
 	}
 }
 
@@ -262,6 +407,8 @@ func (im *Importer) sendNotif(status string) error {
 			Status:   status,
 			Imported: s.Imported,
 			Total:    s.Total,
+
+			AxmRejected: s.AxmRejected,
 		}
 		subject = fmt.Sprintf("%s: %s import", cases.Title(language.Und).String(status), s.Name)
 	)
@@ -485,9 +632,14 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		return errors.New("empty file")
 	}
 
-	// Exclude the header from count.
+	// Exclude the header from count. The rows the column mapping left out for their address
+	// are not in the file but are rows of the import, as their refusal is counted: the total
+	// is on the same footing as the raw upload of the same file (LST-53).
 	s.im.Lock()
 	s.im.status.Total = numLines - 1
+	if s.id == s.im.importSeq {
+		s.im.status.Total += s.im.status.AxmExcluded
+	}
 	s.im.Unlock()
 
 	// Rewind, now that we've done a linecount on the same handler.
@@ -501,6 +653,8 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		s.log.Printf("error reading header from '%s': '%v'", srcPath, err)
 		return err
 	}
+	rows := sheetRows{}
+	rows.next(rd, csvHdr, nil)
 
 	hdrKeys := s.mapCSVHeaders(csvHdr, csvHeaders)
 	// email is a required header.
@@ -512,6 +666,7 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 	var (
 		lnHdr = len(hdrKeys)
 		i     = 0
+		rec   = 0 // the records read so far, the header not counted
 	)
 	for {
 		i++
@@ -527,7 +682,25 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		}
 
 		cols, err := rd.Read()
+		// The line of the file the row starts on: the reader skips blank lines, so counting
+		// rows would run behind a spreadsheet's numbers.
+		rec++
+		fileLine := rows.next(rd, cols, err)
 		if err == io.EOF {
+			// The line count above is only a first guess: a cell with line breaks is one
+			// record over several lines. Once every record is read, the total is the records
+			// of the file (rows of the wrong width included, blank lines not). For the column
+			// mapping it is the records of the file the person chose, so that both uploads of
+			// one file give the same total; never less than what this import has counted.
+			s.im.Lock()
+			if s.id == s.im.importSeq {
+				total := rec - 1 + s.im.status.AxmExcluded
+				if s.opt.AxmFileRows > total {
+					total = s.opt.AxmFileRows
+				}
+				s.im.status.Total = total
+			}
+			s.im.Unlock()
 			break
 		} else if err != nil {
 			if err, ok := err.(*csv.ParseError); ok && err.Err == csv.ErrFieldCount {
@@ -559,10 +732,27 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 			sub.Name = v
 		}
 
+		rawEmail := sub.Email
 		sub, err = s.im.ValidateFields(sub)
 		if err != nil {
 			s.log.Printf("skipping line %d: %v: %v", i, err, cols)
+			reason := RejectDomain
+			if _, ferr := utils.SanitizeEmail(rawEmail); ferr != nil || len(rawEmail) > 1000 {
+				reason = RejectFormat
+			}
+			s.im.reject(s.id, RejectedRow{Row: s.rowOf(rec, fileLine), Email: clip(rawEmail), Reason: reason})
 			continue
+		}
+
+		// An address that cannot receive mail is not added to a list (LST-53). Blocklisting
+		// takes any address: the point there is to keep it out.
+		if s.opt.Mode == ModeSubscribe {
+			if reason, suggest := addrcheck.Rules(sub.Email); reason != "" {
+				// The log is shown to everyone who may import: the address is not written to it.
+				s.log.Printf("skipping line %d: address refused (%s)", i, reason)
+				s.im.reject(s.id, RejectedRow{Row: s.rowOf(rec, fileLine), Email: sub.Email, Reason: reason, Suggest: suggest})
+				continue
+			}
 		}
 
 		// JSON attributes.
@@ -586,6 +776,55 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 	failed = false
 
 	return nil
+}
+
+// sheetRows numbers the records a csv.Reader returns as a spreadsheet numbers rows: blank
+// lines count, and a cell with line breaks in it is one row. A record's row is the line it
+// starts on less the line breaks inside the cells read before it.
+type sheetRows struct{ embedded int }
+
+// next gives the row of the record Read just returned, or 0 when it returned none. A record
+// of the wrong width comes back with ErrFieldCount and is skipped, but its line breaks are
+// counted too, or every later row would be numbered too high.
+func (r *sheetRows) next(rd *csv.Reader, cols []string, err error) int {
+	if err != nil && !errors.Is(err, csv.ErrFieldCount) {
+		return 0
+	}
+	line, _ := rd.FieldPos(0)
+	row := line - r.embedded
+	r.embedded += countLineBreaks(cols)
+	return row
+}
+
+// countLineBreaks counts the line breaks inside the cells of a record.
+func countLineBreaks(cols []string) int {
+	n := 0
+	for _, c := range cols {
+		n += strings.Count(c, "\n")
+	}
+	return n
+}
+
+// rowOf is the row number a refused record is reported under: its row in the file the person
+// chose when the column mapping sent that, else its row in the uploaded file.
+func (s *Session) rowOf(record, fileLine int) int {
+	if record >= 1 && record <= len(s.opt.AxmSourceRows) {
+		return s.opt.AxmSourceRows[record-1]
+	}
+	return fileLine
+}
+
+// clipLen is the longest address kept for a download: an address over 1000 characters is
+// refused as malformed anyway, and a corrected one is not longer than the address.
+const clipLen = 1000
+
+// clip keeps a refused value to a length a download can carry.
+func clip(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > clipLen {
+		return s[:clipLen]
+	}
+	return s
 }
 
 // Stop sends a signal to stop the existing import.

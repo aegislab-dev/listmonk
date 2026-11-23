@@ -98,6 +98,7 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 
 	// Start the importer session.
 	opt.Filename = file.Filename
+	opt.OwnerID = user.ID
 	sess, err := a.newImportSession(opt)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError,
