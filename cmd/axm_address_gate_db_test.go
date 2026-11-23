@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"mime/multipart"
 	"encoding/csv"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,8 +128,8 @@ func TestGateSingleAddReasons(t *testing.T) {
 	}
 	for _, c := range []struct{ email, warn string }{
 		{"kim@ok.test", ""},
-		{"kim@aonly.test", ""},      // an address record is enough
-		{"info@ok.test", "role"},    // a role address comes in, with a warning
+		{"kim@aonly.test", ""},       // an address record is enough
+		{"info@ok.test", "role"},     // a role address comes in, with a warning
 		{"kim@slow.test", "unknown"}, // DNS did not answer: in, with a warning
 		{"info@slow.test", "unknown"},
 	} {
@@ -697,30 +697,93 @@ func TestGateImport(t *testing.T) {
 // webhooks'), and not the others: those do not say which address they were for.
 func TestGateMigrationTwice(t *testing.T) {
 	e := newGateEnv(t)
-	var id int
-	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'Now.Address@ok.test', 'P', 'enabled') RETURNING id`)
-	e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source, meta) VALUES
-		($1, 'hard', 'postmark', '{"Email":"Legacy.Old@ok.test"}'),
-		($1, 'complaint', 'sendgrid', '{"email":"legacy.two@ok.test"}'),
-		($1, 'hard', 'forwardemail', '{"recipient":"legacy.three@ok.test"}'),
-		($1, 'hard', 'sendgrid', '[{"email":"Legacy.Four@ok.test","event":"bounce"}]'),
-		($1, 'hard', 'ses', '{"mail":{"destination":["legacy.five@ok.test"]}}'),
-		($1, 'hard', 'mailbox', '{"from":"mailer-daemon"}'),
-		($1, 'soft', 'postmark', '{"Email":"legacy.soft@ok.test"}')`, id)
+	// A subscriber whose address changed after the bounces, and one whose address never changed.
+	var id, steady int
+	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'was.address@ok.test', 'P', 'enabled') RETURNING id`)
+	e.db.MustExec(`UPDATE subscribers SET email = 'now.address@ok.test' WHERE id = $1`, id)
+	e.get(&steady, `INSERT INTO subscribers (uuid, email, name, status) VALUES (gen_random_uuid(), 'steady.address@ok.test', 'P', 'enabled') RETURNING id`)
+	bounce := func(sub int, typ, source, meta, at string) int {
+		var bid int
+		e.get(&bid, `INSERT INTO bounces (subscriber_id, type, source, meta, created_at) VALUES ($1, $2, $3, $4, `+at+`) RETURNING id`, sub, typ, source, meta)
+		return bid
+	}
+	ts := "1700000000"
+	at := "to_timestamp(" + ts + ")"
+	bounce(id, "hard", "postmark", `{"Email":"Legacy.Old@ok.test"}`, "NOW()")
+	bounce(id, "hard", "forwardemail", `{"recipient":"legacy.three@ok.test"}`, "NOW()")
+	bounce(id, "hard", "lettermint", `{"data":{"recipient":"legacy.six@ok.test"}}`, "NOW()")
+	bounce(id, "complaint", "azure", `{"data":{"recipient":"legacy.seven@ok.test"}}`, "NOW()")
+	bounce(id, "hard", "ses", `{"mail":{"destination":["legacy.five@ok.test"]}}`, "NOW()")
+	// SendGrid keeps the whole batch with each bounce: the bounce is its own event, not the first.
+	bounce(id, "hard", "sendgrid", `[{"email":"delivered@ok.test","event":"delivered","timestamp":`+ts+`},`+
+		`{"email":"Legacy.Four@ok.test","event":"bounce","timestamp":`+ts+`,"bounce_classification":"invalid"},`+
+		`{"email":"legacy.soft2@ok.test","event":"bounce","timestamp":`+ts+`,"bounce_classification":"technical"},`+
+		`{"email":"later@ok.test","event":"bounce","timestamp":1700000099}]`, at)
+	// Two bounces of the same time and type in one batch: which one is not known.
+	bounce(id, "hard", "sendgrid", `[{"email":"either.one@ok.test","event":"bounce","timestamp":1700000500},`+
+		`{"email":"either.two@ok.test","event":"bounce","timestamp":1700000500}]`, "to_timestamp(1700000500)")
+	// The mailbox collector's bounces say no address: the current one only when it never changed.
+	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
+	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
+	bounce(id, "soft", "postmark", `{"Email":"legacy.soft@ok.test"}`, "NOW()")
 	e.db.MustExec(`DELETE FROM axm_bounced_emails`)
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
-		if n := e.bouncedRows(); n != 5 || !e.isBounced("legacy.four@ok.test") || !e.isBounced("legacy.five@ok.test") || !e.isBounced("legacy.old@ok.test") || !e.isBounced("legacy.two@ok.test") ||
-			!e.isBounced("legacy.three@ok.test") || e.isBounced("now.address@ok.test") || e.isBounced("legacy.soft@ok.test") {
+		for _, a := range []string{"legacy.old", "legacy.three", "legacy.four", "legacy.five", "legacy.six", "legacy.seven", "steady.address"} {
+			if !e.isBounced(a + "@ok.test") {
+				t.Fatalf("run %d: %s not taken in", i+1, a)
+			}
+		}
+		for _, a := range []string{"delivered", "later", "legacy.soft", "legacy.soft2", "either.one", "either.two", "now.address", "was.address"} {
+			if e.isBounced(a + "@ok.test") {
+				t.Fatalf("run %d: %s taken in", i+1, a)
+			}
+		}
+		if n := e.bouncedRows(); n != 7 {
 			t.Fatalf("run %d: %d rows", i+1, n)
 		}
 	}
+	var n int
+	e.get(&n, `SELECT COUNT(*) FROM axm_bounced_emails WHERE bounce_id = $1`, edited)
+	if n != 0 {
+		t.Fatal("a mailbox bounce of an edited subscriber was taken in")
+	}
+	e.get(&n, `SELECT COUNT(*) FROM axm_bounced_emails WHERE bounce_id = $1 AND subscriber_id = $2`, kept, steady)
+	if n != 1 {
+		t.Fatal("a mailbox bounce of a subscriber whose address never changed was not taken in")
+	}
 	var trg int
-	e.get(&trg, `SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('axm_bounced_release', 'axm_bounced_record') AND NOT tgisinternal AND tgrelid = 'bounces'::regclass`)
-	if trg != 2 {
+	e.get(&trg, `SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('axm_bounced_release', 'axm_bounced_record', 'axm_email_changed') AND NOT tgisinternal
+		AND tgrelid IN ('bounces'::regclass, 'subscribers'::regclass)`)
+	if trg != 3 {
 		t.Fatalf("%d triggers", trg)
+	}
+}
+
+// The migration counts an edit before it as a change of address: a bounce that says no address
+// is then for the current one only when the mail of its campaign was recorded after the edit.
+func TestGateMigrationCountsEarlierEdits(t *testing.T) {
+	e := newGateEnv(t)
+	var id, camp int
+	e.get(&id, `INSERT INTO subscribers (uuid, email, name, status, created_at, updated_at) VALUES (gen_random_uuid(), 'edited@ok.test', 'P', 'enabled', NOW() - INTERVAL '30 days', NOW() - INTERVAL '20 days') RETURNING id`)
+	e.get(&camp, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'C','S','test@example.invalid','b','email') RETURNING id`)
+	e.db.MustExec(`DELETE FROM axm_email_changes`)
+	e.db.MustExec(`INSERT INTO bounces (subscriber_id, type, source, meta) VALUES ($1, 'hard', 'mailbox', '{}')`, id)
+	if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("edited@ok.test") {
+		t.Fatal("a bounce without a campaign was taken in for a subscriber edited before")
+	}
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() - INTERVAL '10 days')`, camp, id)
+	e.db.MustExec(`INSERT INTO bounces (subscriber_id, campaign_id, type, source, meta) VALUES ($1, $2, 'hard', 'mailbox', '{}')`, id, camp)
+	if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !e.isBounced("edited@ok.test") {
+		t.Fatal("a bounce of a campaign sent after the last edit was not taken in")
 	}
 }
 
@@ -851,5 +914,130 @@ func TestGateRepeatedReportIsReleasedWithTheBounceRecords(t *testing.T) {
 	e.db.MustExec(`DELETE FROM axm_suppressed_emails`)
 	if e.bouncedRows() != 0 {
 		t.Fatalf("%d rows left", e.bouncedRows())
+	}
+}
+
+// A bounce that says no address (the mailbox collector's) is for the current address only when the
+// address did not change since the mail it is for. An opt-in mail names no campaign, and a send
+// record removed by retention proves nothing: neither marks a changed address, whatever else was
+// sent to it since.
+func TestGateDelayedBounceNeedsTheSendOfItsMail(t *testing.T) {
+	e := newGateEnv(t)
+	e.noActionCore()
+	id := e.person2("optin.old@ok.test")
+	if r := e.do(e.a.PatchSubscriber, "PATCH", id, `{"email":"optin.new@ok.test"}`); r.code != 200 {
+		t.Fatalf("%+v", r)
+	}
+	// The first campaign after the change went to the new address.
+	e.sentTo(id, "NOW()")
+	// The bounce of the opt-in mail to the old address: subscriber UUID only.
+	e.hardBounce("", e.uuidOf(id))
+	if e.isBounced("optin.new@ok.test") {
+		t.Fatal("a delayed opt-in bounce marked the new address")
+	}
+	// A campaign sent to the old address whose send record is gone.
+	var camp, campUUID = 0, ""
+	e.get(&camp, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'Old','S','test@example.invalid','b','email') RETURNING id`)
+	e.get(&campUUID, `SELECT uuid::TEXT FROM campaigns WHERE id = $1`, camp)
+	if err := e.a.core.RecordBounce(models.Bounce{SubscriberUUID: e.uuidOf(id), CampaignUUID: campUUID, Type: "hard", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("optin.new@ok.test") {
+		t.Fatal("a bounce of a campaign without a send record marked the new address")
+	}
+	if r := e.add("optin.new2@ok.test"); r.code != 200 {
+		t.Fatalf("%+v", r)
+	}
+	// A campaign recorded as sent well after the change: the current address.
+	e.db.MustExec(`UPDATE axm_email_changes SET changed_at = NOW() - INTERVAL '10 days' WHERE subscriber_id = $1`, id)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() - INTERVAL '2 days')`, camp, id)
+	if err := e.a.core.RecordBounce(models.Bounce{SubscriberUUID: e.uuidOf(id), CampaignUUID: campUUID, Type: "hard", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if !e.isBounced("optin.new@ok.test") {
+		t.Fatal("a bounce of a campaign sent after the change did not mark the current address")
+	}
+	// Sent within the hour after the change (the send may have read the old address): not known.
+	other := e.person2("race.old@ok.test")
+	e.db.MustExec(`UPDATE subscribers SET email = 'race.new@ok.test' WHERE id = $1`, other)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() + INTERVAL '10 minutes')`, camp, other)
+	if err := e.a.core.RecordBounce(models.Bounce{SubscriberUUID: e.uuidOf(other), CampaignUUID: campUUID, Type: "hard", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("race.new@ok.test") {
+		t.Fatal("a send right after the change marked the new address")
+	}
+}
+
+// A bounce over the count of the bounce action leaves no bounce record. Its address is kept all
+// the same, also when it is the subscriber's current one, and it goes with the subscriber's
+// bounce records.
+func TestGateBounceOverTheCountKeepsTheAddress(t *testing.T) {
+	e := newGateEnv(t)
+	e.a.core = core.New(&core.Opt{DB: e.db, Queries: e.q, Log: e.a.log, I18n: e.a.i18n, Constants: core.Constants{
+		BounceActions: map[string]struct {
+			Count  int
+			Action string
+		}{"hard": {1, "none"}, "soft": {3, "none"}, "complaint": {1, "none"}},
+	}}, nil)
+	id := e.person2("cap.first@ok.test")
+	e.hardBounce("cap.first@ok.test", e.uuidOf(id))
+	e.db.MustExec(`UPDATE subscribers SET email = 'cap.second@ok.test' WHERE id = $1`, id)
+	e.hardBounce("cap.second@ok.test", e.uuidOf(id))
+	var records int
+	e.get(&records, `SELECT COUNT(*) FROM bounces WHERE subscriber_id = $1`, id)
+	if records != 1 || !e.isBounced("cap.first@ok.test") || !e.isBounced("cap.second@ok.test") {
+		t.Fatalf("records %d first %v second %v", records, e.isBounced("cap.first@ok.test"), e.isBounced("cap.second@ok.test"))
+	}
+	e.db.MustExec(`UPDATE subscribers SET email = 'cap.third@ok.test' WHERE id = $1`, id)
+	if r := e.add("cap.second@ok.test"); r.code != 400 || r.rule != "bounced" {
+		t.Fatalf("%+v", r)
+	}
+	// The same bounce once more: no second row.
+	e.hardBounce("cap.third@ok.test", e.uuidOf(id))
+	e.hardBounce("cap.third@ok.test", e.uuidOf(id))
+	var rows int
+	e.get(&rows, `SELECT COUNT(*) FROM axm_bounced_emails WHERE email_hash = axm_email_hash('cap.third@ok.test')`)
+	if rows != 1 {
+		t.Fatalf("%d rows for one address", rows)
+	}
+	// Deleting the subscriber's last bounce record releases them all.
+	var bid int
+	e.get(&bid, `SELECT id FROM bounces WHERE subscriber_id = $1`, id)
+	if err := e.a.core.DeleteBounces([]int{bid}, false); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("cap.first@ok.test") || e.isBounced("cap.second@ok.test") || e.isBounced("cap.third@ok.test") {
+		t.Fatal("not released with the last bounce record")
+	}
+
+	// A subscriber blocklisted by hand gets no bounce record at all: deleting their bounces (the
+	// subscriber page) releases the address all the same.
+	blocked := e.person2("by.hand@ok.test")
+	e.db.MustExec(`UPDATE subscribers SET status = 'blocklisted' WHERE id = $1`, blocked)
+	if err := e.a.core.RecordBounce(models.Bounce{SubscriberUUID: e.uuidOf(blocked), Type: "complaint", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if !e.isBounced("by.hand@ok.test") {
+		t.Fatal("the complaint of a blocklisted subscriber was not kept")
+	}
+	if err := e.a.core.DeleteSubscriberBounces(blocked, ""); err != nil {
+		t.Fatal(err)
+	}
+	if e.isBounced("by.hand@ok.test") {
+		t.Fatal("not released by deleting the subscriber's bounces")
+	}
+	// Through the list-bounded call too.
+	e.hardBounce("cap.third@ok.test", e.uuidOf(id))
+	e.hardBounce("cap.third@ok.test", e.uuidOf(id))
+	if locked, err := e.a.core.DeleteSubscriberBouncesBounded(id, []int{e.aList}); err != nil || len(locked) != 0 {
+		t.Fatal(locked, err)
+	}
+	if e.isBounced("cap.third@ok.test") {
+		t.Fatal("not released by the bounded delete")
 	}
 }

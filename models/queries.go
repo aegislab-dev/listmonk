@@ -38,10 +38,11 @@ type Queries struct {
 	AxmAddressCheckAudienceOptin *sqlx.Stmt `query:"axm-address-check-audience-optin"`
 	AxmAddressCheckLinked        *sqlx.Stmt `query:"axm-address-check-linked"`
 
-	AxmAddressFacts  *sqlx.Stmt `query:"axm-address-facts"`
-	AxmBounceAddress *sqlx.Stmt `query:"axm-bounce-address"`
-	AxmBouncedOrphan *sqlx.Stmt `query:"axm-bounced-orphan"`
-	AxmBouncedUnlessRecorded *sqlx.Stmt `query:"axm-bounced-unless-recorded"`
+	AxmAddressFacts             *sqlx.Stmt `query:"axm-address-facts"`
+	AxmBounceAddress            *sqlx.Stmt `query:"axm-bounce-address"`
+	AxmBouncedOrphan            *sqlx.Stmt `query:"axm-bounced-orphan"`
+	AxmBouncedUnlessRecorded    *sqlx.Stmt `query:"axm-bounced-unless-recorded"`
+	AxmBouncedReleaseSubscriber *sqlx.Stmt `query:"axm-bounced-release-subscriber"`
 
 	AxmPreflightAudience    *sqlx.Stmt `query:"axm-preflight-audience"`
 	AxmPreflightSample      *sqlx.Stmt `query:"axm-preflight-sample"`

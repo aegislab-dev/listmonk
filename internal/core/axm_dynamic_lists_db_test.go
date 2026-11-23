@@ -727,8 +727,8 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
-	if len(before) != 24 {
-		t.Fatalf("expected 24 axm functions, got %d", len(before))
+	if len(before) != 26 {
+		t.Fatalf("expected 26 axm functions, got %d", len(before))
 	}
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.

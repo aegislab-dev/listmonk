@@ -560,12 +560,38 @@ func (c *Core) DeleteSubscriberBounces(id int, uuid string) error {
 		uu = uuid
 	}
 
-	if _, err := c.q.DeleteBouncesBySubscriber.Exec(id, uu); err != nil {
+	tx, err := c.db.Beginx()
+	if err != nil {
+		c.log.Printf("error deleting bounces: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError,
+			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.bounces}", "error", pqErrMsg(err)))
+	}
+	defer tx.Rollback()
+	if err := c.deleteSubscriberBouncesTx(tx, id, uu); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		c.log.Printf("error deleting bounces: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.bounces}", "error", pqErrMsg(err)))
 	}
 
+	return nil
+}
+
+// deleteSubscriberBouncesTx deletes the bounce records of a subscriber and, with them, the
+// addresses kept for their bounces that left no record (LST-56).
+func (c *Core) deleteSubscriberBouncesTx(tx *sqlx.Tx, id int, uuid any) error {
+	if _, err := tx.Stmtx(c.q.AxmBouncedReleaseSubscriber).Exec(id, uuid); err != nil {
+		c.log.Printf("error deleting bounces: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError,
+			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.bounces}", "error", pqErrMsg(err)))
+	}
+	if _, err := tx.Stmtx(c.q.DeleteBouncesBySubscriber).Exec(id, uuid); err != nil {
+		c.log.Printf("error deleting bounces: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError,
+			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.bounces}", "error", pqErrMsg(err)))
+	}
 	return nil
 }
 

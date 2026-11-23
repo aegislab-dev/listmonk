@@ -96,13 +96,13 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		b.CreatedAt,
 		action.Count,
 		action.Action)
-	if err == nil && permanent && strings.TrimSpace(b.Email) != "" {
-		// A bounce that names its address and left no record of its own (the subscriber was
-		// already blocklisted) still keeps the address.
-		if _, e := tx.Exec("SAVEPOINT axm_orphan"); e == nil {
-			if _, e := tx.Stmtx(c.q.AxmBouncedUnlessRecorded).Exec(strings.TrimSpace(b.Email), b.Type); e != nil {
+	if err == nil && permanent {
+		// A bounce that left no record of its own (the subscriber was already blocklisted, or over
+		// the count of the bounce action) still keeps the address named above.
+		if _, e := tx.Exec("SAVEPOINT axm_unrecorded"); e == nil {
+			if _, e := tx.Stmtx(c.q.AxmBouncedUnlessRecorded).Exec(b.SubscriberUUID, b.Email, b.Type); e != nil {
 				c.log.Printf("error remembering a bounced address: %v", e)
-				_, _ = tx.Exec("ROLLBACK TO SAVEPOINT axm_orphan")
+				_, _ = tx.Exec("ROLLBACK TO SAVEPOINT axm_unrecorded")
 			}
 		}
 	}

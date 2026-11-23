@@ -222,6 +222,7 @@
     "frontend/src/teams.js",
     "cmd/axm_teams*.go",
     "cmd/axm_sub_boundary*.go",
+    "internal/core/axm_sub_boundary*.go",
     "internal/core/axm_teams*.go"
    ],
    "specs": [
