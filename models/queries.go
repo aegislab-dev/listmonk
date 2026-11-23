@@ -41,6 +41,7 @@ type Queries struct {
 	AxmAddressFacts  *sqlx.Stmt `query:"axm-address-facts"`
 	AxmBounceAddress *sqlx.Stmt `query:"axm-bounce-address"`
 	AxmBouncedOrphan *sqlx.Stmt `query:"axm-bounced-orphan"`
+	AxmBouncedUnlessRecorded *sqlx.Stmt `query:"axm-bounced-unless-recorded"`
 
 	AxmPreflightAudience    *sqlx.Stmt `query:"axm-preflight-audience"`
 	AxmPreflightSample      *sqlx.Stmt `query:"axm-preflight-sample"`

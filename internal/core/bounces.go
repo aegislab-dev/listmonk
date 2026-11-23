@@ -96,8 +96,21 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		b.CreatedAt,
 		action.Count,
 		action.Action)
+	if err == nil && permanent && strings.TrimSpace(b.Email) != "" {
+		// A bounce that names its address and left no record of its own (the subscriber was
+		// already blocklisted) still keeps the address.
+		if _, e := tx.Exec("SAVEPOINT axm_orphan"); e == nil {
+			if _, e := tx.Stmtx(c.q.AxmBouncedUnlessRecorded).Exec(strings.TrimSpace(b.Email), b.Type); e != nil {
+				c.log.Printf("error remembering a bounced address: %v", e)
+				_, _ = tx.Exec("ROLLBACK TO SAVEPOINT axm_orphan")
+			}
+		}
+	}
 	if err == nil {
 		err = tx.Commit()
+	} else {
+		// Give the connection back before the statement below asks the pool for another one.
+		_ = tx.Rollback()
 	}
 
 	if err != nil {
