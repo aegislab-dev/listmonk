@@ -962,12 +962,27 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 		if _, err := tx.Exec(`SELECT 1 FROM subscribers WHERE id = $1 FOR UPDATE`, people[0]); err != nil {
 			t.Fatal(err)
 		}
-		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
+		// Due a moment from now, so that the sender's first check of a round is the one that finds it.
+		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() + INTERVAL '500 milliseconds' WHERE id = $1`, camp)
 		waitFor(t, "the check to wait", waiting(e, "WITH reaction_candidates%"))
 		// The check has not locked the campaign yet, so the save does not wait for it.
 		cm, err := save(e, camp, time.Now().Add(3*time.Second))
-		if err != nil || cm.Status != models.CampaignStatusScheduled {
-			t.Fatalf("save: %v %s", err, cm.Status)
+		if err != nil {
+			// The schedule fell due between the round's first check and the sender's query: the sender
+			// started the campaign first and is checking it now. The save is refused, and the campaign
+			// goes out at its earlier time with the check made then (both still held).
+			var he *echo.HTTPError
+			if !errors.As(err, &he) || he.Code != http.StatusBadRequest || status(e, camp) != "running" {
+				t.Fatalf("save: %v, campaign %s", err, status(e, camp))
+			}
+			tx.Rollback()
+			waitFor(t, "the follow-up to finish", func() bool { return status(e, camp) == "finished" })
+			wantSame(t, "sent to", e.gate.sentIDs(), nil)
+			t.Log("the sender started the campaign before the save; the save was refused")
+			return
+		}
+		if cm.Status != models.CampaignStatusScheduled {
+			t.Fatalf("saved, but the campaign is %s", cm.Status)
 		}
 		e.db.MustExec(`UPDATE subscriber_lists SET status = 'confirmed' WHERE subscriber_id = ANY($1::INT[]) AND list_id = $2`, pq.Array(people), e.aList)
 		tx.Rollback()
