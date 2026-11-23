@@ -614,6 +614,7 @@ DROP TABLE IF EXISTS axm_campaign_recent_rules CASCADE;
 DROP TABLE IF EXISTS axm_test_addresses CASCADE;
 DROP TABLE IF EXISTS axm_campaign_followup_holds CASCADE;
 DROP TABLE IF EXISTS axm_campaign_followup_members CASCADE;
+DROP TABLE IF EXISTS axm_tracking_off CASCADE;
 DROP TABLE IF EXISTS axm_campaign_followup_reactions CASCADE;
 DROP TABLE IF EXISTS axm_campaign_followups CASCADE;
 
@@ -1184,9 +1185,6 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followups (
     -- The follow-up's version (see axm_followup_touch) and the version its last check was made for.
     version            INTEGER NOT NULL DEFAULT 0,
     checked_version    INTEGER NULL,
-    -- Set when opens and clicks stopped being recorded per subscriber while the follow-up was
-    -- waiting: reactions in that time cannot be seen, so nobody's can be judged.
-    tracking_gap       BOOLEAN NOT NULL DEFAULT FALSE,
     created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CHECK (campaign_id <> parent_campaign_id)
@@ -1231,12 +1229,22 @@ CREATE TRIGGER axm_followup_touch_campaign AFTER UPDATE OF status, send_at ON ca
 DROP TRIGGER IF EXISTS axm_followup_touch_lists ON campaign_lists;
 CREATE TRIGGER axm_followup_touch_lists AFTER INSERT OR DELETE OR UPDATE OF list_id, campaign_id ON campaign_lists
     FOR EACH ROW EXECUTE FUNCTION axm_followup_touch();
--- Who the draft was made for: the people put on the follow-up list when it was made. They are
--- judged before sending whatever happens to their list row or to the original's send records.
+-- Who got the original campaign, kept when the follow-up is made, and whether the draft was made
+-- for them (made_for: put on the follow-up list then). They are judged before sending whatever
+-- happens to their list row or to the original's send records, which expire.
 CREATE TABLE IF NOT EXISTS axm_campaign_followup_members (
     campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
     subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    made_for      BOOLEAN NOT NULL,
     PRIMARY KEY (campaign_id, subscriber_id)
+);
+-- The times opens and clicks were not recorded per subscriber (individual tracking off, or
+-- tracking switched off). Settings take effect when the app starts, so a time begins at a start
+-- with tracking off and ends at the next start with it on. A follow-up of a campaign that went
+-- out before such a time ended cannot see its people's reactions of that time.
+CREATE TABLE IF NOT EXISTS axm_tracking_off (
+    started_at TIMESTAMP WITH TIME ZONE PRIMARY KEY,
+    ended_at   TIMESTAMP WITH TIME ZONE NULL
 );
 -- Opens and clicks of the original campaign since the follow-up was made, kept as they are
 -- recorded: clearing the statistics or the send records' keeping time does not take them away.
@@ -1288,8 +1296,7 @@ BEGIN
                 WHERE EXISTS (SELECT 1 FROM subscriber_lists sl WHERE sl.list_id = lid
                         AND sl.subscriber_id = NEW.subscriber_id AND sl.status != 'unsubscribed')
                     AND NOT EXISTS (SELECT 1 FROM subscribers s WHERE s.id = NEW.subscriber_id AND s.status = 'blocklisted')
-                    AND (EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = f.campaign_id AND m.subscriber_id = NEW.subscriber_id)
-                        OR EXISTS (SELECT 1 FROM axm_campaign_sends cs WHERE cs.campaign_id = f.parent_campaign_id AND cs.subscriber_id = NEW.subscriber_id))
+                    AND EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = f.campaign_id AND m.subscriber_id = NEW.subscriber_id)
                     AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.campaign_id AND x.subscriber_id = NEW.subscriber_id)
                     AND NOT axm_followup_reaches_otherwise(f.campaign_id, NEW.subscriber_id, ARRAY[lid])
                 ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;

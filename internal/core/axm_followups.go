@@ -152,18 +152,25 @@ func (c *Core) makeFollowupTx(ctx context.Context, tx *sqlx.Tx, out *models.Reac
 	if d.UserID > 0 {
 		by = d.UserID
 	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupInsert).ExecContext(ctx, id, out.Campaign.ID, out.List.UUID, cond, counts, by, !c.tracking()); err != nil {
+	if _, err := tx.Stmtx(c.q.AxmFollowupInsert).ExecContext(ctx, id, out.Campaign.ID, out.List.UUID, cond, counts, by); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pgUniqueViolation {
 			return c.followupExistsError(ctx, out.Campaign.ID)
 		}
 		return err
 	}
-	if _, err := tx.Stmtx(c.q.AxmFollowupMembers).ExecContext(ctx, id, out.List.ID); err != nil {
+	if _, err := tx.Stmtx(c.q.AxmFollowupMembers).ExecContext(ctx, id, out.List.ID, out.Campaign.ID); err != nil {
 		return err
 	}
 	if _, err := tx.Stmtx(c.q.AxmFollowupReactionsNow).ExecContext(ctx, id, out.Campaign.ID); err != nil {
 		return err
+	}
+	// Made while opens and clicks are not recorded per subscriber: that time is noted (it is
+	// otherwise noted when the app starts with tracking off).
+	if !c.tracking() {
+		if _, err := tx.Stmtx(c.q.AxmTrackingOffStart).ExecContext(ctx); err != nil {
+			return err
+		}
 	}
 	out.Followup = &models.FollowupRef{ID: id, Name: o.Name, Status: models.CampaignStatusDraft}
 	return nil
@@ -259,10 +266,15 @@ func (c *Core) SetIndividualTracking(f func() bool) { c.individualTracking = f }
 
 func (c *Core) tracking() bool { return c.individualTracking != nil && c.individualTracking() }
 
-// MarkFollowupTrackingGap notes on the follow-ups still to be sent that opens and clicks are not
-// recorded per subscriber now (the app calls it at start when tracking is off).
-func (c *Core) MarkFollowupTrackingGap() error {
-	_, err := c.q.AxmFollowupTrackingGap.Exec()
+// NoteTracking records, when the app starts, whether opens and clicks are recorded per subscriber
+// from now on: a time without it begins (off) or ends (on). Follow-ups of campaigns that went out
+// before such a time ended cannot judge "did not open/click" (LST-47).
+func (c *Core) NoteTracking(on bool) error {
+	q := c.q.AxmTrackingOffStart
+	if on {
+		q = c.q.AxmTrackingOffEnd
+	}
+	_, err := q.Exec()
 	return err
 }
 
@@ -322,6 +334,11 @@ func (c *Core) recheckOne(ctx context.Context, f followupDue, s models.ReactionS
 	}
 	defer tx.Rollback()
 
+	// Reactions on record now are kept first, so the judgement below and every later one sees
+	// them even once their records are cleared or expire.
+	if _, err := tx.Stmtx(c.q.AxmFollowupReactionsNow).ExecContext(ctx, f.CampaignID, f.ParentID); err != nil {
+		return 0, false, err
+	}
 	if _, err := tx.Stmtx(c.q.AxmFollowupUnhold).ExecContext(ctx, f.CampaignID); err != nil {
 		return 0, false, err
 	}

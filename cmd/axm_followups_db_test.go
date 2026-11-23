@@ -586,7 +586,7 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	if !ok || !endOK || !strings.Contains(string(mig), "`"+start+block+end+"`") {
 		t.Fatal("schema and migration SQL of axm_campaign_followups differ")
 	}
-	e.db.MustExec(`DROP TABLE axm_campaign_followup_holds, axm_campaign_followup_members, axm_campaign_followup_reactions, axm_campaign_followups`)
+	e.db.MustExec(`DROP TABLE axm_campaign_followup_holds, axm_campaign_followup_members, axm_campaign_followup_reactions, axm_campaign_followups, axm_tracking_off`)
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
@@ -1657,11 +1657,14 @@ func TestFollowupHeldWhileTrackingIsOff(t *testing.T) {
 	}
 	run()
 	wantSame(t, "held, tracking off", e.held(camp), []int{charlie, daniel})
-	// The app starts with tracking off and notes it; tracking comes back on later.
-	if err := e.a.core.MarkFollowupTrackingGap(); err != nil {
+	// The app starts with tracking off and notes it; later it starts with tracking on again.
+	if err := e.a.core.NoteTracking(false); err != nil {
 		t.Fatal(err)
 	}
 	e.a.cfg.Privacy.DisableTracking = false
+	if err := e.a.core.NoteTracking(true); err != nil {
+		t.Fatal(err)
+	}
 	run()
 	wantSame(t, "held after a time without tracking", e.held(camp), []int{charlie, daniel})
 	if _, info := e.callGet(e.admin, camp); info.Recheck == nil || info.Recheck.Unknown != 2 {
@@ -1747,19 +1750,34 @@ func TestFollowupReactionAfterTheCheckHoldsAtOnce(t *testing.T) {
 	}
 }
 
-// Review 17 (2): the draft is made while tracking is switched off; tracking comes back on. The
-// reactions of the time without tracking cannot be seen, so everyone is held back.
+// Review 17/18 (2): the draft is made while tracking is switched off; tracking comes back on (the
+// app starts with it on). The reactions of the time without tracking cannot be seen, so everyone
+// is held back, also in a draft made again for the same original after tracking is on.
 func TestFollowupMadeWhileTrackingIsOffHoldsEveryone(t *testing.T) {
 	t.Parallel()
 	e := newFollowupEnv(t)
 	e.a.cfg.Privacy.DisableTracking = true
 	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
 	e.a.cfg.Privacy.DisableTracking = false
-	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
-	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+	if err := e.a.core.NoteTracking(true); err != nil {
 		t.Fatal(err)
 	}
+	run := func(camp int) {
+		t.Helper()
+		e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+			t.Fatal(err)
+		}
+		e.db.MustExec(`UPDATE campaigns SET status = 'draft' WHERE id = $1`, camp)
+	}
+	run(got.Followup.ID)
 	wantSame(t, "held", e.held(got.Followup.ID), []int{e.ids[2], e.ids[3]})
+	// The draft is deleted and made again with tracking on: the original went out before the time
+	// without tracking ended, so it is the same.
+	e.db.MustExec(`DELETE FROM campaigns WHERE id = $1`, got.Followup.ID)
+	again := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	run(again.Followup.ID)
+	wantSame(t, "held in the draft made again", e.held(again.Followup.ID), []int{e.ids[2], e.ids[3]})
 }
 
 // Review 17 (3): Charlie's open is only in the original's send record when the draft is made (the
@@ -1780,16 +1798,61 @@ func TestFollowupOpenOnlyInTheSendRecordIsKept(t *testing.T) {
 	wantSame(t, "held", e.held(got.Followup.ID), []int{charlie})
 }
 
-// Review 17 (4): on an "opened and did not click" follow-up, someone added by hand who got the
-// original but never opened it does not meet "opened": he is held back. Alice, whom the draft was
-// made for, is sent to.
+// Review 17/18 (1): on an "opened and did not click" follow-up, Daniel, who got the original but
+// never opened it, is added by hand. He does not meet "opened" and is held back, also after the
+// original's send records expired.
 func TestFollowupAddedByHandMustMeetADidCondition(t *testing.T) {
 	t.Parallel()
 	e := newFollowupEnv(t)
 	got := e.makeFollowup(e.admin, `{"open":"yes","click":"no","no_team":true,"followup":true}`)
 	wantSame(t, "made for", e.members(got.List.ID), []int{e.ids[0]})
+	daniel := e.ids[3]
+	if n := e.count(`SELECT (SELECT COUNT(*) FROM campaign_views WHERE campaign_id = $1 AND subscriber_id = $2) + (SELECT COUNT(*) FROM link_clicks WHERE campaign_id = $1 AND subscriber_id = $2)`, e.campID, daniel); n != 0 {
+		t.Fatalf("Daniel reacted to the original (%d)", n)
+	}
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, daniel, got.List.ID)
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "held", e.held(got.Followup.ID), []int{daniel})
+}
+
+// Review 18 (2): Charlie opens the original while the draft is being made (after its snapshot,
+// before its commit); then the statistics are cleared and the send records expire. The open is
+// kept for the follow-up once the draft is committed, so he is held back.
+func TestFollowupOpenWhileTheDraftIsMadeIsKept(t *testing.T) {
+	e := newFollowupEnv(t)
 	charlie := e.ids[2]
-	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, charlie, got.List.ID)
+	lock, err := e.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback()
+	if _, err := lock.Exec(`LOCK TABLE axm_campaign_followup_members IN EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		code int
+		data json.RawMessage
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, data := e.sendRequest(true, e.admin, e.campID, `{"open":"no","no_team":true,"followup":true}`)
+		done <- result{code, data}
+	}()
+	waitFor(t, "the draft to wait", e.lockWaiting("%INSERT INTO axm_campaign_followup_members%"))
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
+	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NOW() WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
+	lock.Rollback()
+	r := <-done
+	var got models.ReactionResult
+	if r.code != http.StatusOK || json.Unmarshal(r.data, &got) != nil || got.Followup == nil {
+		t.Fatalf("made: %d %s", r.code, r.data)
+	}
+	e.db.MustExec(`DELETE FROM campaign_views WHERE campaign_id = $1`, e.campID)
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, e.campID)
 	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
 	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
 		t.Fatal(err)

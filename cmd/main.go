@@ -324,11 +324,9 @@ func main() {
 	// AXM (LST-47): the check before a follow-up starts needs to know whether opens and clicks
 	// are recorded per subscriber now (settings can change it while the app runs).
 	app.core.SetIndividualTracking(app.followupTracking)
-	if !app.followupTracking() {
-		// Settings take effect at a start: reactions from now on are not recorded per subscriber.
-		if err := app.core.MarkFollowupTrackingGap(); err != nil {
-			lo.Printf("error noting the tracking gap on follow-up campaigns: %v", err)
-		}
+	// Settings take effect at a start: note whether reactions are recorded per subscriber from now on.
+	if err := app.core.NoteTracking(app.followupTracking()); err != nil {
+		lo.Printf("error noting the tracking state for follow-up campaigns: %v", err)
 	}
 
 	importAuditHook = app.auditImportFinish
