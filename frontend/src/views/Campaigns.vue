@@ -265,7 +265,7 @@
             </b-tooltip>
           </a>
           <a v-if="$can('campaigns:manage')" href="#"
-            @click.prevent="$utils.confirm($t('campaigns.confirmDelete', { name: props.row.name }), () => deleteCampaign(props.row))"
+            @click.prevent="confirmDeleteCampaign(props.row)"
             data-cy="btn-delete" :aria-label="$t('globals.buttons.delete')">
             <b-icon icon="trash-can-outline" size="is-small" />
           </a>
@@ -578,11 +578,35 @@ export default Vue.extend({
       });
     },
 
+    // A campaign that is sending cannot be deleted: say so instead of asking (LST-55). The
+    // server refuses it too, and also one that has sent mail (409, shown in a dialog).
+    confirmDeleteCampaign(c) {
+      if (['running', 'paused'].includes(c.status)) {
+        this.$utils.notice(
+          this.$t('campaigns.axmDeleteBlockedTitle'),
+          this.$t('campaigns.axmDeleteSending', { name: c.name, status: this.$t(`campaigns.status.${c.status}`) }),
+        );
+        return;
+      }
+      this.$utils.confirm(this.$t('campaigns.confirmDelete', { name: c.name }), () => this.deleteCampaign(c));
+    },
+
     deleteCampaign(c) {
       this.$api.deleteCampaign(c.id).then(() => {
         this.getCampaigns();
         this.$utils.toast(this.$t('globals.messages.deleted', { name: c.name }));
-      });
+      }).catch((err) => this.onDeleteFailed(err, 'campaigns.axmDeleteBlockedTitle'));
+    },
+
+    // The server refuses (409) to delete a campaign that is sending or has sent mail, with
+    // the reason in its message; any other failure is a toast, as for every request.
+    onDeleteFailed(err, titleKey) {
+      const msg = err.response && err.response.data && err.response.data.message;
+      if (err.response && err.response.status === 409 && msg) {
+        this.$utils.notice(this.$t(titleKey), msg);
+        return;
+      }
+      this.$utils.toast(msg || err.toString(), 'is-danger');
     },
 
     // Mark all campaigns in the query as selected.
@@ -619,7 +643,8 @@ export default Vue.extend({
               this.numSelectedCampaigns,
               { num: this.numSelectedCampaigns, name },
             ));
-          });
+          })
+          .catch((err) => this.onDeleteFailed(err, 'campaigns.axmDeleteBlockedManyTitle'));
       };
 
       this.$utils.confirm(this.$tc(

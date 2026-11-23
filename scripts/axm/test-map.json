@@ -17,7 +17,8 @@
   "analytics-proof.cy.js",
   "address-check.cy.js",
   "campaign-test-send.cy.js",
-  "schedule-time.cy.js"
+  "schedule-time.cy.js",
+  "campaign-delete-guard.cy.js"
  ],
  "smoke": [
   "audit.cy.js",
@@ -37,7 +38,8 @@
    ],
    "specs": [
     "audit.cy.js",
-    "campaign-test-send.cy.js"
+    "campaign-test-send.cy.js",
+    "campaign-delete-guard.cy.js"
    ]
   },
   {
@@ -138,7 +140,8 @@
     "reaction-lists.cy.js",
     "campaign-test-send.cy.js",
     "schedule-time.cy.js",
-    "from-addresses.cy.js"
+    "from-addresses.cy.js",
+    "campaign-delete-guard.cy.js"
    ]
   },
   {
@@ -156,7 +159,8 @@
     "list-trash.cy.js",
     "campaign-test-send.cy.js",
     "schedule-time.cy.js",
-    "from-addresses.cy.js"
+    "from-addresses.cy.js",
+    "campaign-delete-guard.cy.js"
    ]
   },
   {
@@ -326,7 +330,8 @@
     "queries/axm_audit.sql"
    ],
    "specs": [
-    "audit.cy.js"
+    "audit.cy.js",
+    "campaign-delete-guard.cy.js"
    ]
   },
   {

@@ -1165,3 +1165,35 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 마이그레이션 `v6.2.1-axm.15`는 설정 행 하나를 넣을 뿐이고 새 테이블·시퀀스는 없다. 이전 이미지로 되돌리면 행은 남고 이전 이미지는 읽지 않는다(From 검사만 사라진다).
 
 업스트림 v7로 옮길 때: v7은 From을 여러 개 두고 자동완성하는 자유 입력이다. 그 입력을 이 목록에 맞춰 제한하는 화면 연결과 서버 검사를 다시 붙인다. 운영 반영 때는 목록에 실제 쓰는 주소를 먼저 넣고, `app.from_email`(기본 `aegislab_korea@`)을 팀이 쓰는 주소로 바꿀지 정한다. 목록 밖 기존 초안은 열 때 경고가 뜬다.
+
+## 캠페인 삭제 제한 (LST-55)
+
+2026-11-23 00:43 캠페인 #60 이 발송 도중 멈추고 삭제됐다. 발송 중 캠페인을 지우면 이미 큐에 든 메일은 나가는데 발송 기록(`axm_campaign_sends`)은 남지 않고(`axm-record-campaign-sends` 가 `JOIN campaigns`), 삭제는 발송 기록을 CASCADE 로 함께 지워 「최근 발송 제외」·반응 집계가 그 수신자를 못 본다. 그래서 서버가 삭제를 거절한다. 스키마·마이그레이션 변경은 없다.
+
+### 거절되는 캠페인
+단건(`DELETE /api/campaigns/:id`)·일괄(`DELETE /api/campaigns?id=…` 또는 검색·`all`) 모두 HTTP 409. 다음 중 하나라도 맞으면:
+
+- 상태가 `running` 또는 `paused` — 먼저 취소해야 한다.
+- `axm_campaign_sends` 에 이 캠페인의 행이 있다.
+- `sent > 0` 이고 시작(없으면 생성) 시각이 12개월(`core.SendRetentionMonths`) 안이다 — 발송 기록이 아직 쓰이는 중일 수 있다(취소 직후 몇 초).
+
+발송 기록 보존 기간이 지나 기록이 정리되면 그 캠페인은 다시 지울 수 있다. 한 번도 보내지 않은 캠페인(임시 저장, 시작 전 예약, 시험 발송만 한 것)은 지금처럼 지워진다. 일괄 삭제는 하나라도 걸리면 아무것도 지우지 않고, 걸린 수와 앞 3개의 이름을 알려 준다.
+
+### 구현
+- `queries/axm_audit.sql` 의 `axm-delete-campaigns-guarded` 한 문장이 대상 행을 `FOR UPDATE` 로 잡고, 걸린 행이 없을 때만 같은 문장에서 `DELETE` 한다. 대상 조건은 upstream 의 `delete-campaigns` 와 같다. 확인과 삭제가 한 문장이라 그 사이에 상태가 바뀌지 않는다. upstream 의 `Core.DeleteCampaign(s)` 와 `queries/campaigns.sql` 은 그대로 두었고 이 포크는 쓰지 않는다.
+- `internal/core/axm_audit.go` 의 `DeleteCampaignsGuarded` → `cmd/campaigns.go` 의 `DeleteCampaign`·`DeleteCampaigns`. 거절 문구는 i18n `campaigns.axmDeleteSending`·`axmDeleteSent`·`axmDeleteBlockedMany`.
+- 화면(`frontend/src/views/Campaigns.vue`): 행의 휴지통이 running·paused 이면 확인 창 대신 안내 창만 띄우고 요청을 보내지 않는다. 그 밖에는 지금의 확인 창이고, 서버가 409 를 주면 그 문구를 안내 창으로 보인다(`api` 의 `disableToast`). 다른 오류는 토스트.
+
+### 삭제 감사 행
+`campaign.delete` 행이 삭제 시점의 값을 남긴다. `count` = 보낸 수, `detail` = `{status, sent, to_send}`(감사 화면에는 상태·보낸 수·보낼 대상 수로 보인다). 값은 삭제 문장이 돌려준 것이라 삭제 시점의 값이다. 감사 행 쓰기는 삭제와 별도 문장이라 실패하면 로그만 남는다(이전과 같다). 거절된 시도는 감사에 남기지 않는다.
+
+### 알려진 한계
+- 발송한 캠페인(취소한 실수 발송 포함)은 12개월 동안 목록에 남는다. 숨김·보관 표시는 만들지 않았다.
+- 발송 시작 직후 `sent` 가 아직 0 이고 기록도 쓰이기 전에 취소하고 바로 지우면 통과한다(몇 초). 발송기의 진행 상태는 삭제 조건에 넣지 않았다.
+- 이전 이미지(`axm.7` 이하)로 되돌리면 제한이 사라진다(마이그레이션이 없다).
+
+### upstream 을 따라갈 때
+upstream 이 `DeleteCampaign(s)` 핸들러를 바꾸면 `cmd/campaigns.go` 의 두 핸들러가 충돌한다. 새 핸들러가 `DeleteCampaignsGuarded` 를 부르는 구조를 지킨다.
+
+### 검증
+`cmd/axm_campaign_delete_db_test.go`(DB 시험: 거절·허용·일괄·권한 밖·감사 값), `frontend/cypress/e2e/campaign-delete-guard.cy.js`.

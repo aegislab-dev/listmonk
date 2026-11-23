@@ -42,12 +42,12 @@ class SelectSpecTest(unittest.TestCase):
     def test_feature_file_selects_its_spec(self):
         r = pick('frontend/src/views/Audit.vue')
         # campaign-test-send 도 감사 화면(/admin/settings/audit)과 감사 API 를 단언한다.
-        self.assertEqual(r['specs'], ['audit.cy.js', 'campaign-test-send.cy.js'])
+        self.assertEqual(r['specs'], ['audit.cy.js', 'campaign-test-send.cy.js', 'campaign-delete-guard.cy.js'])
         self.assertTrue(r['unit'])
 
     def test_backend_feature_file(self):
         r = pick('cmd/axm_audit.go')
-        self.assertEqual(r['specs'], ['audit.cy.js', 'campaign-test-send.cy.js'])
+        self.assertEqual(r['specs'], ['audit.cy.js', 'campaign-test-send.cy.js', 'campaign-delete-guard.cy.js'])
 
     def test_changed_spec_runs_itself(self):
         r = pick('frontend/cypress/e2e/list-draw.cy.js')
