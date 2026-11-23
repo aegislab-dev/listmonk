@@ -1187,12 +1187,14 @@ CREATE TABLE IF NOT EXISTS axm_bounced_emails (
 CREATE INDEX IF NOT EXISTS idx_axm_bounced_hash ON axm_bounced_emails(email_hash);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_axm_bounced_bounce ON axm_bounced_emails(bounce_id) WHERE bounce_id IS NOT NULL;
 
--- The bounces the webhooks recorded say in their payload which address they were for.
+-- The bounces the webhooks recorded say in their payload which address they were for
+-- (Postmark, SendGrid: an object or a list of events, ForwardEmail, Lettermint, SES).
 INSERT INTO axm_bounced_emails (email_hash, kind, bounce_id)
     SELECT axm_email_hash(a.addr), b.type::TEXT, b.id
     FROM bounces b
     CROSS JOIN LATERAL (SELECT COALESCE(NULLIF(b.meta->>'Email', ''), NULLIF(b.meta->>'email', ''),
-        NULLIF(b.meta->>'recipient', ''), NULLIF(b.meta->'data'->>'recipient', '')) AS addr) a
+        NULLIF(b.meta->>'recipient', ''), NULLIF(b.meta->'data'->>'recipient', ''),
+        NULLIF(b.meta->0->>'email', ''), NULLIF(b.meta->'mail'->'destination'->>0, '')) AS addr) a
     WHERE b.type IN ('hard', 'complaint') AND a.addr LIKE '%@%'
     ON CONFLICT (bounce_id) WHERE bounce_id IS NOT NULL DO NOTHING;
 

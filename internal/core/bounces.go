@@ -80,7 +80,7 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		// address must not lose the bounce: a savepoint takes it back.
 		if _, err := tx.Exec("SAVEPOINT axm_bounced"); err == nil {
 			var set string
-			if err := tx.Stmtx(c.q.AxmBounceAddress).Get(&set, b.SubscriberUUID, b.Email); err != nil {
+			if err := tx.Stmtx(c.q.AxmBounceAddress).Get(&set, b.SubscriberUUID, b.Email, b.CampaignUUID); err != nil {
 				c.log.Printf("error naming the address of a bounce: %v", err)
 				_, _ = tx.Exec("ROLLBACK TO SAVEPOINT axm_bounced")
 			}

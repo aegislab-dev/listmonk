@@ -703,6 +703,8 @@ func TestGateMigrationTwice(t *testing.T) {
 		($1, 'hard', 'postmark', '{"Email":"Legacy.Old@ok.test"}'),
 		($1, 'complaint', 'sendgrid', '{"email":"legacy.two@ok.test"}'),
 		($1, 'hard', 'forwardemail', '{"recipient":"legacy.three@ok.test"}'),
+		($1, 'hard', 'sendgrid', '[{"email":"Legacy.Four@ok.test","event":"bounce"}]'),
+		($1, 'hard', 'ses', '{"mail":{"destination":["legacy.five@ok.test"]}}'),
 		($1, 'hard', 'mailbox', '{"from":"mailer-daemon"}'),
 		($1, 'soft', 'postmark', '{"Email":"legacy.soft@ok.test"}')`, id)
 	e.db.MustExec(`DELETE FROM axm_bounced_emails`)
@@ -710,7 +712,7 @@ func TestGateMigrationTwice(t *testing.T) {
 		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
-		if n := e.bouncedRows(); n != 3 || !e.isBounced("legacy.old@ok.test") || !e.isBounced("legacy.two@ok.test") ||
+		if n := e.bouncedRows(); n != 5 || !e.isBounced("legacy.four@ok.test") || !e.isBounced("legacy.five@ok.test") || !e.isBounced("legacy.old@ok.test") || !e.isBounced("legacy.two@ok.test") ||
 			!e.isBounced("legacy.three@ok.test") || e.isBounced("now.address@ok.test") || e.isBounced("legacy.soft@ok.test") {
 			t.Fatalf("run %d: %d rows", i+1, n)
 		}
@@ -801,5 +803,53 @@ func TestGateAddressCheckFollowsTheStrength(t *testing.T) {
 		if gate != mode || len(issues["0"]) != 0 || strings.Join(issues["2"], ",") != "disposable" || e.dns.calls != 0 {
 			t.Fatalf("%s: %v %s, %d lookups", mode, issues, gate, e.dns.calls)
 		}
+	}
+}
+
+// A delayed bounce that names its campaign (or none) is for the address the subscriber had when
+// that mail was sent: another campaign sent to the new address does not make it the new address's.
+func TestGateBounceOfAnotherCampaignDoesNotMarkTheNewAddress(t *testing.T) {
+	e := newGateEnv(t)
+	e.noActionCore()
+	id := e.person2("was@ok.test")
+	var campA, campB int
+	e.get(&campA, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'A','S','test@example.invalid','b','email') RETURNING id`)
+	e.get(&campB, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'B','S','test@example.invalid','b','email') RETURNING id`)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $3, NOW() - INTERVAL '16 days'), ($2, $3, NOW() - INTERVAL '1 day')`, campA, campB, id)
+	e.db.MustExec(`UPDATE subscribers SET email = 'now@ok.test', updated_at = NOW() - INTERVAL '15 days' WHERE id = $1`, id)
+	var uuidA string
+	e.get(&uuidA, `SELECT uuid::TEXT FROM campaigns WHERE id = $1`, campA)
+	if err := e.a.core.RecordBounce(models.Bounce{SubscriberUUID: e.uuidOf(id), CampaignUUID: uuidA, Type: "hard", Source: "t",
+		Meta: json.RawMessage(`{}`), CreatedAt: time.Now().Add(-16 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	e.hardBounce("", e.uuidOf(id))
+	if e.isBounced("now@ok.test") {
+		t.Fatal("a bounce of the old campaign marked the new address")
+	}
+}
+
+// The same report delivered twice leaves nothing that outlives the subscriber's own records.
+func TestGateRepeatedReportIsReleasedWithTheBounceRecords(t *testing.T) {
+	e := newGateEnv(t)
+	e.a.core = core.New(&core.Opt{DB: e.db, Queries: e.q, Log: e.a.log, I18n: e.a.i18n, Constants: core.Constants{
+		BounceActions: map[string]struct {
+			Count  int
+			Action string
+		}{"hard": {1, "blocklist"}, "soft": {3, "none"}, "complaint": {1, "blocklist"}},
+	}}, nil)
+	id := e.person2("twice@ok.test")
+	e.hardBounce("twice@ok.test", e.uuidOf(id))
+	e.hardBounce("twice@ok.test", e.uuidOf(id))
+	if n := e.bouncedRows(); n != 1 {
+		t.Fatalf("%d rows for one address", n)
+	}
+	e.db.MustExec(`UPDATE subscribers SET status = 'enabled' WHERE id = $1`, id)
+	if err := e.a.core.DeleteSubscriberBounces(id, ""); err != nil {
+		t.Fatal(err)
+	}
+	e.db.MustExec(`DELETE FROM axm_suppressed_emails`)
+	if e.bouncedRows() != 0 {
+		t.Fatalf("%d rows left", e.bouncedRows())
 	}
 }
