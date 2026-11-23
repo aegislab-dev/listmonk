@@ -12,6 +12,7 @@ import (
 	"log"
 	"log/slog"
 	"maps"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
@@ -1010,9 +1011,9 @@ func initHTTPServer(cfg *Config, urlCfg *UrlConfig, i *i18n.I18n, fs stuffbin.Fi
 	)
 	switch {
 	case uploadProvider == "filesystem" && uploadFsURI != "":
-		srv.Static(uploadFsURI, ko.String("upload.filesystem.upload_path"))
+		serveUploadDir(srv, uploadFsURI, ko.String("upload.filesystem.upload_path"), uploadSecurityHeaders)
 	case uploadProvider == "s3" && strings.HasPrefix(publicURL, "/"):
-		srv.GET(path.Join(publicURL, "/:filepath"), app.ServeS3Media)
+		srv.GET(path.Join(publicURL, "/:filepath"), app.ServeS3Media, uploadSecurityHeaders)
 	}
 
 	// Register all HTTP handlers.
@@ -1030,6 +1031,59 @@ func initHTTPServer(cfg *Config, urlCfg *UrlConfig, i *i18n.I18n, fs stuffbin.Fi
 	}()
 
 	return srv
+}
+
+// uploadSecurityHeaders sandboxes uploaded media that is served from the app's
+// own origin, so that an uploaded HTML or SVG file opened directly cannot run
+// script with the admin session. Images and PDFs render inline; every other
+// type is forced to download.
+func uploadSecurityHeaders(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		// All uploaded media is sandboxed.
+		c.Response().Header().Set("Content-Security-Policy", "sandbox")
+		c.Response().Header().Set("X-Content-Type-Options", "nosniff")
+
+		// The Content-Type is only known once the handler is about to write
+		// the response header.
+		c.Response().Before(func() {
+			h := c.Response().Header()
+			h.Set("Content-Disposition", uploadDisposition(h.Get("Content-Type"), c.Request().URL.Path))
+		})
+		return next(c)
+	}
+}
+
+// uploadDisposition returns the Content-Disposition of an uploaded file:
+// images and PDFs render inline, every other type is forced to download.
+//
+// The type is the response's Content-Type, except where that does not name
+// the file's type: a 304 has none, and a multi-range 206 is
+// "multipart/byteranges". There the file extension decides, as it does for
+// the full response of a file on disk. A 304 must carry the disposition too:
+// its headers replace the ones the browser cached with the file, and a copy
+// cached before these headers existed has to pick up "attachment".
+func uploadDisposition(contentType, urlPath string) string {
+	typ, _, _ := mime.ParseMediaType(contentType)
+	if typ == "" || typ == "multipart/byteranges" {
+		typ, _, _ = mime.ParseMediaType(mime.TypeByExtension(path.Ext(urlPath)))
+	}
+	if strings.HasPrefix(typ, "image/") || typ == "application/pdf" {
+		return "inline"
+	}
+	return "attachment"
+}
+
+// serveUploadDir serves the filesystem media upload directory under the given
+// URI prefix. It is srv.Static() with path unescaping kept on: since echo
+// v4.15.4, Static() no longer unescapes the request path, which would turn
+// every uploaded file whose name is not sent in Go's default encoding
+// (e.g. "a(1).png" requested as "a%281%29.png") into a 404, including image
+// links in e-mails that have already been sent. The handler rejects ".", ".."
+// and empty path segments before and after unescaping, and there are no
+// guarded routes under the upload URI.
+func serveUploadDir(srv *echo.Echo, uri, root string, m ...echo.MiddlewareFunc) *echo.Route {
+	return srv.Add(http.MethodGet, uri+"*",
+		echo.StaticDirectoryHandler(echo.MustSubFS(srv.Filesystem, root), false), m...)
 }
 
 // initAddrCheck initializes the checker that looks e-mail domains up in DNS for the

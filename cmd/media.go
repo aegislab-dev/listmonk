@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
@@ -204,7 +205,24 @@ func (a *App) ServeS3Media(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "error fetching media")
 	}
 
-	return c.Stream(http.StatusOK, http.DetectContentType(b), bytes.NewReader(b))
+	return c.Stream(http.StatusOK, detectMediaContentType(key, b), bytes.NewReader(b))
+}
+
+// detectMediaContentType returns the Content-Type of a media file from its bytes,
+// falling back to its file extension where sniffing is not specific enough.
+func detectMediaContentType(key string, b []byte) string {
+	// Detect content type from file bytes.
+	ctype := http.DetectContentType(b)
+	switch ctype {
+	// Images like SVGs will be detected as text/plain, so for those types, fall back
+	// to using the simple file extension check.
+	case "text/plain; charset=utf-8", "text/xml; charset=utf-8", "application/octet-stream":
+		if typ := mime.TypeByExtension(filepath.Ext(key)); typ != "" {
+			ctype = typ
+		}
+	}
+
+	return ctype
 }
 
 // processImage reads the image file and returns thumbnail bytes and
