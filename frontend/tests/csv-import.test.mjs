@@ -6,6 +6,7 @@ import {
   LIMITS, STORAGE_KEY, checkInputSize, cleanEmail, validEmail, suggestKey, isSpelledKey, romanize,
   parseCSV, suggestMapping, validateMapping, convertCSV, readMemory, rememberMapping,
   inspectOriginalCSV, inspectCSVHeader, standardTwin, unresolvedValues,
+  addressExcludedRows, excludedRowsCSV,
 } from '../src/lib/csv-import.js';
 
 // The dictionary the server sends in /api/config, read from the file the server embeds.
@@ -132,7 +133,9 @@ test('email cleaning, validation, first duplicate wins, logical source rows and 
   for (const email of ['a@localhost', 'a@@example.invalid', '@example.invalid', 'a@.invalid', 'a@example.', 'a b@example.invalid', 'a\x01@example.invalid']) assert.equal(validEmail(email), false, email);
   const parsed = parseCSV('email,name\n AB@EXAMPLE.INVALID ,"first\nname"\nab@example.invalid,second\n,b\nbad@localhost,b\n\nc@example.invalid,C');
   const result = convertCSV(parsed, suggestMapping(parsed));
-  assert.deepEqual(result.summary, { imported: 2, cleaned: 1, empty: 1, invalid: 1, duplicate: 1, malformed: 0 });
+  assert.deepEqual(result.summary, {
+    imported: 2, cleaned: 1, empty: 1, invalid: 1, duplicate: 1, malformed: 0, address: 0,
+  });
   assert.deepEqual(result.sourceRows, [2, 7]);
   assert.equal(unpack(result)[0].name, 'first\nname');
   assert.deepEqual(result.examples.duplicate, [{ row: 3, email: 'ab@example.invalid' }]);
@@ -146,6 +149,16 @@ test('malformed widths are excluded and keep source row numbers', () => {
   const parsed = parseCSV('email,name\na@example.invalid,A\nb@example.invalid,B,extra');
   assert.deepEqual(parsed.issues, [{ row: 3, type: 'width' }]);
   assert.deepEqual(convertCSV(parsed, suggestMapping(parsed)).sourceRows, [2]);
+});
+
+test('a quoted empty field is an empty address; only a line with nothing on it is skipped', () => {
+  // Rows: 1 header, 2 address, 3 "" (an empty address), 4 blank line, 5 spaces, 6 address.
+  const parsed = parseCSV('email\na@example.invalid\n""\n\n   \r\nb@example.invalid\n');
+  assert.equal(parsed.total, 4);
+  assert.deepEqual(parsed.rows.map(({ row }) => row), [2, 3, 5, 6]);
+  assert.deepEqual(convertCSV(parsed, suggestMapping(parsed)).invalidRows, [{ row: 3, email: '' }, { row: 5, email: '' }]);
+  // With two columns, a line of spaces has the wrong width, as the server's reader sees it.
+  assert.deepEqual(parseCSV('email,name\na@example.invalid,A\n  \n\nb@example.invalid,B').issues, [{ row: 3, type: 'width' }]);
 });
 
 test('unclosed or invalid closing quotes reject the whole file instead of hiding later people', () => {
@@ -369,4 +382,50 @@ test('the headers of the advertiser sheets map as the B2B preset expects', () =>
     // The Remember copy has no e-mail column: it cannot be imported until one is added.
     assert.deepEqual(validateMapping(suggest(parsed)), sheet === '리멤버 사본' ? [{ type: 'emailColumns' }] : [], sheet);
   });
+});
+
+test('rows the address check leaves out are counted, kept out of the upload and still listed for the check', () => {
+  const parsed = parseCSV('email,name\na@example.invalid,A\nbad,B\nb@example.invalid,C\na@example.invalid,D\nc@example.invalid,E');
+  const mapping = suggest(parsed);
+  const all = convertCSV(parsed, mapping, [], STANDARD);
+  assert.deepEqual(all.checkEmails, ['a@example.invalid', 'b@example.invalid', 'c@example.invalid']);
+  assert.deepEqual(all.checkRows, [2, 4, 6]);
+  assert.equal(all.summary.imported, 3);
+  assert.equal(all.summary.address, 0);
+
+  const result = convertCSV(parsed, mapping, [], STANDARD, new Set([2, 6, 99]));
+  assert.deepEqual(unpack(result).map(({ email }) => email), ['b@example.invalid']);
+  assert.deepEqual(result.sourceRows, [4]);
+  assert.deepEqual(result.summary, {
+    imported: 1, cleaned: 0, empty: 0, invalid: 1, duplicate: 1, malformed: 0, address: 2,
+  });
+  // The check still sees every usable address, so its answer does not change with the switches.
+  assert.deepEqual(result.checkEmails, all.checkEmails);
+  assert.deepEqual(result.checkRows, all.checkRows);
+});
+
+test('address exclusion follows the two switches and the excluded-rows file is safe to open', () => {
+  const issues = {
+    3: ['dead', 'role'], 5: ['role'], 7: ['disposable'], 9: ['nullmx'], 11: ['unknown'], 13: ['format'], 15: ['pending'],
+  };
+  assert.deepEqual(addressExcludedRows(issues), [3, 9, 13]);
+  assert.deepEqual(addressExcludedRows(issues, { confirmed: true, warning: true }), [3, 5, 7, 9, 13]);
+  assert.deepEqual(addressExcludedRows(issues, { confirmed: false, warning: true }), [3, 5, 7]);
+  assert.deepEqual(addressExcludedRows(issues, { confirmed: false }), []);
+  // The rules of LST-53 (a misspelled domain, a Gmail name that cannot exist) are confirmed risks too.
+  assert.deepEqual(addressExcludedRows({ 2: ['typo'], 4: ['provider', 'role'], 6: ['role'] }), [2, 4]);
+
+  const csv = excludedRowsCSV([
+    { row: 3, email: 'info@gone.invalid', reasons: ['No mail server', 'Role address'] },
+    { row: 9, email: '=cmd@x.invalid', reasons: ['a, "b"'] },
+  ], ['Row', 'E-mail', 'Reason']);
+  assert.equal(csv, 'Row,E-mail,Reason\r\n3,info@gone.invalid,No mail server; Role address\r\n9,\'=cmd@x.invalid,"a, ""b"""');
+});
+
+test('the excluded rows CSV adds the suggestion column only when a row has a suggestion', () => {
+  const csv = excludedRowsCSV([
+    { row: 2, email: 'kim@gmail.con', reasons: ['Misspelled domain'], suggest: 'kim@gmail.com' },
+    { row: 5, email: 'a@gone.invalid', reasons: ['No mail server'] },
+  ], ['Row', 'E-mail', 'Reason', 'Suggested']);
+  assert.equal(csv, 'Row,E-mail,Reason,Suggested\r\n2,kim@gmail.con,Misspelled domain,kim@gmail.com\r\n5,a@gone.invalid,No mail server,');
 });

@@ -153,8 +153,10 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 
 		g.GET("/api/import/subscribers", pm(a.GetImportSubscribers, "subscribers:import"))
 		g.GET("/api/import/subscribers/logs", pm(a.GetImportSubscriberStats, "subscribers:import"))
+		g.GET("/api/import/subscribers/rejected", pm(a.GetImportRejected, "subscribers:import"))
 		g.POST("/api/import/subscribers", pm(a.ImportSubscribers, "subscribers:import"))
 		g.DELETE("/api/import/subscribers", pm(a.StopImportSubscribers, "subscribers:import"))
+		g.POST("/api/subscribers/address-check", pm(a.CheckImportAddresses, "subscribers:import"))
 
 		// Individual list permissions are applied directly within handleGetLists.
 		g.GET("/api/lists", a.GetLists)
@@ -168,6 +170,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/api/lists/trash/:id/restore", hasID(a.RestoreList))
 		g.GET("/api/lists/:id", hasID(a.GetList))
 		g.POST("/api/lists/dynamic/preview", a.PreviewDynamicList)
+		// Individual list permissions are applied within the handler.
+		g.POST("/api/lists/address-check", a.CheckListAddresses)
 		g.GET("/api/lists/draws", a.GetListDraws)
 		g.POST("/api/lists/:id/draw/preview", a.listMaker(hasID(a.PreviewListDraw)))
 		g.POST("/api/lists/:id/draw", a.listMaker(hasID(a.DrawList)))
@@ -181,6 +185,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/campaigns/:id", pm(hasID(a.GetCampaign), "campaigns:get_all", "campaigns:get"))
 		g.GET("/api/campaigns/analytics/:type", pm(a.GetCampaignViewAnalytics, "campaigns:get_analytics"))
 		g.POST("/api/campaigns/recent-exclude/preview", pm(a.PreviewRecentExclusion, "campaigns:manage_all", "campaigns:manage"))
+		g.POST("/api/campaigns/recent-exclude/list", a.listMaker(pm(a.MakeRecentExcludeList, "campaigns:manage_all", "campaigns:manage")))
 		g.GET("/api/campaigns/:id/recent-exclude", pm(hasID(a.GetRecentRule), "campaigns:get_all", "campaigns:get"))
 		g.PUT("/api/campaigns/:id/recent-exclude", pm(hasID(a.PutRecentRule), "campaigns:manage_all", "campaigns:manage"))
 		g.POST("/api/campaigns/:id/reaction-list/preview", a.listMaker(hasID(a.PreviewReactionList)))
@@ -188,6 +193,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/campaigns/:id/preview", pm(hasID(a.PreviewCampaign), "campaigns:get_all", "campaigns:get"))
 		g.POST("/api/campaigns/:id/preview/archive", pm(hasID(a.PreviewCampaignArchive), "campaigns:get_all", "campaigns:get"))
 		g.POST("/api/campaigns/:id/preview", pm(hasID(a.PreviewCampaign), "campaigns:get_all", "campaigns:get"))
+		g.POST("/api/campaigns/:id/tracking-check", pm(hasID(a.CheckCampaignTracking), "campaigns:get_all", "campaigns:get"))
+		g.GET("/api/campaigns/:id/preflight", pm(hasID(a.GetCampaignPreflight), "campaigns:get_all", "campaigns:get"))
 		g.POST("/api/campaigns/:id/content", pm(hasID(a.CampaignContent), "campaigns:manage_all", "campaigns:manage"))
 		g.POST("/api/campaigns/:id/text", pm(hasID(a.PreviewCampaign), "campaigns:get"))
 		g.POST("/api/campaigns/:id/test", pm(hasID(a.senderPolicyGuard(a.TestCampaign)), "campaigns:manage_all", "campaigns:manage"))
@@ -288,6 +295,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 
 		g.GET("/sender/verify/:token", noIndex(a.SenderVerify))
 		g.POST("/sender/verify/:token", noIndex(a.SenderVerify))
+		g.GET("/test-address/verify/:token", noIndex(a.TestAddressVerify))
+		g.POST("/test-address/verify/:token", noIndex(a.TestAddressVerify))
 		// Public APIs.
 		g.GET("/api/public/lists", a.GetPublicLists)
 		g.POST("/api/public/subscription", a.PublicSubscription)
@@ -308,6 +317,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/subscription/wipe/:subUUID", a.hasUUID(a.hasSub(a.WipeSubscriberData), "subUUID"))
 		g.GET("/link/:linkUUID/:campUUID/:subUUID", noIndex(a.hasUUID(a.LinkRedirect, "linkUUID", "campUUID", "subUUID")))
 		content.GET("/campaign/:campUUID/:subUUID", noIndex(a.hasUUID(a.ViewCampaignMessage, "campUUID", "subUUID")))
+		// AXM (LST-41): a sample test message, as it was mailed (see TestMessageView).
+		content.GET("/test-message/:token", noIndex(a.TestMessageView))
 		g.GET("/campaign/:campUUID/:subUUID/px.png", noIndex(a.hasUUID(a.RegisterCampaignView, "campUUID", "subUUID")))
 
 		if a.cfg.EnablePublicArchive {

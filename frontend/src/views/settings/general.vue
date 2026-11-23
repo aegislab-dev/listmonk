@@ -28,6 +28,12 @@
       <b-input v-model="data['app.from_email']" name="app.from_email"
         placeholder="Listmonk <noreply@listmonk.yoursite.com>" pattern="((.+?)\s)?<(.+?)@(.+?)>" :maxlength="300" />
     </b-field>
+    <b-field :label="$t('settings.general.fromAddresses')" label-position="on-border"
+      :message="$t('settings.general.fromAddressesHelp')" class="mt-5">
+      <b-taginput v-model="data['axm.from_addresses']" name="axm.from_addresses" data-cy="from-addresses"
+        :confirm-keys="['Enter', 'Tab']" :on-paste-separators="['\n']"
+        :disabled="!$can('settings:manage')" :placeholder="$t('settings.general.fromAddressesPlaceholder')" />
+    </b-field>
     <section class="sender-settings">
       <hr />
       <h3 class="is-size-5 has-text-weight-semibold">{{ $t('settings.general.senderTitle') }}</h3>
@@ -76,6 +82,16 @@
         <p class="help">{{ $t('senders.inUse') }}</p>
       </template>
       <p class="help mt-4">{{ $t('settings.general.senderSaveHelp') }}</p>
+      <hr />
+    </section>
+    <section class="test-send-settings">
+      <h3 class="is-size-5 has-text-weight-semibold">{{ $t('settings.general.testSendTitle') }}</h3>
+      <p class="help mb-5">{{ $t('settings.general.testSendHelp') }}</p>
+      <b-field :label="$t('settings.general.testDomains')" label-position="on-border"
+        :message="$t('settings.general.testDomainsHelp')">
+        <b-taginput v-model="data['axm.test_domains']" name="axm.test_domains"
+          :disabled="!$can('settings:manage')" :placeholder="$t('settings.general.senderDomainsPlaceholder')" />
+      </b-field>
       <hr />
     </section>
     <b-field :label="$t('settings.general.adminNotifEmails')" label-position="on-border"

@@ -51,9 +51,10 @@
           <div class="columns">
             <div class="column is-4">
               <b-field v-if="form.mode === 'subscribe'" :label="$t('import.overwriteUserInfo')"
-                :message="$t('import.overwriteUserInfoHelp')">
+                :message="$can('lists:manage_all') ? $t('import.overwriteUserInfoHelp') : $t('teams.importOverwriteLocked')">
                 <div>
-                  <b-switch v-model="form.overwriteUserInfo" name="overwriteUserInfo" data-cy="overwrite-user-info" />
+                  <b-switch v-model="form.overwriteUserInfo" name="overwriteUserInfo" data-cy="overwrite-user-info"
+                    :disabled="!$can('lists:manage_all')" />
                 </div>
               </b-field>
             </div>
@@ -97,7 +98,8 @@
             :existing-keys="existingKeys" :standard="standardAttribs" :values="csv.values"
             :validation="mappingMessages" :total="csv.total" :summary="csv.summary"
             :examples="csv.examples" :preview="csv.preview" :error="csv.error" :busy="csv.busy"
-            :overwrite="form.mode === 'subscribe' && form.overwriteUserInfo"
+            :overwrite="form.mode === 'subscribe' && form.overwriteUserInfo" :address="addressView"
+            @address-exclude="setAddressExclude" @address-download="downloadExcluded"
             @mapping="updateMapping" @mode="setCSVMode" @encoding="setEncoding" @header="setHeader" />
           <div class="buttons">
             <b-button native-type="submit" type="is-primary"
@@ -145,12 +147,32 @@
       <p>{{ $t('import.recordsCount', { num: status.imported, total: status.total }) }}</p>
       <br />
 
+      <b-message v-if="rejectedTotal" type="is-warning" :closable="false" class="has-text-left" data-cy="import-rejected">
+        <strong>{{ $t('import.rejected.title', { count: rejectedTotal }) }}</strong>
+        <table class="rejected-table">
+          <tr v-for="r in rejectedLines" :key="r.reason" :data-cy="`import-rejected-${r.reason}`">
+            <td>{{ $t(`import.rejected.reason.${r.reason}`) }}</td>
+            <td class="has-text-right">{{ r.count }}</td>
+          </tr>
+        </table>
+        <p>
+          <a :href="`/api/import/subscribers/rejected?id=${status.axmImportId}`" download="rejected-rows.csv"
+            data-cy="import-rejected-download">
+            {{ $t('import.rejected.download') }}
+          </a>
+        </p>
+      </b-message>
+
       <p>
         <b-button @click="stopImport" :loading="isProcessing" icon-left="file-upload-outline" type="is-primary">
           {{ isDone() ? $t('import.importDone') : $t('import.stopImport') }}
         </b-button>
       </p>
       <br />
+
+      <address-check v-if="showImportCheck" :list-ids="status.axmLists" :lists="lists.results || []"
+        :hidden-lists="status.axmListsHidden || 0"
+        :scope-note="$t('addressCheck.listScope', { lists: importListNames })" />
 
       <div class="import-logs">
         <log-view :lines="logs" :loading="false" />
@@ -165,7 +187,26 @@ import { mapState } from 'vuex';
 import ListSelector from '../components/ListSelector.vue';
 import LogView from '../components/LogView.vue';
 import ImportColumnMapper from '../components/ImportColumnMapper.vue';
-import { LIMITS, readMemory, rememberMapping } from '../lib/csv-import';
+import AddressCheck from '../components/AddressCheck.vue';
+import {
+  LIMITS, readMemory, rememberMapping, ADDRESS_CONFIRMED, ADDRESS_WARNING, addressExcludedRows, excludedRowsCSV,
+} from '../lib/csv-import';
+
+// While DNS lookups are unfinished the address check is asked again, this often and this many times.
+const ADDRESS_POLL_MS = 3000;
+const ADDRESS_MAX_POLLS = 10;
+
+// What the address check leaves out of a new file until someone changes it: the confirmed
+// risky rows, not the role and disposable ones.
+function addressExcludeDefaults() {
+  return { confirmed: true, warning: false };
+}
+
+function addressState() {
+  return {
+    state: 'idle', result: null, issues: Object.freeze({}), emails: Object.freeze({}), polls: 0,
+  };
+}
 
 function csvState() {
   return {
@@ -202,6 +243,7 @@ export default Vue.extend({
     ListSelector,
     LogView,
     ImportColumnMapper,
+    AddressCheck,
   },
 
   props: {
@@ -230,6 +272,9 @@ export default Vue.extend({
       csvRequest: 0,
       keyRequest: 0,
       existingKeys: [],
+      // The address check of the rows to import, and the two switches of what it leaves out.
+      addr: addressState(),
+      addrExclude: addressExcludeDefaults(),
       sentCount: null,
       isProcessing: false,
       status: { status: '' },
@@ -242,6 +287,9 @@ export default Vue.extend({
     'form.file': function fileChanged(file) {
       this.stopCSV();
       this.csv = csvState();
+      // Every file starts with the default switches: what was chosen for an earlier file
+      // must not leave rows out of (or let them into) this one without being seen.
+      this.addrExclude = addressExcludeDefaults();
       if (file && /\.csv$/i.test(file.name)) {
         this.sentCount = null;
         this.parseCSV(true);
@@ -265,6 +313,9 @@ export default Vue.extend({
       if (this.isCSV) this.loadAttributeKeys();
     },
     'form.mode': function formMode() {
+      // A blocklist import has no address check; coming back to subscribe runs it again.
+      this.resetAddressCheck();
+      if (this.form.mode === 'subscribe' && this.addrInput) this.checkAddresses(this.addrInput.emails, this.addrInput.rows);
       // Select the appropriate status radio whenever mode changes.
       this.$nextTick(() => {
         if (this.form.mode === 'subscribe') {
@@ -293,6 +344,135 @@ export default Vue.extend({
       this.csvBytes = null;
       this.csvSourceRows = null;
       this.csvKeysSent = '';
+      this.addrInput = null;
+      this.csvExclude = [];
+      this.csvExcludeKey = '';
+      this.resetAddressCheck(false);
+    },
+
+    // Forgets the address check. With apply, an upload built without the rows it left out is rebuilt.
+    resetAddressCheck(apply = true) {
+      clearTimeout(this.addrTimer);
+      if (this.addrController) this.addrController.abort();
+      this.addrKey = '';
+      this.addr = addressState();
+      if (apply) this.applyAddressExclusion();
+    },
+
+    // Checks the addresses of the rows to import. The same addresses are not asked about twice,
+    // so rebuilding the upload without some rows does not start a new check.
+    checkAddresses(emails, rows) {
+      if (!emails) return;
+      this.addrInput = { emails, rows };
+      if (this.form.mode !== 'subscribe') return;
+      // The rows are part of the key: the same addresses in other rows are another file to check.
+      const key = `${emails.join('\n')}\n\n${rows.join(',')}`;
+      if (key === this.addrKey) return;
+      this.resetAddressCheck();
+      this.addrKey = key;
+      if (!emails.length) return;
+      this.addr.state = 'checking';
+      this.addrTimer = setTimeout(() => this.runAddressCheck(key), 400);
+    },
+
+    async runAddressCheck(key) {
+      if (this.addrController) this.addrController.abort();
+      const controller = new AbortController();
+      this.addrController = controller;
+      const { emails, rows } = this.addrInput;
+      try {
+        const result = await this.$api.checkImportAddresses({ emails }, controller.signal);
+        if (controller.signal.aborted || key !== this.addrKey) return;
+        const issues = {};
+        const shown = {};
+        const suggest = {};
+        Object.entries(result.suggest || {}).forEach(([index, address]) => { suggest[rows[index]] = address; });
+        Object.entries(result.issues || {}).forEach(([index, classes]) => {
+          issues[rows[index]] = classes;
+          shown[rows[index]] = emails[index];
+        });
+        const polls = this.addr.polls + (result.pending > 0 ? 1 : 0);
+        this.addr = {
+          state: 'done', result, issues: Object.freeze(issues), emails: Object.freeze(shown), suggest: Object.freeze(suggest), polls,
+        };
+        this.applyAddressExclusion();
+        if (result.pending > 0 && polls <= ADDRESS_MAX_POLLS) {
+          this.addrTimer = setTimeout(() => this.runAddressCheck(key), ADDRESS_POLL_MS);
+        }
+      } catch (_) {
+        // A failed check never blocks the upload: without an answer it is an error, and with
+        // one the unfinished lookups are given up on.
+        if (controller.signal.aborted || key !== this.addrKey) return;
+        if (this.addr.state === 'done') this.addr = { ...this.addr, polls: ADDRESS_MAX_POLLS + 1 };
+        else this.addr.state = 'error';
+      }
+    },
+
+    // Rebuilds the upload when the rows the address check leaves out have changed.
+    applyAddressExclusion() {
+      const rows = addressExcludedRows(this.addr.issues, this.addrExclude);
+      const key = rows.join(',');
+      if (key === (this.csvExcludeKey || '')) return;
+      this.csvExclude = rows;
+      this.csvExcludeKey = key;
+      if (this.csv.parsed && this.csv.mode === 'mapping') this.convertCSV(true);
+    },
+
+    setAddressExclude(patch) {
+      this.addrExclude = { ...this.addrExclude, ...patch };
+      this.applyAddressExclusion();
+    },
+
+    // The rows the address check left out, with why: made here and never sent anywhere.
+    // The rows the column mapping leaves out for their address, with the reason the box shows:
+    // the address check's confirmed rows and the rows that are not an address at all.
+    excludedForServer() {
+      const out = (this.csvExclude || []).map((row) => ({
+        row,
+        email: this.addr.emails[row] || '',
+        reason: ADDRESS_CONFIRMED.find((c) => (this.addr.issues[row] || []).includes(c)),
+        suggest: (this.addr.suggest || {})[row] || '',
+      })).filter((x) => x.reason);
+      (this.csvInvalidRows || []).forEach(({ row, email }) => out.push({
+        row, email, reason: 'format', suggest: '',
+      }));
+      return out.slice(0, LIMITS.rows);
+    },
+
+    // The rows the review leaves out for their address, for the download on the review screen:
+    // the address check's rows and the rows that are not an address at all, by source row. The
+    // same rows the box that ends the import counts.
+    excludedRows() {
+      const reasons = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING];
+      const format = [this.$t('addressCheck.class.format')];
+      return [
+        ...(this.csvExclude || []).map((row) => ({
+          row,
+          email: this.addr.emails[row] || '',
+          reasons: (this.addr.issues[row] || []).filter((c) => reasons.includes(c)).map((c) => this.$t(`addressCheck.class.${c}`)),
+          suggest: (this.addr.suggest || {})[row] || '',
+        })),
+        ...(this.csvInvalidRows || []).map(({ row, email }) => ({
+          row, email, reasons: format, suggest: '',
+        })),
+      ].sort((a, b) => a.row - b.row);
+    },
+
+    saveCSV(csv, name) {
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' }));
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    },
+
+    downloadExcluded() {
+      this.saveCSV(
+        excludedRowsCSV(this.excludedRows(), [this.$t('import.addr.csvRow'), this.$t('import.addr.csvEmail'), this.$t('import.addr.csvReason'), this.$t('import.rejected.csvSuggest')]),
+        `${this.form.file.name.replace(/\.csv$/i, '')}-excluded.csv`,
+      );
     },
 
     async parseCSV(initial = false, manualDelimiter = false) {
@@ -363,6 +543,7 @@ export default Vue.extend({
           } else if (data.type === 'convert') {
             this.csvBytes = data.bytes;
             this.csvSourceRows = data.sourceRows;
+            this.csvInvalidRows = data.invalidRows || [];
             Object.assign(this.csv, {
               busy: false,
               ready: !!data.bytes && data.summary.imported > 0,
@@ -373,6 +554,7 @@ export default Vue.extend({
               // A reply without a conversion (another column is wrong) keeps the last counts.
               values: data.values || this.csv.values,
             });
+            this.checkAddresses(data.checkEmails, data.checkRows);
           }
         };
         const delimiter = initial || (!manualDelimiter && !this.csv.delimiter) ? '' : this.form.delim;
@@ -422,13 +604,17 @@ export default Vue.extend({
       this.csv.error = this.$t(`import.mapError${code}`);
     },
 
-    convertCSV() {
+    // keep leaves the review on screen while the upload is rebuilt (the address check changed
+    // only which rows are left out).
+    convertCSV(keep = false) {
       clearTimeout(this.csvTimer);
       this.csvRequest += 1;
       this.csvBytes = null;
       this.csv.ready = false;
-      this.csv.summary = null;
-      this.csv.preview = [];
+      if (!keep) {
+        this.csv.summary = null;
+        this.csv.preview = [];
+      }
       if (this.csv.limit) {
         this.csv.error = this.csv.mode === 'mapping' ? this.$t(`import.mapError${this.csv.limit}`) : '';
         this.csv.busy = false;
@@ -444,7 +630,7 @@ export default Vue.extend({
       this.csvTimer = setTimeout(() => {
         if (this.csvWorker) {
           this.csvWorker.postMessage({
-            id: this.csvRequest, type: 'convert', mapping: this.csv.mapping, keys: this.existingKeys, standard: this.standardAttribs,
+            id: this.csvRequest, type: 'convert', mapping: this.csv.mapping, keys: this.existingKeys, standard: this.standardAttribs, exclude: this.csvExclude || [],
           });
         }
       }, 100);
@@ -642,6 +828,12 @@ export default Vue.extend({
         lists: this.form.lists.map((l) => l.id),
         overwrite_userinfo: this.form.overwriteUserInfo,
         overwrite_subscription_status: this.form.overwriteSubStatus,
+        // The rows the column mapping left out: the server counts them with its own refusals.
+        axm_excluded: mapped && this.form.mode === 'subscribe' ? this.excludedForServer() : [],
+        // The row of the chosen file each uploaded row came from, for the numbers in the rejected rows.
+        axm_source_rows: mapped ? (this.csvSourceRows || []) : [],
+        // The records of the chosen file, for the total the end of the import shows.
+        axm_file_rows: mapped ? (this.csv.total || 0) : 0,
       }));
       params.set('file', file);
 
@@ -673,6 +865,8 @@ export default Vue.extend({
       if (!this.form.file || this.isProcessing || this.form.delim.length !== 1) return false;
       if (!this.isCSV) return true;
       if (this.csv.busy || this.csv.error) return false;
+      // Uploading before the check answers would let the rows it leaves out through.
+      if (this.csv.mode === 'mapping' && this.addressBusy) return false;
       return this.csv.mode === 'raw' ? this.csv.rawReady : this.csv.parsed && this.csv.ready;
     },
     displayColumns() {
@@ -703,8 +897,87 @@ export default Vue.extend({
       const count = this.csv.summary ? this.csv.summary.empty + this.csv.summary.invalid : 0;
       return count ? { [this.csv.mapping.findIndex(({ role }) => role === 'email')]: this.$t('import.mapEmailErrors', { count }) } : {};
     },
+    addressPolling() {
+      const { state, result, polls } = this.addr;
+      return state === 'done' && result.pending > 0 && polls <= ADDRESS_MAX_POLLS;
+    },
+    // The check has not answered for every row yet (first answer, or lookups still running).
+    addressBusy() {
+      return this.form.mode === 'subscribe' && (this.addr.state === 'checking' || this.addressPolling);
+    },
+    // The finished box checks the lists the server says this import subscribed people to (it
+    // sends them with the status, after its own permission filter; none for a blocklist import).
+    showImportCheck() {
+      return this.isSuccessful() && (this.status.axmLists || []).length > 0;
+    },
+    importListNames() {
+      const all = this.lists.results || [];
+      return (this.status.axmLists || []).map((id) => (all.find((l) => l.id === id) || { name: `#${id}` }).name).join(', ');
+    },
+    // What the column mapper shows of the address check: counts, one line per class with the
+    // first source rows, and how many rows each switch leaves out.
+    addressView() {
+      const {
+        state, result, issues, emails,
+      } = this.addr;
+      const suggest = this.addr.suggest || {};
+      if (state === 'idle' || this.form.mode !== 'subscribe') return null;
+      if (state !== 'done') return { state, busy: this.addressBusy };
+      const rows = Object.keys(issues).map(Number).sort((a, b) => a - b);
+      const has = (row, classes) => issues[row].some((c) => classes.includes(c));
+      const confirmed = rows.filter((row) => has(row, ADDRESS_CONFIRMED));
+      const confirmedSet = new Set(confirmed);
+      const polling = this.addressPolling;
+      // A misspelled domain is shown with the address it should be.
+      const shownAddress = (row) => (suggest[row] ? `${emails[row]} → ${suggest[row]}` : emails[row]);
+      const lines = [...ADDRESS_CONFIRMED, ...ADDRESS_WARNING, 'unknown'].map((name) => {
+        const found = rows.filter((row) => issues[row].includes(name));
+        let kind = 'unknown';
+        if (ADDRESS_CONFIRMED.includes(name)) kind = 'confirmed';
+        else if (ADDRESS_WARNING.includes(name)) kind = 'warning';
+        let help = '';
+        if (['role', 'provider', 'typo'].includes(name)) help = this.$t(`addressCheck.classHelp.${name}`);
+        else if (name === 'unknown') help = this.$t('import.addr.unknownHelp');
+        return {
+          name,
+          kind,
+          help,
+          count: found.length,
+          examples: `${found.slice(0, 5).map((row) => `${row} (${shownAddress(row)})`).join(', ')}${found.length > 5 ? ' …' : ''}`,
+        };
+      }).filter(({ count }) => count);
+      return {
+        state,
+        lines,
+        total: result.total,
+        risky: result.risky,
+        confirmed: result.confirmed,
+        warning: result.warning,
+        pending: polling ? result.pending : 0,
+        unknown: result.unknown + (polling ? 0 : result.pending),
+        busy: this.addressBusy,
+        confirmedRows: confirmed.length,
+        // What the second switch adds: with the first one on, rows it already leaves out are not counted again.
+        warningRows: rows.filter((row) => has(row, ADDRESS_WARNING) && !(this.addrExclude.confirmed && confirmedSet.has(row))).length,
+        excludeConfirmed: this.addrExclude.confirmed,
+        excludeWarning: this.addrExclude.warning,
+      };
+    },
+    // Rows the server refused because of the address rules (LST-53): counted by reason.
+    // The server's refusals and the rows the column mapping left out (sent with the upload).
+    rejectedTotal() {
+      return (this.status && this.status.axmRejectedTotal) || 0;
+    },
+    // Rows the server itself refused: the ones the upload carried count as sent, not as missing.
+    serverRejected() {
+      return this.rejectedTotal - ((this.status && this.status.axmExcluded) || 0);
+    },
+    rejectedLines() {
+      const counts = (this.status && this.status.axmRejected) || {};
+      return ['typo', 'provider', 'format', 'dead', 'nullmx', 'domain'].filter((r) => counts[r]).map((r) => ({ reason: r, count: counts[r] }));
+    },
     countMismatch() {
-      return this.sentCount !== null && this.isDone() && this.status.imported !== this.sentCount;
+      return this.sentCount !== null && this.isDone() && this.status.imported + this.serverRejected !== this.sentCount;
     },
 
     // Import progress bar value.
@@ -718,6 +991,7 @@ export default Vue.extend({
 
   beforeDestroy() {
     clearInterval(this.pollID);
+    clearTimeout(this.addrTimer);
     this.stopCSV();
     this.keyRequest += 1;
   },
@@ -735,3 +1009,8 @@ export default Vue.extend({
   },
 });
 </script>
+
+<style scoped>
+.rejected-table { width: 100%; margin: 0.4rem 0; border-collapse: collapse; }
+.rejected-table td { padding: 0.15rem 0.25rem; border-top: 1px solid rgba(97, 70, 0, 0.2); }
+</style>

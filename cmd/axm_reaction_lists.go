@@ -41,22 +41,24 @@ func (a *App) reactionScope(c echo.Context, user auth.User) (core.ReactionScope,
 	}, nil
 }
 
-func (a *App) reactionTeams(user auth.User, req reactionRequest, source []string) ([]string, error) {
+// reactionTeams decides the team tags of a list made from other lists: a member always gets their
+// own team, an admin the source teams unless they pick a team or no team.
+func (a *App) reactionTeams(user auth.User, team string, noTeam bool, source []string) ([]string, error) {
 	if user.HasPerm(auth.PermListManageAll) {
-		if req.NoTeam {
-			if strings.TrimSpace(req.Team) != "" {
+		if noTeam {
+			if strings.TrimSpace(team) != "" {
 				return nil, echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.reactionList.chooseOneTeamOption"))
 			}
 			return nil, nil
 		}
-		if strings.TrimSpace(req.Team) == "" && len(source) == 0 {
+		if strings.TrimSpace(team) == "" && len(source) == 0 {
 			return nil, echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("lists.team.required"))
 		}
 		if !a.core.HasTeamRoles() {
 			return nil, echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.reactionList.chooseOneTeamOption"))
 		}
 	}
-	set, tags, err := a.teamsForNewList(user, req.Team, req.NoTeam, func() ([]string, error) {
+	set, tags, err := a.teamsForNewList(user, team, noTeam, func() ([]string, error) {
 		return source, nil
 	})
 	if err != nil {
@@ -107,7 +109,7 @@ func (a *App) MakeReactionList(c echo.Context) error {
 	}
 	out, err := a.core.MakeReactionList(c.Request().Context(), getID(c), req.ReactionSettings, core.ReactionListOptions{
 		Name: req.Name, Scope: scope,
-		ResolveTeams: func(source []string) ([]string, error) { return a.reactionTeams(user, req, source) },
+		ResolveTeams: func(source []string) ([]string, error) { return a.reactionTeams(user, req.Team, req.NoTeam, source) },
 	})
 	if err != nil {
 		return a.reactionListError(err)

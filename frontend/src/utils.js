@@ -145,16 +145,15 @@ export default class Utils {
   titleCase = (str) => str[0].toUpperCase() + str.substr(1).toLowerCase();
 
   // UI shortcuts.
-  confirm = (msg, onConfirm, onCancel) => {
-    Dialog.confirm({
-      scroll: 'keep',
-      message: !msg ? this.i18n.t('globals.messages.confirm') : this.escapeHTML(msg).replace(/\n/g, '<br>'),
-      confirmText: this.i18n.t('globals.buttons.ok'),
-      cancelText: this.i18n.t('globals.buttons.cancel'),
-      onConfirm,
-      onCancel,
-    });
-  };
+  // Returns the dialog (AXM LST-44: a page closes its own when it goes away).
+  confirm = (msg, onConfirm, onCancel) => Dialog.confirm({
+    scroll: 'keep',
+    message: !msg ? this.i18n.t('globals.messages.confirm') : this.escapeHTML(msg).replace(/\n/g, '<br>'),
+    confirmText: this.i18n.t('globals.buttons.ok'),
+    cancelText: this.i18n.t('globals.buttons.cancel'),
+    onConfirm,
+    onCancel,
+  });
 
   // A confirmation with a title and a warning box (the text is escaped), for an action that
   // reaches further than the person may think. The confirm button has its own name.
@@ -168,6 +167,16 @@ export default class Utils {
       confirmText,
       cancelText: this.i18n.t('globals.buttons.cancel'),
       onConfirm,
+    });
+  };
+
+  // A titled notice with one button (the text is escaped), for an action that cannot be done.
+  notice = (title, text) => {
+    Dialog.alert({
+      scroll: 'keep',
+      title: this.escapeHTML(title),
+      message: `<div class="notification is-warning is-light" data-cy="warn-box">${this.escapeHTML(text)}</div>`,
+      confirmText: this.i18n.t('globals.buttons.ok'),
     });
   };
 

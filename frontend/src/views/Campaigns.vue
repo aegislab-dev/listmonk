@@ -74,7 +74,7 @@
                 {{ $utils.duration(new Date(), props.row.sendAt, true) }}
                 <br />
               </span>
-              {{ $utils.niceDate(props.row.sendAt, true) }}
+              {{ sendAtLabel(props.row) }}
             </span>
           </p>
         </div>
@@ -186,7 +186,7 @@
           <!-- start / pause / resume / scheduled -->
           <template v-if="$can('campaigns:send')">
             <a v-if="canStart(props.row)" href="#"
-              @click.prevent="$utils.confirm(null, () => changeCampaignStatus(props.row, 'running'))"
+              @click.prevent="confirmSend(props.row, 'running')"
               data-cy="btn-start" :aria-label="$t('campaigns.start')">
               <b-tooltip :label="$t('campaigns.start')" type="is-dark">
                 <b-icon icon="rocket-launch-outline" size="is-small" />
@@ -202,7 +202,7 @@
             </a>
 
             <a v-if="canResume(props.row)" href="#"
-              @click.prevent="$utils.confirm(null, () => changeCampaignStatus(props.row, 'running'))"
+              @click.prevent="confirmSend(props.row, 'running')"
               data-cy="btn-resume" :aria-label="$t('campaigns.send')">
               <b-tooltip :label="$t('campaigns.send')" type="is-dark">
                 <b-icon icon="rocket-launch-outline" size="is-small" />
@@ -210,7 +210,7 @@
             </a>
 
             <a v-if="canSchedule(props.row)" href="#"
-              @click.prevent="$utils.confirm($t('campaigns.confirmSchedule'), () => changeCampaignStatus(props.row, 'scheduled'))"
+              @click.prevent="confirmSend(props.row, 'scheduled')"
               data-cy="btn-schedule" :aria-label="$t('campaigns.schedule')">
               <b-tooltip :label="$t('campaigns.schedule')" type="is-dark">
                 <b-icon icon="clock-start" size="is-small" />
@@ -264,7 +264,16 @@
               <b-icon icon="format-list-bulleted-square" size="is-small" />
             </b-tooltip>
           </a>
-          <a v-if="$can('campaigns:manage')" href="#"
+          <!-- A campaign that is sending cannot be deleted (LST-55): the icon is dimmed and the
+               reason shows on hover and focus. No click action. -->
+          <b-tooltip v-if="$can('campaigns:manage') && isSending(props.row)" :label="$t('campaigns.axmDeleteSendingHint')"
+            :triggers="['hover', 'focus']" type="is-dark" multilined>
+            <a href="#" @click.prevent class="delete-blocked" aria-disabled="true"
+              data-cy="btn-delete-blocked" :aria-label="$t('campaigns.axmDeleteSendingHint')">
+              <b-icon icon="trash-can-outline" size="is-small" />
+            </a>
+          </b-tooltip>
+          <a v-else-if="$can('campaigns:manage')" href="#"
             @click.prevent="$utils.confirm($t('campaigns.confirmDelete', { name: props.row.name }), () => deleteCampaign(props.row))"
             data-cy="btn-delete" :aria-label="$t('globals.buttons.delete')">
             <b-icon icon="trash-can-outline" size="is-small" />
@@ -281,6 +290,12 @@
       @close="closePreview" />
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
       @close="reactionCampaign = null" />
+    <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
+      :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
+      @close="sendAsk = null">
+      <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
+        :campaign-name="sendAsk.name" @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" />
+    </b-modal>
   </section>
 </template>
 
@@ -289,8 +304,12 @@ import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import reactionStatuses from '../campaign-reaction-list';
+import {
+  splitAttribs, TZ_ATTRIB, zoneAbbr, zoneParts,
+} from '../schedule-time';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
+import CampaignSendConfirm from '../components/CampaignSendConfirm.vue';
 import CopyText from '../components/CopyText.vue';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
 
@@ -298,12 +317,16 @@ export default Vue.extend({
   components: {
     CampaignPreview,
     CampaignReactionList,
+    CampaignSendConfirm,
     EmptyPlaceholder,
     CopyText,
   },
 
   data() {
     return {
+      // The window every start, resume and schedule goes through (LST-48).
+      isSendVisible: false,
+      sendAsk: null,
       previewItem: null,
       reactionCampaign: null,
       queryParams: {
@@ -344,6 +367,18 @@ export default Vue.extend({
     },
     canResume(c) {
       return c.status === 'paused';
+    },
+    // The scheduled time in the campaign's own time zone (KST when none is stored), with its short name.
+    sendAtLabel(c) {
+      const t = new Date(c.sendAt);
+      const { tz } = splitAttribs(c.attribs);
+      // Straight from the zone's own clock, not through a Date in this computer's zone: a time that
+      // does not exist on this computer (its clocks go forward) must still show as it is.
+      const p = zoneParts(t, tz);
+      const [y, m, d] = p.ymd.split('-');
+      const day = this.$t(`globals.days.${p.wd + 1}`);
+      const month = this.$t(`globals.months.${parseInt(m, 10)}`);
+      return `${day}, ${d} ${month} ${y}, ${p.hm} ${zoneAbbr(t, tz)}`;
     },
     isSheduled(c) {
       return c.status === 'scheduled' || c.sendAt !== null;
@@ -435,6 +470,23 @@ export default Vue.extend({
       }, 1000);
     },
 
+    // Starting, resuming or scheduling from the list sends the saved campaign as it is, and
+    // goes through the same window as the campaign page (LST-48).
+    confirmSend(c, status) {
+      // busy: the status change is on its way; the window cannot be closed then.
+      this.sendAsk = {
+        id: c.id, name: c.name, status, busy: false,
+      };
+      this.isSendVisible = true;
+    },
+
+    onSendDone(out) {
+      const c = this.sendAsk;
+      this.$utils.toast(this.$t('campaigns.statusChanged', { name: c.name, status: (out && out.status) || c.status }));
+      this.getCampaigns();
+      this.pollStats();
+    },
+
     changeCampaignStatus(c, status) {
       this.$api.changeCampaignStatus(c.id, status).then(() => {
         this.$utils.toast(this.$t('campaigns.statusChanged', { name: c.name, status }));
@@ -444,12 +496,23 @@ export default Vue.extend({
     },
 
     async cloneCampaign(name, c) {
+      // The From list may have changed in another session: refresh it first,
+      // then read the campaign, whose from_match the server computes from it.
+      await this.$api.getServerConfig();
+
       // Fetch the template body from the server.
       let body = '';
       let bodySource = null;
+      let { fromEmail } = c;
+      const list = this.serverConfig.from_addresses || [];
+      const accountSenders = (this.serverConfig.sender_domains || []).length > 0;
       await this.$api.getCampaign(c.id).then((data) => {
         body = data.body;
         bodySource = data.bodySource;
+        // The original From goes as it is: the server matches it to the
+        // current list itself (an index from here could point at another entry
+        // if the list changed meanwhile).
+        fromEmail = data.fromEmail;
       });
 
       const now = this.$utils.getDate();
@@ -459,12 +522,17 @@ export default Vue.extend({
         sendAt = dayjs(c.sendAt).isAfter(now) ? c.sendAt : now.add(7, 'day');
       }
 
+      // With a From list a custom From header is refused, so a copy goes without one.
+      const fromHeaderFree = !accountSenders && list.length > 0;
+      const dropFromHeader = (set) => Object.fromEntries(Object.entries(set).filter(([k]) => k.trim().toLowerCase() !== 'from'));
+
+      const zone = splitAttribs(c.attribs);
       const data = {
         name,
         subject: c.subject,
         lists: c.lists.map((l) => l.id),
         type: c.type,
-        from_email: c.fromEmail,
+        from_email: fromEmail,
         reply_to: c.replyTo,
         content_type: c.contentType,
         messenger: c.messenger,
@@ -473,9 +541,11 @@ export default Vue.extend({
         body,
         body_source: bodySource,
         altbody: c.altbody,
-        headers: c.headers,
+        headers: fromHeaderFree ? (c.headers || []).map(dropFromHeader).filter((h) => Object.keys(h).length) : c.headers,
         send_later: sendLater,
         send_at: sendAt,
+        // The copy keeps the time zone the scheduled time was chosen in.
+        attribs: sendLater && zone.stored ? { [TZ_ATTRIB]: zone.tz } : undefined,
         archive: c.archive,
         archive_template_id: c.archiveTemplateId,
         archive_meta: c.archiveMeta,
@@ -491,11 +561,27 @@ export default Vue.extend({
       });
     },
 
+    // Running and paused campaigns cannot be deleted (the server refuses too, LST-55).
+    isSending(c) {
+      return ['running', 'paused'].includes(c.status);
+    },
+
     deleteCampaign(c) {
       this.$api.deleteCampaign(c.id).then(() => {
         this.getCampaigns();
         this.$utils.toast(this.$t('globals.messages.deleted', { name: c.name }));
-      });
+      }).catch((err) => this.onDeleteFailed(err, 'campaigns.axmDeleteBlockedTitle'));
+    },
+
+    // The server refuses (409) to delete a campaign that is sending or has sent mail, with
+    // the reason in its message; any other failure is a toast, as for every request.
+    onDeleteFailed(err, titleKey) {
+      const msg = err.response && err.response.data && err.response.data.message;
+      if (err.response && err.response.status === 409 && msg) {
+        this.$utils.notice(this.$t(titleKey), msg);
+        return;
+      }
+      this.$utils.toast(msg || err.toString(), 'is-danger');
     },
 
     // Mark all campaigns in the query as selected.
@@ -532,7 +618,8 @@ export default Vue.extend({
               this.numSelectedCampaigns,
               { num: this.numSelectedCampaigns, name },
             ));
-          });
+          })
+          .catch((err) => this.onDeleteFailed(err, 'campaigns.axmDeleteBlockedManyTitle'));
       };
 
       this.$utils.confirm(this.$tc(
@@ -544,7 +631,7 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['campaigns', 'loading']),
+    ...mapState(['campaigns', 'loading', 'serverConfig']),
 
     numSelectedCampaigns() {
       return this.bulk.all ? this.campaigns.total : this.bulk.checked.length;

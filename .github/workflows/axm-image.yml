@@ -12,9 +12,11 @@ permissions:
   packages: write
 
 # Serialize reruns of a release so the second run sees the published tag.
+# Only superseded PR runs are cancelled (a new push makes the older run moot);
+# tag (release) and manual runs are never cancelled.
 concurrency:
   group: axm-image-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   image:
@@ -34,7 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          # Full history is only needed to check a release tag belongs to
+          # origin/axm/*; PR runs only build the merge commit.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
 
       - name: Resolve and validate version
         id: version
@@ -167,6 +171,9 @@ jobs:
           presets=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_column_presets')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE indexname = 'idx_axm_column_presets_name')::text")
           test "$presets" = 1:1
           docker exec -i ${{ job.services.postgres.id }} psql -v ON_ERROR_STOP=1 -U listmonk -d listmonk < frontend/cypress/fixtures/reaction-lists.sql
+          # A test inbox, so that browser tests can check who a campaign really reached (LST-48).
+          docker run -d --name axm-mail --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:1025 -e MP_UI_BIND_ADDR=127.0.0.1:8025 axllent/mailpit:v1.27
+          docker exec ${{ job.services.postgres.id }} psql -v ON_ERROR_STOP=1 -U listmonk -d listmonk -c "UPDATE settings SET value = jsonb_build_array(jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(value->0, '{host}', '\"127.0.0.1\"'), '{port}', '1025'), '{auth_protocol}', '\"none\"'), '{tls_type}', '\"none\"'), '{enabled}', 'true')) WHERE key = 'smtp'"
           docker run -d --name axm-smoke --network host "${env_args[@]}" listmonk-axm:ci
           curl --fail --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 http://127.0.0.1:9000/health
           python3 - <<'PY'
@@ -205,11 +212,13 @@ jobs:
         env:
           CYPRESS_LISTMONK_ADMIN_USER: ci-admin
           CYPRESS_LISTMONK_ADMIN_PASSWORD: ci-only-password
+          CYPRESS_mailpitUrl: http://127.0.0.1:8025
         run: |
           npm install --global yarn@1.22.22
           cd frontend
           yarn install --frozen-lockfile
-          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/reaction-lists.cy.js,cypress/e2e/subscriber-columns.cy.js,cypress/e2e/column-presets.cy.js,cypress/e2e/audit.cy.js,cypress/e2e/list-trash.cy.js,cypress/e2e/campaign-recent-exclude.cy.js,cypress/e2e/analytics-proof.cy.js'
+          for tz in Asia/Seoul America/New_York Pacific/Auckland; do TZ=$tz node --test tests/schedule-time.test.mjs; done
+          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/from-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/reaction-lists.cy.js,cypress/e2e/subscriber-columns.cy.js,cypress/e2e/column-presets.cy.js,cypress/e2e/audit.cy.js,cypress/e2e/list-trash.cy.js,cypress/e2e/campaign-recent-exclude.cy.js,cypress/e2e/campaign-tracking-check.cy.js,cypress/e2e/analytics-proof.cy.js,cypress/e2e/address-check.cy.js,cypress/e2e/address-gate.cy.js,cypress/e2e/campaign-test-send.cy.js,cypress/e2e/schedule-time.cy.js,cypress/e2e/campaign-send-confirm.cy.js,cypress/e2e/campaign-delete-guard.cy.js'
 
       - name: Upgrade official v6.2.0 database and smoke test
         env:
@@ -237,7 +246,11 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.13
+          test "$migration" = v6.2.1-axm.15
+          test_domains=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value::text FROM settings WHERE key = 'axm.test_domains'")
+          test "$test_domains" = '[]'
+          test_addr=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_test_addresses')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_test_addresses')::text")
+          test "$test_addr" = 6:2
           sends=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_campaign_sends')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_campaign_sends')::text")
           test "$sends" = 13:3
           draws=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename IN ('axm_list_draws', 'axm_list_draw_campaigns'))::text || ':' || (SELECT count(*) FROM pg_proc WHERE proname IN ('axm_list_target', 'axm_draw_candidates')) || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname IN ('axm_propagate_draw_unsub', 'axm_keep_draw_campaigns', 'axm_guard_exclude_list_delete') AND NOT tgisinternal)")
@@ -296,3 +309,4 @@ jobs:
         run: |
           docker logs axm-smoke || true
           docker rm -f axm-smoke || true
+          docker rm -f axm-mail || true

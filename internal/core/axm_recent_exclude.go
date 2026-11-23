@@ -7,7 +7,11 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
+	"time"
 
+	"github.com/gofrs/uuid/v5"
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
@@ -174,6 +178,232 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if err != nil {
 		return out, c.recentError(err)
 	}
+	if err := tx.Commit(); err != nil {
+		return out, c.recentError(err)
+	}
+	return out, nil
+}
+
+// recentListLockKey serializes the making of recent-exclusion lists (see MakeRecentExcludeList).
+const recentListLockKey int64 = 746046
+
+// RecentListOptions carries what the handler decides about the new list.
+type RecentListOptions struct {
+	Name         string
+	ResolveTeams func(source []string) ([]string, error)
+	// UserID, when set, must be able to read every source list in the transaction's snapshot
+	// (the caller checked the session's permissions, which can be older than the snapshot).
+	UserID int
+	// AfterTeams, when set, runs after the teams are decided and before the transaction (tests
+	// change the source lists there).
+	AfterTeams func()
+}
+
+func (c *Core) recentBadRequest(key string) error {
+	return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recent."+key))
+}
+
+func (c *Core) recentListName(sources []models.RecentSourceList, days int, at time.Time) string {
+	base := sources[0].Name
+	if len(sources) > 1 {
+		base = c.i18n.Ts("lists.recentExclude.moreLists", "name", base, "count", strconv.Itoa(len(sources)-1))
+	}
+	return listNameWithSuffix(base, c.i18n.Ts("lists.recentExclude.nameSuffix", "days", strconv.Itoa(days), "date", at.Format("2006-01-02")))
+}
+
+func (c *Core) describeRecentList(out models.RecentListResult, rule models.RecentRule) string {
+	names := make([]string, len(out.SourceLists))
+	for i, source := range out.SourceLists {
+		names[i] = source.Name + " (#" + strconv.Itoa(source.ID) + ")"
+	}
+	scope := c.i18n.T("campaigns.recent.scope." + rule.Scope)
+	if rule.Scope == models.RecentScopeCampaigns {
+		ids := make([]string, len(rule.CampaignIDs))
+		for i, id := range rule.CampaignIDs {
+			ids[i] = "#" + strconv.FormatInt(id, 10)
+		}
+		scope += " " + strings.Join(ids, ", ")
+	}
+	return c.i18n.Ts("lists.recentExclude.description", "lists", strings.Join(names, ", "),
+		"days", strconv.Itoa(rule.Days), "scope", scope, "time", out.AsOf.Format("2006-01-02 15:04 MST"),
+		"target", groupThousands(out.Counts.Target), "excluded", groupThousands(out.Counts.Excluded),
+		"added", groupThousands(out.Counts.Added))
+}
+
+// MakeRecentExcludeList counts the audience again and, in the same repeatable-read
+// transaction, creates a private list holding everybody the rule does not exclude. The
+// caller has validated the rule and checked access to every list. It does not touch any
+// campaign: the campaign's target is changed by the normal campaign update.
+func (c *Core) MakeRecentExcludeList(ctx context.Context, lists []int, rule models.RecentRule, selfID int, o RecentListOptions) (models.RecentListResult, error) {
+	var out models.RecentListResult
+	ids := make(pq.Int64Array, 0, len(lists))
+	for _, id := range lists {
+		if !slices.Contains(ids, int64(id)) {
+			ids = append(ids, int64(id))
+		}
+	}
+	if len(ids) == 0 {
+		return out, c.recentBadRequest("selectLists")
+	}
+
+	// The teams are resolved first, on the pool: resolving reads the database, and the request
+	// must not ask the pool for a second connection while it holds one (db.max_open may be 1).
+	// The transaction then checks that the source lists still have those teams; if a team was
+	// changed in between, the whole decision is made again.
+	for attempt := 1; ; attempt++ {
+		out = models.RecentListResult{}
+		if err := c.q.AxmRecentSourceLists.SelectContext(ctx, &out.SourceLists, ids); err != nil {
+			return out, c.recentError(err)
+		}
+		if len(out.SourceLists) != len(ids) {
+			return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("globals.messages.invalidID"))
+		}
+		tags := recentSourceTeams(out.SourceLists)
+		if rule.Scope == models.RecentScopeTeam && len(tags) == 0 {
+			return out, c.recentBadRequest("noTeam")
+		}
+		teams, err := o.ResolveTeams(tags)
+		if err != nil {
+			return out, err
+		}
+		// A same-team rule counts the teams of the campaign's lists: a list without a team would
+		// leave the rule with nothing to count.
+		if rule.Scope == models.RecentScopeTeam && len(teams) == 0 {
+			return out, c.recentBadRequest("noTeam")
+		}
+		if o.AfterTeams != nil {
+			o.AfterTeams()
+		}
+
+		out, err = c.makeRecentExcludeList(ctx, ids, rule, selfID, o, tags, teams, out)
+		if errors.Is(err, errRecentTeamsChanged) {
+			if attempt < 3 {
+				continue
+			}
+			return out, c.recentError(err)
+		}
+		if err != nil {
+			return out, err
+		}
+		break
+	}
+	// The connection of the transaction is back in the pool here.
+	_ = c.refreshCache(matListSubStats, false)
+	return out, nil
+}
+
+// errRecentTeamsChanged: the source lists' teams changed between deciding the new list's teams
+// and the transaction's snapshot.
+var errRecentTeamsChanged = errors.New("the source lists' teams changed while the list was being made")
+
+// recentSourceTeams is the union of the source lists' team tags, in order.
+func recentSourceTeams(sources []models.RecentSourceList) []string {
+	tags := []string{}
+	for _, source := range sources {
+		for _, tag := range models.TeamTags(source.Tags) {
+			if !slices.Contains(tags, tag) {
+				tags = append(tags, tag)
+			}
+		}
+	}
+	return tags
+}
+
+// makeRecentExcludeList does the work of MakeRecentExcludeList on one connection: the lock and
+// the transaction share it, so the request never holds one connection while waiting for another.
+func (c *Core) makeRecentExcludeList(ctx context.Context, ids pq.Int64Array, rule models.RecentRule, selfID int,
+	o RecentListOptions, sourceTeams, teams []string, out models.RecentListResult) (models.RecentListResult, error) {
+	// Names are made unique by looking at the committed lists, so two makers must not run at
+	// once: the second one starts its snapshot only after the first one committed. The session
+	// lock is taken before the transaction takes its snapshot.
+	conn, err := c.db.Connx(ctx)
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, recentListLockKey); err != nil {
+		return out, c.recentError(err)
+	}
+	defer conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, recentListLockKey)
+
+	tx, err := conn.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	defer tx.Rollback()
+
+	// The lists are read again in the snapshot (a list deleted meanwhile is refused).
+	out.SourceLists = nil
+	if err := tx.Stmtx(c.q.AxmRecentSourceLists).SelectContext(ctx, &out.SourceLists, ids); err != nil {
+		return out, c.recentError(err)
+	}
+	if len(out.SourceLists) != len(ids) {
+		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("globals.messages.invalidID"))
+	}
+	// The count below reads the teams of this snapshot (a same-team rule counts by them), and the
+	// new list's teams were decided from the teams read before: they must be the same.
+	if now := recentSourceTeams(out.SourceLists); len(now) != len(sourceTeams) ||
+		slices.ContainsFunc(now, func(t string) bool { return !slices.Contains(sourceTeams, t) }) {
+		return out, errRecentTeamsChanged
+	}
+	// A list moved to another team meanwhile can take the user's access with it: read access is
+	// checked in the same snapshot the people are read from.
+	if o.UserID != 0 {
+		var readable []int
+		if err := tx.Stmtx(c.q.AxmRecentReadableLists).SelectContext(ctx, &readable, o.UserID, ids); err != nil {
+			return out, c.recentError(err)
+		}
+		if len(readable) != len(ids) {
+			return out, echo.NewHTTPError(http.StatusForbidden, c.i18n.T("campaigns.recent.listForbidden"))
+		}
+	}
+
+	var counts models.RecentCounts
+	if err := tx.Stmtx(c.q.AxmRecentExcludeCounts).GetContext(ctx, &counts, ids, rule.Days, rule.Scope, rule.CampaignIDs, selfID); err != nil {
+		return out, c.recentError(err)
+	}
+	out.AsOf = counts.AsOf
+	out.Counts = models.RecentListCounts{Target: counts.Target, Excluded: counts.Excluded, Added: counts.Target - counts.Excluded}
+	if out.Counts.Added <= 0 {
+		return out, c.recentBadRequest("listEmpty")
+	}
+
+	name := strings.TrimSpace(o.Name)
+	if name == "" {
+		name = c.recentListName(out.SourceLists, rule.Days, out.AsOf)
+	}
+	if name, err = c.uniqueDerivedListName(ctx, tx, name); err != nil {
+		return out, c.recentError(err)
+	}
+	uu, err := uuid.NewV4()
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	preset := out.SourceLists[0].Preset
+	if preset == "" {
+		preset = DefaultColumnPreset
+	}
+	out.List = models.List{
+		Name: name, UUID: uu.String(), Type: models.ListTypePrivate, Optin: models.ListOptinSingle,
+		Status: models.ListStatusActive, AxmPreset: preset, Tags: append(pq.StringArray{models.RecentListTag}, teams...),
+		Description: c.describeRecentList(out, rule),
+	}
+	if err := tx.Stmtx(c.q.AxmDrawCreateList).GetContext(ctx, &out.List.Base, out.List.UUID, name, out.List.Tags, out.List.Description, preset); err != nil {
+		return out, c.recentError(err)
+	}
+	result, err := tx.Stmtx(c.q.AxmRecentAddMembers).ExecContext(ctx, ids, rule.Days, rule.Scope, rule.CampaignIDs, selfID, out.List.ID)
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return out, c.recentError(err)
+	}
+	if inserted != int64(out.Counts.Added) {
+		return out, c.recentError(errors.New("recent-exclude list membership differs from the transaction count"))
+	}
+	out.List.SubscriberCount = int(inserted)
+	out.List.SubscriberCounts = models.StringIntMap{"confirmed": int(inserted)}
 	if err := tx.Commit(); err != nil {
 		return out, c.recentError(err)
 	}

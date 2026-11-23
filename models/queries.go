@@ -20,6 +20,20 @@ type Queries struct {
 	AxmRecentSourceCamps   *sqlx.Stmt `query:"axm-recent-source-campaigns"`
 	AxmLockRecentCampaign  *sqlx.Stmt `query:"axm-lock-recent-campaign"`
 	AxmRecentCampaignLists *sqlx.Stmt `query:"axm-recent-campaign-lists"`
+	AxmRecentSourceLists   *sqlx.Stmt `query:"axm-recent-source-lists"`
+	AxmRecentAddMembers    *sqlx.Stmt `query:"axm-recent-add-members"`
+	AxmRecentReadableLists *sqlx.Stmt `query:"axm-recent-readable-lists"`
+
+	AxmAddressCheckCount         *sqlx.Stmt `query:"axm-address-check-count"`
+	AxmAddressCheckAudience      *sqlx.Stmt `query:"axm-address-check-audience"`
+	AxmAddressCheckDynamic       *sqlx.Stmt `query:"axm-address-check-dynamic"`
+	AxmAddressCheckCountOptin    *sqlx.Stmt `query:"axm-address-check-count-optin"`
+	AxmAddressCheckAudienceOptin *sqlx.Stmt `query:"axm-address-check-audience-optin"`
+	AxmAddressCheckLinked        *sqlx.Stmt `query:"axm-address-check-linked"`
+
+	AxmPreflightAudience    *sqlx.Stmt `query:"axm-preflight-audience"`
+	AxmPreflightSample      *sqlx.Stmt `query:"axm-preflight-sample"`
+	AxmCampaignForSendCheck *sqlx.Stmt `query:"axm-campaign-for-send-check"`
 
 	AxmDrawLock                    *sqlx.Stmt `query:"axm-draw-lock"`
 	AxmDrawSource                  *sqlx.Stmt `query:"axm-draw-source"`
@@ -61,6 +75,11 @@ type Queries struct {
 	AxmVisibleTeams                *sqlx.Stmt `query:"axm-visible-teams"`
 	AxmTeamlessListIDs             *sqlx.Stmt `query:"axm-teamless-list-ids"`
 	AxmSubscriberOtherTeams        *sqlx.Stmt `query:"axm-subscriber-other-teams"`
+	AxmSubscriberLocked            *sqlx.Stmt `query:"axm-subscriber-locked"`
+	AxmLockSubscribers             *sqlx.Stmt `query:"axm-lock-subscribers"`
+	AxmUpdateSubscriberLists       *sqlx.Stmt `query:"axm-update-subscriber-lists"`
+	AxmQuerySubscribersMulti       string     `query:"axm-query-subscribers-multi"`
+	AxmQuerySubscribersMultiCount  string     `query:"axm-query-subscribers-multi-count"`
 	NextCampaignSubscribersDynamic *sqlx.Stmt `query:"next-campaign-subscribers-dynamic"`
 	ListSenderAddresses            *sqlx.Stmt `query:"list-sender-addresses"`
 	GetSenderAddress               *sqlx.Stmt `query:"get-sender-address"`
@@ -82,7 +101,8 @@ type Queries struct {
 	AxmDeleteAudit *sqlx.Stmt `query:"axm-delete-audit"`
 	AxmQueryAudit  string     `query:"axm-query-audit"`
 
-	AxmResolveCampaignsToDelete *sqlx.Stmt `query:"axm-resolve-campaigns-to-delete"`
+	AxmLockCampaignsToDelete  *sqlx.Stmt `query:"axm-lock-campaigns-to-delete"`
+	AxmDeleteCampaignsGuarded *sqlx.Stmt `query:"axm-delete-campaigns-guarded"`
 
 	AxmTrashResolveLists *sqlx.Stmt `query:"axm-trash-resolve-lists"`
 	AxmTrashBusyLists    *sqlx.Stmt `query:"axm-trash-busy-lists"`

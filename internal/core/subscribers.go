@@ -135,6 +135,11 @@ func (c *Core) QuerySubscribers(searchStr, queryExp string, listIDs []int, subSt
 	// stmt is the raw SQL query.
 	// One pass: text put in for one placeholder is never scanned for the other.
 	stmt := strings.NewReplacer("%query%", cond, "%order%", orderExp).Replace(c.q.QuerySubscribers)
+	// With more than one list the upstream join returns a subscriber once per list they are
+	// on, so a query that reads every subscriber once takes its place (LST-42).
+	if len(listIDs) > 1 {
+		stmt = strings.NewReplacer("%query%", cond, "%order%", orderExp).Replace(c.q.AxmQuerySubscribersMulti)
+	}
 
 	// Validate the tables used in the query.
 	if err := validateQueryTables(c.db, stmt, allowedSubQueryTables, pq.Array(listIDs), subStatus, searchStr, offset, limit); err != nil {
@@ -612,6 +617,10 @@ func (c *Core) getSubscriberCount(searchStr, queryExp, subStatus string, listIDs
 	// Create a readonly transaction that just does COUNT() to obtain the count of results
 	// and to ensure that the arbitrary query is indeed readonly.
 	stmt := strings.ReplaceAll(c.q.QuerySubscribersCount, "%query%", queryExp)
+	// More than one list: count people, not subscription rows (LST-42).
+	if len(listIDs) > 1 {
+		stmt = strings.ReplaceAll(c.q.AxmQuerySubscribersMultiCount, "%query%", queryExp)
+	}
 	tx, err := c.db.BeginTxx(context.Background(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		c.log.Printf("error preparing subscriber query: %v", err)

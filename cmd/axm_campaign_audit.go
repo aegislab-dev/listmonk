@@ -35,9 +35,11 @@ func (a *App) auditCampaignStatus(c echo.Context, status string, camp models.Cam
 	a.audit(c, action, auditTarget{auditTargetCampaign, camp.ID, camp.Name}, count, d)
 }
 
-// auditCampaignsDeleted writes campaign.delete: one row for each campaign deleted.
-func (a *App) auditCampaignsDeleted(c echo.Context, camps []core.CampaignRef) {
+// auditCampaignsDeleted writes campaign.delete: one row for each campaign deleted, with the
+// status, sent and to_send it had when it was deleted (count is how many it had sent).
+func (a *App) auditCampaignsDeleted(c echo.Context, camps []core.DeletedCampaign) {
 	for _, camp := range camps {
-		a.audit(c, auditCampaignDelete, auditTarget{auditTargetCampaign, camp.ID, camp.Name}, auditNoCount, nil)
+		a.audit(c, auditCampaignDelete, auditTarget{auditTargetCampaign, camp.ID, camp.Name}, camp.Sent,
+			map[string]any{"status": camp.Status, "sent": camp.Sent, "to_send": camp.ToSend})
 	}
 }

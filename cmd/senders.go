@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/mail"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,175 @@ func internalSender(addr string, domains []string) bool {
 		}
 	}
 	return false
+}
+
+// placeholderLocals are local parts that stand for "fill in the real address".
+var placeholderLocals = map[string]bool{"change-me": true, "changeme": true, "change_me": true}
+
+// addrOf returns the lowercased address part of a From value, or "" if the
+// value cannot be parsed.
+func addrOf(v string) string {
+	a, err := mail.ParseAddress(strings.TrimSpace(v))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(a.Address)
+}
+
+// placeholderFrom reports whether a From value is a placeholder that was never
+// replaced (change-me@..., or a domain reserved for examples).
+// It is a pure function so other checks can reuse it.
+func placeholderFrom(v string) bool { return placeholderAddress(addrOf(v)) }
+
+// placeholderAddress is placeholderFrom for an address that is already parsed
+// (quotes in the local part removed) and lowercased.
+func placeholderAddress(addr string) bool {
+	at := strings.LastIndexByte(addr, '@')
+	if at < 1 {
+		return false
+	}
+	local, domain := addr[:at], addr[at+1:]
+	if placeholderLocals[local] {
+		return true
+	}
+	for _, d := range []string{"example.com", "example.org", "example.net"} {
+		if domain == d || strings.HasSuffix(domain, "."+d) {
+			return true
+		}
+	}
+	for _, tld := range []string{"example", "invalid", "test"} {
+		if strings.HasSuffix(domain, "."+tld) {
+			return true
+		}
+	}
+	for _, tld := range []string{"example", "invalid", "test"} {
+		if strings.HasSuffix(domain, "."+tld) {
+			return true
+		}
+	}
+	return false
+}
+
+// placeholderListFrom is the stricter rule for the settings list: it also
+// rejects the stock install address (noreply@listmonk.yoursite.com).
+func placeholderListFrom(v string) bool { return placeholderListAddress(addrOf(v)) }
+
+func placeholderListAddress(addr string) bool {
+	if placeholderAddress(addr) {
+		return true
+	}
+	at := strings.LastIndexByte(addr, '@')
+	if at < 1 {
+		return false
+	}
+	d := addr[at+1:]
+	return d == "yoursite.com" || strings.HasSuffix(d, ".yoursite.com")
+}
+
+var reFromNameSpecial = regexp.MustCompile(`[,"<>@;:\\()\[\]]`)
+
+// matchFromAddress finds the list entry a From value stands for. A value equal
+// to an entry (after trimming) matches it; otherwise a value with the same
+// address (case-insensitive) matches the first entry with that address, so a
+// stray space or a different display name is replaced by the list's spelling.
+func matchFromAddress(value string, list []string) (string, bool) {
+	if i := matchFromIndex(value, list); i >= 0 {
+		return list[i], true
+	}
+	return "", false
+}
+
+// matchFromIndex is the index of the list entry a From value stands for, or -1.
+// It is the one place that reads From values against the list; the admin UI
+// shows what this returns and never parses an address itself.
+func matchFromIndex(value string, list []string) int {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return -1
+	}
+	for i, e := range list {
+		if e == v {
+			return i
+		}
+	}
+	if a := addrOf(v); a != "" {
+		for i, e := range list {
+			if addrOf(e) == a {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// fromState is what a campaign's stored From means: the index of the matching
+// list entry (nil when there is no list or no match) and whether it is a
+// placeholder. Account senders (no list is used) and an empty From say nothing.
+func fromState(from string, list []string, accountSenders bool) (*int, bool) {
+	if accountSenders || strings.TrimSpace(from) == "" {
+		return nil, false
+	}
+	if i := matchFromIndex(from, list); i >= 0 {
+		return &i, false
+	}
+	return nil, placeholderFrom(from)
+}
+
+// defaultFromIndex is the list entry a new campaign starts with: the app
+// default if it is on the list, else the first entry. -1 for an empty list.
+func defaultFromIndex(appFrom string, list []string) int {
+	if len(list) == 0 {
+		return -1
+	}
+	if i := matchFromIndex(appFrom, list); i >= 0 {
+		return i
+	}
+	return 0
+}
+
+// defaultFromFor is the From a new campaign gets when none is sent.
+func defaultFromFor(appFrom string, list []string) string {
+	return strings.TrimSpace(list[defaultFromIndex(appFrom, list)])
+}
+
+// normalizeFromAddresses cleans the team's From list. Entries are "Name <addr>"
+// or "addr"; the address part is lowercased, exact duplicates are dropped and
+// placeholder addresses are refused.
+func normalizeFromAddresses(in []string) ([]string, error) {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, v := range in {
+		if strings.ContainsAny(v, "\r\n") {
+			return nil, errors.New("invalid from address")
+		}
+		v = strings.TrimSpace(v)
+		if v == "" || len(v) > 200 {
+			return nil, errors.New("invalid from address")
+		}
+		a, err := mail.ParseAddress(v)
+		if err != nil || placeholderListAddress(strings.ToLower(a.Address)) {
+			return nil, errors.New("invalid from address")
+		}
+		// Address.String quotes a local part that needs it ("two words"@x).
+		e := strings.ToLower(a.Address)
+		bare := strings.TrimSuffix(strings.TrimPrefix((&mail.Address{Address: e}).String(), "<"), ">")
+		if name := strings.TrimSpace(a.Name); name != "" {
+			if reFromNameSpecial.MatchString(name) {
+				name = strconv.Quote(name)
+			}
+			e = name + " <" + bare + ">"
+		} else {
+			e = bare
+		}
+		if !seen[e] {
+			seen[e] = true
+			out = append(out, e)
+		}
+	}
+	if len(out) > 50 {
+		return nil, errors.New("too many from addresses")
+	}
+	return out, nil
 }
 
 func resolveFrom(user auth.User, defaultFrom, appFrom string, domains []string) string {
@@ -72,6 +242,19 @@ func replyToAllowed(addr string, user auth.User, domains []string, verifiedLooku
 	return verifiedLookup(strings.ToLower(a.Address))
 }
 
+// hasFromHeader reports a custom From header, which would replace the From
+// that was checked against the From list when the mail is sent.
+func hasFromHeader(headers []map[string]string) bool {
+	for _, set := range headers {
+		for k := range set {
+			if strings.EqualFold(strings.TrimSpace(k), "from") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func hasReservedHeader(headers []map[string]string) bool {
 	for _, set := range headers {
 		for k := range set {
@@ -85,6 +268,13 @@ func hasReservedHeader(headers []map[string]string) bool {
 }
 
 func (a *App) campaignReplyVerified(camp *models.Campaign) error {
+	// Every campaign response passes here: tell the UI what the From means.
+	camp.FromMatch, camp.FromPlaceholder = fromState(camp.FromEmail, a.cfg.FromAddresses, len(a.cfg.SenderDomains) > 0)
+	camp.FromEntry = nil
+	if camp.FromMatch != nil {
+		e := strings.TrimSpace(a.cfg.FromAddresses[*camp.FromMatch])
+		camp.FromEntry = &e
+	}
 	if len(a.cfg.SenderDomains) == 0 {
 		camp.ReplyToVerified = true
 		return nil
@@ -208,22 +398,23 @@ func (a *App) SenderVerify(c echo.Context) error {
 	}{publicTpl{Title: a.i18n.T("senders.verifyTitle")}, out.Email, c.Request().URL.Path})
 }
 
-// normalizeSenderSettings is shared by full and keyed settings updates.
-func normalizeSenderSettings(set *models.Settings) error {
+// normalizeDomains lowercases and trims a list of exact domains, drops repeats and refuses
+// anything that is not a domain name. The sender domains and the test domains share it.
+func normalizeDomains(in []string) ([]string, error) {
 	domains := []string{}
 	seen := map[string]bool{}
-	for _, v := range set.AxmSenderDomains {
+	for _, v := range in {
 		v = strings.ToLower(strings.TrimSpace(v))
 		if v == "" || len(v) > 253 || strings.ContainsAny(v, " <>@\t\r\n:/") || !strings.Contains(v, ".") {
-			return errors.New("invalid domain")
+			return nil, errors.New("invalid domain")
 		}
 		for _, label := range strings.Split(v, ".") {
 			if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-				return errors.New("invalid domain")
+				return nil, errors.New("invalid domain")
 			}
 			for _, ch := range label {
 				if !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '-') {
-					return errors.New("invalid domain")
+					return nil, errors.New("invalid domain")
 				}
 			}
 		}
@@ -232,7 +423,25 @@ func normalizeSenderSettings(set *models.Settings) error {
 			seen[v] = true
 		}
 	}
+	return domains, nil
+}
+
+// normalizeSenderSettings is shared by full and keyed settings updates.
+func normalizeSenderSettings(set *models.Settings) error {
+	domains, err := normalizeDomains(set.AxmSenderDomains)
+	if err != nil {
+		return err
+	}
 	set.AxmSenderDomains = domains
+	froms, err := normalizeFromAddresses(set.AxmFromAddresses)
+	if err != nil {
+		return err
+	}
+	set.AxmFromAddresses = froms
+	// AXM (LST-41): the domains that may receive a test message follow the same rule.
+	if set.AxmTestDomains, err = normalizeDomains(set.AxmTestDomains); err != nil {
+		return err
+	}
 	for _, v := range []*string{&set.AxmDefaultFrom, &set.AxmDefaultReplyTo} {
 		*v = strings.TrimSpace(*v)
 		if *v != "" {

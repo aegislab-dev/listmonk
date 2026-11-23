@@ -563,7 +563,10 @@ func (a *App) LinkRedirect(c echo.Context) error {
 	)
 
 	// If tracking is globally disabled, resolve the URL without recording a click.
-	if a.cfg.Privacy.DisableTracking {
+	// AXM (LST-41): the same goes for the dummy campaign UUID of previews and sample test
+	// messages. Upstream recorded such a click as a row without a campaign. The subscriber
+	// UUID says nothing here: with individual tracking off every real message has the dummy one.
+	if a.cfg.Privacy.DisableTracking || campUUID == dummyUUID {
 		url, err := a.core.GetLinkURL(linkUUID)
 		if err != nil {
 			e := err.(*echo.HTTPError)
@@ -768,6 +771,10 @@ func (a *App) processSubForm(c echo.Context) (bool, error) {
 		return false, echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 	req.Email = em
+	// An address that cannot receive mail is not added, and the person is told why (LST-53).
+	if err := a.addressRuleError(c, req.Email); err != nil {
+		return false, err
+	}
 
 	req.Name = strings.TrimSpace(req.Name)
 	if len(req.Name) == 0 {

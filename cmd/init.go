@@ -36,6 +36,7 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/posflag"
 	"github.com/knadh/koanf/v2"
+	"github.com/knadh/listmonk/internal/addrcheck"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/bounce"
 	"github.com/knadh/listmonk/internal/bounce/mailbox"
@@ -82,8 +83,10 @@ type UrlConfig struct {
 // Config contains static, constant config values required by arbitrary handlers and functions.
 type Config struct {
 	SenderDomains                 []string
+	TestDomains                   []string
 	DefaultFrom                   string
 	DefaultReplyTo                string
+	FromAddresses                 []string
 	SiteName                      string   `koanf:"site_name"`
 	FromEmail                     string   `koanf:"from_email"`
 	NotifyEmails                  []string `koanf:"notify_emails"`
@@ -514,8 +517,10 @@ func initConstConfig(ko *koanf.Koanf) *Config {
 	}
 
 	c.SenderDomains = ko.Strings("axm.sender_domains")
+	c.TestDomains = ko.Strings("axm.test_domains")
 	c.DefaultFrom = ko.String("axm.default_from")
 	c.DefaultReplyTo = ko.String("axm.default_reply_to")
+	c.FromAddresses = ko.Strings("axm.from_addresses")
 	c.Lang = ko.String("app.lang")
 	c.Privacy.Exportable = koanfmaps.StringSliceToLookupMap(ko.Strings("privacy.exportable"))
 	c.MediaUpload.Provider = ko.String("upload.provider")
@@ -1071,6 +1076,12 @@ func uploadSecurityHeaders(next echo.HandlerFunc) echo.HandlerFunc {
 func serveUploadDir(srv *echo.Echo, uri, root string, m ...echo.MiddlewareFunc) *echo.Route {
 	return srv.Add(http.MethodGet, uri+"*",
 		echo.StaticDirectoryHandler(echo.MustSubFS(srv.Filesystem, root), false), m...)
+}
+
+// initAddrCheck initializes the checker that looks e-mail domains up in DNS for the
+// address check screens. Its cache lives in memory and starts empty.
+func initAddrCheck() *addrcheck.Checker {
+	return addrcheck.NewChecker(addrcheck.Options{})
 }
 
 // initCaptcha initializes the captcha service.

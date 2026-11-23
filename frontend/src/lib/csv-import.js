@@ -96,17 +96,32 @@ export function validEmail(value) {
 export function parseCSV(text, { delimiter = '', header = true } = {}) {
   if (text.includes('\0')) throw new ImportError('nul');
   if (delimiter && (delimiter.length !== 1 || /["\r\n\0]/.test(delimiter))) throw new ImportError('delimiter');
-  const result = Papa.parse(text.replace(/^\uFEFF/, ''), {
+  const source = text.replace(/^\uFEFF/, '');
+  // Only a line with nothing on it is skipped, as the server's reader does: a quoted empty
+  // field ("") or a line of spaces is a record, so in a one-column file it is an empty address.
+  // Papa gives both as [''], so each record's own text tells them apart.
+  const result = {
+    data: [], blank: [], errors: [], meta: {},
+  };
+  let cursor = 0;
+  Papa.parse(source, {
     header: false,
     delimiter,
     delimitersToGuess: [',', ';', '\t', '|'],
     skipEmptyLines: false,
+    step: ({ data, errors, meta }) => {
+      result.data.push(data);
+      result.blank.push(source.slice(cursor, meta.cursor).replace(/(\r\n|\n|\r)$/, '') === '');
+      result.errors.push(...errors);
+      result.meta = meta;
+      cursor = meta.cursor;
+    },
   });
   // A quote error can consume all later physical lines as one logical record.
   // Their boundaries/count cannot be recovered safely; reject the whole file.
   if (result.errors.some((error) => error.type === 'Quotes')) throw new ImportError('quotes');
   const nonempty = result.data.map((cells, index) => ({ cells, row: index + 1 }))
-    .filter(({ cells }) => !(cells.length === 1 && cells[0].trim() === ''));
+    .filter((_, index) => !result.blank[index]);
   const first = nonempty[0];
   if (!first) throw new ImportError('empty');
   const columns = first.cells.map((cell, index) => (header ? cell.trim() : `Column ${index + 1}`));
@@ -252,14 +267,22 @@ export function validateMapping(mapping, existingKeys = []) {
 // values reports, per such column, how many cells were kept, changed, left out as blank and
 // could not be read, with examples. Unreadable cells are never stored: the caller uploads
 // only when every column that has them was told to leave them out (mapping[i].blank).
-export function convertCSV(parsed, mapping, existingKeys = [], standard = []) {
+// exclude is a Set of source row numbers the address check asked to leave out. They are
+// counted in summary.address and are not in the upload. checkEmails and checkRows list every
+// row with a usable, first-seen address (excluded or not): what the address check looks at.
+export function convertCSV(parsed, mapping, existingKeys = [], standard = [], exclude = null) {
   if (mapping.length !== parsed.columns.length || validateMapping(mapping, existingKeys).length) throw new ImportError('mapping');
   const emailIndex = mapping.findIndex(({ role }) => role === 'email');
   const nameIndex = mapping.findIndex(({ role }) => role === 'name');
   const seen = new Set();
   const summary = {
-    imported: 0, cleaned: 0, empty: 0, invalid: 0, duplicate: 0, malformed: parsed.issues.length,
+    imported: 0, cleaned: 0, empty: 0, invalid: 0, duplicate: 0, malformed: parsed.issues.length, address: 0,
   };
+  const checkEmails = [];
+  const checkRows = [];
+  // Every row left out for an address that is not one, with its source row (the download and
+  // the box that ends the import count them with the address check's rows).
+  const invalidRows = [];
   const examples = {
     empty: [], invalid: [], duplicate: [], malformed: parsed.issues.slice(0, 5),
   };
@@ -286,9 +309,16 @@ export function convertCSV(parsed, mapping, existingKeys = [], standard = []) {
     if (issue) {
       summary[issue] += 1;
       if (examples[issue].length < 5) examples[issue].push({ row, email });
+      if ((issue === 'invalid' || issue === 'empty') && invalidRows.length < LIMITS.rows) invalidRows.push({ row, email });
       return;
     }
     seen.add(email);
+    checkEmails.push(email);
+    checkRows.push(row);
+    if (exclude && exclude.has(row)) {
+      summary.address += 1;
+      return;
+    }
     const attributes = Object.create(null);
     // What the preview shows next to a value: the cell it was read from, or a cell left out.
     const changed = Object.create(null);
@@ -329,7 +359,7 @@ export function convertCSV(parsed, mapping, existingKeys = [], standard = []) {
   if (bytes.byteLength > LIMITS.output) throw new ImportError('outputLimit');
   summary.imported = output.length;
   return {
-    bytes, summary, examples, preview, sourceRows, values,
+    bytes, summary, examples, preview, sourceRows, values, checkEmails, checkRows, invalidRows,
   };
 }
 
@@ -369,4 +399,28 @@ export function rememberMapping(storage, columns, mapping, old = readMemory(stor
     // Storage is optional (private browsing, full quota, or disabled).
   }
   return memory;
+}
+
+// The address check: which classes mean the mail is certain to bounce, and which only warn.
+export const ADDRESS_CONFIRMED = ['format', 'provider', 'typo', 'dead', 'nullmx'];
+export const ADDRESS_WARNING = ['disposable', 'role'];
+
+// The source rows the address check leaves out. rowIssues maps a source row to its classes.
+export function addressExcludedRows(rowIssues, { confirmed = true, warning = false } = {}) {
+  const drop = [...(confirmed ? ADDRESS_CONFIRMED : []), ...(warning ? ADDRESS_WARNING : [])];
+  return Object.keys(rowIssues).map(Number).filter((row) => rowIssues[row].some((c) => drop.includes(c))).sort((a, b) => a - b);
+}
+
+// A CSV of the rows the address check left out (source row, address, reasons, and the
+// suggested address when a row has one), for fixing them by hand. Cells that a spreadsheet would run as a formula get a leading apostrophe.
+export function excludedRowsCSV(rows, header) {
+  const cell = (value) => {
+    const text = /^[=+\-@\t\r]/.test(String(value)) ? `'${value}` : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const withSuggest = rows.some((r) => r.suggest);
+  return [withSuggest ? header : header.slice(0, 3), ...rows.map(({
+    row, email, reasons, suggest = '',
+  }) => (withSuggest ? [row, email, reasons.join('; '), suggest] : [row, email, reasons.join('; ')]))]
+    .map((line) => line.map(cell).join(',')).join('\r\n');
 }

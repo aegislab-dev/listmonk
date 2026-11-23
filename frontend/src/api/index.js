@@ -238,9 +238,10 @@ export const getSubscriberAttribSample = (params) => http.get(
   },
 );
 
+// The attribute keys are data: they stay as they are stored (customer_id, not customerId).
 export const getSubscriber = async (id) => http.get(
   `/api/subscribers/${id}`,
-  { loading: models.subscribers },
+  { loading: models.subscribers, camelCase: (keyPath) => !keyPath.startsWith('.attribs.') },
 );
 
 export const getSubscriberActivity = async (id) => http.get(
@@ -276,11 +277,20 @@ export const blocklistBouncedSubscribers = async () => http.put(
 export const createSubscriber = (data) => http.post(
   '/api/subscribers',
   data,
-  { loading: models.subscribers },
+  { loading: models.subscribers, disableToast: true },
 );
 
+// The subscriber form shows an address-rule refusal under the address field and toasts the
+// other errors itself (disableToast).
 export const updateSubscriber = (data) => http.put(
   `/api/subscribers/${data.id}`,
+  data,
+  { loading: models.subscribers, disableToast: true },
+);
+
+// Saves only the lists of a subscriber (the profile is left to the server as it is).
+export const updateSubscriberLists = (id, data) => http.patch(
+  `/api/subscribers/${id}`,
   data,
   { loading: models.subscribers },
 );
@@ -371,6 +381,18 @@ export const getCampaign = async (id) => http.get(`/api/campaigns/${id}`, {
 export const previewRecentExclude = (data, signal) => http.post('/api/campaigns/recent-exclude/preview', data, {
   disableToast: true, signal,
 });
+export const makeRecentExcludeList = (data) => http.post('/api/campaigns/recent-exclude/list', data, {
+  disableToast: true,
+});
+// Address check (LST-43). Both only read; pending lookups are asked for again by the caller.
+export const checkListAddresses = (data, signal) => http.post('/api/lists/address-check', data, {
+  disableToast: true, signal,
+});
+// The answer can hold one entry per row of a large file; its keys need no conversion, and
+// converting them takes many seconds.
+export const checkImportAddresses = (data, signal) => http.post('/api/subscribers/address-check', data, {
+  disableToast: true, signal, camelCase: false,
+});
 export const getRecentRule = (id) => http.get(`/api/campaigns/${id}/recent-exclude`);
 export const saveRecentRule = (id, data) => http.put(`/api/campaigns/${id}/recent-exclude`, data);
 export const getRecentCampaignOption = (id) => http.get(`/api/campaigns/${id}`, { disableToast: true });
@@ -418,6 +440,13 @@ export const convertCampaignContent = async (data) => http.post(
   { loading: models.campaigns },
 );
 
+// The pre-send tracking check (LST-44). The component shows the error itself.
+export const checkCampaignTracking = (id, data) => http.post(
+  `/api/campaigns/${id}/tracking-check`,
+  data,
+  { disableToast: true, timeout: 15000 },
+);
+
 export const testCampaign = async (data) => http.post(
   `/api/campaigns/${data.id}/test`,
   data,
@@ -430,11 +459,21 @@ export const updateCampaign = async (id, data) => http.put(
   { loading: models.campaigns },
 );
 
-export const changeCampaignStatus = async (id, status) => http.put(
+// updatedAt (LST-48): the campaign's updated_at as the pre-send confirmation showed it,
+// unchanged. The server then refuses (409) a campaign that was edited since. Left out, the
+// status is changed without that check. options: more of the request's own settings.
+// extra: more fields of the request (send_at_passed from the pre-send confirmation, LST-48).
+export const changeCampaignStatus = async (id, status, updatedAt, options, extra = {}) => http.put(
   `/api/campaigns/${id}/status`,
-  { status },
+  { status, ...(updatedAt ? { updated_at: updatedAt } : {}), ...extra },
 
-  { loading: models.campaigns },
+  { loading: models.campaigns, ...options },
+);
+
+// What the pre-send confirmation shows (LST-48). The window shows its own errors.
+export const getCampaignPreflight = (id, options) => http.get(
+  `/api/campaigns/${id}/preflight`,
+  { disableToast: true, timeout: 60000, ...options },
 );
 
 export const updateCampaignArchive = async (id, data) => http.put(
@@ -443,14 +482,16 @@ export const updateCampaignArchive = async (id, data) => http.put(
   { loading: models.campaigns },
 );
 
+// A campaign that is sending or has sent mail is refused with 409 (LST-55): the caller shows
+// the reason in a dialog, not a toast.
 export const deleteCampaign = async (id) => http.delete(
   `/api/campaigns/${id}`,
-  { loading: models.campaigns },
+  { loading: models.campaigns, disableToast: true },
 );
 
 export const deleteCampaigns = (params) => http.delete(
   '/api/campaigns',
-  { params, loading: models.campaigns },
+  { params, loading: models.campaigns, disableToast: true },
 );
 
 // Media.

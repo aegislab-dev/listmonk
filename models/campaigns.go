@@ -39,6 +39,13 @@ type Campaign struct {
 	ReplyTo         string `db:"reply_to" json:"reply_to"`
 	ReplyToVerified bool   `db:"-" json:"reply_to_verified"`
 
+	// Set by the server from the From list (LST-49): the index of the list
+	// entry this campaign's From stands for (null if none or no list), and
+	// whether the From is a placeholder. The admin UI only uses these values.
+	FromMatch       *int    `db:"-" json:"from_match"`
+	FromEntry       *string `db:"-" json:"from_entry"`
+	FromPlaceholder bool    `db:"-" json:"from_placeholder"`
+
 	// LastSubscriberID is the sending checkpoint (campaigns.last_subscriber_id): the
 	// campaign is done with every subscriber up to it. The campaign manager continues
 	// after it when it picks a campaign up (AXM, LST-20). It is not part of the API.
@@ -250,6 +257,20 @@ func (c *Campaign) CompileTemplate(f template.FuncMap) error {
 	}
 
 	return nil
+}
+
+// ExpandTplFuncs is a subject or body as CompileTemplate parses it: the shorthands
+// ({{ MessageURL }}, url@TrackLink, …) given the message as their argument. Empty when it has no
+// template expression and is not compiled at all. AXM (LST-48): the send confirmation reads the
+// subject the way the sender runs it.
+func ExpandTplFuncs(s string) string {
+	if !hasTplExpr(s) {
+		return ""
+	}
+	for _, r := range regTplFuncs {
+		s = r.regExp.ReplaceAllString(s, r.replace)
+	}
+	return s
 }
 
 // hasTplExpr checks whether a given string has a Go template expression with {{ and  }}.
