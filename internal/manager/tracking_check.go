@@ -53,7 +53,20 @@ type TrackingLinks struct {
 	Auto          int      `json:"auto"`
 	Untracked     int      `json:"untracked"`
 	UntrackedURLs []string `json:"untracked_urls"`
+
+	// Every distinct link that was counted, as its kind ("manual", "auto" or "untracked")
+	// and destination, not capped. Not sent: reports of the same campaign in different
+	// states are put together from it (the pre-send confirmation, LST-48).
+	All []TrackedLink `json:"-"`
 }
+
+// TrackedLink is one distinct link of a report: how its clicks are recorded and where it goes.
+type TrackedLink struct {
+	Kind, Dest string
+}
+
+// MaxUntrackedURLs caps the list of untracked links in a report.
+const MaxUntrackedURLs = maxUntrackedURLs
 
 // TrackingReport is the result of CheckTracking.
 type TrackingReport struct {
@@ -169,6 +182,7 @@ func (m *Manager) CheckTracking(c *models.Campaign, sub models.Subscriber) (Trac
 			return
 		}
 		seen[kind+"\x00"+dest] = true
+		rep.Links.All = append(rep.Links.All, TrackedLink{Kind: kind, Dest: dest})
 		rep.Links.Total++
 		switch kind {
 		case TrackingViewManual:
