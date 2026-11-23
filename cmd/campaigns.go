@@ -541,7 +541,8 @@ func (a *App) UpdateCampaignArchive(c echo.Context) error {
 }
 
 // DeleteCampaign handles campaign deletion.
-// Only scheduled campaigns that have not started yet can be deleted.
+// A campaign that is running or paused, or that has sent mail (it has send records, or sent
+// within their retention period), is not deleted (409): see Core.DeleteCampaignsGuarded.
 func (a *App) DeleteCampaign(c echo.Context) error {
 	// Get the campaign ID.
 	id := getID(c)
@@ -552,16 +553,21 @@ func (a *App) DeleteCampaign(c echo.Context) error {
 	}
 
 	// Delete the campaign from the DB.
-	camps, _ := a.core.ResolveCampaignsToDelete([]int{id}, "", true, nil)
-	if err := a.core.DeleteCampaign(id); err != nil {
+	camps, err := a.core.DeleteCampaignsGuarded([]int{id}, "", false, true, nil)
+	if err != nil {
 		return err
+	}
+	if len(camps) == 0 {
+		return echo.NewHTTPError(http.StatusBadRequest,
+			a.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
 	}
 	a.auditCampaignsDeleted(c, camps)
 
 	return c.JSON(http.StatusOK, okResp{true})
 }
 
-// DeleteCampaigns deletes multiple campaigns by IDs or by query.
+// DeleteCampaigns deletes multiple campaigns by IDs or by query. If one of them is sending or
+// has sent mail, none is deleted (409).
 func (a *App) DeleteCampaigns(c echo.Context) error {
 	// Get the authenticated user.
 	user := auth.GetUser(c)
@@ -604,11 +610,8 @@ func (a *App) DeleteCampaigns(c echo.Context) error {
 	}
 
 	// Delete the campaigns from the DB.
-	camps, err := a.core.ResolveCampaignsToDelete(ids, query, hasAllPerm, permittedLists)
+	camps, err := a.core.DeleteCampaignsGuarded(ids, query, true, hasAllPerm, permittedLists)
 	if err != nil {
-		a.log.Printf("error reading campaigns for the audit log: %v", err)
-	}
-	if err := a.core.DeleteCampaigns(ids, query, hasAllPerm, permittedLists); err != nil {
 		return err
 	}
 	a.auditCampaignsDeleted(c, camps)

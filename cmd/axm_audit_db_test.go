@@ -410,6 +410,9 @@ func TestAuditCampaignsAndImports(t *testing.T) {
 	}
 	if r := e.oneAudit(auditCampaignDelete); *r.TargetID != second || !strings.HasPrefix(r.TargetName, "Synthetic") {
 		t.Fatalf("campaign delete: %+v", r)
+	} else if r.Count == nil || *r.Count != 0 || !strings.Contains(string(r.Detail), "draft") || !strings.Contains(string(r.Detail), "to_send") {
+		// LST-55: the status and the counts it had when it was deleted.
+		t.Fatalf("campaign delete detail: count %v, %s", r.Count, r.Detail)
 	}
 
 	// An import: start by a user, finish by the importer's callback.

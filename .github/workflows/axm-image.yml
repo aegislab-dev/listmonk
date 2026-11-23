@@ -219,7 +219,7 @@ jobs:
           cd frontend
           yarn install --frozen-lockfile
           for tz in Asia/Seoul America/New_York Pacific/Auckland; do TZ=$tz node --test tests/schedule-time.test.mjs; done
-          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/from-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/reaction-lists.cy.js,cypress/e2e/followup.cy.js,cypress/e2e/subscriber-columns.cy.js,cypress/e2e/column-presets.cy.js,cypress/e2e/audit.cy.js,cypress/e2e/list-trash.cy.js,cypress/e2e/campaign-recent-exclude.cy.js,cypress/e2e/campaign-tracking-check.cy.js,cypress/e2e/analytics-proof.cy.js,cypress/e2e/address-check.cy.js,cypress/e2e/address-gate.cy.js,cypress/e2e/campaign-test-send.cy.js,cypress/e2e/schedule-time.cy.js,cypress/e2e/campaign-send-confirm.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/from-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/reaction-lists.cy.js,cypress/e2e/followup.cy.js,cypress/e2e/subscriber-columns.cy.js,cypress/e2e/column-presets.cy.js,cypress/e2e/audit.cy.js,cypress/e2e/list-trash.cy.js,cypress/e2e/campaign-recent-exclude.cy.js,cypress/e2e/campaign-tracking-check.cy.js,cypress/e2e/analytics-proof.cy.js,cypress/e2e/address-check.cy.js,cypress/e2e/address-gate.cy.js,cypress/e2e/campaign-test-send.cy.js,cypress/e2e/schedule-time.cy.js,cypress/e2e/campaign-send-confirm.cy.js,cypress/e2e/campaign-delete-guard.cy.js'
 
       - name: Upgrade official v6.2.0 database and smoke test
         env:
