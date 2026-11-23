@@ -159,6 +159,11 @@
             <strong>{{ $t('import.mapIssueaddress', { count: summary.address }) }}</strong>
             <span>{{ $t('import.mapIssueaddressHelp') }}</span>
           </p>
+          <!-- Rows that are not an address are left out without the address check: the same
+               download is offered here when the check below offers none. -->
+          <p v-if="(summary.invalid || summary.empty) && !addressDownload">
+            <a href="#" data-cy="map-issues-download" @click.prevent="$emit('address-download')">{{ $t('import.addr.download') }}</a>
+          </p>
         </div>
         <p class="help">{{ $t('import.mapDuplicateHelp') }}</p>
         <div v-if="address" class="map-address" data-cy="map-address">
@@ -190,11 +195,10 @@
                 </span>
               </p>
             </div>
-            <div v-if="address.confirmedRows || address.warningRows" class="map-address-switches">
-              <b-switch :value="address.excludeConfirmed" :disabled="!address.confirmedRows" data-cy="map-address-exclude-confirmed"
-                @input="$emit('address-exclude', { confirmed: $event })">
-                {{ $t('import.addr.excludeConfirmed', { count: address.confirmedRows }) }}
-              </b-switch>
+            <p v-if="address.confirmedRows" class="map-address-fixed" data-cy="map-address-fixed">
+              {{ $t('import.addr.fixedRules', { count: address.confirmedRows }) }}
+            </p>
+            <div v-if="address.warningRows" class="map-address-switches">
               <b-switch :value="address.excludeWarning" :disabled="!address.warningRows" data-cy="map-address-exclude-warning"
                 @input="$emit('address-exclude', { warning: $event })">
                 {{ $t('import.addr.excludeWarning', { count: address.warningRows }) }}
@@ -203,7 +207,7 @@
             <p v-if="address.confirmedRows || address.warningRows" class="map-address-result" data-cy="map-address-result">
               <span v-if="summary.address">{{ $t('import.addr.result', { count: summary.imported, excluded: summary.address }) }}</span>
               <span v-else>{{ $t('import.addr.resultAll', { count: summary.imported }) }}</span>
-              <a v-if="summary.address" href="#" data-cy="map-address-download" @click.prevent="$emit('address-download')">
+              <a v-if="addressDownload" href="#" data-cy="map-address-download" @click.prevent="$emit('address-download')">
                 {{ $t('import.addr.download') }}
               </a>
             </p>
@@ -294,6 +298,12 @@ export default {
     address: { type: Object, default: null },
   },
   computed: {
+    // True when the address check's result line offers the download of the left out rows.
+    addressDownload() {
+      const a = this.address;
+      return !!(a && a.state === 'done' && (a.confirmedRows || a.warningRows) && this.summary && this.summary.address);
+    },
+
     rows() {
       return this.columns.map((label, index) => {
         const { role, key, blank } = this.mapping[index];

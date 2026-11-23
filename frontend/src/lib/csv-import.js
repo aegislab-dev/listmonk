@@ -96,17 +96,32 @@ export function validEmail(value) {
 export function parseCSV(text, { delimiter = '', header = true } = {}) {
   if (text.includes('\0')) throw new ImportError('nul');
   if (delimiter && (delimiter.length !== 1 || /["\r\n\0]/.test(delimiter))) throw new ImportError('delimiter');
-  const result = Papa.parse(text.replace(/^\uFEFF/, ''), {
+  const source = text.replace(/^\uFEFF/, '');
+  // Only a line with nothing on it is skipped, as the server's reader does: a quoted empty
+  // field ("") or a line of spaces is a record, so in a one-column file it is an empty address.
+  // Papa gives both as [''], so each record's own text tells them apart.
+  const result = {
+    data: [], blank: [], errors: [], meta: {},
+  };
+  let cursor = 0;
+  Papa.parse(source, {
     header: false,
     delimiter,
     delimitersToGuess: [',', ';', '\t', '|'],
     skipEmptyLines: false,
+    step: ({ data, errors, meta }) => {
+      result.data.push(data);
+      result.blank.push(source.slice(cursor, meta.cursor).replace(/(\r\n|\n|\r)$/, '') === '');
+      result.errors.push(...errors);
+      result.meta = meta;
+      cursor = meta.cursor;
+    },
   });
   // A quote error can consume all later physical lines as one logical record.
   // Their boundaries/count cannot be recovered safely; reject the whole file.
   if (result.errors.some((error) => error.type === 'Quotes')) throw new ImportError('quotes');
   const nonempty = result.data.map((cells, index) => ({ cells, row: index + 1 }))
-    .filter(({ cells }) => !(cells.length === 1 && cells[0].trim() === ''));
+    .filter((_, index) => !result.blank[index]);
   const first = nonempty[0];
   if (!first) throw new ImportError('empty');
   const columns = first.cells.map((cell, index) => (header ? cell.trim() : `Column ${index + 1}`));
@@ -265,6 +280,9 @@ export function convertCSV(parsed, mapping, existingKeys = [], standard = [], ex
   };
   const checkEmails = [];
   const checkRows = [];
+  // Every row left out for an address that is not one, with its source row (the download and
+  // the box that ends the import count them with the address check's rows).
+  const invalidRows = [];
   const examples = {
     empty: [], invalid: [], duplicate: [], malformed: parsed.issues.slice(0, 5),
   };
@@ -291,6 +309,7 @@ export function convertCSV(parsed, mapping, existingKeys = [], standard = [], ex
     if (issue) {
       summary[issue] += 1;
       if (examples[issue].length < 5) examples[issue].push({ row, email });
+      if ((issue === 'invalid' || issue === 'empty') && invalidRows.length < LIMITS.rows) invalidRows.push({ row, email });
       return;
     }
     seen.add(email);
@@ -340,7 +359,7 @@ export function convertCSV(parsed, mapping, existingKeys = [], standard = [], ex
   if (bytes.byteLength > LIMITS.output) throw new ImportError('outputLimit');
   summary.imported = output.length;
   return {
-    bytes, summary, examples, preview, sourceRows, values, checkEmails, checkRows,
+    bytes, summary, examples, preview, sourceRows, values, checkEmails, checkRows, invalidRows,
   };
 }
 
@@ -383,7 +402,7 @@ export function rememberMapping(storage, columns, mapping, old = readMemory(stor
 }
 
 // The address check: which classes mean the mail is certain to bounce, and which only warn.
-export const ADDRESS_CONFIRMED = ['format', 'dead', 'nullmx'];
+export const ADDRESS_CONFIRMED = ['format', 'provider', 'typo', 'dead', 'nullmx'];
 export const ADDRESS_WARNING = ['disposable', 'role'];
 
 // The source rows the address check leaves out. rowIssues maps a source row to its classes.
@@ -392,13 +411,16 @@ export function addressExcludedRows(rowIssues, { confirmed = true, warning = fal
   return Object.keys(rowIssues).map(Number).filter((row) => rowIssues[row].some((c) => drop.includes(c))).sort((a, b) => a - b);
 }
 
-// A CSV of the rows the address check left out (source row, address, reasons), for fixing
-// them by hand. Cells that a spreadsheet would run as a formula get a leading apostrophe.
+// A CSV of the rows the address check left out (source row, address, reasons, and the
+// suggested address when a row has one), for fixing them by hand. Cells that a spreadsheet would run as a formula get a leading apostrophe.
 export function excludedRowsCSV(rows, header) {
   const cell = (value) => {
     const text = /^[=+\-@\t\r]/.test(String(value)) ? `'${value}` : String(value);
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  return [header, ...rows.map(({ row, email, reasons }) => [row, email, reasons.join('; ')])]
+  const withSuggest = rows.some((r) => r.suggest);
+  return [withSuggest ? header : header.slice(0, 3), ...rows.map(({
+    row, email, reasons, suggest = '',
+  }) => (withSuggest ? [row, email, reasons.join('; '), suggest] : [row, email, reasons.join('; ')]))]
     .map((line) => line.map(cell).join(',')).join('\r\n');
 }

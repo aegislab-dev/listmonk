@@ -294,7 +294,9 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=map-address-role]').should('contain', `5 (${rows[3]})`);
     cy.get('[data-cy=map-address-disposable]').should('contain', `6 (${rows[4]})`);
     cy.get('[data-cy=map-address-unknown]').should('contain', `7 (${rows[5]})`);
-    cy.get('[data-cy=map-address-exclude-confirmed] input').should('be.checked');
+    // No switch for the confirmed rows: they are never imported (a fixed line says so).
+    cy.get('[data-cy=map-address-exclude-confirmed]').should('not.exist');
+    cy.get('[data-cy=map-address-fixed]').should('contain', '2');
     cy.get('[data-cy=map-address-exclude-warning] input').should('not.be.checked');
     cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '4');
     cy.get('[data-cy=map-summary] .map-counts strong').eq(1).should('have.text', '2');
@@ -314,10 +316,6 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=map-address-exclude-warning] .check').click();
     cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
     cy.get('[data-cy=map-address-exclude-warning] .check').click();
-    cy.get('[data-cy=map-address-exclude-confirmed] .check').click();
-    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '6');
-    cy.get('[data-cy=map-issue-address], [data-cy=map-address-download]').should('not.exist');
-    cy.get('[data-cy=map-address-exclude-confirmed] .check').click();
     cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '4');
     // The check ran once: rebuilding the upload does not ask again.
     cy.get('@importCheck.all').should('have.length', 1);
@@ -400,12 +398,10 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=map-busy]').should('not.exist');
     cy.get('[data-cy=map-mode-mapping]').click();
     cy.wait('@importCheck');
-    // The first file: confirmed rows let in, role rows left out.
-    cy.get('[data-cy=map-address-exclude-confirmed] .check').click();
+    // The first file: the dead row is out, and the role row too once the warning switch is on.
     cy.get('[data-cy=map-address-exclude-warning] .check').click();
-    cy.get('[data-cy=map-address-exclude-confirmed] input').should('not.be.checked');
     cy.get('[data-cy=map-address-exclude-warning] input').should('be.checked');
-    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '1');
     cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
     cy.get('button[type=submit]').should('not.be.disabled').click();
     cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
@@ -417,7 +413,6 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=map-busy]').should('not.exist');
     cy.get('[data-cy=map-mode-mapping]').click();
     cy.wait('@importCheck');
-    cy.get('[data-cy=map-address-exclude-confirmed] input').should('be.checked');
     cy.get('[data-cy=map-address-exclude-warning] input').should('not.be.checked');
     cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
     cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
@@ -529,7 +524,7 @@ describe('Address check before sending and on import', () => {
     cy.get('.status button').first().click();
   });
 
-  it('lets the warning switch leave out a row that is both confirmed and a role address', () => {
+  it('leaves out a row that is both confirmed and a role address without a switch', () => {
     const both = `info@both-${stamp}.invalid`;
     cy.intercept('POST', importCheck, {
       data: {
@@ -539,14 +534,9 @@ describe('Address check before sending and on import', () => {
     openImport(`Mail,Person\n${both},Synthetic\nboth-${stamp}@example.invalid,Synthetic\n`, 'both.csv');
     cy.wait('@importCheck');
     cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '1');
-    // With the first switch on the row is already out, so the second has nothing to add.
-    cy.get('[data-cy=map-address-exclude-warning] input').should('be.disabled');
-    cy.get('[data-cy=map-address-exclude-confirmed] .check').click();
-    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
-    cy.get('[data-cy=map-address-exclude-warning] input').should('not.be.disabled');
-    cy.get('[data-cy=map-address-exclude-warning]').should('contain', '1');
-    cy.get('[data-cy=map-address-exclude-warning] .check').click();
-    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '1');
+    // The row is confirmed, so it is out and the warning switch has nothing to add: it is not shown.
+    cy.get('[data-cy=map-address-exclude-warning]').should('not.exist');
+    cy.get('[data-cy=map-address-fixed]').should('contain', '1');
     cy.get('[data-cy=map-issue-address]').should('contain', '1');
   });
 });

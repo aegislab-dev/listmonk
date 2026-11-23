@@ -16,7 +16,7 @@ const (
 )
 
 // Classes lists every class in the order the screens show them.
-var Classes = []string{ClassFormat, ClassDead, ClassNullMX, ClassDisposable, ClassRole, ClassUnknown}
+var Classes = []string{ClassFormat, ClassProvider, ClassTypo, ClassDead, ClassNullMX, ClassDisposable, ClassRole, ClassUnknown}
 
 const (
 	// MaxSamples is how many example addresses a class carries.
@@ -33,7 +33,7 @@ type Verdict struct {
 
 // Confirmed reports whether mail to the address is certain to bounce.
 func (v Verdict) Confirmed() bool {
-	return v.Format || v.Status == StatusDead || v.Status == StatusNullMX
+	return v.Format || v.Provider || v.Typo || v.Status == StatusDead || v.Status == StatusNullMX
 }
 
 // Warning reports whether the address is only a warning (disposable or role).
@@ -44,6 +44,12 @@ func (v Verdict) Classes() []string {
 	var out []string
 	if v.Format {
 		return append(out, ClassFormat)
+	}
+	if v.Provider {
+		out = append(out, ClassProvider)
+	}
+	if v.Typo {
+		out = append(out, ClassTypo)
 	}
 	switch v.Status {
 	case StatusDead:
@@ -114,7 +120,7 @@ type Summary struct {
 	Total int `json:"total"`
 	// Risky = Confirmed + Warning; an address in several classes counts once.
 	Risky int `json:"risky"`
-	// Confirmed: malformed, dead domain or null MX.
+	// Confirmed: malformed, breaks a provider rule, misspelled domain, dead domain or null MX.
 	Confirmed int `json:"confirmed"`
 	// Warning: disposable or role, and not confirmed.
 	Warning int `json:"warning"`

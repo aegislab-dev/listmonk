@@ -151,6 +151,16 @@ test('malformed widths are excluded and keep source row numbers', () => {
   assert.deepEqual(convertCSV(parsed, suggestMapping(parsed)).sourceRows, [2]);
 });
 
+test('a quoted empty field is an empty address; only a line with nothing on it is skipped', () => {
+  // Rows: 1 header, 2 address, 3 "" (an empty address), 4 blank line, 5 spaces, 6 address.
+  const parsed = parseCSV('email\na@example.invalid\n""\n\n   \r\nb@example.invalid\n');
+  assert.equal(parsed.total, 4);
+  assert.deepEqual(parsed.rows.map(({ row }) => row), [2, 3, 5, 6]);
+  assert.deepEqual(convertCSV(parsed, suggestMapping(parsed)).invalidRows, [{ row: 3, email: '' }, { row: 5, email: '' }]);
+  // With two columns, a line of spaces has the wrong width, as the server's reader sees it.
+  assert.deepEqual(parseCSV('email,name\na@example.invalid,A\n  \n\nb@example.invalid,B').issues, [{ row: 3, type: 'width' }]);
+});
+
 test('unclosed or invalid closing quotes reject the whole file instead of hiding later people', () => {
   const people = Array.from({ length: 10 }, (_, i) => `person-${i}@example.invalid,Name ${i}`);
   for (const bad of ['person-2@example.invalid,"unclosed', 'person-2@example.invalid,"홍"길동']) {
@@ -402,10 +412,20 @@ test('address exclusion follows the two switches and the excluded-rows file is s
   assert.deepEqual(addressExcludedRows(issues, { confirmed: true, warning: true }), [3, 5, 7, 9, 13]);
   assert.deepEqual(addressExcludedRows(issues, { confirmed: false, warning: true }), [3, 5, 7]);
   assert.deepEqual(addressExcludedRows(issues, { confirmed: false }), []);
+  // The rules of LST-53 (a misspelled domain, a Gmail name that cannot exist) are confirmed risks too.
+  assert.deepEqual(addressExcludedRows({ 2: ['typo'], 4: ['provider', 'role'], 6: ['role'] }), [2, 4]);
 
   const csv = excludedRowsCSV([
     { row: 3, email: 'info@gone.invalid', reasons: ['No mail server', 'Role address'] },
     { row: 9, email: '=cmd@x.invalid', reasons: ['a, "b"'] },
   ], ['Row', 'E-mail', 'Reason']);
   assert.equal(csv, 'Row,E-mail,Reason\r\n3,info@gone.invalid,No mail server; Role address\r\n9,\'=cmd@x.invalid,"a, ""b"""');
+});
+
+test('the excluded rows CSV adds the suggestion column only when a row has a suggestion', () => {
+  const csv = excludedRowsCSV([
+    { row: 2, email: 'kim@gmail.con', reasons: ['Misspelled domain'], suggest: 'kim@gmail.com' },
+    { row: 5, email: 'a@gone.invalid', reasons: ['No mail server'] },
+  ], ['Row', 'E-mail', 'Reason', 'Suggested']);
+  assert.equal(csv, 'Row,E-mail,Reason,Suggested\r\n2,kim@gmail.con,Misspelled domain,kim@gmail.com\r\n5,a@gone.invalid,No mail server,');
 });

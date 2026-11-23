@@ -34,10 +34,16 @@
           </b-taglist>
         </div>
 
-        <b-field :label="$t('subscribers.email')" label-position="on-border">
+        <b-field :label="$t('subscribers.email')" label-position="on-border"
+          :type="addrError ? 'is-danger' : ''" :message="addrError">
           <b-input :maxlength="200" v-model="form.email" name="email" :ref="'focus'"
-            :placeholder="$t('subscribers.email')" required :disabled="profileLocked" />
+            :placeholder="$t('subscribers.email')" required :disabled="profileLocked" @input="clearAddrRefusal" />
         </b-field>
+        <p v-if="addrSuggest" class="addr-suggest" data-cy="addr-suggest">
+          <b-button size="is-small" type="is-primary" outlined data-cy="addr-suggest-apply" @click="applySuggest">
+            {{ $t('subscribers.addr.apply', { domain: addrSuggestDomain }) }}
+          </b-button>
+        </p>
 
         <div class="columns">
           <div class="column is-8">
@@ -201,6 +207,15 @@ import ListSelector from '../components/ListSelector.vue';
 import CopyText from '../components/CopyText.vue';
 import SubscriberActivity from '../components/SubscriberActivity.vue';
 
+// The suggestion header is percent-encoded by the server, so a name outside ASCII arrives whole.
+function decodeSuggest(value) {
+  try {
+    return value ? decodeURIComponent(value) : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 export default Vue.extend({
   components: {
     ListSelector,
@@ -226,6 +241,10 @@ export default Vue.extend({
         status: 'enabled',
         preconfirm: false,
       },
+      // An address rule refused the save (LST-53): the words, and the corrected address for a
+      // misspelled domain. Nothing is changed until the person presses the button.
+      addrError: '',
+      addrSuggest: '',
       isBounceVisible: false,
       bounces: [],
       visibleMeta: {},
@@ -235,6 +254,35 @@ export default Vue.extend({
   },
 
   methods: {
+    // Shows a refusal by the address rules under the address field. Any other error is a toast.
+    // sent is the address that was saved: an answer that arrives after another address was typed
+    // belongs to the address before and is dropped.
+    saveFailed(err, sent) {
+      const res = err && err.response;
+      const msg = (res && res.data && res.data.message) || String(err);
+      if (res && res.headers && res.headers['x-axm-address-rule']) {
+        if (sent !== this.form.email) return;
+        this.addrError = msg;
+        this.addrSuggest = decodeSuggest(res.headers['x-axm-suggest']);
+        return;
+      }
+      this.$utils.toast(msg, 'is-danger');
+    },
+
+    // Typing another address ends the refusal of the one before, with its suggestion.
+    clearAddrRefusal() {
+      this.addrError = '';
+      this.addrSuggest = '';
+    },
+
+    // Only the domain is taken from the suggestion: the name is the one the person typed.
+    applySuggest() {
+      const at = this.form.email.lastIndexOf('@');
+      this.form.email = at < 0 ? this.addrSuggest : `${this.form.email.slice(0, at)}@${this.addrSuggestDomain}`;
+      this.addrSuggest = '';
+      this.addrError = '';
+    },
+
     toggleBounces() {
       this.isBounceVisible = !this.isBounceVisible;
     },
@@ -298,7 +346,7 @@ export default Vue.extend({
         this.$emit('finished');
         this.$parent.close();
         this.$utils.toast(this.$t('globals.messages.created', { name: d.name }));
-      });
+      }).catch((err) => this.saveFailed(err, data.email));
     },
 
     updateSubscriber() {
@@ -340,7 +388,7 @@ export default Vue.extend({
         this.$emit('finished');
         this.$parent.close();
         this.$utils.toast(this.$t('globals.messages.updated', { name: d.name }));
-      });
+      }).catch((err) => this.saveFailed(err, data.email));
     },
 
     sendOptinConfirmation() {
@@ -373,6 +421,10 @@ export default Vue.extend({
   },
 
   computed: {
+    addrSuggestDomain() {
+      return this.addrSuggest.split('@').pop();
+    },
+
     ...mapState(['lists', 'loading']),
 
     // A blocklisted address is blocked for every team: only someone who reads all subscribers
@@ -421,6 +473,7 @@ export default Vue.extend({
 </script>
 
 <style scoped>
+.addr-suggest { margin: -0.5rem 0 1rem; }
 .other-teams-box { background: #f8fafb; border: 1px solid #dce3e8; border-radius: 5px; padding: 10px 14px; margin: 0 0 16px; }
 .other-teams-box .label { margin-bottom: 4px; }
 .lock-icon { width: 1.05em; height: 1.05em; vertical-align: -0.15em; fill: none; stroke: currentColor; stroke-width: 1.8;
