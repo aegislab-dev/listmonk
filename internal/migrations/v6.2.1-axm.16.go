@@ -108,9 +108,71 @@ RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
                 SELECT 1 FROM axm_dynamic_list_members(ol.id, p_sub - 1, p_sub, 1))))
     );
 $$;
--- Holds person p_sub back from follow-up p_campaign at once when what is kept of their reactions
--- breaks its condition: a reaction on a "did not" condition, or, for someone the draft was not
--- made for, no reaction on a "did" condition. Called when a reaction is recorded and when a
+-- The judgement of the check before a follow-up is sent, in one place: the check, the count of who
+-- it would hold now, and the holds made at once when a reaction or a late send record comes in all
+-- read it. One row per person on the follow-up list (subscribed, not sent the follow-up yet, not
+-- reached through another list of the campaign) who got the original, with the reason to hold
+-- them back: 0 none, 1 blocked, 2 opted out of the original's lists, 4 reactions cannot be seen
+-- (per-subscriber tracking off now, p_tracking, or for a time since the original went out), -1
+-- the condition is broken. A reaction counts from the copy kept for the follow-up or any record
+-- of it still there. A "did" condition held for the people the draft was made for. p_subs NULL
+-- means everyone.
+CREATE OR REPLACE FUNCTION axm_followup_judge(p_campaign INT, p_subs INT[], p_tracking BOOLEAN)
+RETURNS TABLE (subscriber_id INT, sub_status TEXT, optin TEXT, reason INT)
+LANGUAGE SQL STABLE AS $$
+    WITH f AS (
+        SELECT fu.parent_campaign_id AS parent, fu.condition->>'open' AS open, fu.condition->>'click' AS click,
+            fu.list_uuid, COALESCE(pc.started_at, pc.created_at) AS parent_start
+        FROM axm_campaign_followups fu JOIN campaigns pc ON pc.id = fu.parent_campaign_id
+        WHERE fu.campaign_id = p_campaign
+    ),
+    lst AS (
+        SELECT l.id, l.optin::TEXT AS optin FROM f
+        JOIN lists l ON l.uuid = f.list_uuid AND l.axm_filter IS NULL
+        JOIN campaign_lists cl ON cl.list_id = l.id AND cl.campaign_id = p_campaign
+    ),
+    known AS (
+        SELECT (f.open <> 'no' AND f.click <> 'no') OR (p_tracking AND NOT EXISTS (
+            SELECT 1 FROM axm_tracking_off o WHERE o.ended_at IS NULL OR o.ended_at > f.parent_start)) AS ok
+        FROM f
+    )
+    SELECT sl.subscriber_id, sl.status::TEXT, lst.optin, CASE
+        WHEN s.status = 'blocklisted' THEN 1
+        WHEN EXISTS (
+            SELECT 1 FROM campaign_lists pl JOIN subscriber_lists u ON u.list_id = pl.list_id
+            WHERE pl.campaign_id = f.parent AND u.subscriber_id = sl.subscriber_id AND u.status = 'unsubscribed'
+        ) THEN 2
+        WHEN NOT known.ok THEN 4
+        WHEN (f.open = 'no' AND (
+                EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = p_campaign AND r.subscriber_id = sl.subscriber_id AND r.opened)
+                OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = f.parent AND v.subscriber_id = sl.subscriber_id)
+                OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.parent AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
+            OR (f.click = 'no' AND (
+                EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = p_campaign AND r.subscriber_id = sl.subscriber_id AND r.clicked)
+                OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = f.parent AND k.subscriber_id = sl.subscriber_id)
+                OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.parent AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))
+            OR (NOT m.made_for AND (
+                (f.open = 'yes' AND NOT (
+                    EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = p_campaign AND r.subscriber_id = sl.subscriber_id AND r.opened)
+                    OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = f.parent AND v.subscriber_id = sl.subscriber_id)
+                    OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.parent AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
+                OR (f.click = 'yes' AND NOT (
+                    EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = p_campaign AND r.subscriber_id = sl.subscriber_id AND r.clicked)
+                    OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = f.parent AND k.subscriber_id = sl.subscriber_id)
+                    OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.parent AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))))
+            THEN -1
+        ELSE 0
+    END
+    FROM f CROSS JOIN known CROSS JOIN lst
+    JOIN subscriber_lists sl ON sl.list_id = lst.id
+    JOIN subscribers s ON s.id = sl.subscriber_id
+    JOIN axm_campaign_followup_members m ON m.campaign_id = p_campaign AND m.subscriber_id = sl.subscriber_id
+    WHERE sl.status != 'unsubscribed' AND (p_subs IS NULL OR sl.subscriber_id = ANY(p_subs))
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = p_campaign AND sent.subscriber_id = sl.subscriber_id)
+        AND NOT axm_followup_reaches_otherwise(p_campaign, sl.subscriber_id, ARRAY[lst.id]);
+$$;
+-- Holds person p_sub back from follow-up p_campaign at once when the check's judgement
+-- (axm_followup_judge) says so. Called when a reaction is recorded and when a
 -- recipient of the original is kept late, so neither waits for the next check before sending.
 -- The person's reactions on record now (view and click rows, open and click times of the send
 -- record) are kept first: a reaction recorded before they were known to have got the original
@@ -119,7 +181,6 @@ CREATE OR REPLACE FUNCTION axm_followup_hold_reacted(p_campaign INT, p_sub INT)
 RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
     f RECORD;
-    lid INT;
 BEGIN
     SELECT * INTO f FROM axm_campaign_followups WHERE campaign_id = p_campaign;
     IF NOT FOUND THEN
@@ -135,24 +196,11 @@ BEGIN
     ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
         opened = axm_campaign_followup_reactions.opened OR EXCLUDED.opened,
         clicked = axm_campaign_followup_reactions.clicked OR EXCLUDED.clicked;
-    SELECT l.id INTO lid FROM lists l JOIN campaign_lists cl ON cl.list_id = l.id AND cl.campaign_id = p_campaign
-    WHERE l.uuid = f.list_uuid AND l.axm_filter IS NULL;
-    IF lid IS NULL THEN
-        RETURN;
-    END IF;
+    -- The same judgement as the check (opted out, blocked, reactions unseen, condition broken).
+    -- Tracking that is off now is recorded in axm_tracking_off when the app starts.
     INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
-    SELECT p_campaign, p_sub, -1
-    FROM axm_campaign_followup_members m
-    LEFT JOIN axm_campaign_followup_reactions r ON r.campaign_id = p_campaign AND r.subscriber_id = p_sub
-    WHERE m.campaign_id = p_campaign AND m.subscriber_id = p_sub
-        AND ((f.condition->>'open' = 'no' AND COALESCE(r.opened, FALSE))
-            OR (f.condition->>'click' = 'no' AND COALESCE(r.clicked, FALSE))
-            OR (NOT m.made_for AND ((f.condition->>'open' = 'yes' AND NOT COALESCE(r.opened, FALSE))
-                OR (f.condition->>'click' = 'yes' AND NOT COALESCE(r.clicked, FALSE)))))
-        AND EXISTS (SELECT 1 FROM subscriber_lists sl WHERE sl.list_id = lid AND sl.subscriber_id = p_sub AND sl.status != 'unsubscribed')
-        AND NOT EXISTS (SELECT 1 FROM subscribers s WHERE s.id = p_sub AND s.status = 'blocklisted')
-        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = p_campaign AND x.subscriber_id = p_sub)
-        AND NOT axm_followup_reaches_otherwise(p_campaign, p_sub, ARRAY[lid])
+    SELECT p_campaign, j.subscriber_id, j.reason FROM axm_followup_judge(p_campaign, ARRAY[p_sub], TRUE) j
+    WHERE j.reason <> 0
     ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
 END;
 $$;

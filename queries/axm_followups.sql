@@ -94,71 +94,12 @@ SELECT COALESCE((SELECT f.checked_version IS DISTINCT FROM f.version FROM axm_ca
 DELETE FROM axm_campaign_followup_holds WHERE campaign_id = $1;
 
 -- name: axm-followup-recheck
--- Holds back from the follow-up campaign the people on its list who no longer meet the condition,
--- because they reacted to the original (-1), opted out of it (2) or were blocked (1), or because
--- the records to judge by are gone (4). Subscriptions are not changed. The sender skips the people
--- held here (next-campaign-subscribers, next-campaign-subscribers-dynamic). Judged are the people
--- the draft was made for and anyone else on the list who got the original. Not judged are people
--- added by hand who never got it, people who already got the follow-up, people not subscribed to
--- the list, and people the campaign also reaches through another of its lists.
--- A reaction is one recorded for the follow-up as it happened (axm_followup_reaction) or any record
--- of it still there, a view or click row or the open or click time of the send record.
--- $1 original, $2 open, $3 click, $4 follow-up list ids, $5 follow-up campaign, $6 opens and
--- clicks recorded per subscriber now (the app's settings).
--- Keep the judged part identical to axm-followup-pending.
-WITH ev AS (
-    -- Whether reactions can be seen. Without per-subscriber tracking now ($6), or after a time
-    -- without it since the original went out (axm_tracking_off), an open or click may not have
-    -- been recorded, so nobody's can be judged on a "did not" condition.
-    SELECT ($2 <> 'no' AND $3 <> 'no')
-        OR ($6::BOOLEAN AND NOT EXISTS (
-            SELECT 1 FROM axm_tracking_off o
-            WHERE o.ended_at IS NULL OR o.ended_at > (SELECT COALESCE(c.started_at, c.created_at) FROM campaigns c WHERE c.id = $1))) AS known
-),
-judged AS (
-    SELECT sl.subscriber_id, sl.status AS sub_status, l.optin, CASE
-        WHEN s.status = 'blocklisted' THEN 1
-        WHEN EXISTS (
-            SELECT 1 FROM campaign_lists cl JOIN subscriber_lists u ON u.list_id = cl.list_id
-            WHERE cl.campaign_id = $1 AND u.subscriber_id = sl.subscriber_id AND u.status = 'unsubscribed'
-        ) THEN 2
-        WHEN NOT (SELECT known FROM ev) THEN 4
-        -- A "did not" condition is broken by a reaction kept for the follow-up (as it happened, or
-        -- found when the draft was made) or by any record of one that is still there. A "did"
-        -- condition held for the people the draft was made for; anyone else needs a record of it.
-        WHEN ($2 = 'no' AND (
-                EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.opened)
-                OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = sl.subscriber_id)
-                OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
-            OR ($3 = 'no' AND (
-                EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.clicked)
-                OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = sl.subscriber_id)
-                OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))
-            OR (($2 = 'yes' OR $3 = 'yes')
-                AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = $5 AND m.subscriber_id = sl.subscriber_id AND m.made_for)
-                AND (($2 = 'yes' AND NOT (
-                        EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.opened)
-                        OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = sl.subscriber_id)
-                        OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
-                    OR ($3 = 'yes' AND NOT (
-                        EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.clicked)
-                        OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = sl.subscriber_id)
-                        OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))))
-            THEN -1
-        ELSE 0
-    END AS reason
-    FROM subscriber_lists sl
-    JOIN subscribers s ON s.id = sl.subscriber_id
-    JOIN lists l ON l.id = sl.list_id
-    WHERE sl.list_id = ANY($4::INT[]) AND sl.status != 'unsubscribed'
-        -- Who got the original, as kept when the draft was made (so also after a list row was
-        -- taken off and put back or the original's send records expired).
-        AND EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = $5 AND m.subscriber_id = sl.subscriber_id)
-        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $5 AND sent.subscriber_id = sl.subscriber_id)
-        AND NOT axm_followup_reaches_otherwise($5, sl.subscriber_id, $4::INT[])
-)
+-- Holds back from follow-up campaign $1 the people the check's judgement says to
+-- (axm_followup_judge, with $2 = opens and clicks recorded per subscriber now). Subscriptions are
+-- not changed. The sender skips the people held here (next-campaign-subscribers,
+-- next-campaign-subscribers-dynamic).
 INSERT INTO axm_campaign_followup_holds (campaign_id, subscriber_id, reason)
-SELECT $5, subscriber_id, reason FROM judged WHERE reason <> 0
+SELECT $1::INT, j.subscriber_id, j.reason FROM axm_followup_judge($1, NULL, $2) j WHERE j.reason <> 0
 -- A reaction recorded meanwhile may have held the person already (axm_followup_reaction).
 ON CONFLICT (campaign_id, subscriber_id) DO NOTHING
 RETURNING reason;
@@ -166,68 +107,17 @@ RETURNING reason;
 -- name: axm-followup-pending
 -- The same judgement, read only. How many people a check made now would hold back, and how many
 -- of them the campaign would otherwise reach (the pre-send confirmation leaves them out), all and
--- after its checkpoint. Keep the judged part identical to axm-followup-recheck.
-WITH ev AS (
-    -- Whether reactions can be seen. Without per-subscriber tracking now ($6), or after a time
-    -- without it since the original went out (axm_tracking_off), an open or click may not have
-    -- been recorded, so nobody's can be judged on a "did not" condition.
-    SELECT ($2 <> 'no' AND $3 <> 'no')
-        OR ($6::BOOLEAN AND NOT EXISTS (
-            SELECT 1 FROM axm_tracking_off o
-            WHERE o.ended_at IS NULL OR o.ended_at > (SELECT COALESCE(c.started_at, c.created_at) FROM campaigns c WHERE c.id = $1))) AS known
-),
-judged AS (
-    SELECT sl.subscriber_id, sl.status AS sub_status, l.optin, CASE
-        WHEN s.status = 'blocklisted' THEN 1
-        WHEN EXISTS (
-            SELECT 1 FROM campaign_lists cl JOIN subscriber_lists u ON u.list_id = cl.list_id
-            WHERE cl.campaign_id = $1 AND u.subscriber_id = sl.subscriber_id AND u.status = 'unsubscribed'
-        ) THEN 2
-        WHEN NOT (SELECT known FROM ev) THEN 4
-        -- A "did not" condition is broken by a reaction kept for the follow-up (as it happened, or
-        -- found when the draft was made) or by any record of one that is still there. A "did"
-        -- condition held for the people the draft was made for; anyone else needs a record of it.
-        WHEN ($2 = 'no' AND (
-                EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.opened)
-                OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = sl.subscriber_id)
-                OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
-            OR ($3 = 'no' AND (
-                EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.clicked)
-                OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = sl.subscriber_id)
-                OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))
-            OR (($2 = 'yes' OR $3 = 'yes')
-                AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = $5 AND m.subscriber_id = sl.subscriber_id AND m.made_for)
-                AND (($2 = 'yes' AND NOT (
-                        EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.opened)
-                        OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = sl.subscriber_id)
-                        OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
-                    OR ($3 = 'yes' AND NOT (
-                        EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = $5 AND r.subscriber_id = sl.subscriber_id AND r.clicked)
-                        OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = sl.subscriber_id)
-                        OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))))
-            THEN -1
-        ELSE 0
-    END AS reason
-    FROM subscriber_lists sl
-    JOIN subscribers s ON s.id = sl.subscriber_id
-    JOIN lists l ON l.id = sl.list_id
-    WHERE sl.list_id = ANY($4::INT[]) AND sl.status != 'unsubscribed'
-        -- Who got the original, as kept when the draft was made (so also after a list row was
-        -- taken off and put back or the original's send records expired).
-        AND EXISTS (SELECT 1 FROM axm_campaign_followup_members m WHERE m.campaign_id = $5 AND m.subscriber_id = sl.subscriber_id)
-        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = $5 AND sent.subscriber_id = sl.subscriber_id)
-        AND NOT axm_followup_reaches_otherwise($5, sl.subscriber_id, $4::INT[])
-)
-SELECT COUNT(*) FILTER (WHERE reason = -1) AS reacted,
-    COUNT(*) FILTER (WHERE reason = 2) AS opted_out,
-    COUNT(*) FILTER (WHERE reason = 1) AS blocked,
-    COUNT(*) FILTER (WHERE reason = 4) AS unknown,
-    COUNT(*) FILTER (WHERE reason NOT IN (0, 1)
-        AND CASE WHEN optin = 'double' THEN sub_status = 'confirmed' ELSE sub_status != 'unsubscribed' END) AS reachable,
-    COUNT(*) FILTER (WHERE reason NOT IN (0, 1)
-        AND CASE WHEN optin = 'double' THEN sub_status = 'confirmed' ELSE sub_status != 'unsubscribed' END
-        AND subscriber_id > (SELECT last_subscriber_id FROM campaigns WHERE id = $5)) AS reachable_after
-FROM judged;
+-- after its checkpoint.
+SELECT COUNT(*) FILTER (WHERE j.reason = -1) AS reacted,
+    COUNT(*) FILTER (WHERE j.reason = 2) AS opted_out,
+    COUNT(*) FILTER (WHERE j.reason = 1) AS blocked,
+    COUNT(*) FILTER (WHERE j.reason = 4) AS unknown,
+    COUNT(*) FILTER (WHERE j.reason NOT IN (0, 1)
+        AND CASE WHEN j.optin = 'double' THEN j.sub_status = 'confirmed' ELSE j.sub_status != 'unsubscribed' END) AS reachable,
+    COUNT(*) FILTER (WHERE j.reason NOT IN (0, 1)
+        AND CASE WHEN j.optin = 'double' THEN j.sub_status = 'confirmed' ELSE j.sub_status != 'unsubscribed' END
+        AND j.subscriber_id > (SELECT last_subscriber_id FROM campaigns WHERE id = $1)) AS reachable_after
+FROM axm_followup_judge($1, NULL, $2) j;
 
 -- name: axm-followup-members
 -- Keeps who got original $3 (its send records) and who the draft $1 was made for (on list $2).

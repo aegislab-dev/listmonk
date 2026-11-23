@@ -985,7 +985,7 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 		}
 		// Due a moment from now, so that the sender's first check of a round is the one that finds it.
 		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() + INTERVAL '500 milliseconds' WHERE id = $1`, camp)
-		waitFor(t, "the check to wait", waiting(e, "WITH ev AS%"))
+		waitFor(t, "the check to wait", waiting(e, "INSERT INTO axm_campaign_followup_holds%axm_followup_judge($1, NULL%"))
 		// The check has not locked the campaign yet, so the save does not wait for it.
 		cm, err := save(e, camp, time.Now().Add(3*time.Second))
 		if err != nil {
@@ -1030,7 +1030,7 @@ func TestFollowupPostponedWhileCheckHoldsEveryone(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() - INTERVAL '1 second' WHERE id = $1`, camp)
-		waitFor(t, "the check to hold both", waiting(e, "WITH ev AS%"))
+		waitFor(t, "the check to hold both", waiting(e, "INSERT INTO axm_campaign_followup_holds%axm_followup_judge($1, NULL%"))
 		// Someone else has the campaign row, so the check, with both held, waits for it last.
 		row, err := e.db.Begin()
 		if err != nil {
@@ -1998,4 +1998,29 @@ func TestFollowupOpenBeforeTheDraftWithALateSendRecordHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSame(t, "held after another check", e.held(got.Followup.ID), []int{daniel})
+}
+
+// Review 22: Daniel, added by hand, left the original's list before the follow-up is due, and his
+// send record of the original is written only after a check has run. He is held back at once for
+// having opted out, as the check holds others for it.
+func TestFollowupOptOutWithALateSendRecordHolds(t *testing.T) {
+	t.Parallel()
+	e := newFollowupEnv(t)
+	daniel := e.ids[3]
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, daniel)
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, daniel, got.List.ID)
+	e.db.MustExec(`UPDATE subscriber_lists SET status = 'unsubscribed' WHERE subscriber_id = $1 AND list_id = $2`, daniel, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, got.Followup.ID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "not judged yet", e.held(got.Followup.ID), nil)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+	wantSame(t, "held at once", e.held(got.Followup.ID), []int{daniel})
+	var reason int
+	e.get(&reason, `SELECT reason FROM axm_campaign_followup_holds WHERE campaign_id = $1 AND subscriber_id = $2`, got.Followup.ID, daniel)
+	if reason != 2 {
+		t.Fatalf("held for %d, want 2 (opted out)", reason)
+	}
 }
