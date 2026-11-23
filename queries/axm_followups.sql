@@ -177,9 +177,9 @@ SELECT $1::INT, j.subscriber_id, j.reason FROM axm_followup_judge($1, $2::INT[],
 ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
 
 -- name: axm-followup-guard-held
--- How many of the people $2 of a batch of follow-up $1 are held back now, by whoever held them (this
+-- Who of the people $2 of a batch of follow-up $1 is held back now, by whoever held them (this
 -- guard, a check, or a reaction committed after the batch was read).
-SELECT COUNT(*) FROM axm_campaign_followup_holds WHERE campaign_id = $1 AND subscriber_id = ANY($2::INT[]);
+SELECT subscriber_id FROM axm_campaign_followup_holds WHERE campaign_id = $1 AND subscriber_id = ANY($2::INT[]);
 
 -- name: axm-followup-recipients-now
 -- Keeps for follow-up $1 the people of the send records of original $2 that are not kept yet (send

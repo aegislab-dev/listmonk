@@ -2177,3 +2177,51 @@ func TestCampaignTakenBackWhileStartingIsNotStarted(t *testing.T) {
 		})
 	}
 }
+
+// Review 25: the follow-up also sends to a dynamic list. Charlie, held back for opening the
+// original, comes into that dynamic list while it sends. The batch is read without him and the
+// sender moves on (it used to read the same batch again without end).
+func TestFollowupHeldPersonInADynamicListDoesNotStopTheSender(t *testing.T) {
+	e := newFollowupEnv(t)
+	charlie, daniel := e.ids[2], e.ids[3]
+	got := e.makeFollowup(e.admin, `{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	var base, dyn int
+	e.get(&base, `INSERT INTO lists (uuid, name, type, optin) VALUES (gen_random_uuid(), 'Base', 'private', 'single') RETURNING id`)
+	e.get(&dyn, `INSERT INTO lists (uuid, name, type, optin, axm_filter) VALUES (gen_random_uuid(), 'Dynamic', 'private', 'single', $1::JSONB) RETURNING id`,
+		fmt.Sprintf(`{"version":2,"base":{"type":"lists","lists":[%d]},"match":"all","conditions":[],"exclude":{"lists":[]}}`, base))
+	e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name) VALUES ($1, $2, 'Dynamic')`, camp, dyn)
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, charlie)
+	wantSame(t, "held", e.held(camp), []int{charlie})
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, charlie, base)
+	type result struct {
+		subs []models.Subscriber
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		subs, err := e.store.NextSubscribers(camp, 0, 100)
+		done <- result{subs, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		ids := []int{}
+		for _, s := range r.subs {
+			ids = append(ids, s.ID)
+		}
+		wantSame(t, "the batch", ids, []int{daniel})
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sender keeps reading the same batch")
+	}
+	// A batch of only held people is read past, not taken for the end.
+	if subs, err := e.store.NextSubscribers(camp, daniel, 100); err != nil || len(subs) != 0 {
+		t.Fatalf("after Daniel: %d %v", len(subs), err)
+	}
+}

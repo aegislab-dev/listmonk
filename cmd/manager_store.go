@@ -154,34 +154,41 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	// checkpoint in the DB.
 	camps[0].LastSubscriberID = lastSubID
 
-	var out []models.Subscriber
-	read := func() error {
-		out = out[:0]
-		return query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, camps[0].LastSubscriberID, camps[0].MaxSubscriberID, pq.Array(listIDs), limit)
-	}
-	if err := read(); err != nil {
-		return out, err
-	}
-
 	// AXM (LST-47): the people of a follow-up's batch are judged once more as it is read, after every
 	// reaction or send record of the original being written now is committed (see
-	// core.GuardFollowupBatch). Whoever it holds back is left out by reading the batch again (the
-	// query skips held people); that ends, as every round holds someone more.
+	// core.GuardFollowupBatch). Whoever is held back (by that or by anyone else meanwhile) is taken
+	// out of the batch. A batch of only held people is read past, so the position always moves on:
+	// someone held can come back in every read (a dynamic list of the campaign is not read with the
+	// holds), and reading the same batch again would never end.
+	var out []models.Subscriber
+	after := camps[0].LastSubscriberID
 	for {
-		ids := make([]int, len(out))
-		for i, sub := range out {
+		var raw []models.Subscriber
+		if err := query.Select(&raw, camps[0].CampaignID, camps[0].CampaignType, after, camps[0].MaxSubscriberID, pq.Array(listIDs), limit); err != nil {
+			return raw, err
+		}
+		if len(raw) == 0 {
+			out = raw
+			break
+		}
+		ids := make([]int, len(raw))
+		for i, sub := range raw {
 			ids[i] = sub.ID
 		}
 		held, err := s.core.GuardFollowupBatch(context.Background(), campID, ids)
 		if err != nil {
 			return nil, err
 		}
-		if held == 0 {
+		out = raw[:0]
+		for _, sub := range raw {
+			if !held[sub.ID] {
+				out = append(out, sub)
+			}
+		}
+		if len(out) > 0 {
 			break
 		}
-		if err := read(); err != nil {
-			return out, err
-		}
+		after = raw[len(raw)-1].ID
 	}
 
 	// AXM (LST-47): a follow-up is sent only while its last check is for the campaign as it is now.
