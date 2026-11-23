@@ -488,14 +488,16 @@ export const updateCampaignArchive = async (id, data) => http.put(
   { loading: models.campaigns },
 );
 
+// A campaign that is sending or has sent mail is refused with 409 (LST-55): the caller shows
+// the reason in a dialog, not a toast.
 export const deleteCampaign = async (id) => http.delete(
   `/api/campaigns/${id}`,
-  { loading: models.campaigns },
+  { loading: models.campaigns, disableToast: true },
 );
 
 export const deleteCampaigns = (params) => http.delete(
   '/api/campaigns',
-  { params, loading: models.campaigns },
+  { params, loading: models.campaigns, disableToast: true },
 );
 
 // Media.
