@@ -20,6 +20,7 @@ type sendgridNotif struct {
 	Email                string `json:"email"`
 	Timestamp            int64  `json:"timestamp"`
 	Event                string `json:"event"`
+	Type                 string `json:"type"`
 	BounceClassification string `json:"bounce_classification"`
 
 	// SendGrid flattens all X-headers and adds them to the bounce
@@ -67,7 +68,9 @@ func (s *Sendgrid) ProcessBounce(sig, timestamp string, b []byte) ([]models.Boun
 		}
 
 		typ := models.BounceTypeHard
-		if n.BounceClassification == "technical" || n.BounceClassification == "content" {
+		// A blocked bounce is a temporary block (SendGrid's event type "blocked"), not a mailbox
+		// that does not exist: soft, so that the address is not refused for good (LST-56).
+		if n.BounceClassification == "technical" || n.BounceClassification == "content" || strings.EqualFold(n.Type, "blocked") {
 			typ = models.BounceTypeSoft
 		}
 

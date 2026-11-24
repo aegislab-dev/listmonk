@@ -698,6 +698,7 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM list trash. Keep this block identical to V6_2_1_axm_11.", "-- End of AXM list trash.", "v6.2.1-axm.11.go"},
 		{"-- AXM column presets. Keep this block identical to V6_2_1_axm_12.", "-- End of AXM column presets.", "v6.2.1-axm.12.go"},
 		{"-- AXM recent-send exclusion. Keep this block identical to V6_2_1_axm_13.", "-- End of AXM recent-send exclusion.", "v6.2.1-axm.13.go"},
+		{"-- AXM bounced addresses (LST-56). Keep this block identical to V6_2_1_axm_16.", "-- End of AXM bounced addresses.", "v6.2.1-axm.16.go"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
 		if err != nil {
@@ -726,8 +727,11 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
-	if len(before) != 22 {
-		t.Fatalf("expected 22 axm functions, got %d", len(before))
+	// 32: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
+	// axm_followup_reaction, axm_followup_recipients, axm_followup_to_send and axm_followup_recount
+	// (LST-47, .17; their parity is in TestFollowupSchemaAndMigration).
+	if len(before) != 32 {
+		t.Fatalf("expected 32 axm functions, got %d", len(before))
 	}
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.

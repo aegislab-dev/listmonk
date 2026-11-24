@@ -104,7 +104,8 @@ jobs:
         run: |
           set -euo pipefail
           docker exec ${{ job.services.postgres.id }} createdb -U listmonk listmonk_dynamic_tests
-          go test ./... -timeout 180s
+          # The cmd package's DB tests took about 100-150 s; 180 s left no room on a slow runner (LST-47).
+          go test ./... -timeout 300s
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -144,6 +145,8 @@ jobs:
           LISTMONK_app__address: 0.0.0.0:9000
           LISTMONK_ADMIN_USER: ci-admin
           LISTMONK_ADMIN_PASSWORD: ci-only-password
+          # The sandbox of the browser tests has no DNS: the gate leaves DNS out (LST-56).
+          LISTMONK_app__axm_address_gate: nodns
         run: |
           set -euo pipefail
           actual=$(docker run --rm --entrypoint ./listmonk listmonk-axm:ci --version)
@@ -170,6 +173,8 @@ jobs:
           test "$audit" = 12:5:2
           presets=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_column_presets')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE indexname = 'idx_axm_column_presets_name')::text")
           test "$presets" = 1:1
+          bounced=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_bounced_emails')::text || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'axm_bounced_release' AND NOT tgisinternal)::text || ':' || (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_email_changes')::text || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'axm_email_changed' AND NOT tgisinternal)::text")
+          test "$bounced" = 1:1:1:1
           docker exec -i ${{ job.services.postgres.id }} psql -v ON_ERROR_STOP=1 -U listmonk -d listmonk < frontend/cypress/fixtures/reaction-lists.sql
           # A test inbox, so that browser tests can check who a campaign really reached (LST-48).
           docker run -d --name axm-mail --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:1025 -e MP_UI_BIND_ADDR=127.0.0.1:8025 axllent/mailpit:v1.27
@@ -218,7 +223,7 @@ jobs:
           cd frontend
           yarn install --frozen-lockfile
           for tz in Asia/Seoul America/New_York Pacific/Auckland; do TZ=$tz node --test tests/schedule-time.test.mjs; done
-          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/from-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/reaction-lists.cy.js,cypress/e2e/subscriber-columns.cy.js,cypress/e2e/column-presets.cy.js,cypress/e2e/audit.cy.js,cypress/e2e/list-trash.cy.js,cypress/e2e/campaign-recent-exclude.cy.js,cypress/e2e/campaign-tracking-check.cy.js,cypress/e2e/analytics-proof.cy.js,cypress/e2e/address-check.cy.js,cypress/e2e/address-gate.cy.js,cypress/e2e/campaign-test-send.cy.js,cypress/e2e/schedule-time.cy.js,cypress/e2e/campaign-send-confirm.cy.js,cypress/e2e/campaign-delete-guard.cy.js,cypress/e2e/campaign-clone-lists.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/from-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/reaction-lists.cy.js,cypress/e2e/followup.cy.js,cypress/e2e/subscriber-columns.cy.js,cypress/e2e/column-presets.cy.js,cypress/e2e/audit.cy.js,cypress/e2e/list-trash.cy.js,cypress/e2e/campaign-recent-exclude.cy.js,cypress/e2e/campaign-tracking-check.cy.js,cypress/e2e/analytics-proof.cy.js,cypress/e2e/address-check.cy.js,cypress/e2e/address-gate.cy.js,cypress/e2e/campaign-test-send.cy.js,cypress/e2e/schedule-time.cy.js,cypress/e2e/campaign-send-confirm.cy.js,cypress/e2e/campaign-delete-guard.cy.js,cypress/e2e/campaign-clone-lists.cy.js'
 
       - name: Upgrade official v6.2.0 database and smoke test
         env:
@@ -231,6 +236,8 @@ jobs:
           LISTMONK_app__address: 0.0.0.0:9001
           LISTMONK_ADMIN_USER: ci-admin
           LISTMONK_ADMIN_PASSWORD: ci-only-password
+          # The sandbox of the browser tests has no DNS: the gate leaves DNS out (LST-56).
+          LISTMONK_app__axm_address_gate: nodns
         run: |
           set -euo pipefail
           docker exec ${{ job.services.postgres.id }} createdb -U listmonk listmonk_upgrade
@@ -246,11 +253,13 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.15
+          test "$migration" = v6.2.1-axm.17
           test_domains=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value::text FROM settings WHERE key = 'axm.test_domains'")
           test "$test_domains" = '[]'
           test_addr=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_test_addresses')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_test_addresses')::text")
           test "$test_addr" = 6:2
+          followups=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_campaign_followups')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_campaign_followups')::text || ':' || (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_campaign_followup_holds')::text || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname IN ('axm_followup_reaction_view', 'axm_followup_reaction_click', 'axm_followup_recipients', 'axm_followup_reaction_send', 'axm_followup_recount', 'axm_followup_finished') AND NOT tgisinternal)::text || ':' || (SELECT count(*) FROM pg_tables WHERE tablename IN ('axm_campaign_followup_members', 'axm_campaign_followup_reactions', 'axm_tracking_off', 'axm_campaign_followup_claims'))::text")
+          test "$followups" = 9:2:3:6:4
           sends=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_campaign_sends')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_campaign_sends')::text")
           test "$sends" = 13:3
           draws=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename IN ('axm_list_draws', 'axm_list_draw_campaigns'))::text || ':' || (SELECT count(*) FROM pg_proc WHERE proname IN ('axm_list_target', 'axm_draw_candidates')) || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname IN ('axm_propagate_draw_unsub', 'axm_keep_draw_campaigns', 'axm_guard_exclude_list_delete') AND NOT tgisinternal)")
@@ -263,6 +272,8 @@ jobs:
           test "$audit" = 12:5:2
           presets=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_column_presets')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE indexname = 'idx_axm_column_presets_name')::text")
           test "$presets" = 1:1
+          bounced=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_bounced_emails')::text || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'axm_bounced_release' AND NOT tgisinternal)::text || ':' || (SELECT count(*) FROM pg_tables WHERE tablename = 'axm_email_changes')::text || ':' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'axm_email_changed' AND NOT tgisinternal)::text")
+          test "$bounced" = 1:1:1:1
           number=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT axm_to_number('\" 100,000 \"'::jsonb)::text || ':' || (axm_to_number('\"100,000원\"'::jsonb) IS NULL)::text")
           test "$number" = 100000:true
           column=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM information_schema.columns WHERE table_name = 'lists' AND column_name = 'axm_filter'")

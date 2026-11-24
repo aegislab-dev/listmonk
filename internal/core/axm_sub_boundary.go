@@ -109,12 +109,7 @@ func (c *Core) BlocklistSubscribersBounded(subIDs, manageListIDs []int) ([]int, 
 // a subscription outside manageListIDs (then it returns the ID).
 func (c *Core) DeleteSubscriberBouncesBounded(id int, manageListIDs []int) ([]int, error) {
 	return c.allOrNothing([]int{id}, manageListIDs, func(tx *sqlx.Tx) error {
-		if _, err := tx.Stmtx(c.q.DeleteBouncesBySubscriber).Exec(id, nil); err != nil {
-			c.log.Printf("error deleting bounces: %v", err)
-			return echo.NewHTTPError(http.StatusInternalServerError,
-				c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.bounces}", "error", pqErrMsg(err)))
-		}
-		return nil
+		return c.deleteSubscriberBouncesTx(tx, id, nil)
 	})
 }
 

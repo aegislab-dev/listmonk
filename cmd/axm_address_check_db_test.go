@@ -49,9 +49,9 @@ func (f *addrFakeDNS) LookupMX(ctx context.Context, name string) ([]*net.MX, err
 	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
 }
 
-func (f *addrFakeDNS) LookupIPAddr(ctx context.Context, name string) ([]net.IPAddr, error) {
-	if name == "aonly.test." {
-		return []net.IPAddr{{IP: net.IPv4(192, 0, 2, 1)}}, nil
+func (f *addrFakeDNS) LookupIP(ctx context.Context, network, name string) ([]net.IP, error) {
+	if network == "ip4" && name == "aonly.test." {
+		return []net.IP{net.IPv4(192, 0, 2, 1)}, nil
 	}
 	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
 }

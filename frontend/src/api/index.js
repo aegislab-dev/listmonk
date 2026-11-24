@@ -27,6 +27,11 @@ http.interceptors.request.use((config) => {
 
 // Intercept responses to set them to store.
 http.interceptors.response.use((resp) => {
+  // A request can ask for the response headers (the address gate warns through a header, LST-56).
+  if (typeof resp.config.axmOnHeaders === 'function') {
+    resp.config.axmOnHeaders(resp.headers || {});
+  }
+
   // Clear the loading state for a model.
   if ('loading' in resp.config) {
     store.commit('setLoading', { model: resp.config.loading, status: false });
@@ -274,18 +279,19 @@ export const blocklistBouncedSubscribers = async () => http.put(
   { loading: models.bounces },
 );
 
-export const createSubscriber = (data) => http.post(
+// onHeaders gets the response headers: X-Axm-Address-Warn says the address came in with a warning.
+export const createSubscriber = (data, onHeaders) => http.post(
   '/api/subscribers',
   data,
-  { loading: models.subscribers, disableToast: true },
+  { loading: models.subscribers, disableToast: true, axmOnHeaders: onHeaders },
 );
 
 // The subscriber form shows an address-rule refusal under the address field and toasts the
 // other errors itself (disableToast).
-export const updateSubscriber = (data) => http.put(
+export const updateSubscriber = (data, onHeaders) => http.put(
   `/api/subscribers/${data.id}`,
   data,
-  { loading: models.subscribers, disableToast: true },
+  { loading: models.subscribers, disableToast: true, axmOnHeaders: onHeaders },
 );
 
 // Saves only the lists of a subscriber (the profile is left to the server as it is).
@@ -405,6 +411,8 @@ export const searchRecentCampaigns = (query, signal) => http.get('/api/campaigns
 export const previewCampaignReactionList = (id, data) => http.post(`/api/campaigns/${id}/reaction-list/preview`, data, { disableToast: true });
 
 export const makeCampaignReactionList = (id, data) => http.post(`/api/campaigns/${id}/reaction-list`, data, { disableToast: true });
+
+export const getCampaignFollowup = (id) => http.get(`/api/campaigns/${id}/followup`, { disableToast: true });
 
 export const getCampaignStats = async () => http.get('/api/campaigns/running/stats', {});
 

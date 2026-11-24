@@ -45,6 +45,8 @@ type App struct {
 	emailMsgr  manager.Messenger
 	importer   *subimporter.Importer
 	addrCheck  *addrcheck.Checker
+	// addrGate is how strict the address gate is: full (default), nodns or basic (LST-56).
+	addrGate string
 	auth       *auth.Auth
 	media      media.Store
 	bounce     *bounce.Manager
@@ -296,6 +298,7 @@ func main() {
 		emailMsgr:  emailMsgr,
 		importer:   importer,
 		addrCheck:  initAddrCheck(),
+		addrGate:   ko.String("app.axm_address_gate"),
 		auth:       auth,
 		media:      media,
 		bounce:     bounce,
@@ -321,8 +324,16 @@ func main() {
 		// If there are no users, then the app needs to prompt for new user setup.
 		needsUserSetup: !hasUsers,
 	}
+	// AXM (LST-47): the check before a follow-up starts needs to know whether opens and clicks
+	// are recorded per subscriber now (settings can change it while the app runs).
+	app.core.SetIndividualTracking(app.followupTracking)
+	// Settings take effect at a start: note whether reactions are recorded per subscriber from now on.
+	if err := app.core.NoteTracking(app.followupTracking()); err != nil {
+		lo.Printf("error noting the tracking state for follow-up campaigns: %v", err)
+	}
 
 	importAuditHook = app.auditImportFinish
+	importer.SetAxmVerify(app.importVerify)
 
 	// Star the update checker.
 	if ko.Bool("app.check_updates") {

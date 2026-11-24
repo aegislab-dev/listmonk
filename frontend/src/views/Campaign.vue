@@ -56,6 +56,8 @@
 
     <b-loading :active="loading.campaigns || savingCampaign" />
 
+    <campaign-followup-banner v-if="isEditing && data.id" :campaign-id="data.id" :status="data.status"
+      :updated-at="data.updatedAt" @loaded="onFollowupLoaded" />
     <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
       :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
       @close="onSendClosed">
@@ -121,6 +123,9 @@
                   :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || !recentRuleLoaded || savingCampaign"
                   :lists-editable="canChangeLists" :saved-campaign="!!data.id" :made-list="madeListView" @list-made="onRecentListMade" />
                 <p v-if="recentRuleError" class="help is-danger mb-4" role="alert">{{ recentRuleError }}</p>
+                <p v-if="isFollowup && canShowRecentRule" class="help mb-4" data-cy="followup-exclude-note">
+                  {{ $t('campaigns.followup.excludeNote') }}
+                </p>
 
                 <div class="columns">
                   <div class="column is-6">
@@ -381,6 +386,7 @@ import CopyText from '../components/CopyText.vue';
 import Editor from '../components/Editor.vue';
 import ListSelector from '../components/ListSelector.vue';
 import AddressCheck from '../components/AddressCheck.vue';
+import CampaignFollowupBanner from '../components/CampaignFollowupBanner.vue';
 import RecentSendExclude from '../components/RecentSendExclude.vue';
 import TimezonePicker from '../components/TimezonePicker.vue';
 import Media from './Media.vue';
@@ -407,6 +413,7 @@ export default Vue.extend({
     CampaignTestSend,
     SenderAddressInput,
     AddressCheck,
+    CampaignFollowupBanner,
     RecentSendExclude,
     TimezonePicker,
     TrackingCheck,
@@ -424,6 +431,7 @@ export default Vue.extend({
       }),
 
       isNew: false,
+      isFollowup: false,
       isEditing: false,
       isHeadersVisible: false,
       isAttachFieldVisible: false,
@@ -662,6 +670,10 @@ export default Vue.extend({
       if (attribs === undefined) return false;
       this.form.attribs = attribs;
       return true;
+    },
+
+    onFollowupLoaded(info) {
+      this.isFollowup = !!info && info.role === 'followup';
     },
 
     getCampaign(id) {

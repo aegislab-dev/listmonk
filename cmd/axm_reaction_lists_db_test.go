@@ -41,6 +41,7 @@ func newReactionEnv(t *testing.T) *reactionEnv {
 	e.a.log = log.New(io.Discard, "", 0)
 	e.a.i18n = lang
 	e.a.core = core.New(&core.Opt{DB: e.db, Queries: e.q, Log: e.a.log, I18n: lang}, nil)
+	e.a.core.SetIndividualTracking(e.a.followupTracking)
 	e.db.MustExec(`UPDATE roles SET permissions = array_append(permissions, 'campaigns:get_analytics') WHERE id = $1`, e.memberRole)
 	e.db.MustExec(`UPDATE campaigns SET status = 'finished', name = 'Synthetic engagement', started_at = NOW() WHERE id = $1`, e.campID)
 	e.db.MustExec(`UPDATE lists SET axm_preset = 'b2b-sales' WHERE id = $1`, e.aList)
@@ -282,5 +283,19 @@ func TestReactionListAdminRequiresTeamChoice(t *testing.T) {
 	result := e.make(e.admin, `{"no_team":true}`)
 	if result.List.AxmPreset != core.DefaultColumnPreset || !sameSet(result.List.Tags, []string{models.ReactionListTag}) {
 		t.Fatalf("teamless result: %+v", result.List)
+	}
+}
+
+// Review 26 (2): an open that is only in the send record (the view statistics were cleared) still
+// counts: that person is not among those who did not open.
+func TestReactionListCountsOpensOnlyInTheSendRecord(t *testing.T) {
+	e := newReactionEnv(t)
+	charlie := e.ids[2]
+	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NOW() WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
+	got := e.preview(e.admin, `{"open":"no"}`)
+	before := got.Counts.Eligible
+	e.db.MustExec(`UPDATE axm_campaign_sends SET opened_at = NULL WHERE campaign_id = $1 AND subscriber_id = $2`, e.campID, charlie)
+	if after := e.preview(e.admin, `{"open":"no"}`).Counts.Eligible; after != before+1 {
+		t.Fatalf("did not open: %d with the send record's open, %d without", before, after)
 	}
 }

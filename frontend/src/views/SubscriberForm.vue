@@ -269,6 +269,16 @@ export default Vue.extend({
       this.$utils.toast(msg, 'is-danger');
     },
 
+    // The toast after a save. An address the gate let in with a warning (a role address, or a
+    // domain whose DNS did not answer) says so in one yellow line instead (LST-56).
+    savedToast(key, name, warn) {
+      if (warn === 'role' || warn === 'unknown') {
+        this.$utils.toast(this.$t(`subscribers.addr.warn.${warn}`), 'is-warning', 5000);
+        return;
+      }
+      this.$utils.toast(this.$t(key, { name }));
+    },
+
     // Typing another address ends the refusal of the one before, with its suggestion.
     clearAddrRefusal() {
       this.addrError = '';
@@ -342,10 +352,11 @@ export default Vue.extend({
         lists: this.form.lists.map((l) => l.id),
       };
 
-      this.$api.createSubscriber(data).then((d) => {
+      let warn = '';
+      this.$api.createSubscriber(data, (h) => { warn = h['x-axm-address-warn'] || ''; }).then((d) => {
         this.$emit('finished');
         this.$parent.close();
-        this.$utils.toast(this.$t('globals.messages.created', { name: d.name }));
+        this.savedToast('globals.messages.created', d.name, warn);
       }).catch((err) => this.saveFailed(err, data.email));
     },
 
@@ -384,10 +395,11 @@ export default Vue.extend({
         lists: this.form.lists.map((l) => l.id),
       };
 
-      this.$api.updateSubscriber(data).then((d) => {
+      let warn = '';
+      this.$api.updateSubscriber(data, (h) => { warn = h['x-axm-address-warn'] || ''; }).then((d) => {
         this.$emit('finished');
         this.$parent.close();
-        this.$utils.toast(this.$t('globals.messages.updated', { name: d.name }));
+        this.savedToast('globals.messages.updated', d.name, warn);
       }).catch((err) => this.saveFailed(err, data.email));
     },
 

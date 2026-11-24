@@ -24,6 +24,10 @@ type store struct {
 	core    *core.Core
 	media   media.Store
 
+	// AXM (LST-47): whether a campaign is a follow-up, asked once per campaign (a campaign only
+	// becomes one when it is made as a draft).
+	followups sync.Map
+
 	// AXM (LST-20): the connection that holds the campaign sending lock.
 	db       *sqlx.DB
 	lockMut  sync.Mutex
@@ -86,6 +90,11 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	// AXM (LST-25): no row means the campaign is not running. That is not the same
 	// as having no subscribers left, which would finish it.
 	if len(camps) == 0 {
+		// AXM (LST-47): a follow-up that is due with nobody on its lists is not started by the
+		// sender; it is ended here instead of staying scheduled.
+		if _, err := s.core.FinishEmptyFollowup(campID); err != nil {
+			return nil, err
+		}
 		return nil, manager.ErrCampaignNotRunning
 	}
 
@@ -109,9 +118,51 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	// checkpoint in the DB.
 	camps[0].LastSubscriberID = lastSubID
 
-	var out []models.Subscriber
-	err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, camps[0].LastSubscriberID, camps[0].MaxSubscriberID, pq.Array(listIDs), limit)
-	return out, err
+	// AXM (LST-47): a follow-up campaign decides who of each batch it leaves out just before the
+	// batch is used (core.ClaimFollowupBatch: the people who reacted to the original, opted out of
+	// it, are blocked, or whose reactions cannot be seen), and the batch is given back without them.
+	// A batch of only such people is read past, so the position always moves on. Any other campaign
+	// is read as before.
+	isFollowup, known := s.followups.Load(campID)
+	if !known {
+		var f bool
+		if err := s.queries.AxmFollowupIsFollowup.Get(&f, campID); err != nil {
+			return nil, err
+		}
+		s.followups.Store(campID, f)
+		isFollowup = f
+	}
+	after := camps[0].LastSubscriberID
+	for {
+		var out []models.Subscriber
+		if err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, after, camps[0].MaxSubscriberID, pq.Array(listIDs), limit); err != nil {
+			return out, err
+		}
+		if len(out) == 0 || !isFollowup.(bool) {
+			return out, nil
+		}
+		ids := make([]int, len(out))
+		for i, sub := range out {
+			ids[i] = sub.ID
+		}
+		left, _, err := s.core.ClaimFollowupBatch(context.Background(), campID, ids)
+		if err != nil {
+			return nil, err
+		}
+		if len(left) == 0 {
+			return out, nil
+		}
+		kept := out[:0]
+		for _, sub := range out {
+			if !left[sub.ID] {
+				kept = append(kept, sub)
+			}
+		}
+		if len(kept) > 0 {
+			return kept, nil
+		}
+		after = out[len(out)-1].ID
+	}
 }
 
 // GetCampaign fetches a campaign from the database.
@@ -224,14 +275,29 @@ func (s *store) CountCampaignSends(campID int) (int, error) {
 // while the app runs) holds no record of anyone, so that case is an empty result and
 // not an error: the campaign goes out, as it does when records cannot be written.
 func (s *store) GetCampaignSentIDs(campID, lastSubID int) ([]int, error) {
+	// AXM (LST-47): a follow-up takes back what it decided for messages that did not go out.
+	if err := s.core.PickUpFollowup(campID, lastSubID); err != nil {
+		return nil, err
+	}
+
 	var out []int
 	err := s.queries.AxmGetCampaignSentIDs.Select(&out, campID, lastSubID)
 
 	var pqErr *pq.Error
 	if errors.As(err, &pqErr) && pqErr.Code == pgUndefinedTable {
-		return nil, nil
+		out, err = nil, nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+
+	// AXM (LST-47): a follow-up also leaves out whom its decisions say it was sent to, so that a
+	// send record that expired while it was paused does not send it to them again.
+	var sent []int
+	if err := s.queries.AxmFollowupSentIDs.Select(&sent, campID, lastSubID); err != nil {
+		return nil, err
+	}
+	return append(out, sent...), nil
 }
 
 // HoldCampaignLock reports whether this app instance holds the campaign sending lock.

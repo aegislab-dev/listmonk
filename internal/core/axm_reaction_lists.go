@@ -21,12 +21,16 @@ type ReactionScope struct {
 	AllSubscribers     bool
 	PermittedLists     []int // nil means all lists are readable, empty means none
 	IndividualTracking bool
+	// CanFollowup is set when the user may also make a campaign (LST-47).
+	CanFollowup bool
 }
 
 type ReactionListOptions struct {
 	Name         string
 	Scope        ReactionScope
 	ResolveTeams func(source []string) ([]string, error)
+	// Followup, when set, makes the draft campaign for the new list in the same transaction.
+	Followup *FollowupDraft
 }
 
 type reactionSource struct {
@@ -117,6 +121,9 @@ func (c *Core) PreviewReactionList(ctx context.Context, id int, s models.Reactio
 	if err != nil {
 		return out, err
 	}
+	if out.Followup, err = c.followupOffer(ctx, tx, out.Campaign, out.Tracking, scope.CanFollowup); err != nil {
+		return out, err
+	}
 	out.Sample = []models.ReactionSample{}
 	if trackingOnly {
 		return out, nil
@@ -202,6 +209,13 @@ func (c *Core) MakeReactionList(ctx context.Context, id int, s models.ReactionSe
 		return out, err
 	}
 
+	// AXM (LST-47): a follow-up that cannot be made is refused before the count, so the answer
+	// to a second request is the existing follow-up even when nobody is left to send to.
+	if o.Followup != nil {
+		if err := c.followupRefusal(ctx, tx, out.Campaign); err != nil {
+			return out, err
+		}
+	}
 	args := reactionArgs(id, s, o.Scope)
 	if err := tx.Stmtx(c.q.AxmReactionCounts).GetContext(ctx, &out.Counts, args...); err != nil {
 		return out, err
@@ -246,8 +260,23 @@ func (c *Core) MakeReactionList(ctx context.Context, id int, s models.ReactionSe
 	out.Counts.Eligible = int(inserted)
 	out.List.SubscriberCount = int(inserted)
 	out.List.SubscriberCounts = models.StringIntMap{"confirmed": int(inserted)}
+	if o.Followup != nil {
+		if err := c.makeFollowupTx(ctx, tx, &out, s, o.Followup); err != nil {
+			return out, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return out, err
+	}
+	// AXM (LST-47): a reaction recorded while the transaction ran did not see the new follow-up
+	// (its trigger looked before the commit). Keep what is on record now as well.
+	if out.Followup != nil {
+		if _, err := c.q.AxmFollowupRecipientsNow.ExecContext(ctx, out.Followup.ID, out.Campaign.ID); err != nil {
+			c.log.Printf("error keeping the recipients for follow-up campaign %d: %v", out.Followup.ID, err)
+		}
+		if _, err := c.q.AxmFollowupReactionsNow.ExecContext(ctx, out.Followup.ID, out.Campaign.ID); err != nil {
+			c.log.Printf("error keeping the reactions for follow-up campaign %d: %v", out.Followup.ID, err)
+		}
 	}
 	_ = c.refreshCache(matListSubStats, false)
 	return out, nil

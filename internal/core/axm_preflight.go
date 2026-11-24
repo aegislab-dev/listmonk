@@ -33,6 +33,33 @@ func (c *Core) GetPreflightAudience(ctx context.Context, id, afterID int, resume
 		lists = append(lists, r.PreflightList)
 		aud = r.PreflightAudience
 	}
+
+	// AXM (LST-47): a follow-up's check before sending holds back the people who reacted to the
+	// original since (or opted out of it). Those it would hold now are not counted, so a
+	// follow-up that would reach nobody is stopped as any empty campaign is. They are only on
+	// the follow-up list among the campaign's lists (else they are not held).
+	if len(rows) > 0 {
+		held, listID, err := c.FollowupHeldNow(ctx, id)
+		if err != nil {
+			c.log.Printf("error counting who the check would hold back from campaign %d: %v", id, err)
+			return nil, models.PreflightAudience{}, echo.NewHTTPError(http.StatusInternalServerError,
+				c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
+		}
+		if held != nil && held.Reachable > 0 {
+			for i := range lists {
+				if lists[i].ID.Valid && int(lists[i].ID.Int) == listID {
+					lists[i].Count = max(0, lists[i].Count-held.Reachable)
+				}
+			}
+			aud.Total = max(0, aud.Total-held.Reachable)
+			aud.Excluded += held.Reachable
+			if resume {
+				aud.Remaining = max(0, aud.Remaining-held.ReachableAfter)
+			} else {
+				aud.Remaining = aud.Total
+			}
+		}
+	}
 	return lists, aud, nil
 }
 

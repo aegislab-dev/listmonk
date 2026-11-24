@@ -612,6 +612,14 @@ DROP TABLE IF EXISTS axm_deleted_lists CASCADE;
 DROP TABLE IF EXISTS axm_column_presets CASCADE;
 DROP TABLE IF EXISTS axm_campaign_recent_rules CASCADE;
 DROP TABLE IF EXISTS axm_test_addresses CASCADE;
+DROP TABLE IF EXISTS axm_bounced_emails CASCADE;
+DROP TABLE IF EXISTS axm_email_changes CASCADE;
+DROP TABLE IF EXISTS axm_campaign_followup_holds CASCADE;
+DROP TABLE IF EXISTS axm_campaign_followup_claims CASCADE;
+DROP TABLE IF EXISTS axm_campaign_followup_members CASCADE;
+DROP TABLE IF EXISTS axm_tracking_off CASCADE;
+DROP TABLE IF EXISTS axm_campaign_followup_reactions CASCADE;
+DROP TABLE IF EXISTS axm_campaign_followups CASCADE;
 
 -- AXM campaign send records. Keep this block identical to V6_2_1_axm_6.
 -- One row per campaign message that a messenger accepted: who got which campaign and when,
@@ -1166,3 +1174,372 @@ CREATE TABLE IF NOT EXISTS axm_test_addresses (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_axm_test_addr_token ON axm_test_addresses(token_hash) WHERE token_hash IS NOT NULL;
 -- End of AXM test addresses.
+
+-- AXM bounced addresses (LST-56). Keep this block identical to V6_2_1_axm_16.
+-- Addresses that had a hard bounce or a complaint stay known when the subscriber row is deleted
+-- (the bounce rows go with it), so that a person cannot add them again. Only a hash of the
+-- lowercased address is kept. A row with bounce_id is for that bounce record and goes when a
+-- person deletes the record (not when the subscriber is deleted, which takes its bounce rows
+-- with it). A row without bounce_id is a bounce that left no record of its own (the subscriber
+-- was blocklisted already, or over the count of the bounce action): it goes with the last hard
+-- bounce or complaint record of its subscriber_id, or when a person deletes that subscriber's
+-- bounces. One with no subscriber at all (the address is nobody's any more) only goes by SQL
+-- (FORK.md).
+-- RecordBounce names the address the bounce is for in the setting axm.bounce_email of its
+-- transaction: the address the bounce gives, or else axm_mailed_email. Failing to keep the
+-- address never loses the bounce: the trigger only warns.
+CREATE TABLE IF NOT EXISTS axm_bounced_emails (
+    email_hash     BYTEA NOT NULL,
+    kind           TEXT NOT NULL,
+    bounce_id      INT NULL,
+    subscriber_id  INT NULL,
+    created_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_axm_bounced_hash ON axm_bounced_emails(email_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_axm_bounced_bounce ON axm_bounced_emails(bounce_id) WHERE bounce_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_axm_bounced_sub ON axm_bounced_emails(subscriber_id) WHERE bounce_id IS NULL;
+
+-- When a subscriber's address last changed: a bounce that does not say its address is for the
+-- current one only when it has not changed since the mail. Before this table, an edit may have
+-- changed it: the last edit stands for a change.
+CREATE TABLE IF NOT EXISTS axm_email_changes (
+    subscriber_id  INT PRIMARY KEY REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    changed_at     TIMESTAMP WITH TIME ZONE NOT NULL
+);
+INSERT INTO axm_email_changes (subscriber_id, changed_at)
+    SELECT id, updated_at FROM subscribers WHERE updated_at > created_at
+    ON CONFLICT (subscriber_id) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION axm_email_changed()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO axm_email_changes (subscriber_id, changed_at) VALUES (NEW.id, NOW())
+        ON CONFLICT (subscriber_id) DO UPDATE SET changed_at = EXCLUDED.changed_at;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_email_changed ON subscribers;
+CREATE TRIGGER axm_email_changed AFTER UPDATE OF email ON subscribers
+    FOR EACH ROW WHEN (OLD.email IS DISTINCT FROM NEW.email)
+    EXECUTE FUNCTION axm_email_changed();
+
+-- The address a mail of the campaign (NULL: an opt-in or a transactional mail, or not known)
+-- went to, when it is surely the subscriber's current one: it never changed, or it changed more
+-- than an hour (a send in progress) before the recorded send of that campaign to them. NULL
+-- otherwise: a send record that is gone (retention) proves nothing.
+CREATE OR REPLACE FUNCTION axm_mailed_email(p_subscriber INT, p_campaign INT)
+RETURNS TEXT LANGUAGE sql STABLE AS $$
+    SELECT s.email FROM subscribers s
+    WHERE s.id = p_subscriber AND NOT EXISTS (
+        SELECT 1 FROM axm_email_changes c WHERE c.subscriber_id = s.id AND c.changed_at >= COALESCE(
+            (SELECT x.sent_at - INTERVAL '1 hour' FROM axm_campaign_sends x
+                WHERE x.campaign_id = p_campaign AND x.subscriber_id = s.id), '-infinity'))
+$$;
+
+-- The bounces recorded before: the webhooks say in their payload which address a bounce was for,
+-- each in its own field. The others are taken in by axm_mailed_email. SES and SendGrid are taken
+-- in by the migration's Go code (V6_2_1_axm_16), by the addresses their notifications name alone,
+-- tied to no record or subscriber: a person lets such an address go by deleting its row (FORK.md).
+INSERT INTO axm_bounced_emails (email_hash, kind, bounce_id, subscriber_id)
+    SELECT axm_email_hash(a.addr), b.type::TEXT, b.id, b.subscriber_id
+    FROM bounces b
+    CROSS JOIN LATERAL (SELECT COALESCE(CASE b.source
+        WHEN 'postmark' THEN NULLIF(b.meta->>'Email', '')
+        WHEN 'forwardemail' THEN NULLIF(b.meta->>'recipient', '')
+        WHEN 'lettermint' THEN NULLIF(b.meta->'data'->>'recipient', '')
+        WHEN 'azure' THEN NULLIF(b.meta->'data'->>'recipient', '')
+        END, axm_mailed_email(b.subscriber_id, b.campaign_id)) AS addr) a
+    WHERE b.type IN ('hard', 'complaint') AND b.source NOT IN ('ses', 'sendgrid') AND a.addr LIKE '%@%'
+    ON CONFLICT (bounce_id) WHERE bounce_id IS NOT NULL DO NOTHING;
+
+CREATE OR REPLACE FUNCTION axm_bounced_record()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    v_email TEXT := NULLIF(current_setting('axm.bounce_email', true), '');
+BEGIN
+    IF v_email IS NOT NULL THEN
+        BEGIN
+            INSERT INTO axm_bounced_emails (email_hash, kind, bounce_id, subscriber_id)
+                VALUES (axm_email_hash(v_email), NEW.type::TEXT, NEW.id, NEW.subscriber_id);
+            PERFORM set_config('axm.bounce_recorded', '1', true);
+        EXCEPTION WHEN OTHERS THEN
+            -- The bounce itself must not be lost for the sake of the address.
+            RAISE WARNING 'axm_bounced_record: %', SQLERRM;
+        END;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_bounced_record ON bounces;
+CREATE TRIGGER axm_bounced_record AFTER INSERT ON bounces
+    FOR EACH ROW WHEN (NEW.type IN ('hard', 'complaint'))
+    EXECUTE FUNCTION axm_bounced_record();
+
+CREATE OR REPLACE FUNCTION axm_bounced_release()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    -- The subscriber is gone when the bounce rows are deleted with it: the address stays.
+    IF EXISTS (SELECT 1 FROM subscribers WHERE id = OLD.subscriber_id) THEN
+        DELETE FROM axm_bounced_emails WHERE bounce_id = OLD.id;
+        IF NOT EXISTS (SELECT 1 FROM bounces WHERE subscriber_id = OLD.subscriber_id AND type IN ('hard', 'complaint')) THEN
+            DELETE FROM axm_bounced_emails WHERE subscriber_id = OLD.subscriber_id AND bounce_id IS NULL;
+        END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_bounced_release ON bounces;
+CREATE TRIGGER axm_bounced_release AFTER DELETE ON bounces
+    FOR EACH ROW WHEN (OLD.type IN ('hard', 'complaint'))
+    EXECUTE FUNCTION axm_bounced_release();
+-- End of AXM bounced addresses.
+-- AXM campaign follow-ups (LST-47). Keep this block identical to V6_2_1_axm_17.
+CREATE TABLE IF NOT EXISTS axm_campaign_followups (
+    campaign_id        INTEGER PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    parent_campaign_id INTEGER NOT NULL UNIQUE REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    -- The follow-up list by its UUID: a list that goes to the trash and comes back has the same UUID.
+    list_uuid          UUID NOT NULL,
+    condition          JSONB NOT NULL,
+    counts             JSONB NOT NULL DEFAULT '{}',
+    -- Who the sender left out so far, by reason, and how many batches it judged.
+    recheck            JSONB NOT NULL DEFAULT '{}',
+    rechecked_at       TIMESTAMP WITH TIME ZONE NULL,
+    created_by         INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    created_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CHECK (campaign_id <> parent_campaign_id)
+);
+-- People the sender left out of a follow-up campaign when it judged their batch, with the reason
+-- (as axm_followup_judge, and 5: no longer subscribed through the campaign's lists). Their
+-- subscriptions are not changed. A later judgement of the same person replaces the row.
+CREATE TABLE IF NOT EXISTS axm_campaign_followup_holds (
+    campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    reason        SMALLINT NOT NULL,
+    PRIMARY KEY (campaign_id, subscriber_id)
+);
+-- People the sender decided to send a follow-up campaign to, written in the judgement of their
+-- batch before their message is queued; sent is set when their send record is written. A finished
+-- follow-up counts them as its to_send (whatever happened to their subscription, send record or
+-- data later: the row has only the number and outlives the subscriber); one who is judged again
+-- before their message went out (a pause drops queued messages) and left out loses the row. The
+-- rows belong to the campaign, not to its link to the original: when the original is deleted the
+-- campaign goes on as an ordinary one, and still does not send to whom it was sent to.
+CREATE TABLE IF NOT EXISTS axm_campaign_followup_claims (
+    campaign_id   INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    subscriber_id INTEGER NOT NULL,
+    sent          BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (campaign_id, subscriber_id)
+);
+-- Who got the original campaign, kept when the follow-up is made (and when a send record of the
+-- original comes later), and whether the draft was made for them (made_for: put on the follow-up
+-- list then). They are judged whatever happens to their list row or to the original's send
+-- records, which expire.
+CREATE TABLE IF NOT EXISTS axm_campaign_followup_members (
+    campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    made_for      BOOLEAN NOT NULL,
+    PRIMARY KEY (campaign_id, subscriber_id)
+);
+-- The times opens and clicks were not recorded per subscriber (individual tracking off, or
+-- tracking switched off). Settings take effect when the app starts, so a time begins at a start
+-- with tracking off and ends at the next start with it on. A follow-up of a campaign that went
+-- out before such a time ended cannot see its people's reactions of that time.
+CREATE TABLE IF NOT EXISTS axm_tracking_off (
+    started_at TIMESTAMP WITH TIME ZONE PRIMARY KEY,
+    ended_at   TIMESTAMP WITH TIME ZONE NULL
+);
+-- Opens and clicks of the original campaign, kept for the follow-up as they are recorded (and
+-- copied from the records when it is made): clearing the statistics or the send records' keeping
+-- time does not take them away.
+CREATE TABLE IF NOT EXISTS axm_campaign_followup_reactions (
+    campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    opened        BOOLEAN NOT NULL DEFAULT FALSE,
+    clicked       BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (campaign_id, subscriber_id)
+);
+-- Whether follow-up campaign p_campaign also reaches p_sub through a list other than its
+-- follow-up list(s) p_lists (a list added to it by hand): such a person is not left out.
+CREATE OR REPLACE FUNCTION axm_followup_reaches_otherwise(p_campaign INT, p_sub INT, p_lists INT[])
+RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM campaign_lists cl JOIN lists ol ON ol.id = cl.list_id
+        WHERE cl.campaign_id = p_campaign AND NOT (cl.list_id = ANY(p_lists)) AND (
+            (ol.axm_filter IS NULL AND EXISTS (
+                SELECT 1 FROM subscriber_lists o WHERE o.list_id = ol.id AND o.subscriber_id = p_sub
+                    AND CASE WHEN ol.optin = 'double' THEN o.status = 'confirmed' ELSE o.status != 'unsubscribed' END))
+            OR (ol.axm_filter IS NOT NULL AND EXISTS (
+                SELECT 1 FROM axm_dynamic_list_members(ol.id, p_sub - 1, p_sub, 1))))
+    );
+$$;
+-- The judgement of who a follow-up leaves out, in one place: the sender reads it for every batch
+-- just before sending (axm-followup-claim), and the count of who would be left out now reads it. One row per person on the follow-up list (subscribed, not sent the follow-up yet, not
+-- reached through another list of the campaign) who got the original, with the reason to hold
+-- them back: 0 none, 1 blocked, 2 opted out of the original's lists, 4 reactions cannot be seen
+-- (per-subscriber tracking off now, p_tracking, or for a time since the original went out), -1
+-- the condition is broken. A reaction counts from the copy kept for the follow-up or any record
+-- of it still there. A "did" condition held for the people the draft was made for. p_subs NULL
+-- means everyone.
+CREATE OR REPLACE FUNCTION axm_followup_judge(p_campaign INT, p_subs INT[], p_tracking BOOLEAN)
+RETURNS TABLE (subscriber_id INT, sub_status TEXT, optin TEXT, reason INT)
+LANGUAGE SQL STABLE AS $$
+    WITH f AS (
+        SELECT fu.parent_campaign_id AS parent, fu.condition->>'open' AS open, fu.condition->>'click' AS click,
+            fu.list_uuid, COALESCE(pc.started_at, pc.created_at) AS parent_start
+        FROM axm_campaign_followups fu JOIN campaigns pc ON pc.id = fu.parent_campaign_id
+        WHERE fu.campaign_id = p_campaign
+    ),
+    lst AS (
+        SELECT l.id, l.optin::TEXT AS optin FROM f
+        JOIN lists l ON l.uuid = f.list_uuid AND l.axm_filter IS NULL
+        JOIN campaign_lists cl ON cl.list_id = l.id AND cl.campaign_id = p_campaign
+    ),
+    known AS (
+        SELECT (f.open <> 'no' AND f.click <> 'no') OR (p_tracking AND NOT EXISTS (
+            SELECT 1 FROM axm_tracking_off o WHERE o.ended_at IS NULL OR o.ended_at > f.parent_start)) AS ok
+        FROM f
+    )
+    SELECT sl.subscriber_id, sl.status::TEXT, lst.optin, CASE
+        WHEN s.status = 'blocklisted' THEN 1
+        WHEN EXISTS (
+            SELECT 1 FROM campaign_lists pl JOIN subscriber_lists u ON u.list_id = pl.list_id
+            WHERE pl.campaign_id = f.parent AND u.subscriber_id = sl.subscriber_id AND u.status = 'unsubscribed'
+        ) THEN 2
+        WHEN NOT known.ok THEN 4
+        WHEN (f.open = 'no' AND (
+                EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = p_campaign AND r.subscriber_id = sl.subscriber_id AND r.opened)
+                OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = f.parent AND v.subscriber_id = sl.subscriber_id)
+                OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.parent AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
+            OR (f.click = 'no' AND (
+                EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = p_campaign AND r.subscriber_id = sl.subscriber_id AND r.clicked)
+                OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = f.parent AND k.subscriber_id = sl.subscriber_id)
+                OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.parent AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))
+            OR (NOT m.made_for AND (
+                (f.open = 'yes' AND NOT (
+                    EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = p_campaign AND r.subscriber_id = sl.subscriber_id AND r.opened)
+                    OR EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = f.parent AND v.subscriber_id = sl.subscriber_id)
+                    OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.parent AND x.subscriber_id = sl.subscriber_id AND x.opened_at IS NOT NULL)))
+                OR (f.click = 'yes' AND NOT (
+                    EXISTS (SELECT 1 FROM axm_campaign_followup_reactions r WHERE r.campaign_id = p_campaign AND r.subscriber_id = sl.subscriber_id AND r.clicked)
+                    OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = f.parent AND k.subscriber_id = sl.subscriber_id)
+                    OR EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = f.parent AND x.subscriber_id = sl.subscriber_id AND x.clicked_at IS NOT NULL)))))
+            THEN -1
+        ELSE 0
+    END
+    FROM f CROSS JOIN known CROSS JOIN lst
+    JOIN subscriber_lists sl ON sl.list_id = lst.id
+    JOIN subscribers s ON s.id = sl.subscriber_id
+    JOIN axm_campaign_followup_members m ON m.campaign_id = p_campaign AND m.subscriber_id = sl.subscriber_id
+    WHERE sl.status != 'unsubscribed' AND (p_subs IS NULL OR sl.subscriber_id = ANY(p_subs))
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends sent WHERE sent.campaign_id = p_campaign AND sent.subscriber_id = sl.subscriber_id)
+        AND NOT axm_followup_reaches_otherwise(p_campaign, sl.subscriber_id, ARRAY[lst.id]);
+$$;
+-- Keeps an open or click of an original campaign for its follow-up as it is recorded: a view or
+-- click row, or the open or click time written on the send record (that can come later than the
+-- row, and the row can be cleared meanwhile).
+CREATE OR REPLACE FUNCTION axm_followup_reaction()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    f RECORD;
+    o BOOLEAN;
+    k BOOLEAN;
+BEGIN
+    IF TG_TABLE_NAME = 'axm_campaign_sends' THEN
+        o := NEW.opened_at IS NOT NULL;
+        k := NEW.clicked_at IS NOT NULL;
+    ELSE
+        o := TG_TABLE_NAME = 'campaign_views';
+        k := TG_TABLE_NAME = 'link_clicks';
+    END IF;
+    -- A follow-up being made of this campaign, and the sender judging a batch of one, take this
+    -- lock exclusively: they wait for this reaction to be committed and then see it.
+    PERFORM pg_advisory_xact_lock_shared(4747, NEW.campaign_id);
+    FOR f IN SELECT fu.campaign_id FROM axm_campaign_followups fu JOIN campaigns c ON c.id = fu.campaign_id
+        WHERE fu.parent_campaign_id = NEW.campaign_id AND c.status NOT IN ('finished', 'cancelled')
+    LOOP
+        INSERT INTO axm_campaign_followup_reactions (campaign_id, subscriber_id, opened, clicked)
+        VALUES (f.campaign_id, NEW.subscriber_id, o, k)
+        ON CONFLICT (campaign_id, subscriber_id) DO UPDATE SET
+            opened = axm_campaign_followup_reactions.opened OR EXCLUDED.opened,
+            clicked = axm_campaign_followup_reactions.clicked OR EXCLUDED.clicked;
+    END LOOP;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_followup_reaction_view ON campaign_views;
+CREATE TRIGGER axm_followup_reaction_view AFTER INSERT ON campaign_views
+    FOR EACH ROW WHEN (NEW.subscriber_id IS NOT NULL) EXECUTE FUNCTION axm_followup_reaction();
+DROP TRIGGER IF EXISTS axm_followup_reaction_click ON link_clicks;
+CREATE TRIGGER axm_followup_reaction_click AFTER INSERT ON link_clicks
+    FOR EACH ROW WHEN (NEW.subscriber_id IS NOT NULL) EXECUTE FUNCTION axm_followup_reaction();
+-- Send records of an original campaign written after a follow-up of it was made (they are saved
+-- shortly after the messages went out): the people are kept for the follow-up as well.
+CREATE OR REPLACE FUNCTION axm_followup_recipients()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock_shared(4747, c.campaign_id) FROM (SELECT DISTINCT campaign_id FROM axm_new_sends) c;
+    INSERT INTO axm_campaign_followup_members (campaign_id, subscriber_id, made_for)
+    SELECT f.campaign_id, n.subscriber_id, FALSE
+    FROM axm_new_sends n JOIN axm_campaign_followups f ON f.parent_campaign_id = n.campaign_id
+    ON CONFLICT (campaign_id, subscriber_id) DO NOTHING;
+    -- A follow-up's own send records mark the decisions as sent.
+    UPDATE axm_campaign_followup_claims c SET sent = TRUE
+    FROM axm_new_sends n WHERE c.campaign_id = n.campaign_id AND c.subscriber_id = n.subscriber_id AND NOT c.sent;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_followup_recipients ON axm_campaign_sends;
+CREATE TRIGGER axm_followup_recipients AFTER INSERT ON axm_campaign_sends
+    REFERENCING NEW TABLE AS axm_new_sends FOR EACH STATEMENT EXECUTE FUNCTION axm_followup_recipients();
+DROP TRIGGER IF EXISTS axm_followup_reaction_send ON axm_campaign_sends;
+CREATE TRIGGER axm_followup_reaction_send AFTER UPDATE OF opened_at, clicked_at ON axm_campaign_sends
+    FOR EACH ROW WHEN ((OLD.opened_at IS NULL AND NEW.opened_at IS NOT NULL) OR (OLD.clicked_at IS NULL AND NEW.clicked_at IS NOT NULL))
+    EXECUTE FUNCTION axm_followup_reaction();
+-- What follow-up campaign p_campaign means to send, in one statement: the people it decided to send
+-- to, and the people on its lists now whom the sender has not left out.
+CREATE OR REPLACE FUNCTION axm_followup_to_send(p_campaign INT)
+RETURNS INT LANGUAGE SQL STABLE AS $$
+    SELECT COUNT(*)::INT FROM (
+        SELECT c.subscriber_id FROM axm_campaign_followup_claims c WHERE c.campaign_id = p_campaign
+        UNION
+        SELECT m.id FROM (
+            SELECT sl.subscriber_id AS id FROM campaign_lists cl
+            JOIN lists l ON l.id = cl.list_id AND l.axm_filter IS NULL
+            JOIN subscriber_lists sl ON sl.list_id = l.id
+                AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END
+            JOIN subscribers s ON s.id = sl.subscriber_id AND s.status != 'blocklisted'
+            WHERE cl.campaign_id = p_campaign
+            UNION
+            SELECT dm.subscriber_id FROM campaign_lists cl
+            JOIN lists l ON l.id = cl.list_id AND l.axm_filter IS NOT NULL
+            CROSS JOIN LATERAL axm_dynamic_list_members(l.id) dm
+            WHERE cl.campaign_id = p_campaign
+        ) m
+        WHERE NOT EXISTS (SELECT 1 FROM axm_campaign_followup_holds h WHERE h.campaign_id = p_campaign AND h.subscriber_id = m.id)
+    ) x;
+$$;
+-- The start of a follow-up's run (next-campaigns sets to_send and max_subscriber_id together, and
+-- is the only statement that sets max_subscriber_id) sets its to_send to axm_followup_to_send, and
+-- its finish to the people it decided to send to. Ordinary campaigns are left as they are.
+CREATE OR REPLACE FUNCTION axm_followup_recount()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM axm_campaign_followups WHERE campaign_id = NEW.id) THEN
+        RETURN NEW;
+    END IF;
+    IF TG_ARGV[0] = 'finish' THEN
+        NEW.to_send := (SELECT COUNT(*) FROM axm_campaign_followup_claims c WHERE c.campaign_id = NEW.id);
+        RETURN NEW;
+    END IF;
+    NEW.to_send := axm_followup_to_send(NEW.id);
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_followup_recount ON campaigns;
+CREATE TRIGGER axm_followup_recount BEFORE UPDATE OF max_subscriber_id ON campaigns
+    FOR EACH ROW EXECUTE FUNCTION axm_followup_recount('start');
+DROP TRIGGER IF EXISTS axm_followup_finished ON campaigns;
+CREATE TRIGGER axm_followup_finished BEFORE UPDATE OF status ON campaigns
+    FOR EACH ROW WHEN (NEW.status = 'finished' AND OLD.status IS DISTINCT FROM 'finished')
+    EXECUTE FUNCTION axm_followup_recount('finish');
+-- End of AXM campaign follow-ups.
