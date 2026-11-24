@@ -445,22 +445,56 @@ func TestCampaignPreflightHandler(t *testing.T) {
 		t.Fatalf("scheduled in the past: %s", data)
 	}
 
-	// A saved recent-send rule is only recorded: the line says so, with who it would exclude.
+	// A saved recent-send rule is applied by the sender (LST-65): an information line says who it
+	// leaves out, and the answer has the number that goes out.
 	e.db.MustExec(`UPDATE campaigns SET send_at=NULL WHERE id=$1`, e.campID)
 	e.db.MustExec(`INSERT INTO axm_campaign_recent_rules(campaign_id,days,scope) VALUES($1,14,'all')`, e.campID)
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	var firstSub int
+	e.get(&firstSub, `SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 ORDER BY subscriber_id LIMIT 1`, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, prior, firstSub)
 	data = pfRead(t, e, member, target, id)
 	json.Unmarshal(data, &out)
 	var recent *models.PreflightCheck
 	for i, c := range out.Checks {
 		if c.Key == "recent.notApplied" {
+			t.Fatalf("the line that says the rule is not applied is still there: %s", data)
+		}
+		if c.Key == "recent.applied" {
 			recent = &out.Checks[i]
 		}
 	}
-	if recent == nil || recent.Level != "warn" || recent.Params["days"] != float64(14) {
+	if recent == nil || recent.Level != "info" || recent.Params["days"] != float64(14) || recent.Params["excluded"] != float64(1) {
 		t.Fatalf("recent rule: %s", data)
 	}
-	if _, ok := recent.Params["excluded"]; !ok {
-		t.Fatalf("the number it would exclude is missing: %s", data)
+	var got struct {
+		Recipients int `json:"recipients"`
+		WillSend   int `json:"will_send"`
+		Recent     struct {
+			Enabled  bool   `json:"enabled"`
+			Days     int    `json:"days"`
+			Scope    string `json:"scope"`
+			Excluded int    `json:"excluded"`
+		} `json:"recent"`
+	}
+	json.Unmarshal(data, &got)
+	if got.Recipients != 3 || got.WillSend != 2 || !got.Recent.Enabled || got.Recent.Days != 14 || got.Recent.Scope != "all" || got.Recent.Excluded != 1 {
+		t.Fatalf("answer: %s", data)
+	}
+	// Nobody is left: the window blocks, as it does for a campaign with nobody on its lists.
+	for _, sub := range e.ids(`SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1`, e.aList) {
+		e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, prior, sub)
+	}
+	data = pfRead(t, e, member, target, id)
+	json.Unmarshal(data, &got)
+	level = map[string]string{}
+	out.Checks = nil
+	json.Unmarshal(data, &out)
+	for _, c := range out.Checks {
+		level[c.Key] = c.Level
+	}
+	if got.WillSend != 0 || level["recent.all"] != "block" || level["recipients.zero"] != "" {
+		t.Fatalf("everybody left out: %s", data)
 	}
 }
 

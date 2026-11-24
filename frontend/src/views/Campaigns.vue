@@ -499,14 +499,14 @@ export default Vue.extend({
       });
     },
 
-    onClone({ name, listIds }) {
+    onClone({ name, listIds, rule }) {
       const c = this.cloneAsk;
       this.cloneAsk = null;
-      if (c) this.cloneCampaign(name, c, listIds);
+      if (c) this.cloneCampaign(name, c, listIds, rule);
     },
 
     // The lists are the ones the person chose in the copy window, never the original's.
-    async cloneCampaign(name, c, listIds) {
+    async cloneCampaign(name, c, listIds, rule) {
       // The From list may have changed in another session: refresh it first,
       // then read the campaign, whose from_match the server computes from it.
       await this.$api.getServerConfig();
@@ -567,7 +567,16 @@ export default Vue.extend({
         data.archive_slug = `${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString().slice(-4)}`;
       }
 
-      this.$api.createCampaign(data).then((d) => {
+      this.$api.createCampaign(data).then(async (d) => {
+        // The recent-send rule the person chose in the window (LST-65). A rule that cannot be
+        // saved leaves the copy as it is, and the person is told (the edit page shows the rule).
+        if (rule) {
+          try {
+            await this.$api.saveRecentRule(d.id, rule);
+          } catch (err) {
+            this.$utils.toast(this.$t('campaigns.recent.saveError'), 'is-danger');
+          }
+        }
         this.$router.push({ name: 'campaign', params: { id: d.id } });
       });
     },

@@ -90,7 +90,7 @@ func TestPreflightChecks(t *testing.T) {
 	good := preflightFacts{
 		Mode: "start", CampType: "regular", Messenger: "email", ContentType: "richtext",
 		Total: 300, Remaining: 300, ListCount: 2, LiveLists: 2, Now: now,
-		From: "Team <team@crevasse.ai>", Unsubscribe: true, UnsubscribeKnown: true, RecentExcluded: -1,
+		From: "Team <team@crevasse.ai>", Unsubscribe: true, UnsubscribeKnown: true,
 	}
 	with := func(f func(*preflightFacts)) preflightFacts { c := good; f(&c); return c }
 
@@ -134,8 +134,16 @@ func TestPreflightChecks(t *testing.T) {
 			map[string]string{"from.placeholder": "ok"}},
 		{"opt-in campaigns have no such line", with(func(f *preflightFacts) { f.CampType, f.Unsubscribe = "optin", false }),
 			map[string]string{"from.placeholder": "ok"}},
-		{"recent rule with the number", with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentExcluded = true, 14, 42 }),
-			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.notApplied": "warn"}},
+		{"recent rule with the number is information, not a warning", with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 42 }),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.applied": "info"}},
+		{"recent rule that leaves out everybody blocks", with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 300 }),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.applied": "info", "recent.all": "block"}},
+		{"recent rule that leaves out all but some does not block", with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 299 }),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.applied": "info"}},
+		{"recent rule on resume with nobody left only warns", with(func(f *preflightFacts) {
+			f.Mode, f.Remaining, f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded, f.RecentHeld = "resume", 0, true, 14, "all", 300, 300
+		}),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.applied": "info", "recipients.zero": "warn"}},
 		{"recent rule on an opt-in campaign is not shown", with(func(f *preflightFacts) { f.RecentEnabled, f.CampType = true, "optin" }),
 			map[string]string{"from.placeholder": "ok"}},
 	} {
@@ -153,15 +161,10 @@ func TestPreflightChecks(t *testing.T) {
 		})
 	}
 
-	// The number the recent rule would exclude is left out when it could not be counted.
-	for excluded, wantKey := range map[int]bool{42: true, 0: true, -1: false} {
-		f := with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentExcluded = true, 7, excluded })
-		for _, ch := range preflightChecks(f) {
-			if ch.Key == "recent.notApplied" {
-				if _, has := ch.Params["excluded"]; has != wantKey {
-					t.Errorf("excluded %d: params %v", excluded, ch.Params)
-				}
-			}
+	// The old line that said the rule is not applied is gone.
+	for _, ch := range preflightChecks(with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentExcluded = true, 7, 3 })) {
+		if ch.Key == "recent.notApplied" {
+			t.Errorf("the rule is applied now: %v", ch)
 		}
 	}
 }
@@ -283,7 +286,7 @@ func TestEnvelopeCopies(t *testing.T) {
 	}
 
 	f := preflightFacts{Mode: "start", CampType: "regular", Messenger: "email", Total: 3, LiveLists: 1, ListCount: 1,
-		From: "News <news@crevasse.ai>", Unsubscribe: true, UnsubscribeKnown: true, RecentExcluded: -1, Copies: []string{"a@x.invalid"}}
+		From: "News <news@crevasse.ai>", Unsubscribe: true, UnsubscribeKnown: true, Copies: []string{"a@x.invalid"}}
 	var line *models.PreflightCheck
 	for _, c := range preflightChecks(f) {
 		if c.Key == "mail.copies" {

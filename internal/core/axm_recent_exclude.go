@@ -155,6 +155,17 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if !models.CanEditCampaign(campaign.Status) {
 		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
 	}
+	// AXM (LST-65): a follow-up campaign goes to the people who got the original, so the rule would
+	// leave out all of them (or race the follow-up's own judgement of each batch): it takes none.
+	if rule.Enabled {
+		var followup bool
+		if err := tx.Stmtx(c.q.AxmFollowupIsFollowup).GetContext(ctx, &followup, campaignID); err != nil {
+			return out, c.recentError(err)
+		}
+		if followup {
+			return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recent.followupNone"))
+		}
+	}
 	if rule.Enabled && rule.Scope == models.RecentScopeTeam {
 		var listIDs []int64
 		if err := tx.Stmtx(c.q.AxmRecentCampaignLists).SelectContext(ctx, &listIDs, campaignID); err != nil {
@@ -178,10 +189,53 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if err != nil {
 		return out, c.recentError(err)
 	}
+	// AXM (LST-65): the rule decides who a send reaches, so a send window opened before the change
+	// must be told the campaign changed (the status change refuses a stale updated_at).
+	if _, err := tx.Stmtx(c.q.AxmTouchRecentCampaign).ExecContext(ctx, campaignID); err != nil {
+		return out, c.recentError(err)
+	}
 	if err := tx.Commit(); err != nil {
 		return out, c.recentError(err)
 	}
 	return out, nil
+}
+
+// HoldRecentBatch (LST-65) returns which of the subscribers ids (a batch the sender has just read for
+// campaign campID) the campaign's recent-send rule leaves out, and remembers them as left out of this
+// campaign for good. It is empty for a campaign without a rule. An error means the batch must not be
+// sent: the rule could not be applied.
+func (c *Core) HoldRecentBatch(ctx context.Context, campID int, ids []int) (map[int]bool, error) {
+	// A campaign without a rule (nearly all of them) costs one lookup by key per batch, and nothing
+	// of the send records is touched: a send that never used the rule does not depend on them.
+	var has bool
+	if err := c.q.AxmRecentHasRule.GetContext(ctx, &has, campID); err != nil {
+		return nil, err
+	}
+	if !has {
+		return map[int]bool{}, nil
+	}
+	arr := make(pq.Int64Array, len(ids))
+	for i, id := range ids {
+		arr[i] = int64(id)
+	}
+	var held []int64
+	if err := c.q.AxmRecentHoldBatch.SelectContext(ctx, &held, campID, arr); err != nil {
+		return nil, err
+	}
+	out := make(map[int]bool, len(held))
+	for _, id := range held {
+		out[int(id)] = true
+	}
+	return out, nil
+}
+
+// RecentHeldCount is how many people the recent-send rule has left out of the campaign so far.
+func (c *Core) RecentHeldCount(campaignID int) (int, error) {
+	var n int
+	if err := c.q.AxmRecentHeldCount.Get(&n, campaignID); err != nil {
+		return 0, c.recentError(err)
+	}
+	return n, nil
 }
 
 // recentListLockKey serializes the making of recent-exclusion lists (see MakeRecentExcludeList).

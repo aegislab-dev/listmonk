@@ -11,6 +11,10 @@
 --     everyone who is not 'unsubscribed' on any other list.
 --   * A dynamic list gives the members of axm_dynamic_list_members (regular campaigns only).
 --   * Blocklisted subscribers are always left out.
+--   * (LST-65) A regular campaign with a recent-send rule leaves out, as the sender does in
+--     NextSubscribers, the people axm_recent_received names and the people it kept out before
+--     (axm_campaign_recent_holds, while the rule is on). The count is `recent`; the remaining
+--     count also leaves them out.
 
 -- name: axm-preflight-audience
 -- One row per list of campaign $1 with the people that list alone would reach (a deleted
@@ -20,6 +24,9 @@
 --   multi      how many of them are on more than one of the lists
 --   excluded   people on the lists of a regular campaign who are not reached (blocklisted,
 --              unsubscribed, not yet confirmed on a double opt-in list)
+--   recent     (LST-65) of total, how many the campaign's recent-send rule leaves out of the
+--              send: the people with a send record in the rule's scope within its days, and
+--              the people it left out already. 0 without a rule.
 --   remaining  with $3 (resume) true, how many of total are still to be sent after the
 --              checkpoint $2 (campaigns.last_subscriber_id). A resumed campaign recounts its
 --              upper bound, so there is none here, and a person above the checkpoint who
@@ -65,11 +72,19 @@ eligible AS (
 ),
 total AS (
     SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE lists > 1) AS multi FROM eligible
+),
+recent_out AS (
+    SELECT r.subscriber_id AS id FROM axm_recent_received($1, ARRAY(SELECT id FROM eligible)) r
+    UNION
+    SELECT h.subscriber_id FROM axm_campaign_recent_holds h
+    WHERE h.campaign_id = $1 AND EXISTS (SELECT 1 FROM axm_campaign_recent_rules WHERE campaign_id = $1)
+        AND h.subscriber_id IN (SELECT id FROM eligible)
 )
 SELECT cl.list_id AS id, cl.name, cl.optin, cl.is_dynamic AS dynamic, NOT cl.live AS deleted,
     COALESCE(per.n, 0) AS count,
     (SELECT n FROM total) AS total,
     (SELECT multi FROM total) AS multi,
+    (SELECT COUNT(*) FROM recent_out) AS recent,
     (CASE WHEN (SELECT type FROM c) = 'regular' THEN (
         SELECT COUNT(*) FROM (SELECT DISTINCT id FROM memb) x
         WHERE NOT EXISTS (SELECT 1 FROM eligible e WHERE e.id = x.id)
@@ -81,6 +96,7 @@ SELECT cl.list_id AS id, cl.name, cl.optin, cl.is_dynamic AS dynamic, NOT cl.liv
             -- AXM (LST-47) a follow-up also skips whom its decisions say it was sent to (kept
             -- when the send record expired), as the sender does (axm-followup-sent-ids).
             AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k WHERE k.campaign_id = $1 AND k.subscriber_id = e.id AND k.sent)
+            AND NOT EXISTS (SELECT 1 FROM recent_out ro WHERE ro.id = e.id)
     ) ELSE (SELECT n FROM total) END) AS remaining,
     NOW() AS as_of
 FROM campLists cl
@@ -91,7 +107,8 @@ ORDER BY cl.name, cl.list_id;
 -- Up to $2 of the people campaign $1 would reach, the lowest IDs first, by the same rule as
 -- axm-preflight-audience (keep the two the same). The pre-send check renders the mail for them.
 -- With $4 (resume) true, only those still to be sent: after the checkpoint $3 and without a send
--- record of this campaign, as the remaining count of axm-preflight-audience.
+-- record of this campaign, as the remaining count of axm-preflight-audience. (LST-65) Without
+-- the people the campaign's recent-send rule leaves out (the same rule as `recent` above).
 WITH c AS (
     SELECT id, type FROM campaigns WHERE id = $1
 ),
@@ -124,4 +141,9 @@ eligible AS (
 SELECT s.* FROM subscribers s WHERE s.id IN (SELECT id FROM eligible)
     AND (NOT $4::BOOLEAN OR (s.id > $3
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = s.id)))
+    AND NOT EXISTS (SELECT 1 FROM axm_recent_received($1, ARRAY[s.id]))
+    AND NOT EXISTS (
+        SELECT 1 FROM axm_campaign_recent_holds h
+        WHERE h.campaign_id = $1 AND h.subscriber_id = s.id
+            AND EXISTS (SELECT 1 FROM axm_campaign_recent_rules WHERE campaign_id = $1))
 ORDER BY s.id LIMIT $2;

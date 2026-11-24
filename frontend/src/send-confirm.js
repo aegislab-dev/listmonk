@@ -84,7 +84,12 @@ const checkLine = (c, pf) => {
   if (c.key === 'recipients.zero' && c.level === 'warn') {
     key = `${K}.check.recipients.zero.${pf.mode === 'resume' ? 'resume' : 'optin'}`;
   }
-  if (c.key === 'recent.notApplied' && p.excluded === undefined) key = `${K}.check.recent.notApplied.noCount`;
+  // The recent-send rule is applied by the sender (LST-65): who it leaves out, who it left out
+  // already when resuming, and the rule on with nobody to leave out.
+  if (c.key === 'recent.applied') {
+    if (pf.mode === 'resume') key = `${K}.check.recent.applied.${p.held > 0 ? 'resume' : 'resumeNone'}`;
+    else key = `${K}.check.recent.applied.${p.excluded > 0 ? p.scope : 'none'}`;
+  }
   if (c.key === 'unsubscribe.missing') p.tag = '{{ UnsubscribeURL }}';
   return {
     key, params: p, level: c.level, name: c.key,
@@ -134,12 +139,15 @@ export const checkLines = (pf) => {
 export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {}) => {
   const resume = pf.mode === 'resume';
   const schedule = pf.mode === 'schedule';
-  const n = resume ? pf.remaining : pf.recipients;
+  // The people it goes to: those on the lists less the ones the recent-send rule leaves out
+  // (LST-65), or what is left when resuming.
+  const n = resume ? pf.remaining : (pf.willSend === undefined ? pf.recipients : pf.willSend);
+  const recent = !resume && pf.recent && pf.recent.enabled && pf.recent.excluded > 0 ? pf.recent : null;
   const all = checkLines(pf);
   const blocked = all.some((c) => c.level === 'block');
   // Nobody to send to (approved design A5): the reason is the only line. Otherwise (a From the
   // send refuses) every line stays, the blocking one first: the rest is to be fixed too (A2).
-  const nobody = all.some((c) => c.level === 'block' && (c.name === 'recipients.zero' || c.name === 'lists.none'));
+  const nobody = all.some((c) => c.level === 'block' && (c.name === 'recipients.zero' || c.name === 'lists.none' || c.name === 'recent.all'));
   const checks = nobody ? all.filter((c) => c.level === 'block') : all;
   const warnings = all.filter((c) => c.level === 'warn').length;
   // A paused campaign with a send time is scheduled by the status change, not sent at once.
@@ -202,6 +210,8 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
     overlap: pf.overlap || 0,
     excluded: pf.excluded || 0,
     zero: !resume && pf.recipients === 0,
+    // The rule leaves out some of the recipients: the line that sums it up (null when none).
+    recent,
     asOf,
   };
 };

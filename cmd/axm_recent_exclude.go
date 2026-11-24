@@ -167,6 +167,9 @@ func (a *App) GetRecentRule(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	if out.Held, err = a.core.RecentHeldCount(id); err != nil {
+		return err
+	}
 	return c.JSON(http.StatusOK, okResp{out})
 }
 

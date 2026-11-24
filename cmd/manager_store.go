@@ -122,7 +122,7 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	// batch is used (core.ClaimFollowupBatch: the people who reacted to the original, opted out of
 	// it, are blocked, or whose reactions cannot be seen), and the batch is given back without them.
 	// A batch of only such people is read past, so the position always moves on. Any other campaign
-	// is read as before.
+	// is read as before, except for its recent-send rule (LST-65, below).
 	isFollowup, known := s.followups.Load(campID)
 	if !known {
 		var f bool
@@ -138,16 +138,31 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 		if err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, after, camps[0].MaxSubscriberID, pq.Array(listIDs), limit); err != nil {
 			return out, err
 		}
-		if len(out) == 0 || !isFollowup.(bool) {
+		if len(out) == 0 {
 			return out, nil
 		}
 		ids := make([]int, len(out))
 		for i, sub := range out {
 			ids[i] = sub.ID
 		}
-		left, _, err := s.core.ClaimFollowupBatch(context.Background(), campID, ids)
-		if err != nil {
-			return nil, err
+
+		// AXM (LST-65): any other campaign with a recent-send rule leaves out, as it reads each batch,
+		// the people who got a campaign of the rule's scope within the rule's days (and keeps leaving
+		// out whom it left out before, whatever the send records say later). A failure to decide
+		// returns the error: the batch is not sent, and the next scan reads it again. A batch of only
+		// such people is read past too, but the campaign is looked at again first: it may have been
+		// paused or cancelled meanwhile, and the sender must not read on to the end of the list.
+		var left map[int]bool
+		if isFollowup.(bool) {
+			var err error
+			if left, _, err = s.core.ClaimFollowupBatch(context.Background(), campID, ids); err != nil {
+				return nil, err
+			}
+		} else {
+			var err error
+			if left, err = s.core.HoldRecentBatch(context.Background(), campID, ids); err != nil {
+				return nil, err
+			}
 		}
 		if len(left) == 0 {
 			return out, nil
@@ -162,6 +177,16 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 			return kept, nil
 		}
 		after = out[len(out)-1].ID
+
+		if !isFollowup.(bool) {
+			var again []runningCamp
+			if err := s.queries.GetRunningCampaign.Select(&again, campID); err != nil {
+				return nil, err
+			}
+			if len(again) == 0 {
+				return nil, manager.ErrCampaignNotRunning
+			}
+		}
 	}
 }
 

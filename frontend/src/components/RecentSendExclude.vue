@@ -51,7 +51,16 @@
                 <th scope="row">{{ $t('campaigns.recent.excluded', { days: value.days }) }}</th>
                 <td>−{{ people(counts.excluded) }}</td>
               </tr>
-              <tr><th scope="row">{{ $t('campaigns.recent.willSend') }}</th><td>{{ people(counts.willSend) }}</td></tr>
+              <tr>
+                <th scope="row">
+                  <template v-if="started">{{ $t('campaigns.recent.sentTarget') }}</template>
+                  <template v-else>
+                    {{ $t('campaigns.recent.willSend') }}
+                    <span class="recent-same" data-cy="recent-same-basis">· {{ $t('campaigns.recent.willSendSame') }}</span>
+                  </template>
+                </th>
+                <td>{{ people(counts.willSend) }}</td>
+              </tr>
             </tbody>
           </table>
           <p class="recent-help" data-cy="recent-as-of">{{ $t('campaigns.recent.asOf', { date: formatDate(counts.asOf) }) }}</p>
@@ -62,20 +71,29 @@
       </div>
     </template>
 
-    <div v-if="showMadeLine" class="recent-made" role="status" data-cy="recent-list-made">
-      ✓ {{ $t(madeList.saved ? 'campaigns.recent.listMade' : 'campaigns.recent.listMadeNew') }}
-      <router-link :to="{ name: 'list', params: { id: madeList.id } }">{{ $t('lists.draw.viewList') }}</router-link>
-    </div>
-    <p v-else-if="madeList && madeList.error && madeListInUse" class="recent-error" role="alert" data-cy="recent-list-save-error">
-      {{ madeList.error }}
-    </p>
-    <div v-else-if="canMakeList" class="recent-make">
-      <b-button type="is-primary is-light" class="recent-make-button" data-cy="recent-make-list" @click="openList">
-        {{ $t('campaigns.recent.makeList') }}
-      </b-button>
+    <!-- LST-65: a campaign that has started says how many people the rule left out of its send. -->
+    <div v-if="started && value.enabled" class="recent-made" role="status" data-cy="recent-held">
+      ✓ {{ $t('campaigns.recent.held', { count: (value.held || 0).toLocaleString($i18n.locale), days: value.days, scope: $t(`campaigns.recent.scope.${value.scope}`) }) }}
     </div>
 
-    <p class="recent-notice" data-cy="recent-notice">{{ $t('campaigns.recent.notice') }}</p>
+    <p class="recent-notice" data-cy="recent-notice">{{ $t(started && disabled ? 'campaigns.recent.locked' : 'campaigns.recent.notice') }}</p>
+
+    <!-- The list of the people the rule leaves out is a side action: the rule works without it
+         (LST-46 makes the list as a separate, optional step). -->
+    <div v-if="showMadeLine || (madeList && madeList.error && madeListInUse) || canMakeList" class="recent-optional">
+      <div v-if="showMadeLine" class="recent-made" role="status" data-cy="recent-list-made">
+        ✓ {{ $t(madeList.saved ? 'campaigns.recent.listMade' : 'campaigns.recent.listMadeNew') }}
+        <router-link :to="{ name: 'list', params: { id: madeList.id } }">{{ $t('lists.draw.viewList') }}</router-link>
+      </div>
+      <p v-else-if="madeList && madeList.error && madeListInUse" class="recent-error" role="alert" data-cy="recent-list-save-error">
+        {{ madeList.error }}
+      </p>
+      <div v-else-if="canMakeList" class="recent-make">
+        <b-button size="is-small" type="is-primary" outlined class="recent-make-button" data-cy="recent-make-list" @click="openList">
+          {{ $t('campaigns.recent.makeList') }}
+        </b-button>
+      </div>
+    </div>
 
     <b-modal v-if="listOpen" :active="true" has-modal-card scroll="keep" :aria-modal="true" v-bind="{ ariaRole: 'dialog' }"
       aria-labelledby="recent-list-title" custom-class="recent-list-modal" :width="560"
@@ -140,6 +158,9 @@ export default {
     campaignType: { type: String, default: 'regular' },
     disabled: Boolean,
     value: { type: Object, required: true },
+    // The campaign has started (running, paused, finished or cancelled): the page says how many
+    // people the rule left out of its send (LST-65).
+    started: Boolean,
     // The campaign's lists can still be changed (a new, draft or scheduled campaign).
     listsEditable: Boolean,
     // The campaign exists on the server, so making the list also saves it.
@@ -403,7 +424,10 @@ export default {
 .recent-table tr:last-child th, .recent-table tr:last-child td { font-weight: 700; border: 0; }
 .recent-notice, .recent-warning, .recent-error { border-radius: 4px; padding: 8px 10px; margin-top: 9px; font-size: .8125rem; }
 .recent-notice { background: #eef2fc; color: #263675; }
-.recent-make { margin-top: 12px; }
+.recent-optional { margin-top: 16px; padding-top: 12px; border-top: 1px solid #e3e3e3; }
+.recent-optional .recent-made { margin-top: 0; }
+.recent-make { margin-top: 0; }
+.recent-same { font-weight: 400; font-size: .75rem; color: #616161; margin-left: 4px; }
 @media (max-width: 440px) {
   .recent-make-button { width: 100%; }
 }

@@ -727,11 +727,12 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
-	// 32: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
+	// 33: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
 	// axm_followup_reaction, axm_followup_recipients, axm_followup_to_send and axm_followup_recount
-	// (LST-47, .17; their parity is in TestFollowupSchemaAndMigration).
-	if len(before) != 32 {
-		t.Fatalf("expected 32 axm functions, got %d", len(before))
+	// (LST-47, .17; their parity is in TestFollowupSchemaAndMigration), and axm_recent_received
+	// (LST-65, .18; its parity is in TestRecentHoldsMigration).
+	if len(before) != 33 {
+		t.Fatalf("expected 33 axm functions, got %d", len(before))
 	}
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.

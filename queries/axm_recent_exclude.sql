@@ -75,3 +75,31 @@ WHERE u.id = $1 AND (
             AND r.permissions && ARRAY['list:get', 'list:manage']
     )
 );
+
+-- name: axm-touch-recent-campaign
+-- A rule change is a change of the campaign: a send window opened before it is stale (409).
+UPDATE campaigns SET updated_at = NOW() WHERE id = $1;
+
+-- name: axm-recent-hold-batch
+-- (LST-65) Who of the batch $2 the recent-send rule of campaign $1 leaves out: the people it leaves
+-- out now (and keeps from now on in axm_campaign_recent_holds) and the people it left out before,
+-- while the rule is on. Nothing for a campaign without a rule.
+WITH on_rule AS (
+    SELECT 1 FROM axm_campaign_recent_rules WHERE campaign_id = $1
+), fresh AS (
+    SELECT subscriber_id FROM axm_recent_received($1, $2::INT[])
+), keep AS (
+    INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id)
+    SELECT $1, subscriber_id FROM fresh
+    ON CONFLICT DO NOTHING
+)
+SELECT subscriber_id FROM fresh
+UNION
+SELECT h.subscriber_id FROM axm_campaign_recent_holds h
+WHERE h.campaign_id = $1 AND h.subscriber_id = ANY($2::INT[]) AND EXISTS (SELECT 1 FROM on_rule);
+
+-- name: axm-recent-has-rule
+SELECT EXISTS (SELECT 1 FROM axm_campaign_recent_rules WHERE campaign_id = $1);
+
+-- name: axm-recent-held-count
+SELECT COUNT(*) FROM axm_campaign_recent_holds WHERE campaign_id = $1;

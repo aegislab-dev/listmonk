@@ -189,7 +189,7 @@ const fingerprint = (pf) => {
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
     // Each header's own list: the merged list drops an address of the Bcc that the Cc also has.
     keep('cc', (pf.copyLists || {}).cc), keep('bcc', (pf.copyLists || {}).bcc),
-    pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.name, l.count, l.deleted]),
+    pf.recipients, pf.remaining, pf.willSend, (pf.lists || []).map((l) => [l.id, l.name, l.count, l.deleted]),
     (pf.checks || []).filter((c) => c.key !== 'schedule.past')
       .map((c) => {
         // The addresses are compared above, kind by kind; the line itself by its count.
@@ -259,7 +259,8 @@ export default Vue.extend({
 
     until() { return this.model && this.model.until ? untilKey(this.model.until) : null; },
 
-    // The summary under the lists: people on several lists, and people already left out.
+    // The summary under the lists: people on several lists, people already left out, and the
+    // people the campaign's recent-send rule leaves out of the send (LST-65).
     sumParts() {
       const m = this.model;
       const out = [];
@@ -270,6 +271,11 @@ export default Vue.extend({
           : this.$t('campaigns.sendConfirm.total', { n: this.pf.recipients }));
       }
       if (m.excluded > 0) out.push(this.$t('campaigns.sendConfirm.excluded', { excluded: m.excluded }));
+      if (m.recent) {
+        out.push(this.$t(out.length ? 'campaigns.sendConfirm.recentCut' : 'campaigns.sendConfirm.recentSum', {
+          n: this.pf.recipients, days: m.recent.days, x: m.recent.excluded, m: this.pf.willSend,
+        }));
+      }
       return out;
     },
 

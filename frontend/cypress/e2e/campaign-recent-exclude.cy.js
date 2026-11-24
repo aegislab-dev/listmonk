@@ -63,7 +63,9 @@ describe('Recent-send exclusion settings', () => {
       expect([...$cells].map((cell) => cell.textContent)).to.deep.equal(['1', '−0', '1']);
     });
     cy.get('[data-cy=recent-as-of]').contains(/As of \d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
-    cy.get('[data-cy=recent-notice]').should('contain', 'still be included when you send');
+    cy.get('[data-cy=recent-notice]').should('contain', 'left out when the campaign is sent');
+    // The list of the result is a side action below the notice, not the main one (LST-65).
+    cy.get('[data-cy=recent-same-basis]').should('contain', 'send window');
 
     cy.get('select[data-cy=recent-days]').select('7');
     cy.wait('@recentPreview').its('request.body.days').should('eq', 7);
@@ -86,8 +88,9 @@ describe('Recent-send exclusion settings', () => {
     cy.get(switchInput).should('be.checked').and('not.be.disabled');
     cy.get('select[data-cy=recent-days]').should('have.value', '7');
     cy.get('[data-cy=btn-start]').click();
-    // The saved rule is only recorded: the window that every start goes through says so (LST-48).
-    cy.get('[data-cy="send-check-recent.notApplied"]').should('contain', 'does not apply to sending yet').and('contain', 'last 7 days');
+    // The saved rule is applied by the sender (LST-65): the window says so, as information.
+    cy.get('[data-cy="send-check-recent.applied"]').should('have.attr', 'data-level', 'info').and('contain', 'last 7 days');
+    cy.get('[data-cy="send-check-recent.notApplied"]').should('not.exist');
     cy.get('[data-cy=send-cancel]').click();
 
     cy.clearCookies();

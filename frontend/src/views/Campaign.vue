@@ -119,9 +119,10 @@
                 <address-check v-if="canShowAddressCheck" :list-ids="recentListIds" :lists="lists.results || []"
                   :optin="data.type === 'optin'" />
 
-                <recent-send-exclude v-if="canShowRecentRule" v-model="recentRule" :campaign-id="data.id || createdDraftId"
+                <recent-send-exclude v-if="canShowRecentRule && !isFollowup" v-model="recentRule" :campaign-id="data.id || createdDraftId"
                   :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || !recentRuleLoaded || savingCampaign"
-                  :lists-editable="canChangeLists" :saved-campaign="!!data.id" :made-list="madeListView" @list-made="onRecentListMade" />
+                  :started="recentStarted" :lists-editable="canChangeLists" :saved-campaign="!!data.id" :made-list="madeListView"
+                  @list-made="onRecentListMade" />
                 <p v-if="recentRuleError" class="help is-danger mb-4" role="alert">{{ recentRuleError }}</p>
                 <p v-if="isFollowup && canShowRecentRule" class="help mb-4" data-cy="followup-exclude-note">
                   {{ $t('campaigns.followup.excludeNote') }}
@@ -1080,6 +1081,10 @@ export default Vue.extend({
 
     canShowRecentRule() {
       return this.isNew || this.data.type === 'regular';
+    },
+    // The campaign has been started (LST-65): the rule panel says how many people it left out.
+    recentStarted() {
+      return ['running', 'paused', 'finished', 'cancelled'].includes(this.data.status);
     },
     // An opt-in campaign also mails people: its audience (the unconfirmed subscribers of the
     // double opt-in lists) is checked too.

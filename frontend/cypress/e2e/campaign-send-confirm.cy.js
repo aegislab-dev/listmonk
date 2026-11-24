@@ -181,14 +181,15 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-cancel]').click();
   });
 
-  it('says in the window that a saved exclusion rule is not applied, from the list too', () => {
+  it('says in the window that a saved exclusion rule is applied and what goes out, from the list too', () => {
     cy.visit('/admin/campaigns');
     row('rule').find('[data-cy=btn-start]').click();
     ready();
-    cy.get('[data-cy="send-check-recent.notApplied"]').should('have.attr', 'data-level', 'warn')
-      .and('contain', 'does not apply to sending yet').and('contain', 'last 14 days');
-    cy.get('[data-cy=send-sub]').should('contain', 'warning');
-    cy.get('[data-cy=send-ok]').should('contain', 'anyway').and('not.be.disabled');
+    cy.get('[data-cy="send-check-recent.notApplied"]').should('not.exist');
+    cy.get('[data-cy="send-check-recent.applied"]').should('have.attr', 'data-level', 'info').and('contain', 'last 14 days');
+    // Information, not a warning: the button does not turn into "anyway".
+    cy.get('[data-cy=send-sub]').should('not.contain', 'warning');
+    cy.get('[data-cy=send-ok]').should('not.contain', 'anyway').and('not.be.disabled');
     cy.get('[data-cy=send-cancel]').click();
   });
 

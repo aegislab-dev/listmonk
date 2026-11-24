@@ -28,6 +28,8 @@ type RecentRule struct {
 	CampaignIDs pq.Int64Array `db:"campaign_ids" json:"campaign_ids,omitempty"`
 	UpdatedAt   *time.Time    `db:"updated_at" json:"updated_at,omitempty"`
 	UpdatedBy   *int          `db:"updated_by" json:"updated_by,omitempty"`
+	// Held (LST-65) is how many people the rule has left out of the campaign's send so far.
+	Held int `db:"-" json:"held,omitempty"`
 }
 
 type RecentCounts struct {

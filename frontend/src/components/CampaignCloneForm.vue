@@ -43,7 +43,7 @@
       <div v-else-if="received.state === 'error'" class="clone-received is-note" data-cy="clone-received" data-state="error">
         {{ $t('campaigns.clone.checkFailed') }}
       </div>
-      <div v-else-if="received.state === 'ok' && received.excluded > 0" class="clone-received is-warn"
+      <div v-else-if="received.state === 'ok' && eff === 'none' && received.excluded > 0" class="clone-received is-warn"
         data-cy="clone-received" data-state="warn" role="status">
         <b>{{ $t('campaigns.clone.received', {
           target: $utils.formatNumber(received.target),
@@ -52,8 +52,43 @@
           days: DAYS,
         }) }}</b>
         <span class="clone-sub">{{ $t('campaigns.clone.receivedRisk') }}</span>
-        <span class="clone-sub" data-cy="clone-received-way">{{ $t('campaigns.clone.receivedWay') }}</span>
       </div>
+      <div v-else-if="eff !== 'none' && ruleNote" class="clone-received is-note" data-cy="clone-received" data-state="rule" role="status">
+        <b>{{ ruleNote }}</b>
+        <span v-if="restNote" class="clone-sub" data-cy="clone-rule-rest">{{ restNote }}</span>
+      </div>
+
+      <!-- LST-65: the rule that leaves out the people who got a campaign lately now works when the
+           copy is sent. The copy takes the original's rule, leaves out the people who got the
+           original, or goes without one. -->
+      <fieldset v-if="showRule" class="clone-rule" data-cy="clone-rule">
+        <legend class="clone-rule-title">{{ $t('campaigns.clone.ruleTitle') }}</legend>
+        <label v-if="original.enabled" class="clone-radio">
+          <input v-model="choice" type="radio" value="inherit" data-cy="clone-rule-inherit" @change="choiceTouched = true">
+          <span>
+            {{ $t('campaigns.clone.ruleInherit', { days: original.days, scope: $t(`campaigns.recent.scope.${original.scope}`) }) }}
+            <small>{{ $t('campaigns.clone.ruleInheritHelp') }}</small>
+          </span>
+        </label>
+        <label class="clone-radio">
+          <input v-model="choice" type="radio" value="exclude" data-cy="clone-rule-exclude" @change="choiceTouched = true">
+          <span>
+            {{ $t('campaigns.clone.ruleExclude') }}
+            <small>
+              {{ received.state === 'ok'
+                ? $t('campaigns.clone.ruleExcludeHelpCount', { name: campaign.name, days: DAYS, count: $utils.formatNumber(received.excluded) })
+                : $t('campaigns.clone.ruleExcludeHelp', { name: campaign.name, days: DAYS }) }}
+            </small>
+          </span>
+        </label>
+        <label class="clone-radio">
+          <input v-model="choice" type="radio" value="none" data-cy="clone-rule-none" @change="choiceTouched = true">
+          <span>
+            {{ $t('campaigns.clone.ruleNone') }}
+            <small v-if="!original.enabled">{{ $t('campaigns.clone.ruleNoneHelp') }}</small>
+          </span>
+        </label>
+      </fieldset>
     </section>
 
     <footer class="modal-card-foot">
@@ -68,6 +103,7 @@
 
 <script>
 import ListSelector from './ListSelector.vue';
+import { recentRulePayload } from '../recent-send-exclude';
 
 // Where the copy's lists start (LST-59). false: empty, the person picks them (the original's
 // lists are one click away). true: the original's lists are filled in at the start. This is
@@ -97,6 +133,13 @@ export default {
       allLists: [],
       listsError: false,
       received: { state: 'none', target: 0, excluded: 0 },
+      // The original's recent-send rule (LST-65) and what the copy does with it: 'inherit' (take
+      // it), 'exclude' (leave out whoever got the original) or 'none'. The first one is the start
+      // when the original has a rule.
+      original: { loaded: false, enabled: false, days: 14, scope: 'all', campaignIds: [] },
+      choice: 'none',
+      choiceTouched: false,
+      inherited: { state: 'none', excluded: 0, target: 0 },
       previewTimer: null,
       previewController: null,
       previewKey: '',
@@ -121,8 +164,47 @@ export default {
       return this.selected.map((l) => l.id);
     },
 
+    // What the copy does: the choice, while it is offered; otherwise nothing.
+    eff() { return this.showRule ? this.choice : 'none'; },
+
     isWarn() {
-      return this.received.state === 'ok' && this.received.excluded > 0;
+      return this.eff === 'none' && this.received.state === 'ok' && this.received.excluded > 0;
+    },
+
+    // The choice is offered when the original has a rule, or when people in the lists got the
+    // original lately (there is something to leave out).
+    showRule() {
+      if (this.campaign.type !== 'regular') return false;
+      return this.original.enabled || (this.received.state === 'ok' && this.received.excluded > 0);
+    },
+
+    // What the copy will do, as the box says it.
+    ruleNote() {
+      if (this.eff === 'exclude' && this.received.state === 'ok') {
+        return this.$t('campaigns.clone.noteExclude', {
+          name: this.campaign.name, days: DAYS, count: this.$utils.formatNumber(this.received.excluded),
+        });
+      }
+      if (this.eff === 'inherit') {
+        const scope = this.$t(`campaigns.recent.scope.${this.original.scope}`);
+        if (this.inherited.state === 'ok') {
+          return this.$t('campaigns.clone.noteInherit', {
+            days: this.original.days, scope, count: this.$utils.formatNumber(this.inherited.excluded),
+          });
+        }
+        return this.$t('campaigns.clone.noteInheritNoCount', { days: this.original.days, scope });
+      }
+      return '';
+    },
+
+    restNote() {
+      let src = null;
+      if (this.eff === 'exclude' && this.received.state === 'ok') src = this.received;
+      if (this.eff === 'inherit' && this.inherited.state === 'ok') src = this.inherited;
+      if (!src) return '';
+      return this.$t('campaigns.clone.noteRest', {
+        target: this.$utils.formatNumber(src.target), rest: this.$utils.formatNumber(src.target - src.excluded),
+      });
     },
 
     // The button is never held back by the count: only a name and one list are needed.
@@ -136,6 +218,7 @@ export default {
   },
 
   async mounted() {
+    this.loadRule();
     try {
       const data = await this.$api.queryLists({ minimal: false, per_page: 'all', status: 'active' });
       this.allLists = (data.results || []).map((l) => ({ ...l, id: l.id, name: l.name }));
@@ -159,6 +242,24 @@ export default {
         .map(({ id, name }) => ({ id, name }));
     },
 
+    // The original's rule: absent or unreadable is "no rule" (the copy is never held back by it).
+    async loadRule() {
+      if (this.campaign.type !== 'regular') return;
+      try {
+        const rule = await this.$api.getRecentRule(this.campaign.id);
+        if (rule && rule.enabled) {
+          this.original = {
+            loaded: true, enabled: true, days: rule.days, scope: rule.scope, campaignIds: rule.campaignIds || [],
+          };
+          // Starts on the original's rule, unless the person chose before it was read.
+          if (!this.choiceTouched) this.choice = 'inherit';
+          this.schedulePreview();
+        }
+      } catch (e) {
+        // Nothing to take over.
+      }
+    },
+
     schedulePreview() {
       const ids = this.selectedIds;
       const key = ids.join(',');
@@ -166,6 +267,7 @@ export default {
       if (this.previewController) this.previewController.abort();
       this.previewKey = key;
       this.received = { state: 'none', target: 0, excluded: 0 };
+      this.inherited = { state: 'none', excluded: 0, target: 0 };
       // The count is the original's, so a campaign that is not a regular one has none.
       if (!ids.length || this.campaign.type !== 'regular') return;
 
@@ -182,13 +284,34 @@ export default {
         } catch (e) {
           if (current()) this.received = { state: 'error', target: 0, excluded: 0 };
         }
+        // How many the original's own rule would leave out of the chosen lists (the copy has no
+        // id yet, so none of the sends is the copy's own).
+        if (this.original.enabled) {
+          try {
+            const out = await this.$api.previewRecentExclude({
+              list_ids: ids, ...recentRulePayload({ ...this.original, enabled: true }), campaign_id: 0,
+            }, controller.signal);
+            if (current()) this.inherited = { state: 'ok', target: out.target, excluded: out.excluded };
+          } catch (e) {
+            if (current()) this.inherited = { state: 'error', excluded: 0, target: 0 };
+          }
+        }
       }, PREVIEW_DELAY_MS);
     },
 
     submit() {
       if (!this.canClone) return;
       this.busy = true;
-      this.$emit('clone', { name: this.name.trim(), listIds: this.selectedIds });
+      // The rule the copy gets (LST-65), saved after the copy is made; null: none.
+      let rule = null;
+      if (this.eff === 'inherit') {
+        rule = recentRulePayload({ ...this.original, enabled: true });
+      } else if (this.eff === 'exclude') {
+        rule = recentRulePayload({
+          enabled: true, days: DAYS, scope: 'campaigns', campaignIds: [this.campaign.id],
+        });
+      }
+      this.$emit('clone', { name: this.name.trim(), listIds: this.selectedIds, rule });
     },
   },
 };
@@ -208,5 +331,10 @@ export default {
 .clone-received.is-note { background: #f5f5f5; color: #6b6b6b; }
 .clone-received.is-warn { background: #fffaeb; border: 1px solid #ffe08a; color: #7a4a00; }
 .clone-sub { display: block; margin-top: 0.25rem; font-size: 0.8rem; }
+.clone-rule { margin-top: 0.75rem; padding: 0.5rem 0.75rem; border: 1px solid #e3e3e3; border-radius: 6px; font-size: 0.875rem; }
+.clone-rule-title { font-weight: 600; padding: 0 0.25rem; }
+.clone-radio { display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 0.4rem; cursor: pointer; line-height: 1.35; }
+.clone-radio input { margin-top: 0.25rem; }
+.clone-radio small { display: block; color: #6b6b6b; font-size: 0.8rem; }
 .clone-form .button.is-primary.clone-go-warn { background-color: #b25e00; }
 </style>

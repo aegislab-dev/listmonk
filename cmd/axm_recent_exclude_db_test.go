@@ -85,7 +85,7 @@ func TestRecentExclusionPeriodsAndScopes(t *testing.T) {
 	}
 }
 
-func TestRecentExclusionMatchesSendAudienceAndDoesNotChangeSending(t *testing.T) {
+func TestRecentExclusionMatchesSendAudienceAndSending(t *testing.T) {
 	e := newSendsEnv(t, 3)
 	e.setStatus("draft")
 	var doubleID, baseID, dynamicID int
@@ -129,11 +129,13 @@ func TestRecentExclusionMatchesSendAudienceAndDoesNotChangeSending(t *testing.T)
 	if got.Target != 5 || got.Excluded != 1 || got.WillSend != 4 {
 		t.Fatalf("mixed audience: %+v", got)
 	}
+	// The campaigns send at the same time and read each other's send records, so the sending is
+	// checked with the one prior campaign as the rule's scope.
 	want := append(append([]int{}, e.eligible...), doubleOnly, dynamicOnly)
-	assertRecentRuleSends(t, e, control, rule, want)
+	assertRecentRuleSends(t, e, control, prior, 7, minus(want, e.eligible[:1]), want)
 }
 
-func TestRecentRuleDoesNotChangeOrdinaryListSending(t *testing.T) {
+func TestRecentRuleChangesOrdinaryListSending(t *testing.T) {
 	e := newSendsEnv(t, 3)
 	e.setStatus("draft")
 	control, _ := e.addCampaign("draft")
@@ -144,11 +146,15 @@ func TestRecentRuleDoesNotChangeOrdinaryListSending(t *testing.T) {
 	if err != nil || counts.Target != 3 || counts.Excluded != 1 || counts.WillSend != 2 {
 		t.Fatalf("ordinary audience %+v: %v", counts, err)
 	}
-	assertRecentRuleSends(t, e, control, rule, e.eligible)
+	assertRecentRuleSends(t, e, control, prior, 7, minus(e.eligible, e.eligible[:1]), e.eligible)
 }
 
-func assertRecentRuleSends(t *testing.T, e *sendsEnv, control int, rule models.RecentRule, want []int) {
+// assertRecentRuleSends runs the campaign with a rule (the one prior campaign, days) and a control
+// campaign without one at the same time: the first leaves out the people the prior campaign sent
+// to, the control sends to everybody (LST-65; before it, the rule changed nothing).
+func assertRecentRuleSends(t *testing.T, e *sendsEnv, control, prior, days int, wantRule, wantControl []int) {
 	t.Helper()
+	rule := models.RecentRule{Enabled: true, Days: days, Scope: models.RecentScopeCampaigns, CampaignIDs: pq.Int64Array{int64(prior)}}
 	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, rule, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +166,7 @@ func assertRecentRuleSends(t *testing.T, e *sendsEnv, control int, rule models.R
 	waitFor(t, "both campaign send records", func() bool {
 		return strings.Count(logs.String(), "send records:") == 2
 	})
-	for _, id := range []int{e.campID, control} {
+	for id, want := range map[int][]int{e.campID: wantRule, control: wantControl} {
 		delivered := e.ids(`SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1 ORDER BY subscriber_id`, id)
 		wantSame(t, fmt.Sprintf("campaign %d", id), delivered, want)
 	}
