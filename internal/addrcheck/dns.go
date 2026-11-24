@@ -20,7 +20,9 @@ const (
 	StatusDead DomainStatus = "dead"
 	// StatusNullMX: the domain says it accepts no mail ("MX 0 .", RFC 7505).
 	StatusNullMX DomainStatus = "nullmx"
-	// StatusUnknown: the lookup timed out or failed. Not a verdict, and not cached.
+	// StatusUnknown: the lookup timed out or failed. Not a verdict. It is remembered only
+	// briefly (Options.UnknownTTL) so that a silent domain is not waited for again by every
+	// batch.
 	StatusUnknown DomainStatus = "unknown"
 	// StatusPending: the lookup did not finish within the caller's budget. It goes on in
 	// the background, so a later call gets the answer from the cache.
@@ -30,7 +32,10 @@ const (
 // Resolver is the part of net.Resolver the checker uses. Tests replace it.
 type Resolver interface {
 	LookupMX(ctx context.Context, name string) ([]*net.MX, error)
-	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+	// LookupIP is asked for "ip4" and "ip6" one at a time: the Go resolver's LookupIPAddr
+	// reports "not found" when one family has no records and the other failed, which would
+	// make a domain that only had a hiccup look dead.
+	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
 }
 
 // Options sets the limits of a Checker. Zero values take the defaults.
@@ -40,6 +45,8 @@ type Options struct {
 	Concurrency   int           // lookups at once; default 8
 	OKTTL         time.Duration // how long a working domain is remembered; default 7 days
 	BadTTL        time.Duration // how long a dead or null-MX domain is remembered; default 1 day
+	UnknownTTL    time.Duration // how long a domain that did not answer is remembered; default 60s
+	MaxPerSecond  int           // lookups started per second, all callers together; default 50
 	MaxEntries    int           // cached domains; default 50,000
 	MaxQueued     int           // domains waiting for a lookup; default 20,000
 	Now           func() time.Time
@@ -72,6 +79,9 @@ type Checker struct {
 	inflight map[string]*call // domains queued or being looked up
 	queue    []string
 	workers  int
+
+	rateMu sync.Mutex
+	starts []time.Time // when the last MaxPerSecond lookups started, oldest first
 }
 
 // NewChecker returns a checker with the given limits.
@@ -91,6 +101,12 @@ func NewChecker(opt Options) *Checker {
 	}
 	if opt.BadTTL <= 0 {
 		opt.BadTTL = 24 * time.Hour
+	}
+	if opt.UnknownTTL <= 0 {
+		opt.UnknownTTL = 60 * time.Second
+	}
+	if opt.MaxPerSecond <= 0 {
+		opt.MaxPerSecond = 50
 	}
 	if opt.MaxEntries <= 0 {
 		opt.MaxEntries = 50000
@@ -187,16 +203,40 @@ func (c *Checker) work() {
 		cl := c.inflight[d]
 		c.mu.Unlock()
 
+		c.waitSlot()
 		st := c.resolve(d)
 
 		c.mu.Lock()
 		delete(c.inflight, d)
-		if st != StatusUnknown {
-			c.store(d, st)
-		}
+		c.store(d, st)
 		c.mu.Unlock()
 		cl.status = st
 		close(cl.done)
+	}
+}
+
+// waitSlot blocks until the caller may start a lookup: at most MaxPerSecond lookups start in
+// any second, all callers together, so that a big import cannot flood the resolver of the host.
+// The start times of the last MaxPerSecond lookups are kept, and a lookup starts only when the
+// oldest of them is a second old (a millisecond more, so that both ends of a second are not
+// counted): this holds also after the process was paused and many callers wake together.
+// Concurrency still limits how many run at once.
+func (c *Checker) waitSlot() {
+	window := time.Second + time.Millisecond
+	for {
+		c.rateMu.Lock()
+		now := time.Now()
+		if len(c.starts) < c.opt.MaxPerSecond || now.Sub(c.starts[0]) >= window {
+			if len(c.starts) >= c.opt.MaxPerSecond {
+				c.starts = c.starts[1:]
+			}
+			c.starts = append(c.starts, now)
+			c.rateMu.Unlock()
+			return
+		}
+		wait := window - now.Sub(c.starts[0])
+		c.rateMu.Unlock()
+		time.Sleep(wait)
 	}
 }
 
@@ -204,8 +244,11 @@ func (c *Checker) work() {
 func (c *Checker) store(domain string, st DomainStatus) {
 	now := c.opt.Now()
 	ttl := c.opt.BadTTL
-	if st == StatusOK {
+	switch st {
+	case StatusOK:
 		ttl = c.opt.OKTTL
+	case StatusUnknown:
+		ttl = c.opt.UnknownTTL
 	}
 	c.cache[domain] = cacheEntry{status: st, stored: now, expires: now.Add(ttl)}
 	c.order = append(c.order, queued{domain, now})
@@ -249,18 +292,27 @@ func (c *Checker) resolve(domain string) DomainStatus {
 		return StatusUnknown
 	}
 
-	// No MX: mail goes to the domain's own address, if it has one.
-	ctx, cancel = context.WithTimeout(context.Background(), c.opt.LookupTimeout)
-	ips, err := c.opt.Resolver.LookupIPAddr(ctx, name)
-	cancel()
-	switch {
-	case len(ips) > 0:
-		return StatusOK
-	case err == nil || notFound(err):
-		return StatusDead
-	default:
+	// No MX: mail goes to the domain's own address (A or AAAA), if it has one. Each family is
+	// asked on its own: the domain is dead only when both say the name has no such record, and
+	// unknown when one family failed and the other has none.
+	failed := 0
+	for _, network := range []string{"ip4", "ip6"} {
+		ctx, cancel = context.WithTimeout(context.Background(), c.opt.LookupTimeout)
+		ips, err := c.opt.Resolver.LookupIP(ctx, network, name)
+		cancel()
+		switch {
+		case len(ips) > 0:
+			return StatusOK
+		case err == nil || notFound(err):
+			// no record of this family
+		default:
+			failed++
+		}
+	}
+	if failed > 0 {
 		return StatusUnknown
 	}
+	return StatusDead
 }
 
 // notFound reports whether DNS answered that the name or the record type does not exist,

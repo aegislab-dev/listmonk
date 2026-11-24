@@ -15,24 +15,8 @@ import (
 // Address rules (LST-53, step 1): an address that cannot receive mail is refused where a
 // subscriber is added, so it never reaches a campaign. The rules need no network and no
 // stored state: the mailbox name rules of the provider (Gmail) and a table of misspelled
-// domains (gmail.con). DNS, the blocklist and bounce history come in a later step. Blocklisting
-// takes any address. See FORK.md.
-
-// addressRule checks an address and returns the 400 for one that breaks a rule (nil when it
-// passes), with the rule and the suggested address. The address was sanitized by the caller.
-func (a *App) addressRule(email string) (err error, rule, suggest string) {
-	rule, suggest = addrcheck.Rules(email)
-	switch rule {
-	case addrcheck.ClassFormat:
-		// A domain that breaks the label syntax (an underscore, a hyphen at the end) gets here.
-		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("subscribers.invalidEmail")), rule, ""
-	case addrcheck.ClassProvider:
-		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("subscribers.addr.provider")), rule, ""
-	case addrcheck.ClassTypo:
-		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("subscribers.addr.typo", "suggest", suggest)), rule, suggest
-	}
-	return nil, "", ""
-}
+// domains (gmail.con). Step 2 (LST-56) adds the blocklist, the bounce record, the disposable
+// list and DNS: see axm_address_gate.go. Blocklisting takes any address. See FORK.md.
 
 // markAddressRule tells the form that a 400 is an address rule and belongs under the address
 // field (X-Axm-Address-Rule), and sends the corrected address of a misspelled domain
@@ -40,7 +24,10 @@ func (a *App) addressRule(email string) (err error, rule, suggest string) {
 // The suggestion is percent-encoded (headerEscape): a header is read as Latin-1, so a name
 // such as 리뷰 or réview would come back to the browser as other characters.
 func markAddressRule(c echo.Context, rule, suggest string) {
-	if rule != addrcheck.ClassProvider && rule != addrcheck.ClassTypo {
+	switch rule {
+	case addrcheck.ClassProvider, addrcheck.ClassTypo, addrcheck.ClassSuppressed, addrcheck.ClassBounced,
+		addrcheck.ClassDisposable, addrcheck.ClassNullMX, addrcheck.ClassDead:
+	default:
 		return
 	}
 	c.Response().Header().Set("X-Axm-Address-Rule", rule)
@@ -62,38 +49,6 @@ func headerEscape(s string) string {
 		}
 	}
 	return b.String()
-}
-
-// addressRuleError returns the 400 for an address that breaks a rule, or nil.
-func (a *App) addressRuleError(c echo.Context, email string) error {
-	err, rule, suggest := a.addressRule(email)
-	if err != nil {
-		markAddressRule(c, rule, suggest)
-	}
-	return err
-}
-
-// addressChangeError is addressRuleError for a save of the subscriber with the given id:
-// an address the person did not change is not checked, so that an old subscriber can still
-// be edited, and an error that has nothing to do with the address carries no address header.
-// current is the address the subscriber has now, or "" to read it.
-func (a *App) addressChangeError(c echo.Context, id int, email, current string) error {
-	err, rule, suggest := a.addressRule(email)
-	if err == nil {
-		return nil
-	}
-	if current == "" {
-		sub, gerr := a.core.GetSubscriber(id, "", "")
-		if gerr != nil {
-			return gerr
-		}
-		current = sub.Email
-	}
-	if strings.EqualFold(strings.TrimSpace(current), strings.TrimSpace(email)) {
-		return nil
-	}
-	markAddressRule(c, rule, suggest)
-	return err
 }
 
 // GetImportRejected sends the rows of the last import that the address rules refused, as

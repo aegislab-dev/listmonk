@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/knadh/listmonk/internal/addrcheck"
@@ -45,6 +46,10 @@ type addrCheckImportResp struct {
 	// Suggest maps the position of an address with a misspelled domain to the corrected
 	// address. It is a suggestion only; the import refuses the row and does not change it.
 	Suggest map[int]string `json:"suggest"`
+	// Gate is how strict the server's address gate is (full, nodns, basic). The column mapping
+	// leaves out the rows the server would refuse, so it needs to know: with basic a disposable
+	// domain is only a warning.
+	Gate string `json:"gate"`
 }
 
 type addrCheckListReq struct {
@@ -88,10 +93,50 @@ func (a *App) CheckImportAddresses(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("addressCheck.invalid"))
 	}
 
-	verdicts := a.addrCheck.Check(c.Request().Context(), req.Emails, addrCheckBudget)
-	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}, Suggest: map[int]string{}}
+	// The review shows what the import would do. With the gate at nodns or basic the import does
+	// not look at DNS, so neither does this: dead domains would be left out of the review that
+	// the import takes in.
+	var verdicts []addrcheck.Verdict
+	if a.gateStrength() == gateFull && a.addrCheck != nil {
+		verdicts = a.addrCheck.Check(c.Request().Context(), req.Emails, addrCheckBudget)
+	} else {
+		verdicts = make([]addrcheck.Verdict, len(req.Emails))
+		for i, e := range req.Emails {
+			verdicts[i].Result = addrcheck.Classify(e)
+		}
+	}
+	out := addrCheckImportResp{Summary: addrcheck.Summarize(verdicts, nil, nil, false), Issues: map[int][]string{}, Suggest: map[int]string{}, Gate: a.gateStrength()}
+	// What the database knows (LST-56): the column mapping screen shows the rows the server
+	// would refuse for these reasons, and the numbers of Summary are not changed by them.
+	var facts map[string]addrcheck.Facts
+	if a.gateStrength() != gateBasic {
+		emails := make([]string, 0, len(verdicts))
+		for _, v := range verdicts {
+			if !v.Format {
+				emails = append(emails, v.Email)
+			}
+		}
+		var err error
+		if facts, err = a.core.AddressFacts(c.Request().Context(), emails); err != nil {
+			a.log.Printf("error reading the address facts: %v", err)
+			facts = nil
+		}
+	}
 	for i, v := range verdicts {
 		classes := v.Classes()
+		// The gate refuses a disposable domain only when it is on the list itself (not a
+		// subdomain of one): the review leaves out only the rows the import would refuse.
+		if v.Disposable && a.gateStrength() != gateBasic && !addrcheck.ListedDisposable(v.Domain) {
+			classes = slices.DeleteFunc(classes, func(c string) bool { return c == addrcheck.ClassDisposable })
+		}
+		if f := facts[strings.ToLower(strings.TrimSpace(v.Email))]; !v.Format {
+			if f.Suppressed {
+				classes = append(classes, addrcheck.ClassSuppressed)
+			}
+			if f.Bounced {
+				classes = append(classes, addrcheck.ClassBounced)
+			}
+		}
 		if v.Status == addrcheck.StatusPending {
 			classes = append(classes, string(addrcheck.StatusPending))
 		}
