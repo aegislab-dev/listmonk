@@ -24,7 +24,8 @@
 --              checkpoint $2 (campaigns.last_subscriber_id). A resumed campaign recounts its
 --              upper bound, so there is none here, and a person above the checkpoint who
 --              already has a send record is skipped by the sender (internal/manager/pipe.go,
---              axm-get-campaign-sent-ids), also when the checkpoint is 0. Otherwise total.
+--              axm-get-campaign-sent-ids, and for a follow-up its decisions marked sent), also
+--              when the checkpoint is 0. Otherwise total.
 -- The (list, person) pairs are built once and every count reads them: counting each list
 -- and the total with separate queries doubled the time on a 400k list.
 WITH c AS (
@@ -77,6 +78,9 @@ SELECT cl.list_id AS id, cl.name, cl.optin, cl.is_dynamic AS dynamic, NOT cl.liv
         SELECT COUNT(*) FROM eligible e
         WHERE e.id > $2
             AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = e.id)
+            -- AXM (LST-47) a follow-up also skips whom its decisions say it was sent to (kept
+            -- when the send record expired), as the sender does (axm-followup-sent-ids).
+            AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k WHERE k.campaign_id = $1 AND k.subscriber_id = e.id AND k.sent)
     ) ELSE (SELECT n FROM total) END) AS remaining,
     NOW() AS as_of
 FROM campLists cl

@@ -1688,32 +1688,61 @@ func TestFollowupToSendAndAuditCountEachLeftOutPersonOnce(t *testing.T) {
 // F82 (LST-47, decision 11/24): a follow-up is paused after Manual got it, with its checkpoint below
 // Manual (a message before Manual's was dropped by the pause), and Manual's send record expires
 // while it is paused. When it is resumed, the sender knows from the follow-up's decisions that
-// Manual got it and does not send it to them again.
+// Manual got it and does not send it to them again, also when the original was deleted meanwhile
+// (the follow-up goes on as an ordinary campaign then). The resume preview does not count Manual
+// as still to send either.
 func TestFollowupResumedAfterTheSendRecordExpiredSendsNobodyTwice(t *testing.T) {
 	t.Parallel()
-	e := newScanningFollowupEnv(t, true)
-	got, manual := e.followupWithManualMember(`{"open":"no","no_team":true,"followup":true}`)
-	camp := got.Followup.ID
-	charlie, daniel := e.ids[2], e.ids[3]
-	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
-	// The state the pause left: Manual was decided and sent (the send record marks the decision),
-	// nobody below Manual is settled, the checkpoint is 0.
-	e.db.MustExec(`INSERT INTO axm_campaign_followup_claims (campaign_id, subscriber_id) VALUES ($1, $2)`, camp, manual)
-	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() - INTERVAL '400 days')`, camp, manual)
-	e.db.MustExec(`UPDATE campaigns SET status = 'paused', sent = 1, last_subscriber_id = 0 WHERE id = $1`, camp)
-	// The send records expire while it is paused.
-	var deleted int
-	if err := e.q.AxmDeleteCampaignSends.Get(&deleted, time.Now().Add(-365*24*time.Hour), 1000); err != nil {
-		t.Fatal(err)
+	for _, deleteOriginal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("original deleted %v", deleteOriginal), func(t *testing.T) {
+			t.Parallel()
+			e := newScanningFollowupEnv(t, true)
+			got, manual := e.followupWithManualMember(`{"open":"no","no_team":true,"followup":true}`)
+			camp := got.Followup.ID
+			charlie, daniel := e.ids[2], e.ids[3]
+			e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+			// The state the pause left: Manual was decided and sent (the send record marks the
+			// decision), nobody below Manual is settled, the checkpoint is 0.
+			e.db.MustExec(`INSERT INTO axm_campaign_followup_claims (campaign_id, subscriber_id) VALUES ($1, $2)`, camp, manual)
+			e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() - INTERVAL '400 days')`, camp, manual)
+			e.db.MustExec(`UPDATE campaigns SET status = 'paused', sent = 1, last_subscriber_id = 0 WHERE id = $1`, camp)
+			// The send records expire while it is paused.
+			var deleted int
+			if err := e.q.AxmDeleteCampaignSends.Get(&deleted, time.Now().Add(-365*24*time.Hour), 1000); err != nil {
+				t.Fatal(err)
+			}
+			if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1`, camp); deleted == 0 || n != 0 {
+				t.Fatalf("expired %d, left %d", deleted, n)
+			}
+			want := []int{charlie}
+			if deleteOriginal {
+				// The follow-up goes on as an ordinary campaign: Daniel's open of the original no
+				// longer holds him back.
+				e.db.MustExec(`DELETE FROM campaigns WHERE id = $1`, e.campID)
+				want = []int{charlie, daniel}
+			}
+			// The resume preview counts Manual as sent.
+			remaining := func() int {
+				_, aud, err := e.a.core.GetPreflightAudience(context.Background(), camp, 0, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return aud.Remaining
+			}
+			r := remaining()
+			e.db.MustExec(`UPDATE axm_campaign_followup_claims SET sent = FALSE WHERE campaign_id = $1`, camp)
+			if unsent := remaining(); unsent != r+1 {
+				t.Fatalf("remaining %d with Manual's decision sent, %d without", r, unsent)
+			}
+			e.db.MustExec(`UPDATE axm_campaign_followup_claims SET sent = TRUE WHERE campaign_id = $1`, camp)
+
+			e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+			waitFor(t, "the follow-up to finish", func() bool {
+				var s string
+				e.get(&s, `SELECT status FROM campaigns WHERE id = $1`, camp)
+				return s == "finished"
+			})
+			wantSame(t, "sent to", e.gate.sentIDs(), want)
+		})
 	}
-	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1`, camp); deleted == 0 || n != 0 {
-		t.Fatalf("expired %d, left %d", deleted, n)
-	}
-	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
-	waitFor(t, "the follow-up to finish", func() bool {
-		var s string
-		e.get(&s, `SELECT status FROM campaigns WHERE id = $1`, camp)
-		return s == "finished"
-	})
-	wantSame(t, "sent to", e.gate.sentIDs(), []int{charlie})
 }

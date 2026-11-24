@@ -421,7 +421,7 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - 배치마다 새로 빠진 사람이 있으면 감사 기록 `campaign.followup_check` 한 행(사용자 system, 대상 후속 캠페인, count=그 배치에서 새로 빠진 수, detail에 원본 id·이름과 사유별 수, 판정 횟수 `check`; 사람과 주소는 남기지 않는다)을 같은 트랜잭션에 남긴다. 지금까지 빠진 사람의 사유별 수(열람·클릭, 원본 리스트 해지, 차단, 반응 불명, 후속 리스트 해지)와 판정 횟수는 `recheck`·`rechecked_at`에 남아 편집 화면 띠의 「빠진 사람」으로 보인다. 감사 화면의 캠페인 동작 거르기에 `campaign.followup`·`campaign.followup_check`가 있다.
 - 시작 전에는 판정하지 않는다. 편집 화면 띠의 「지금 기준으로 빠질 사람」과 발송 전 확인 창(LST-48)의 받는 인원은 같은 판정을 읽기만 해 계산한다(확인 창은 후속이면 빠질 사람을 받는 인원에서 빼, 전원이 빠질 후속은 「받는 사람 0명」으로 막힌다). 표본에는 빠질 사람이 섞일 수 있다.
 - 리스트에 보낼 사람이 아무도 없는 후속(전원 해지 등)은 발송기가 시작하지 않으므로(`next-campaigns` 원래 동작), 수신자를 읽으려다 캠페인이 `running`이 아니면 후속에 한해 「예약 시각이 됐고 보낼 사람이 없는」 경우 `finished`로 끝낸다(`axm-followup-finish-empty`, 행을 다시 읽어 그 사이 늦춰진 예약은 그대로). 
-- **두 번 보내지 않는다 (F82).** 발송기는 집어 들 때 체크포인트 위에서 이미 받은 사람을 빼는데, 일반 캠페인은 발송 기록으로 안다. 후속은 거기에 결정 표의 `sent`인 사람을 더한다(`GetCampaignSentIDs` → `axm-followup-sent-ids`). 그래서 일시정지 중 발송 기록이 만료되거나(보존 기간) 지워져도 재개 때 이미 받은 사람에게 다시 보내지 않는다. 결정 표는 만료되지 않는다(캠페인과 함께 지워진다). 시험 `TestFollowupResumedAfterTheSendRecordExpiredSendsNobodyTwice`(실제 발송기, 고치기 전 코드에서는 실패).
+- **두 번 보내지 않는다 (F82).** 발송기는 집어 들 때 체크포인트 위에서 이미 받은 사람을 빼는데, 일반 캠페인은 발송 기록으로 안다. 후속은 거기에 결정 표의 `sent`인 사람을 더한다(`GetCampaignSentIDs` → `axm-followup-sent-ids`). 그래서 일시정지 중 발송 기록이 만료되거나(보존 기간) 지워져도 재개 때 이미 받은 사람에게 다시 보내지 않는다. 결정 표는 만료되지 않고, 원본이 지워져도(후속이 일반 캠페인이 되어도) 남는다 — 후속 캠페인 자체를 참조하며 그 캠페인과 함께만 지워진다. 재개 확인 창의 「남은 수」도 같은 결정으로 이미 받은 사람을 뺀다(`axm-preflight-audience`). 시험 `TestFollowupResumedAfterTheSendRecordExpiredSendsNobodyTwice`(실제 발송기, 고치기 전 코드에서는 실패).
 - 알려진 한계(F81, 이강주 결정 11/24로 고치지 않음): 개인정보 삭제가 발송과 겹치면 완료 화면의 「보낼 수」가 실제보다 1 적게 보일 수 있다. 표시만 그렇고, 누구에게 보내는지(판정·중복 없음)는 정확하다.
 - 알려진 한계(일반 경로 원래 동작): 발송 시작 조회와 일시정지·예약 취소가 겹치면 상태가 덮어써질 수 있다(리뷰 F68·F69, 기준 브랜치에도 있음). 후속도 같다. 덮어써져 보내더라도 사람마다의 판정은 보내기 직전에 한다.
 - 설계 이력: 리스트 행을 지우거나 해지로 바꾸는 방식, 시작 전 확인과 판(version)·즉시 보류 트리거·배치 재판정을 겹친 방식은 리뷰에서 「읽은 뒤 다른 트랜잭션이 바꾸는」 경우와 일반 발송 경로 회귀(F66)를 계속 남겨, 이강주 님 결정(11/23)으로 일반 경로를 되돌리고 발송 직전 한 번 판정하는 전용 경로로 다시 짰다.
@@ -450,7 +450,12 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 
 ### 운영 반영 때
 - 마이그레이션 `v6.2.1-axm.16`가 **새 테이블 6개**(연결 `axm_campaign_followups` 9열·인덱스 PK와 유일 키, 빠진 사람 `axm_campaign_followup_holds`, 원본 수신자·대상 `axm_campaign_followup_members`, 반응 `axm_campaign_followup_reactions`, 추적이 꺼진 때 `axm_tracking_off`, 보내기로 한 결정 `axm_campaign_followup_claims`), 함수 6개(`axm_followup_reaches_otherwise`, `axm_followup_judge`, `axm_followup_reaction`, `axm_followup_recipients`, `axm_followup_to_send`, `axm_followup_recount`), 트리거 6개(`axm_followup_recount`·`axm_followup_finished` — 후속의 발송 시작과 끝에 to_send를 센다, `axm_followup_reaction_view` — campaign_views INSERT, `axm_followup_reaction_click` — link_clicks INSERT, `axm_followup_reaction_send` — axm_campaign_sends의 열람·클릭 시각 UPDATE, `axm_followup_recipients` — axm_campaign_sends 문장 단위 INSERT)를 만든다. 시퀀스 없음. 열람·클릭·발송 기록 트리거는 모든 캠페인의 기록마다 원본 잠금(공유)과 유일 키 조회 한 번을 더한다. 운영 백업 역할은 기본 권한으로 읽지만, 교체 뒤 못 읽는 테이블·시퀀스 0개를 확인하고 백업을 1회 돌린다.
-- **이전 이미지(지금 운영 중인 axm.8 이하)로 되돌리기 전에 예약된 후속 캠페인이 있으면 초안으로 내린다.** 이전 이미지는 테이블을 읽지 않으므로 그 동안 발송 직전 판정이 동작하지 않아, 예약 시각이 오면 후속이 판정 없이 나간다(그 사이 원본을 열람·해지한 사람에게도 간다). 후속 메일의 일반 수신거부는 이전 이미지에서도 전사 차단이라 부모 리스트까지 해지된다. `.16`의 트리거 4개(campaign_views, link_clicks, axm_campaign_sends 2개)는 되돌려도 DB에 남아 계속 돈다. 후속 테이블에만 쓰므로 이전 이미지의 동작은 바뀌지 않는다.
+- **이전 이미지(지금 운영 중인 axm.8 이하)로 되돌리기 전에 예약된 후속 캠페인이 있으면 초안으로 내린다.** 이전 이미지는 테이블을 읽지 않으므로 그 동안 발송 직전 판정이 동작하지 않아, 예약 시각이 오면 후속이 판정 없이 나간다(그 사이 원본을 열람·해지한 사람에게도 간다). 후속 메일의 일반 수신거부는 이전 이미지에서도 전사 차단이라 부모 리스트까지 해지된다. `.16`의 트리거 6개는 되돌려도 DB에 남아 계속 돈다. 그중 4개(campaign_views, link_clicks, axm_campaign_sends 2개)는 후속 테이블에만 쓰므로 이전 이미지의 동작을 바꾸지 않는다. **campaigns의 2개(`axm_followup_recount`, `axm_followup_finished`)는 후속 캠페인의 `to_send`를 덮어쓴다**: 이전 이미지는 결정 표를 쓰지 않으므로, 되돌린 뒤 보낸 후속은 끝날 때 「보낸 수 / 0」이 된다(일반 캠페인은 바뀌지 않는다). 되돌릴 때 이 둘을 지운다:
+  ```sql
+  DROP TRIGGER IF EXISTS axm_followup_recount ON campaigns;
+  DROP TRIGGER IF EXISTS axm_followup_finished ON campaigns;
+  ```
+  다시 `.16` 이후 이미지로 올리면 마이그레이션이 다시 만들지 않으므로(이미 적용됨) 같은 블록의 두 `CREATE TRIGGER`를 손으로 다시 실행한다(schema.sql의 「AXM campaign follow-ups」 블록).
 - 후속 캠페인이 하나도 없는 동안에는 일반 발송 경로가 기준 브랜치와 같다. 더해지는 일은 캠페인마다 발송 시작 때 「후속인가」 조회 한 번, 캠페인이 `running`이 아닐 때 수신자 읽기에서 조회 한 번, 열람·클릭·발송 기록 트리거의 잠금·조회다.
 
 ### upstream을 따라갈 때

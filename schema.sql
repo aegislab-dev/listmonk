@@ -1201,9 +1201,11 @@ CREATE TABLE IF NOT EXISTS axm_campaign_followup_holds (
 -- batch before their message is queued; sent is set when their send record is written. A finished
 -- follow-up counts them as its to_send (whatever happened to their subscription, send record or
 -- data later: the row has only the number and outlives the subscriber); one who is judged again
--- before their message went out (a pause drops queued messages) and left out loses the row.
+-- before their message went out (a pause drops queued messages) and left out loses the row. The
+-- rows belong to the campaign, not to its link to the original: when the original is deleted the
+-- campaign goes on as an ordinary one, and still does not send to whom it was sent to.
 CREATE TABLE IF NOT EXISTS axm_campaign_followup_claims (
-    campaign_id   INTEGER NOT NULL REFERENCES axm_campaign_followups(campaign_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    campaign_id   INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
     subscriber_id INTEGER NOT NULL,
     sent          BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (campaign_id, subscriber_id)
