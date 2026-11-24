@@ -320,15 +320,24 @@ func sesRecipients(m sesMail) []sesRecipient {
 		return nil
 	}
 
+	// One address may be named more than once (in other letter cases): it is hard when any of its
+	// entries is.
 	var out []sesRecipient
-	seen := map[string]bool{}
+	at := map[string]int{}
 	for _, r := range m.Bounce.BouncedRecipients {
 		e := clean(r.EmailAddress)
-		if e == "" || seen[e] {
+		if e == "" {
 			continue
 		}
-		seen[e] = true
-		out = append(out, sesRecipient{e, sesBounceType(m.Bounce.BounceType, r.Action, r.Status)})
+		typ := sesBounceType(m.Bounce.BounceType, r.Action, r.Status)
+		if i, ok := at[e]; ok {
+			if typ == models.BounceTypeHard {
+				out[i].Type = typ
+			}
+			continue
+		}
+		at[e] = len(out)
+		out = append(out, sesRecipient{e, typ})
 	}
 	if len(out) > 0 {
 		return out

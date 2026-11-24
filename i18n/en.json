@@ -116,7 +116,7 @@
     "import.addr.help.role": "Addresses such as info@ or booking@ can be real contact points. They are imported and only marked for a look.",
     "import.addr.excludeWarningBasic": "Also leave out the {count} rows with role or disposable addresses",
     "import.addr.help.suppressed": "Blocklisted before. It is not added again.",
-    "import.addr.help.bounced": "A hard bounce or a complaint is on record for this address. Deleting the bounce records releases it.",
+    "import.addr.help.bounced": "A hard bounce or a complaint is on record for this address. Deleting the bounce records releases it, except for an address taken over from the bounce history before the upgrade: an administrator releases that one.",
     "import.addr.help.disposable": "A throwaway mailbox that soon disappears.",
     "import.addr.help.dead": "The domain does not exist or has no server that receives mail.",
     "import.addr.help.nullmx": "The domain states that it accepts no mail.",

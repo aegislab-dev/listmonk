@@ -116,7 +116,7 @@
     "import.addr.help.role": "info@, booking@ 같은 주소는 실제 창구일 수 있습니다. 넣고 확인 표시만 합니다.",
     "import.addr.excludeWarningBasic": "역할·일회용 주소 {count}행도 빼기",
     "import.addr.help.suppressed": "예전에 차단된 주소입니다. 다시 넣지 않습니다.",
-    "import.addr.help.bounced": "하드 바운스나 수신 거부 신고가 기록된 주소입니다. 반송 기록을 지우면 풀립니다.",
+    "import.addr.help.bounced": "하드 바운스나 수신 거부 신고가 기록된 주소입니다. 반송 기록을 지우면 풀립니다. 업그레이드 전 이력에서 옮겨 온 주소는 반송 기록을 지워도 풀리지 않으며 관리자가 따로 풀어야 합니다.",
     "import.addr.help.disposable": "곧 사라지는 일회용 사서함입니다.",
     "import.addr.help.dead": "도메인이 없거나 메일을 받을 서버가 없습니다.",
     "import.addr.help.nullmx": "메일을 받지 않는다고 밝힌 도메인입니다.",

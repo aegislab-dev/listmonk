@@ -932,6 +932,24 @@ func TestGateMigrationTwice(t *testing.T) {
 	}
 	e.db.MustExec(`DELETE FROM bounces WHERE id = ANY($1)`, pq.Array([]int{editedIDs[0], editedIDs[3]}))
 	e.db.MustExec(`UPDATE subscribers SET name = 'Edited', updated_at = NOW() WHERE id = $1`, editedB)
+	// SendGrid: a spam report names the recipient who reported (a complaint); a blocked bounce is a
+	// temporary block (soft); an event whose email is not an address is not judged.
+	bounce(id, "hard", "sendgrid", `[{"email":"reporter@ok.test","event":"spamreport","timestamp":1700014000},`+
+		`{"email":"temporary@ok.test","event":"bounce","type":"blocked","bounce_classification":"Reputation","timestamp":1700014000},`+
+		`{"email":"@","event":"bounce","bounce_classification":"invalid","timestamp":1700014000},`+
+		`{"email":"spam-peer@ok.test","event":"bounce","bounce_classification":"invalid","timestamp":1700014000}]`, "to_timestamp(1700014000)")
+	// SendGrid: a batch of three hard bounces delivered twice: all three are kept.
+	threeBatch := `[{"email":"three-a@ok.test","event":"bounce","timestamp":1700015000},{"email":"three-b@ok.test","event":"bounce","timestamp":1700015000},` +
+		`{"email":"three-c@ok.test","event":"bounce","timestamp":1700015000}]`
+	for i := 0; i < 2; i++ {
+		bounce(id, "hard", "sendgrid", threeBatch, "to_timestamp(1700015000)")
+	}
+	// SES: the same address named twice, delayed first and failed after: hard.
+	bounce(id, "soft", "ses", `{"bounce":{"bounceType":"Permanent","bouncedRecipients":[{"emailAddress":"Mixed@ok.test","action":"delayed","status":"4.2.2"},{"emailAddress":"mixed@ok.test","action":"failed","status":"5.1.1"}]},"mail":{"destination":["mixed@ok.test"]}}`, "NOW()")
+	// SES records of a soft bounce that can not be judged are counted too: one that does not parse,
+	// and a mail to two recipients that names neither.
+	bounce(id, "soft", "ses", `"not a notification"`, "NOW()")
+	bounce(id, "soft", "ses", `{"bounce":{"bounceType":"Transient"},"mail":{"destination":["unnamed-1@ok.test","unnamed-2@ok.test"]}}`, "NOW()")
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -953,7 +971,8 @@ func TestGateMigrationTwice(t *testing.T) {
 			"later", "sg.other", "deleted", "kept", "failed", "twice-bad",
 			"hard-second", "hard-owned", "recreated", "recreated.other", "cleared.other", "cleared-old",
 			"replayed-kept", "replayed-gone", "current-peer", "control-peer", "deleted-edited-peer", "dep-holder",
-			"swap-a", "swap-b", "retry-a", "retry-b", "edited-a", "edited-b", "released-current", "released-control"} {
+			"swap-a", "swap-b", "retry-a", "retry-b", "edited-a", "edited-b", "released-current", "released-control",
+			"reporter", "spam-peer", "three-a", "three-b", "three-c", "mixed"} {
 			if !e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s not taken in", i+1, a)
 			}
@@ -961,14 +980,19 @@ func TestGateMigrationTwice(t *testing.T) {
 		// Not hard bounced or complaining in any notification: delivered, soft, delayed, the mail's
 		// other recipients, a complaint that names several who may have complained.
 		for _, a := range []string{"delivered", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered",
-			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "dep-peer", "swap-b.new", "single-first", "same.delivered", "same1.now", "same2.now"} {
+			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "dep-peer", "swap-b.new", "single-first", "same.delivered", "same1.now", "same2.now",
+			"temporary", "unnamed-1", "unnamed-2"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}
 		}
-		// The complaint with two who may have complained is the one item not judged; it is counted.
-		if i == 0 && !strings.Contains(logged.String(), "1 not judged") {
+		// Not judged, and counted: the complaint with two who may have complained, the SendGrid event
+		// whose email is "@", the soft SES record that does not parse and the one that names nobody.
+		if !e.isBounced("@") && i == 0 && !strings.Contains(logged.String(), " 4 not judged") {
 			t.Fatalf("log: %q", logged.String())
+		}
+		if e.isBounced("@") {
+			t.Fatal("\"@\" was kept as an address")
 		}
 		// The second run adds nothing, and no run makes a bounce record.
 		n := e.bouncedRows()

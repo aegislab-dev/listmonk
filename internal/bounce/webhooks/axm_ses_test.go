@@ -27,6 +27,9 @@ func TestSESRecipients(t *testing.T) {
 		// Several who may have complained: nobody is accused.
 		{`{"notificationType":"Complaint","complaint":{"complainedRecipients":[{"emailAddress":"maybe1@ok.test"},{"emailAddress":"maybe2@ok.test"}]},"mail":{"destination":["maybe1@ok.test","maybe2@ok.test"]}}`,
 			nil},
+		// The same address twice, delayed first and failed after: hard.
+		{`{"notificationType":"Bounce","bounce":{"bounceType":"Permanent","bouncedRecipients":[{"emailAddress":"Mixed@ok.test","action":"delayed","status":"4.2.2"},{"emailAddress":"mixed@ok.test","action":"failed","status":"5.1.1"}]},"mail":{"destination":["mixed@ok.test"]}}`,
+			[]sesRecipient{{"mixed@ok.test", "hard"}}},
 		{`{"notificationType":"Bounce","bounce":{"bounceType":"Permanent"},"mail":{"destination":["Only@ok.test"]}}`,
 			[]sesRecipient{{"only@ok.test", "hard"}}},
 	} {
