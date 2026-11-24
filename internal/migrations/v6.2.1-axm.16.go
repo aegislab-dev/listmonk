@@ -256,27 +256,27 @@ func axm16SESAddresses(meta []byte, typ string) ([]axm16Recipient, int) {
 	}
 	unjudged := 0
 	if typ == "complaint" || m.NotifType == "Complaint" {
+		// Every recipient named counts as one who may have complained, also one whose address can
+		// not be read: a complaint is kept only when it names one recipient, and that one reads.
 		var named []string
-		seen := map[string]bool{}
+		raw := map[string]bool{}
 		for _, r := range m.Complaint.Recipients {
-			e := axm16Clean(r.Email)
-			if e == "" {
-				if strings.TrimSpace(r.Email) != "" {
-					unjudged++
-				}
+			v := strings.ToLower(strings.TrimSpace(r.Email))
+			if v == "" || raw[v] {
 				continue
 			}
-			if !seen[e] {
-				seen[e] = true
-				named = append(named, e)
-			}
+			raw[v] = true
+			named = append(named, v)
 		}
 		switch {
 		case len(named) == 1:
-			return []axm16Recipient{{named[0], "complaint"}}, unjudged
+			if e := axm16Clean(named[0]); e != "" {
+				return []axm16Recipient{{e, "complaint"}}, 0
+			}
+			return nil, 1
 		case len(named) > 1:
 			// Only the ones who may have complained: nobody is accused.
-			return nil, unjudged + 1
+			return nil, 1
 		}
 	} else {
 		// One address may be named more than once (in other letter cases): it is hard when any of
@@ -284,7 +284,11 @@ func axm16SESAddresses(meta []byte, typ string) ([]axm16Recipient, int) {
 		var order []string
 		hard := map[string]bool{}
 		listed := map[string]bool{}
+		named := false
 		for _, r := range m.Bounce.Recipients {
+			if strings.TrimSpace(r.Email) != "" {
+				named = true
+			}
 			e := axm16Clean(r.Email)
 			if e == "" {
 				if strings.TrimSpace(r.Email) != "" {
@@ -300,7 +304,9 @@ func axm16SESAddresses(meta []byte, typ string) ([]axm16Recipient, int) {
 				hard[e] = true
 			}
 		}
-		if len(order) > 0 {
+		// Recipients named: those are the bounce, also when none of them reads (then nobody, not
+		// the mail's other recipients).
+		if named {
 			var out []axm16Recipient
 			for _, e := range order {
 				if hard[e] {
@@ -376,15 +382,12 @@ func axm16SendgridAddresses(meta []byte) ([]axm16Recipient, int) {
 }
 
 // axm16Clean is the address lowercased and trimmed, or "" when it is not an address: one @, with
-// something before it and a domain with a dot after it, and no space.
+// something before and after it, and no space. An address literal (local@[2001:db8::1]) and a
+// one-label domain (local@internal) are addresses: the app takes them in.
 func axm16Clean(e string) string {
 	e = strings.ToLower(strings.TrimSpace(e))
 	at := strings.IndexByte(e, '@')
-	if at <= 0 || at != strings.LastIndexByte(e, '@') || strings.ContainsAny(e, " \t\r\n") {
-		return ""
-	}
-	domain := e[at+1:]
-	if domain == "" || !strings.Contains(domain, ".") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
+	if at <= 0 || at != strings.LastIndexByte(e, '@') || at == len(e)-1 || strings.ContainsAny(e, " \t\r\n") {
 		return ""
 	}
 	return e

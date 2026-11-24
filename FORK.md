@@ -1348,7 +1348,8 @@ DB(4·5)를 DNS(7·8)보다 먼저 본다: 차단·반송이면 DNS를 기다리
     - SES: 반송된 수신자마다 자기 상태로 유형을 정한다(웹훅과 같은 규칙: Permanent 안의 지연 `action` delayed·4.x.x는 soft, Transient의 5.4.4는 hard). 신고는 신고자로 적힌 수신자가 하나일 때 그 주소. 수신자가 적혀 있지 않으면 메일 수신자가 하나일 때만 그 주소.
     - SendGrid: 묶음의 `bounce` 이벤트 가운데 soft가 아닌 것의 `email`은 hard로, `spamreport` 이벤트(수신자의 스팸 신고)의 `email`은 complaint로 넣는다. soft는 `bounce_classification`이 technical·content이거나 `type`이 `blocked`(일시 차단)인 것이다. 웹훅도 업그레이드 뒤 `blocked`를 soft로 기록한다(업스트림은 hard로 기록해 영구 거절됐다). 웹훅이 `spamreport`를 기록하지 않는 것은 업스트림 그대로다.
     - SES에서 한 주소가 대소문자만 달리 두 번 적혀 있으면, 그중 하나라도 hard면 hard다(웹훅도 같다).
-    - 주소로 인정하는 것은 `@`가 하나이고, 그 앞이 비지 않았으며, 그 뒤 도메인에 점이 있고, 공백이 없는 것이다. 그 밖(`@`만 있는 값 등)은 판단 못 한 건수로 센다.
+    - 주소로 인정하는 것은 `@`가 하나이고, 그 앞뒤가 비지 않았으며, 공백이 없는 것이다(앱이 받는 주소 리터럴 `local@[2001:db8::1]`과 점 없는 도메인 `local@internal`도 주소다). 그 밖(`@`만 있는 값 등)은 판단 못 한 건수로 센다.
+    - SES가 신고자·반송 수신자를 적었으면 그것만 본다: 신고자가 여럿이면(읽을 수 없는 값 포함) 아무도 넣지 않고, 적힌 반송 수신자가 하나도 읽히지 않으면 메일의 다른 수신자로 대신하지 않는다(둘 다 판단 못 한 건수).
     - **판단 못 하는 항목은 넣지 않고 건수만 남긴다**: 읽을 수 없는 알림, 신고 후보가 여럿인 신고(ISP가 신고자를 가림), 여러 수신자에게 간 메일인데 수신자가 적히지 않은 반송, 주소가 비었거나 주소가 아닌 수신자·이벤트. 기존 기록이 soft여도 센다. 마이그레이션 로그에 「bounced addresses from earlier SES and SendGrid notifications: N kept, M not judged (not kept)」가 남는다.
     - **풀기**: 이 행은 반송 기록을 지워도 풀리지 않는다. 사람이 반송 표의 행을 지운다(아래 SQL 한 줄). 관리자가 업그레이드 전에 반송 기록을 지워 풀어 준 주소도 알림에 남아 있으면 다시 거절되므로 같은 방법으로 푼다.
 - **`subscriber_id`도 `bounce_id`도 없는 행과 지워진 구독자의 주소는 푸는 화면이 없다.** 운영에서 풀려면(운영 SQL 쓰기는 사람 몫): `DELETE FROM axm_bounced_emails WHERE email_hash = axm_email_hash('주소');`

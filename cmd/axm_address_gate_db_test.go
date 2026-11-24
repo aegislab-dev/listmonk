@@ -950,6 +950,14 @@ func TestGateMigrationTwice(t *testing.T) {
 	// and a mail to two recipients that names neither.
 	bounce(id, "soft", "ses", `"not a notification"`, "NOW()")
 	bounce(id, "soft", "ses", `{"bounce":{"bounceType":"Transient"},"mail":{"destination":["unnamed-1@ok.test","unnamed-2@ok.test"]}}`, "NOW()")
+	// Addresses the app takes in: an address literal and a one-label domain.
+	bounce(id, "hard", "sendgrid", `[{"email":"literal@[2001:db8::1]","event":"bounce","bounce_classification":"invalid","timestamp":1700016000},`+
+		`{"email":"local@internal","event":"bounce","bounce_classification":"invalid","timestamp":1700016000}]`, "to_timestamp(1700016000)")
+	// SES: a complaint that names two who may have complained, one of them not a readable address:
+	// nobody is accused. A bounce whose only named recipient does not read: nobody, not the mail's
+	// other recipient.
+	bounce(id, "complaint", "ses", `{"notificationType":"Complaint","complaint":{"complainedRecipients":[{"emailAddress":"cfirst@ok.test"},{"emailAddress":"@"}]},"mail":{"destination":["cfirst@ok.test","x@y.test"]}}`, "NOW()")
+	bounce(id, "hard", "ses", `{"bounce":{"bounceType":"Permanent","bouncedRecipients":[{"emailAddress":"@","status":"5.1.1"}]},"mail":{"destination":["different@ok.test"]}}`, "NOW()")
 	// The mailbox collector's bounces say no address: the current one only when it never changed.
 	edited := bounce(id, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
 	kept := bounce(steady, "hard", "mailbox", `{"from":"mailer-daemon"}`, "NOW()")
@@ -981,15 +989,21 @@ func TestGateMigrationTwice(t *testing.T) {
 		// other recipients, a complaint that names several who may have complained.
 		for _, a := range []string{"delivered", "legacy.soft", "legacy.soft2", "now.address", "was.address", "ses-first", "sg.delivered",
 			"multi-fine", "delayed", "maybe1", "maybe2", "kept.delivered", "trans-full", "cleared-new", "dep-peer", "swap-b.new", "single-first", "same.delivered", "same1.now", "same2.now",
-			"temporary", "unnamed-1", "unnamed-2"} {
+			"temporary", "unnamed-1", "unnamed-2", "cfirst", "different"} {
 			if e.isBounced(a + "@ok.test") {
 				t.Fatalf("run %d: %s taken in", i+1, a)
 			}
 		}
-		// Not judged, and counted: the complaint with two who may have complained, the SendGrid event
-		// whose email is "@", the soft SES record that does not parse and the one that names nobody.
-		if !e.isBounced("@") && i == 0 && !strings.Contains(logged.String(), " 4 not judged") {
+		// Not judged, and counted: the two complaints with two who may have complained, the SendGrid
+		// event whose email is "@", the soft SES record that does not parse, the one that names
+		// nobody, and the bounce whose only named recipient is "@".
+		if !e.isBounced("@") && i == 0 && !strings.Contains(logged.String(), " 6 not judged") {
 			t.Fatalf("log: %q", logged.String())
+		}
+		for _, a := range []string{"literal@[2001:db8::1]", "local@internal"} {
+			if !e.isBounced(a) {
+				t.Fatalf("run %d: %s not taken in", i+1, a)
+			}
 		}
 		if e.isBounced("@") {
 			t.Fatal("\"@\" was kept as an address")
