@@ -69,7 +69,7 @@ describe('Clone window: the copy picks its own lists', () => {
   it('opens with no lists, a disabled button and the original written out', () => {
     cy.intercept('POST', '/api/campaigns').as('create');
     openWindow();
-    cy.get('[data-cy=clone-lists] .tag').should('not.exist');
+    cy.get('[data-cy=clone-lists] .list-tags .tag').should('not.exist');
     cy.get('[data-cy=btn-clone-confirm]').should('be.disabled');
     cy.get('[data-cy=clone-original]').should('contain', origName)
       .and('contain', listName('A')).and('contain', listName('B'));
@@ -108,7 +108,7 @@ describe('Clone window: the copy picks its own lists', () => {
     openWindow();
     cy.get('[data-cy=clone-name]').clear().type(name);
     cy.get('[data-cy=clone-same-lists]').click();
-    cy.get('[data-cy=clone-lists] .tag').should('have.length', 2);
+    cy.get('[data-cy=clone-lists] .list-tags .tag').should('have.length', 2);
     cy.wait('@count').then(({ request }) => {
       expect(request.body.list_ids).to.have.members([listA, listB]);
       expect(request.body.days).to.equal(30);
