@@ -21,7 +21,8 @@
   "campaign-test-send.cy.js",
   "schedule-time.cy.js",
   "campaign-send-confirm.cy.js",
-  "campaign-delete-guard.cy.js"
+  "campaign-delete-guard.cy.js",
+  "campaign-clone-lists.cy.js"
  ],
  "smoke": [
   "audit.cy.js",
@@ -158,6 +159,16 @@
   },
   {
    "paths": [
+    "frontend/src/components/CampaignCloneForm.vue"
+   ],
+   "specs": [
+    "campaign-clone-lists.cy.js",
+    "from-addresses.cy.js",
+    "campaign-recent-exclude.cy.js"
+   ]
+  },
+  {
+   "paths": [
     "frontend/src/views/Campaigns.vue"
    ],
    "specs": [
@@ -171,7 +182,8 @@
     "schedule-time.cy.js",
     "from-addresses.cy.js",
     "campaign-delete-guard.cy.js",
-    "campaign-send-confirm.cy.js"
+    "campaign-send-confirm.cy.js",
+    "campaign-clone-lists.cy.js"
    ]
   },
   {
@@ -192,7 +204,8 @@
     "schedule-time.cy.js",
     "from-addresses.cy.js",
     "campaign-delete-guard.cy.js",
-    "campaign-send-confirm.cy.js"
+    "campaign-send-confirm.cy.js",
+    "campaign-clone-lists.cy.js"
    ]
   },
   {

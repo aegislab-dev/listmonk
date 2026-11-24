@@ -148,8 +148,9 @@ describe('Team From address list', () => {
     cy.get('input[name=query]').clear().type(`Synthetic clone source ${stamp}{enter}`);
     cy.get('tbody tr').should('have.length', 1);
     cy.get('[data-cy=btn-clone]').click();
-    cy.get('.modal input').clear().type(`Synthetic from list copy ${stamp}`);
-    cy.get('.modal button.is-primary:eq(0)').click();
+    cy.get('[data-cy=clone-name]').clear().type(`Synthetic from list copy ${stamp}`);
+    cy.get('[data-cy=clone-same-lists]').click();
+    cy.get('[data-cy=btn-clone-confirm]').click();
     cy.contains('clone@crevasse.ai').should('exist');
     cy.request(`/api/campaigns?query=${encodeURIComponent(`Synthetic from list copy ${stamp}`)}&no_body=true`)
       .then(({ body }) => expect(body.data.results).to.have.length(0));
@@ -207,8 +208,9 @@ describe('Team From address list', () => {
       cy.get('input[name=query]').clear().type(`${name}{enter}`);
       cy.get('tbody tr').should('have.length', 1);
       cy.get('[data-cy=btn-clone]').click();
-      cy.get('.modal input').clear().type(`Synthetic odd copy ${i} ${stamp}`);
-      cy.get('.modal button.is-primary:eq(0)').click();
+      cy.get('[data-cy=clone-name]').clear().type(`Synthetic odd copy ${i} ${stamp}`);
+      cy.get('[data-cy=clone-same-lists]').click();
+      cy.get('[data-cy=btn-clone-confirm]').click();
       cy.location('pathname').should('match', /\/admin\/campaigns\/\d+$/);
       cy.request(`/api/campaigns?query=${encodeURIComponent(`Synthetic odd copy ${i} ${stamp}`)}&no_body=true`).then(({ body }) => {
         expect(body.data.results, from).to.have.length(1);

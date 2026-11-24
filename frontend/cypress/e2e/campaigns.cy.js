@@ -180,8 +180,9 @@ describe('Campaigns', () => {
     for (let n = 0; n < 3; n++) {
       // Clone the campaign.
       cy.get('[data-cy=btn-clone]').first().click();
-      cy.get('.modal input').clear().type(`clone${n}`).click();
-      cy.get('.modal button.is-primary:eq(0)').click();
+      cy.get('[data-cy=clone-name]').clear().type(`clone${n}`);
+      cy.get('[data-cy=clone-same-lists]').click();
+      cy.get('[data-cy=btn-clone-confirm]').click();
       cy.wait(250);
       cy.clickMenu('all-campaigns');
       cy.wait(100);

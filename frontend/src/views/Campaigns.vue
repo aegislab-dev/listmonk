@@ -241,12 +241,7 @@
               <b-icon icon="file-find-outline" size="is-small" />
             </b-tooltip>
           </a>
-          <a v-if="$can('campaigns:manage')" href="#" @click.prevent="$utils.prompt($t('globals.buttons.clone'),
-            {
-              placeholder: $t('globals.fields.name'),
-              value: $t('campaigns.copyOf', { name: props.row.name }),
-            },
-            (name) => cloneCampaign(name, props.row))" data-cy="btn-clone" :aria-label="$t('globals.buttons.clone')">
+          <a v-if="$can('campaigns:manage')" href="#" @click.prevent="cloneAsk = props.row" data-cy="btn-clone" :aria-label="$t('globals.buttons.clone')">
             <b-tooltip :label="$t('globals.buttons.clone')" type="is-dark">
               <b-icon icon="file-multiple-outline" size="is-small" />
             </b-tooltip>
@@ -290,6 +285,11 @@
       @close="closePreview" />
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
       @close="reactionCampaign = null" />
+    <!-- The copy asks for its own lists (LST-59): the original's lists are not carried over. -->
+    <b-modal has-modal-card scroll="keep" :aria-modal="true" :active="!!cloneAsk" :width="520" trap-focus
+      :can-cancel="['escape', 'outside']" @close="cloneAsk = null">
+      <campaign-clone-form v-if="cloneAsk" :campaign="cloneAsk" @close="cloneAsk = null" @clone="onClone" />
+    </b-modal>
     <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
       :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
       @close="sendAsk = null">
@@ -308,6 +308,7 @@ import {
   splitAttribs, TZ_ATTRIB, zoneAbbr, zoneParts,
 } from '../schedule-time';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
+import CampaignCloneForm from '../components/CampaignCloneForm.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
 import CampaignSendConfirm from '../components/CampaignSendConfirm.vue';
 import CopyText from '../components/CopyText.vue';
@@ -315,6 +316,7 @@ import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
 
 export default Vue.extend({
   components: {
+    CampaignCloneForm,
     CampaignPreview,
     CampaignReactionList,
     CampaignSendConfirm,
@@ -329,6 +331,8 @@ export default Vue.extend({
       sendAsk: null,
       previewItem: null,
       reactionCampaign: null,
+      // The campaign whose copy window is open (LST-59).
+      cloneAsk: null,
       queryParams: {
         page: 1,
         query: '',
@@ -495,7 +499,14 @@ export default Vue.extend({
       });
     },
 
-    async cloneCampaign(name, c) {
+    onClone({ name, listIds }) {
+      const c = this.cloneAsk;
+      this.cloneAsk = null;
+      if (c) this.cloneCampaign(name, c, listIds);
+    },
+
+    // The lists are the ones the person chose in the copy window, never the original's.
+    async cloneCampaign(name, c, listIds) {
       // The From list may have changed in another session: refresh it first,
       // then read the campaign, whose from_match the server computes from it.
       await this.$api.getServerConfig();
@@ -530,7 +541,7 @@ export default Vue.extend({
       const data = {
         name,
         subject: c.subject,
-        lists: c.lists.map((l) => l.id),
+        lists: listIds,
         type: c.type,
         from_email: fromEmail,
         reply_to: c.replyTo,

@@ -10,14 +10,16 @@ describe('Archive', () => {
   it('Clones campaign', () => {
     cy.loginAndVisit('/admin/campaigns');
     cy.get('[data-cy=btn-clone]').first().click();
-    cy.get('.modal input').clear().type('clone').click();
-    cy.get('.modal button.is-primary').click();
+    cy.get('[data-cy=clone-name]').clear().type('clone');
+    cy.get('[data-cy=clone-same-lists]').click();
+    cy.get('[data-cy=btn-clone-confirm]').click();
     cy.wait(250);
 
     cy.loginAndVisit('/admin/campaigns');
     cy.get('[data-cy=btn-clone]').first().click();
-    cy.get('.modal input').clear().type('clone2').click();
-    cy.get('.modal button.is-primary').click();
+    cy.get('[data-cy=clone-name]').clear().type('clone2');
+    cy.get('[data-cy=clone-same-lists]').click();
+    cy.get('[data-cy=btn-clone-confirm]').click();
     cy.wait(250);
 
     cy.clickMenu('all-campaigns');
