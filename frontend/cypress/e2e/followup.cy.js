@@ -42,7 +42,8 @@ describe('follow-up campaign draft', () => {
     cy.get(input('open', 'any')).should('be.checked');
     cy.get('[data-cy=followup-box]').should('not.exist');
     checkOpenedNotClicked();
-    cy.get('[data-cy=followup-box]').should('be.visible');
+    // The box starts ticked, so its parts make the window taller: scroll to it first.
+    cy.get('[data-cy=followup-box]').scrollIntoView().should('be.visible');
     cy.get(toggle).should('be.checked');
     // The fixture was sent just now, so the warning about the first days shows.
     cy.get('[data-cy=followup-warn]').scrollIntoView().should('be.visible').and('contain', '3 days');
