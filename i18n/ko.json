@@ -396,6 +396,7 @@
     "campaigns.continue": "계속",
     "campaigns.copyOf": "{name}의 복사본",
     "campaigns.clone.title": "캠페인 복제",
+    "campaigns.clone.lists": "받는 리스트",
     "campaigns.clone.listPlaceholder": "리스트를 골라 주세요 (필수)",
     "campaigns.clone.help": "복제본은 원본의 리스트를 따라가지 않습니다. 이번에 보낼 리스트를 직접 골라 주세요.",
     "campaigns.clone.helpPrefilled": "복제본에 원본의 리스트가 미리 들어 있습니다. 바꿀 것이 있으면 고쳐 주세요.",

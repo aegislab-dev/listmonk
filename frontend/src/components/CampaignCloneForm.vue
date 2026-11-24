@@ -2,6 +2,8 @@
   <form class="modal-card clone-form" style="width: auto" data-cy="clone-form" @submit.prevent="submit">
     <header class="modal-card-head">
       <h4 class="clone-title">{{ $t('campaigns.clone.title') }}</h4>
+      <button type="button" class="delete clone-close" data-cy="clone-close"
+        :aria-label="$t('globals.buttons.close')" @click="$emit('close')" />
     </header>
 
     <section class="modal-card-body">
@@ -11,7 +13,7 @@
 
       <div data-cy="clone-lists">
         <list-selector v-model="selected" :selected="selected" :all="allLists"
-          :label="$t('globals.terms.lists')" :placeholder="$t('campaigns.clone.listPlaceholder')" />
+          :label="$t('campaigns.clone.lists')" :placeholder="$t('campaigns.clone.listPlaceholder')" />
       </div>
       <p class="help" data-cy="clone-lists-help">
         {{ $t(prefill ? 'campaigns.clone.helpPrefilled' : 'campaigns.clone.help') }}
@@ -196,6 +198,8 @@ export default {
 .clone-form { max-width: 520px; }
 .clone-form .modal-card-foot { background: #fff; border-top: 1px solid #ededed; border-radius: 0 0 6px 6px; justify-content: flex-end; gap: 0.5rem; }
 .clone-title { font-size: 1.25rem; font-weight: 700; }
+.clone-form .modal-card-head { display: flex; flex-direction: row; justify-content: space-between; align-items: center; }
+.clone-close { flex: none; margin-left: 1rem; }
 .clone-orig { display: flex; gap: 0.75rem; justify-content: space-between; align-items: flex-start; margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: #f5f5f5; border-radius: 6px; font-size: 0.875rem; }
 .clone-orig-text { min-width: 0; overflow-wrap: anywhere; }
 .clone-same { flex: none; }

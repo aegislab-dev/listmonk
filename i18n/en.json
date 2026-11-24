@@ -391,6 +391,7 @@
     "campaigns.continue": "Continue",
     "campaigns.copyOf": "Copy of {name}",
     "campaigns.clone.title": "Clone campaign",
+    "campaigns.clone.lists": "Lists to send to",
     "campaigns.clone.listPlaceholder": "Choose lists (required)",
     "campaigns.clone.help": "The copy does not keep the original's lists. Choose the lists to send to this time.",
     "campaigns.clone.helpPrefilled": "The original's lists are filled in. Change them if needed.",

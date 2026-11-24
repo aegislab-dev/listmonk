@@ -76,7 +76,13 @@ describe('Clone window: the copy picks its own lists', () => {
     cy.get('[data-cy=clone-name]').should('have.value', `Copy of ${origName}`);
     cy.get('[data-cy=clone-received]').should('not.exist');
 
-    // Cancel makes nothing.
+    cy.get('[data-cy=clone-lists] label').first().should('contain', 'Lists to send to');
+
+    // The header's close ✕ and Cancel both make nothing.
+    cy.get('[data-cy=clone-close]').should('be.visible').click();
+    cy.get(win).should('not.exist');
+    cy.get('[data-cy=btn-clone]').click();
+    cy.get(win).should('be.visible');
     cy.get('[data-cy=btn-clone-cancel]').click();
     cy.get(win).should('not.exist');
     cy.get('@create.all').should('have.length', 0);
