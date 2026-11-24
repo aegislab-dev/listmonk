@@ -158,14 +158,14 @@ robots.txt와 noindex는 권고일 뿐 강제 차단이 아니다. UA 미들웨�
 기본 범위는 프론트 변경이다. Go·SQL 변경은 태스크가 명시적으로 허용했을 때만(LST-4, LST-6 크롤러 차단, LST-7 사업자정보 푸터 등) 최소 범위로 수행하고, upstream에 낼 수 있는 구조를 유지한다(실제 기여는 별도 결정).
 
 포크 전용 마이그레이션 번호는 **`v<기반 upstream 버전의 패치+1>-axm.<N>`**이다.
-v6.2.0 기반이면 `v6.2.1-axm.1`, `v6.2.1-axm.2` 이후 빈 번호를 사용한다. `.2`는 LST-8 발신 주소, `.3`은 LST-4 동적 리스트, `.4`는 LST-12 동적 리스트 숫자 조건, `.5`는 LST-15 리스트의 열 묶음, `.6`은 LST-19 캠페인 발송 기록, `.7`은 LST-23 뽑기·제외 리스트, `.8`은 LST-24 팀 역할, `.9`는 LST-24 차단 주소 기록, `.10`은 LST-27 감사 기록, `.11`은 LST-27 리스트 휴지통, `.12`는 LST-17 열 묶음 테이블, `.13`은 LST-34 최근 발송 제외 규칙, `.14`는 LST-41 시험 발송 허용 도메인 설정, `.15`는 LST-49 보내는 주소 목록 설정이다, `.16`은 LST-47 후속 캠페인 연결 테이블이다.
+v6.2.0 기반이면 `v6.2.1-axm.1`, `v6.2.1-axm.2` 이후 빈 번호를 사용한다. `.2`는 LST-8 발신 주소, `.3`은 LST-4 동적 리스트, `.4`는 LST-12 동적 리스트 숫자 조건, `.5`는 LST-15 리스트의 열 묶음, `.6`은 LST-19 캠페인 발송 기록, `.7`은 LST-23 뽑기·제외 리스트, `.8`은 LST-24 팀 역할, `.9`는 LST-24 차단 주소 기록, `.10`은 LST-27 감사 기록, `.11`은 LST-27 리스트 휴지통, `.12`는 LST-17 열 묶음 테이블, `.13`은 LST-34 최근 발송 제외 규칙, `.14`는 LST-41 시험 발송 허용 도메인 설정, `.15`는 LST-49 보내는 주소 목록 설정, `.16`은 LST-56 반송 이력 주소 표, `.17`은 LST-47 후속 캠페인 연결 테이블이다.
 이미지 태그 `v6.2.0-axm.N`과 다른 번호다.
 
 **번호가 순서대로 나오지 않아도 된다.** 예: `.12`(LST-17)가 `.10`·`.11`(LST-27)보다 먼저 나가도 된다(실제로는 LST-27이 먼저 병합되어 `.10`·`.11`이 `.12` 앞에 있다). `cmd/upgrade.go`의 `pendingMigrations`는 upstream 규칙(기록된 가장 높은 버전보다 높은 것)에 **기록에 없고 가장 오래된 기록보다 높은 것**을 더해 실행한다. 그래서 `.12`까지 올라간 DB는 나중에 `.10`·`.11`이 이미지에 들어오면 `--upgrade`(또는 기동 시 「pending database upgrade」 확인)에서 그 둘을 실행한다(시험: `cmd/upgrade_pending_test.go`). 새로 설치한 DB는 마지막 버전 하나만 기록하므로 그보다 낮은 번호는 지난 이력으로 보고 건너뛴다. 단 이 규칙을 모르는 이전 이미지(axm.9 이하 등)로 되돌린 DB에서는 이전 규칙(가장 높은 기록 기준)대로 움직이므로, 번호가 순서 없이 들어간 DB는 이전 이미지로 `--upgrade`하지 않는다. 마이그레이션은 두 번 실행해도 안전해야 한다(`IF NOT EXISTS`).
 `golang.org/x/mod/semver` 순서는 다음과 같다.
 
 ```text
-v6.2.0 < v6.2.1-axm.1 < v6.2.1-axm.2 < v6.2.1-axm.3 < v6.2.1-axm.4 < v6.2.1-axm.5 < v6.2.1-axm.6 < v6.2.1-axm.7 < v6.2.1-axm.8 < v6.2.1-axm.9 < v6.2.1-axm.10 < v6.2.1-axm.11 < v6.2.1-axm.12 < v6.2.1-axm.13 < v6.2.1-axm.14 < v6.2.1-axm.15 < v6.2.1-axm.16 < v6.2.1 < v6.3.0 < v7.0.0
+v6.2.0 < v6.2.1-axm.1 < v6.2.1-axm.2 < v6.2.1-axm.3 < v6.2.1-axm.4 < v6.2.1-axm.5 < v6.2.1-axm.6 < v6.2.1-axm.7 < v6.2.1-axm.8 < v6.2.1-axm.9 < v6.2.1-axm.10 < v6.2.1-axm.11 < v6.2.1-axm.12 < v6.2.1-axm.13 < v6.2.1-axm.14 < v6.2.1-axm.15 < v6.2.1-axm.16 < v6.2.1-axm.17 < v6.2.1 < v6.3.0 < v7.0.0
 ```
 
 공식 안정 버전 마이그레이션보다 먼저 정렬되고 번호도 겹치지 않는다. upstream의 미래 prerelease 마이그레이션을 도입할 때에는 그 목록과의 실제 정렬도 확인한다.
@@ -449,13 +449,13 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 발송 직전 판정은 배치(최대 배치 크기 명)마다 한 트랜잭션이고 배치 사람들만 판정한다. 크기 측정은 이 구조로 다시 하지 않았다. 편집 화면의 띠는 후속이 시작 전(초안·예약)일 때만 「지금 빠질 사람」을 계산하므로, 그 화면을 열 때 후속 리스트 전체를 판정하는 조회가 한 번 돈다(리뷰 측정 약 8초, 40만 명; 화면 자체는 기다리지 않고 띠만 늦게 나타난다).
 
 ### 운영 반영 때
-- 마이그레이션 `v6.2.1-axm.16`가 **새 테이블 6개**(연결 `axm_campaign_followups` 9열·인덱스 PK와 유일 키, 빠진 사람 `axm_campaign_followup_holds`, 원본 수신자·대상 `axm_campaign_followup_members`, 반응 `axm_campaign_followup_reactions`, 추적이 꺼진 때 `axm_tracking_off`, 보내기로 한 결정 `axm_campaign_followup_claims`), 함수 6개(`axm_followup_reaches_otherwise`, `axm_followup_judge`, `axm_followup_reaction`, `axm_followup_recipients`, `axm_followup_to_send`, `axm_followup_recount`), 트리거 6개(`axm_followup_recount`·`axm_followup_finished` — 후속의 발송 시작과 끝에 to_send를 센다, `axm_followup_reaction_view` — campaign_views INSERT, `axm_followup_reaction_click` — link_clicks INSERT, `axm_followup_reaction_send` — axm_campaign_sends의 열람·클릭 시각 UPDATE, `axm_followup_recipients` — axm_campaign_sends 문장 단위 INSERT)를 만든다. 시퀀스 없음. 열람·클릭·발송 기록 트리거는 모든 캠페인의 기록마다 원본 잠금(공유)과 유일 키 조회 한 번을 더한다. 운영 백업 역할은 기본 권한으로 읽지만, 교체 뒤 못 읽는 테이블·시퀀스 0개를 확인하고 백업을 1회 돌린다.
-- **이전 이미지(지금 운영 중인 axm.8 이하)로 되돌리기 전에 예약된 후속 캠페인이 있으면 초안으로 내린다.** 이전 이미지는 테이블을 읽지 않으므로 그 동안 발송 직전 판정이 동작하지 않아, 예약 시각이 오면 후속이 판정 없이 나간다(그 사이 원본을 열람·해지한 사람에게도 간다). 후속 메일의 일반 수신거부는 이전 이미지에서도 전사 차단이라 부모 리스트까지 해지된다. `.16`의 트리거 6개는 되돌려도 DB에 남아 계속 돈다. 그중 4개(campaign_views, link_clicks, axm_campaign_sends 2개)는 후속 테이블에만 쓰므로 이전 이미지의 동작을 바꾸지 않는다. **campaigns의 2개(`axm_followup_recount`, `axm_followup_finished`)는 후속 캠페인의 `to_send`를 덮어쓴다**: 이전 이미지는 결정 표를 쓰지 않으므로, 되돌린 뒤 보낸 후속은 끝날 때 「보낸 수 / 0」이 된다(일반 캠페인은 바뀌지 않는다). 되돌릴 때 이 둘을 지운다:
+- 마이그레이션 `v6.2.1-axm.17`가 **새 테이블 6개**(연결 `axm_campaign_followups` 9열·인덱스 PK와 유일 키, 빠진 사람 `axm_campaign_followup_holds`, 원본 수신자·대상 `axm_campaign_followup_members`, 반응 `axm_campaign_followup_reactions`, 추적이 꺼진 때 `axm_tracking_off`, 보내기로 한 결정 `axm_campaign_followup_claims`), 함수 6개(`axm_followup_reaches_otherwise`, `axm_followup_judge`, `axm_followup_reaction`, `axm_followup_recipients`, `axm_followup_to_send`, `axm_followup_recount`), 트리거 6개(`axm_followup_recount`·`axm_followup_finished` — 후속의 발송 시작과 끝에 to_send를 센다, `axm_followup_reaction_view` — campaign_views INSERT, `axm_followup_reaction_click` — link_clicks INSERT, `axm_followup_reaction_send` — axm_campaign_sends의 열람·클릭 시각 UPDATE, `axm_followup_recipients` — axm_campaign_sends 문장 단위 INSERT)를 만든다. 시퀀스 없음. 열람·클릭·발송 기록 트리거는 모든 캠페인의 기록마다 원본 잠금(공유)과 유일 키 조회 한 번을 더한다. 운영 백업 역할은 기본 권한으로 읽지만, 교체 뒤 못 읽는 테이블·시퀀스 0개를 확인하고 백업을 1회 돌린다.
+- **이전 이미지(지금 운영 중인 axm.8 이하)로 되돌리기 전에 예약된 후속 캠페인이 있으면 초안으로 내린다.** 이전 이미지는 테이블을 읽지 않으므로 그 동안 발송 직전 판정이 동작하지 않아, 예약 시각이 오면 후속이 판정 없이 나간다(그 사이 원본을 열람·해지한 사람에게도 간다). 후속 메일의 일반 수신거부는 이전 이미지에서도 전사 차단이라 부모 리스트까지 해지된다. `.17`의 트리거 6개는 되돌려도 DB에 남아 계속 돈다. 그중 4개(campaign_views, link_clicks, axm_campaign_sends 2개)는 후속 테이블에만 쓰므로 이전 이미지의 동작을 바꾸지 않는다. **campaigns의 2개(`axm_followup_recount`, `axm_followup_finished`)는 후속 캠페인의 `to_send`를 덮어쓴다**: 이전 이미지는 결정 표를 쓰지 않으므로, 되돌린 뒤 보낸 후속은 끝날 때 「보낸 수 / 0」이 된다(일반 캠페인은 바뀌지 않는다). 되돌릴 때 이 둘을 지운다:
   ```sql
   DROP TRIGGER IF EXISTS axm_followup_recount ON campaigns;
   DROP TRIGGER IF EXISTS axm_followup_finished ON campaigns;
   ```
-  다시 `.16` 이후 이미지로 올리면 마이그레이션이 다시 만들지 않으므로(이미 적용됨) 같은 블록의 두 `CREATE TRIGGER`를 손으로 다시 실행한다(schema.sql의 「AXM campaign follow-ups」 블록).
+  다시 `.17` 이후 이미지로 올리면 마이그레이션이 다시 만들지 않으므로(이미 적용됨) 같은 블록의 두 `CREATE TRIGGER`를 손으로 다시 실행한다(schema.sql의 「AXM campaign follow-ups」 블록).
 - 후속 캠페인이 하나도 없는 동안에는 일반 발송 경로가 기준 브랜치와 같다. 더해지는 일은 캠페인마다 발송 시작 때 「후속인가」 조회 한 번, 캠페인이 `running`이 아닐 때 수신자 읽기에서 조회 한 번, 열람·클릭·발송 기록 트리거의 잠금·조회다.
 
 ### upstream을 따라갈 때
@@ -1305,13 +1305,13 @@ upstream 이 `DeleteCampaign(s)` 핸들러를 바꾸면 `cmd/campaigns.go` 의 �
 
 ## 구독자 추가 전 주소 규칙 (LST-53)
 
-운영 반송 조사(2026-11-21)에서 발송 직전에 붙인 스크래핑 주소가 92~94% 반송됐고, 형식부터 틀린 주소(오타 도메인 `gmail.con`·`gmaii.com`·`gmal.com`·`gmail.co`, Gmail에 없는 로컬파트 `-`·`_`·6자 미만)는 전부 hard였다. 그래서 구독자가 들어오는 길에서 서버가 주소를 거절한다. 세 단계로 나눠 넣는다: **1단계(이 절의 구현)** 문법·제공자 규칙·오타 도메인, **2단계** DNS(MX/A)·차단 목록·hard 반송 이력·검증 상태 표·강도 스위치, **3단계** 이미 있는 구독자 일괄 검증·발송 전 경고·리스트 만들기 경로. 계획 전문은 태스크 LST-53의 plan.md.
+운영 반송 조사(2026-11-21)에서 발송 직전에 붙인 스크래핑 주소가 92~94% 반송됐고, 형식부터 틀린 주소(오타 도메인 `gmail.con`·`gmaii.com`·`gmal.com`·`gmail.co`, Gmail에 없는 로컬파트 `-`·`_`·6자 미만)는 전부 hard였다. 그래서 구독자가 들어오는 길에서 서버가 주소를 거절한다. 세 단계로 나눠 넣는다: **1단계(이 절의 구현)** 문법·제공자 규칙·오타 도메인, **2단계(LST-56, 아래 절)** DNS(MX/A)·차단 목록·hard 반송 이력·강도 스위치(구독자별 검증 상태 표는 쓰는 곳이 3단계뿐이라 3단계로 미뤘다), **3단계** 이미 있는 구독자 일괄 검증·발송 전 경고·리스트 만들기 경로. 계획 전문은 태스크 LST-53의 plan.md.
 
 ### 1단계 규칙 (`internal/addrcheck/rules.go`, `typo_domains.json`) — DB·네트워크 없음
 
 - **제공자 규칙 (`provider`)**: 대상은 `gmail.com`·`googlemail.com`뿐(Google Workspace 도메인에는 적용하지 않는다). `+태그`를 뗀 로컬파트가 `a-z 0-9 .` 밖의 글자를 가지거나, 점으로 시작·끝나거나 점이 연속이거나, 6자 미만(점 포함)이거나 30자 초과(점 제외)이면 거절한다. 근거는 Google 도움말 "Create a username"(https://support.google.com/mail/answer/9211434): 영문·숫자·마침표만, 6~30자, 마침표 연속·처음·끝 불가. **도움말은 마침표가 길이에 들어가는지 말하지 않으므로**(2026-11-21 aside 확인) 잘못 거절하지 않는 쪽으로, 점을 넣어도 6 미만이거나 점을 빼도 30 초과일 때만 거절한다. 2004년 이전의 짧은 Gmail 주소가 있을 수 있어 6자 미만 거절은 오탐 가능성이 작게 남는다. 네이버·야후·아웃룩 규칙은 근거를 확인하지 못해 넣지 않았다(후보).
 - **오타 도메인 (`typo`)**: `typo_domains.json`의 표에 **정확히 일치**할 때만, 그리고 `.con .cmo .comm .coom .ocm .vom .xom` 같은 실재하지 않는 최상위 라벨일 때만 거절하고 고친 주소를 제안한다. 편집 거리 추측은 하지 않는다(`gmail.co`처럼 실제로 있는 도메인을 규칙이 모르는 채 오판하지 않으려고). 오타 주소를 자동으로 고쳐 넣지는 않는다: 고친 주소가 남의 사서함일 수 있어 사람이 확인한다.
-- 규칙을 바꾸면 `RulesVersion`(`rules.go`)을 올린다(2단계의 저장된 검증 상태가 옛 규칙의 것인지 가린다). 같은 JSON을 BASIS 크롤러가 읽을 수 있다(아래).
+- 규칙을 바꾸면 `RulesVersion`(`rules.go`)을 올린다(3단계에서 저장할 검증 상태가 옛 규칙의 것인지 가린다). 같은 JSON을 BASIS 크롤러가 읽을 수 있다(아래).
 - `s.com` 같은 가짜 도메인은 이 규칙이 아니라 2단계의 DNS(메일 서버 없음)로 걸린다.
 
 ### 걸리는 길 (`cmd/axm_address_rules.go`)
@@ -1344,8 +1344,105 @@ ZeroBounce, NeverBounce, Kickbox, Bouncer, Emailable, Mailgun Validate, AWS SES 
 ### 운영에서 알 것
 
 - DB 변경이 없어 이전 이미지로 그대로 되돌릴 수 있다. 되돌리면 거절이 사라진다.
-- 1단계에는 강도 스위치가 없다(2단계에서 `AXM_ADDRESS_GATE`·설정 `axm.address_gate`를 넣는다).
+- 강도 스위치는 2단계에서 넣었다(아래 「주소 검증 2단계 (LST-56)」: 환경 변수 `LISTMONK_app__axm_address_gate`).
 
 ### 검증
 
 `go test ./internal/addrcheck/`(운영에서 본 틀린 주소 꼴 포함), `cmd/axm_address_rules_db_test.go`(단건·수정·PATCH·가져오기 사유별 건수·거절 CSV·차단 모드).
+
+## 주소 검증 2단계 (LST-56)
+
+1단계(LST-53)는 주소 하나만 보고 판정했다. 2단계는 **DB가 아는 것**(예전에 차단됨, 반송 이력), **일회용 목록**, **DNS**(없는 도메인·메일을 받지 않는 도메인)를 같은 관문(`cmd/axm_address_gate.go`, 표는 `internal/addrcheck/gate.go`의 `Gate`)에서 판정한다. 단건 추가·주소 수정·공개 폼·대량 가져오기가 같은 표를 쓴다. 3단계(기존 리스트 일괄 검사·발송 전 경고)는 넣지 않았다(아래).
+
+### 판정 표
+
+한 주소에 여럿이 걸리면 위에서부터 첫째가 사유다. 거절 = 400(가져오기는 그 행을 넣지 않음).
+
+| 순서 | 코드 | 뜻 | 동작 |
+|---|---|---|---|
+| 1~3 | `format` `provider` `typo` | 1단계 규칙 | 거절 |
+| 4 | `suppressed` | 차단된 주소(`axm_suppressed_emails`) | 거절. 전에는 조용히 차단 상태로 들어갔다 |
+| 5 | `bounced` | hard 반송·수신 거부 신고 이력(`axm_bounced_emails`) | 거절 |
+| 6 | `disposable` | 일회용 도메인(내장 목록에 도메인 자체가 있을 때만: 정확 일치) | 거절 |
+| 7 | `nullmx` | 메일을 받지 않는다고 밝힌 도메인(`MX 0 .`) | 거절 |
+| 8 | `dead` | 도메인 없음·메일 서버 없음 | 거절 |
+| – | `role` | 역할 주소(info@ 등) | **넣고 경고** |
+| – | `unknown` | DNS 시간 초과·일시 오류·예산 초과·주소 리터럴 | **넣고 「확인 못 함」 경고**. 거절하지 않는다 |
+
+DB(4·5)를 DNS(7·8)보다 먼저 본다: 차단·반송이면 DNS를 기다리지 않는다. 일회용을 거절, 역할을 경고로 둔 것은 사람이 승인했다(2026-11-23). 일회용 거절은 목록의 도메인과 **정확히 일치**할 때만이다(`addrcheck.ListedDisposable`). 목록 도메인의 하위 도메인(`x.mailinator.com`)은 캠페인·리스트 패널에서는 지금처럼 일회용 경고로 분류되지만 관문은 거절하지 않고, 열 맞춤 검토도 그 행을 빼지 않는다(`basic`이면 1단계대로 경고). 바꾸려면 `Gate`의 줄과 열 맞춤 스위치 문구만 바뀐다.
+
+- **차단 모드 가져오기와 `status: blocklisted` 단건 추가·수정은 4~8(차단·반송·일회용·DNS)을 보지 않는다**(무엇이든 차단할 수 있어야 한다). 1~3은 둘이 다르다: **차단 모드 CSV는 형식과 설정의 도메인 허용·차단 목록(`privacy.domain_*`)만** 본다(오타 도메인 `gmail.con`은 들어간다), **`blocklisted` 단건 추가·수정은 1~3 전부**(오타·Gmail 규칙은 400)를 본다.
+- **공개 구독 폼은 4·5를 보지 않는다**(차단·반송 여부를 밖에서 알아낼 수 없게). 차단된 주소는 지금처럼 트리거가 차단 상태로 넣는다. 1~3·6~8은 본다.
+- 주소 수정은 **주소가 바뀔 때만** 본다. 같으면 DB도 DNS도 조회하지 않는다.
+- 이미 있는 구독자의 행도 걸리면 새 리스트에 붙지 않는다(hard 반송 이력이 있는 기존 구독자 포함).
+- 자동 교정·자동 삭제는 하지 않는다. 「그래도 추가」 우회 버튼은 없다.
+
+### 강도 스위치
+
+환경 변수 `LISTMONK_app__axm_address_gate` 또는 설정 파일의 `[app] axm_address_gate`(둘 다 koanf 키 `app.axm_address_gate`. 설정 화면의 DB 설정은 아니다. 앱을 다시 켜야 적용):
+
+- `full`(기본. 값이 없거나 모르는 값도 같다): 표 전부.
+- `nodns`: DNS(7·8·`unknown`)만 뺀다. CI(`axm-image.yml`)와 `scripts/axm/axm`이 앱을 이 값으로 띄운다(시험 환경에는 DNS가 없다). 시험 범위는 줄이지 않았다.
+- `basic`: 1단계와 같다(1~3만). 운영에서 문제가 생겼을 때 이미지 롤백 없이 되돌리는 길이다.
+
+### API
+
+- 거절 400의 헤더 `X-Axm-Address-Rule`에 새 코드(`suppressed bounced disposable nullmx dead`)도 실린다. 메시지는 i18n `subscribers.addr.<코드>`.
+- 통과했지만 경고가 있으면 200 응답에 헤더 `X-Axm-Address-Warn: role|unknown`. 본문은 바뀌지 않는다(API 호환).
+- `POST /api/subscribers/address-check`(열 맞춤 검토): 응답 `issues`에 `suppressed`·`bounced`가 더해진다(강도가 `basic`이면 없음). 응답의 `gate`(`full`·`nodns`·`basic`)는 서버의 강도다: `nodns`·`basic`이면 이 API도 DNS를 조회하지 않고(가져오기와 같은 결과가 되도록), `basic`이면 열 맞춤이 일회용을 거절 대상이 아닌 경고로 다룬다(서버가 거절하지 않으므로 원본 CSV와 같은 행이 들어간다). `Summary`의 숫자는 바뀌지 않는다(캠페인·리스트 패널이 같이 쓴다). **이 API로 `subscribers:import` 권한자가 다른 팀이 차단한 주소를 포함해 차단·반송 여부를 보게 된다.** 가져오기 결과 상자에서 어차피 보이는 정보라 승인된 범위다(2026-11-23).
+- 가져오기 상태에 `axm_warned`(사유별 `role` `unknown`)와 `axm_warned_total`. 경고 행은 들어가고 건수만 센다. 거절 CSV에는 넣지 않는다(「넣지 않은 행」의 뜻을 지킨다). 감사 기록 `import.finish` detail에 `warned`. 사유 코드는 위 표와 같다(`axm_rejected`에 `suppressed` `bounced` `disposable`이 더해진다).
+- 가져오기는 구독 모드에서 행을 500개씩 묶어 판정한다(DB 질의 1번 + DNS 대기 묶음당 최대 10초). 로그에는 사유 코드만 쓰고 주소를 쓰지 않는다(속성 JSON 오류 로그에도 주소를 쓰지 않는다). 경고 건수는 그 행이 DB에 커밋된 뒤에 센다(롤백된 행은 세지 않는다). 거절 CSV는 형식 오류 행과 관문이 거절한 행이 섞여도 파일 순서다.
+
+### DNS (`internal/addrcheck/dns.go`)
+
+1단계(LST-43)의 조회기를 쓰되 세 가지를 바꿨다. MX가 없으면 A와 AAAA를 **따로** 묻는다(`LookupIP`의 `ip4`·`ip6`): 둘 다 「그런 기록 없음」일 때만 `dead`이고, 한쪽이 일시 오류면 `unknown`이다(Go 리졸버의 `LookupIPAddr`는 한쪽이 없고 한쪽이 SERVFAIL이어도 「없음」이라 답해 멀쩡한 도메인이 죽은 것으로 보였다). **확인 못 함(`unknown`)도 60초 캐시**(`UnknownTTL`)해서 응답 없는 도메인을 묶음마다 3초씩 다시 기다리지 않는다. **새 조회는 초당 50건까지만 시작**(`MaxPerSecond`, 모든 요청 합산. 동시 8개 상한은 그대로)해 큰 가져오기가 호스트의 리졸버를 몰아치지 않게 한다. 컨테이너의 리졸버가 초당 50건을 못 받아 주면 이 옵션을 낮춘다. 상한은 최근 50번의 시작 시각을 기억해 지키므로 프로세스가 잠시 멈췄다 풀려도 어느 1초에도 50건을 넘지 않는다. 측정(가짜 리졸버: 정상 20ms, 도메인의 5%는 3초 무응답): 5만 행·도메인 2천 종이 45초, 가장 긴 묶음 10초, 동시 8개·초당 51건 이하, 확인 못 함 2,757행. 측정 시험은 `go test -run '^TestGateImportTiming$' ./cmd`로만 돈다.
+
+### 목록의 출처와 갱신 방법
+
+- `internal/addrcheck/disposable_domains.txt`: disposable-email-domains(CC0)의 커밋 `f4cad16e`(2026-11-18)에 고정. 갱신: 새 커밋의 파일로 바꾸고 파일 머리말과 「일회용 도메인 목록」 절의 커밋을 고친다. 이번에 새 커밋으로 올리지 않았다.
+- `internal/addrcheck/role_locals.txt`(전에는 `roles.go`의 코드): 역할 사서함 이름. 출처는 RFC 2142의 사서함 이름과 이 포크가 손으로 더한 흔한 창구 이름이다(외부 목록이 아님). 갱신: 줄을 더하거나 빼고 `go test ./internal/addrcheck/`. 내용은 전과 같다.
+- 두 파일 머리말에 `Source`·`To update`(와 `Commit`·`License` 또는 `Updated`)가 있어야 하고 항목이 1개 이상이어야 한다(`gate_test.go`).
+
+### 반송 이력 표 (`axm_bounced_emails`, 마이그레이션 `v6.2.1-axm.16`)
+
+- 주소의 sha256 해시(`axm_email_hash`)만 저장한다(`axm_suppressed_emails`와 같은 방식). 행: `email_hash`, `kind`(`hard`·`complaint`), `bounce_id`(그 반송 기록), `subscriber_id`(그 반송의 구독자), `created_at`. **반송 기록 한 건에 한 행**이고, 같은 주소에 구독자 둘의 반송이 있거나 한 구독자의 서로 다른 주소가 반송돼도 행은 따로다.
+- **넣기**: `core.RecordBounce`가 한 트랜잭션에서 그 반송이 가리키는 주소를 설정 `axm.bounce_email`에 적고(`axm-bounce-address`) `record-bounce`를 실행한다. `bounces`의 INSERT 트리거 `axm_bounced_record`가 hard·complaint 행이 실제로 들어가면 그 주소의 해시를 넣는다. 반송 본문 기록이 실패하면 해시도 없다. soft 반송은 기록하지 않는다. hard 1회면 거절한다(승인된 범위. listmonk는 5xx를 모두 hard로 적어 스팸 차단성 거절도 섞일 수 있다).
+- **반송 기록이 안 생기는 반송**(이미 차단된 구독자, 또는 반송 처리 설정의 횟수를 넘은 반송: `record-bounce`가 INSERT를 건너뛴다)도 그 주소를 `bounce_id` 없이 `subscriber_id`와 함께 남긴다(`axm-bounced-unless-recorded`). 같은 구독자에게 같은 해시가 이미 있으면 남기지 않는다(같은 신고가 두 번 와도 행이 하나). **차단된 구독자 자신의 현재 주소는 남기지 않는다**: 차단 표(`axm_suppressed_emails`)가 그 주소를 막고(구독자를 지워도 남는다) 차단 해제 때 풀어 준다. 손으로 차단한 구독자가 받은 신고는 반송 기록이 없어 구독자 화면의 반송 탭이 비활성이라, 여기 행을 남기면 화면에서 풀 길이 없기 때문이다. 그래서 횟수 상한에 이른 구독자가 주소를 바꾼 뒤 새 주소가 반송돼도 새 주소가 남는다.
+- **구독자를 못 찾는 반송**(`email`만 오고 그 주소를 가진 구독자가 없음: 주소를 고친 뒤 도착한 SES·Postmark 반송)은 요청의 `email`을 `bounce_id` 없이 남긴다. 지금 그 주소를 가진 구독자가 있으면 그 `subscriber_id`를 단다.
+- **어느 주소인가**: 반송 요청이 `email`을 주면 그 주소(메일을 보낸 뒤 주소를 고친 구독자의 반송은 옛 주소를 막고 새 주소는 막지 않는다). `email` 없이 UUID만 오면(내장 POP 수집기, 가입 확인·트랜잭션 메일의 반송) SQL 함수 `axm_mailed_email`이 정한다: 구독자의 현재 주소이되 **주소가 한 번도 바뀌지 않았거나, 반송이 가리킨 캠페인의 발송 기록(`axm_campaign_sends`)이 주소가 바뀐 때보다 1시간 넘게 뒤일 때만**이다. 캠페인이 없는 반송(가입 확인 메일)이나 발송 기록이 보존 기간(12개월)으로 지워진 반송은 주소가 바뀐 구독자라면 남기지 않는다(반송 기록은 그대로 남는다). 1시간은 주소가 바뀌는 순간 진행 중이던 발송(옛 주소를 읽어 둔 묶음)의 여유다.
+- **SES 웹훅**(`internal/bounce/webhooks/ses.go` `sesRecipients`)은 알림이 적은 수신자마다 반송 하나를 낸다. 업스트림은 알림 하나에 메일의 첫 수신자 하나만, 알림의 유형으로 적어, 여러 수신자에게 간 메일이 일부만 반송되면 정상 수신자가 영구 거절되고 실제 반송 주소는 다시 들어왔다. 반송: SES가 반송으로 적은 수신자마다 자기 유형으로 — Permanent 안에서도 지연된 수신자(`action` delayed 또는 4.x.x 상태)는 soft, Transient의 5.4.4(없는 도메인)는 업스트림처럼 hard. 적힌 수신자가 없으면 업스트림처럼 첫 수신자. 신고: SES가 신고자로 적은 수신자가 하나면 그 주소, **여럿이면 아무도 기록하지 않는다**(ISP가 신고자를 가리면 SES는 신고했을 수 있는 수신자를 모두 적는다: AWS 문서 complainedRecipients). 적힌 신고자가 없으면 메일 수신자가 하나일 때만 그 주소.
+- **주소가 바뀐 때**는 새 표 `axm_email_changes`(`subscriber_id`, `changed_at`)에 있다. `subscribers`의 UPDATE 트리거 `axm_email_changed`가 이메일이 실제로 바뀔 때만 적는다(이름·속성·상태 수정은 적지 않는다). 마이그레이션 전의 수정은 주소를 바꿨는지 알 수 없어 `updated_at > created_at`인 구독자의 `updated_at`을 바뀐 때로 넣는다.
+- **가져오기와 DB 연결**: 가져오기의 쓰는 쪽은 업스트림처럼 한 트랜잭션에 여러 행을 넣는다. 관문은 묶음(500행)마다 DB(`axm-address-facts`)를 읽으므로, 묶음을 판정하기 전에 쓰는 쪽에 지금까지의 행을 커밋하라고 알린다(큐의 표시 행). 쓰는 쪽은 다음 행이 올 때 새 트랜잭션을 연다. 그래서 DB 최대 연결이 하나(`db.max_open = 1`)여도 가져오기가 자기 트랜잭션을 기다리며 멈추지 않고, 다른 관리 요청도 묶음 사이에 연결을 얻는다. 커밋은 1만 행이 아니라 500행 묶음마다 일어난다.
+- 해시 저장 실패는 반송 기록을 잃게 하지 않는다: 트리거가 오류를 경고로만 남기고(`RAISE WARNING`), 이름 붙이기·보충 INSERT는 savepoint 안에서 한다. 실패한 트랜잭션은 구독자를 못 찾는 반송의 보충 INSERT 전에 연결을 돌려준다(연결이 하나뿐인 설정에서도 막히지 않게).
+- **풀기**: 사람이 반송 기록을 지우면(`DeleteBounces`·`DeleteSubscriberBounces`·팀 범위 판) 트리거 `axm_bounced_release`가, 구독자가 **아직 있을 때** 그 반송 기록의 행(`bounce_id`)을 지우고, 그 구독자의 hard·complaint 기록이 하나도 안 남으면 그 구독자의 `bounce_id` 없는 행도 지운다. 구독자 화면의 「반송 기록 삭제」(`DeleteSubscriberBounces`)는 기록이 하나도 없던 구독자(손으로 차단한 뒤 받은 신고)의 `bounce_id` 없는 행도 지운다. 구독자를 지우면서 연쇄로 지워지는 반송 행은 구독자가 이미 없어 해시가 남는다(시험: `cmd/axm_address_gate_db_test.go`). 같은 주소의 다른 반송 기록이 남아 있으면 풀리지 않는다.
+- **마이그레이션은 지금 있는 hard·complaint 반송 기록을 넣는다.** 주소는 출처(`source`)별로 그 웹훅이 받는 주소를 담는 필드에서 읽는다(SQL): Postmark `Email`, ForwardEmail `recipient`, Lettermint·Azure `data.recipient`. 읽지 못하면(POP 수집기, 모르는 출처) 위의 `axm_mailed_email` 규칙을 쓴다. 이 행들은 그 반송 기록에 묶여, 기록을 지우면 풀린다.
+  - **SES·SendGrid는 알림에 적힌 주소 그 자체로 넣는다**(이강주 결정 2026-11-24). 마이그레이션의 Go 코드(`axm16Notifications`)가 SES·SendGrid 기록의 알림(`meta`)을 읽어, 하드 반송·신고로 적힌 수신자 주소마다 정규화(소문자·앞뒤 공백 제거)한 해시를 **반송 기록에도 구독자에도 묶지 않은 행**(`bounce_id`·`subscriber_id` 없음, 주소마다 한 행)으로 넣는다. 반송 기록·구독자·이름·주소 변경·묶음 순서·재전달·그 뒤의 삭제는 따지지 않는다: 기록 삭제·재등록·주소 변경·재전달·순서 뒤바뀜 때문에 주소가 다른 사람의 기록에 묶이는 일이 생기지 않는다. 반송 기록을 새로 만들지 않는다. 500행씩 읽고 쓴다(연결 하나에서도 돈다). SendGrid 묶음은 한 번만 읽는다.
+    - SES: 반송된 수신자마다 자기 상태로 유형을 정한다(웹훅과 같은 규칙: Permanent 안의 지연 `action` delayed·4.x.x는 soft, Transient의 5.4.4는 hard). 신고는 신고자로 적힌 수신자가 하나일 때 그 주소. 수신자가 적혀 있지 않으면 메일 수신자가 하나일 때만 그 주소.
+    - SendGrid: 묶음의 `bounce` 이벤트 가운데 soft가 아닌 것의 `email`은 hard로, `spamreport` 이벤트(수신자의 스팸 신고)의 `email`은 complaint로 넣는다. soft는 `bounce_classification`이 technical·content이거나 `type`이 `blocked`(일시 차단)인 것이다. 웹훅도 업그레이드 뒤 `blocked`를 soft로 기록한다(업스트림은 hard로 기록해 영구 거절됐다). 웹훅이 `spamreport`를 기록하지 않는 것은 업스트림 그대로다.
+    - SES에서 한 주소가 대소문자만 달리 두 번 적혀 있으면, 그중 하나라도 hard면 hard다(웹훅도 같다).
+    - 주소로 인정하는 것은 `@`가 하나이고, 그 앞뒤가 비지 않았으며, 공백이 없는 것이다(앱이 받는 주소 리터럴 `local@[2001:db8::1]`과 점 없는 도메인 `local@internal`도 주소다). 그 밖(`@`만 있는 값 등)은 판단 못 한 건수로 센다.
+    - SES가 신고자·반송 수신자를 적었으면 그것만 본다: 신고자가 여럿이면(읽을 수 없는 값 포함) 아무도 넣지 않고, 적힌 반송 수신자가 하나도 읽히지 않으면 메일의 다른 수신자로 대신하지 않는다(둘 다 판단 못 한 건수).
+    - **판단 못 하는 항목은 넣지 않고 건수만 남긴다**: 읽을 수 없는 알림, 신고 후보가 여럿인 신고(ISP가 신고자를 가림), 여러 수신자에게 간 메일인데 수신자가 적히지 않은 반송, 주소가 비었거나 주소가 아닌 수신자·이벤트. 기존 기록이 soft여도 센다. 마이그레이션 로그에 「bounced addresses from earlier SES and SendGrid notifications: N kept, M not judged (not kept)」가 남는다.
+    - **풀기**: 이 행은 반송 기록을 지워도 풀리지 않는다. 사람이 반송 표의 행을 지운다(아래 SQL 한 줄). 관리자가 업그레이드 전에 반송 기록을 지워 풀어 준 주소도 알림에 남아 있으면 다시 거절되므로 같은 방법으로 푼다.
+- **`subscriber_id`도 `bounce_id`도 없는 행과 지워진 구독자의 주소는 푸는 화면이 없다.** 운영에서 풀려면(운영 SQL 쓰기는 사람 몫): `DELETE FROM axm_bounced_emails WHERE email_hash = axm_email_hash('주소');`
+- **이관한 SES·SendGrid 주소를 풀 때, 업그레이드 전에 풀어 준 주소가 다시 거절될 때**(관리자가 반송 기록을 지운 주소 등): 운영 DB에서 사람이 `DELETE FROM axm_bounced_emails WHERE email_hash = axm_email_hash('옛주소@example.com');` 한 줄을 실행한다. 주소의 대소문자·앞뒤 공백은 함수가 정리한다. 그 주소의 모든 반송 이력 행이 지워진다. 차단 표는 건드리지 않는다.
+- 새 표 `axm_bounced_emails`·`axm_email_changes`와 `subscribers`의 새 트리거는 이전 이미지가 읽거나 기대하지 않으므로 이미지 롤백에 안전하다(롤백한 이미지에서도 트리거는 이메일이 바뀔 때 한 행을 적을 뿐이다). 릴리스 때 백업 역할이 두 표를 읽는지 확인한다(기본 권한이 이미 있어 GRANT는 필요 없을 것이다).
+
+### 화면
+
+가져오기 결과 상자의 거절 사유 줄(차단·반송·일회용·메일을 받지 않는 도메인·없는 도메인이 더해짐)과 「넣었지만 확인이 필요합니다」 상자, 열 맞춤 검토(차단·반송·일회용이 「확정」으로, 「경고」는 역할 주소만, 숫자는 화면이 `issues`로 직접 센다, 스위치 「역할 주소 N행도 빼기」), 구독자 추가·수정 창(새 거절 사유는 이메일 칸 아래에 문장으로, 경고는 저장 뒤 노란 토스트). 시안은 사람이 승인했다(2026-11-23). 캠페인·리스트 주소 검사 패널은 바뀌지 않았다. 단건 저장은 DNS 때문에 최대 4초 걸릴 수 있다(기존 로딩 표시를 쓴다).
+
+### 운영에서 알 것
+
+- 단건 저장·가져오기가 DNS를 기다린다: 단건 4초, 공개 폼 3초, 가져오기 묶음당 10초. 시간 안에 끝나지 않으면 「확인 못 함」 경고로 들어간다(거절하지 않는다).
+- 컨테이너에서 DNS가 막혀 있으면 `full`에서도 DNS 사유(없는 도메인·null MX)로는 아무 것도 거절되지 않는다. 새 도메인은 모두 「확인 못 함」으로 들어간다. 거절되는 범위는 `nodns`와 같지만 경고는 다르다. `full`은 그 주소마다 경고를 단다: 단건·수정은 `X-Axm-Address-Warn: unknown`, 가져오기는 결과 상자의 「넣었지만 확인이 필요합니다」 집계(`axm_warned.unknown`)다. `nodns`는 DNS를 보지 않으므로 이 경고가 없다(역할 주소 경고만 남는다). 열 맞춤 검토도 `nodns`·`basic`에서는 「DNS 조회 안 함(서버 설정)」·「주소 규칙만 검사(서버 설정)」로 표시하고, 위험 주소가 없을 때 DNS(와 `basic`이면 차단·반송 이력)를 확인하지 않았다고 적는다.
+- hard 반송으로 거절된 주소가 잘못 분류된 것이면 그 구독자의 반송 기록을 지운다(구독자가 있는 경우). 지워진 구독자는 위 SQL.
+- 마이그레이션 `.16`은 새 표·트리거만 더한다. 이전 이미지로 되돌려도 동작에는 영향이 없다.
+
+### 3단계 범위 (넣지 않았다)
+
+기존 리스트 일괄 검사(`POST /api/lists/address-check`가 `provider typo bounced suppressed`를 내고 리스트 편집 창에서 문제 주소 목록·구독 해지), 구독자별 검증 상태 표(`axm_address_state`: 주소 해시·상태·사유·규칙 판·검사 시각)와 「검증 안 됨」의 정의, 캠페인 발송 전 확인 창(`cmd/axm_preflight.go`)에 「문제 주소 N명」·「검증 안 된 N명」 경고(발송은 막지 않는다), 리스트 만들기 경로(반응 리스트 후보·최근 발송 제외 리스트)에서 반송·검증 실패 주소 빼기. 화면이 바뀌므로 별도 시안 승인이 필요하다.
+
+### 검증
+
+`go test ./internal/addrcheck/`(`Gate` 표·속도 상한·unknown 캐시·목록 머리말), `cmd/axm_address_gate_db_test.go`(길별 거절·경고·헤더, 반송 기록·풀기·구독자 삭제 뒤 유지, 강도, 가져오기 사유별 건수와 CSV, 마이그레이션 두 번), `internal/subimporter/axm_reject_test.go`(묶음 경계 499·500·501·1203행, 행 번호), `frontend/tests/csv-import.test.mjs`, `frontend/cypress/e2e/address-gate.cy.js`(실제 서버: 일회용·차단 거절, 역할 경고 토스트, 가져오기 결과 상자, 열 맞춤 검토의 새 분류. DNS와 반송 이력은 Go 시험).

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -63,7 +64,30 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.Ts("globals.messages.invalidData")+": "+b.Type)
 	}
 
-	_, err := c.q.RecordBounce.Exec(b.SubscriberUUID,
+	// One transaction: the address of a hard bounce or a complaint is kept out of future imports
+	// and additions (LST-56) only when the bounce itself is recorded. The address is written
+	// first: the delete action removes the subscriber, and with them the bounce rows, in the
+	// statement below.
+	tx, err := c.db.BeginTxx(context.Background(), nil)
+	if err != nil {
+		c.log.Printf("error recording bounce: %v", err)
+		return err
+	}
+	defer tx.Rollback()
+	permanent := b.Type == models.BounceTypeHard || b.Type == models.BounceTypeComplaint
+	if permanent {
+		// The trigger on bounces keeps the address of the record it sees. A failure to name the
+		// address must not lose the bounce: a savepoint takes it back.
+		if _, err := tx.Exec("SAVEPOINT axm_bounced"); err == nil {
+			var set string
+			if err := tx.Stmtx(c.q.AxmBounceAddress).Get(&set, b.SubscriberUUID, b.Email, b.CampaignUUID); err != nil {
+				c.log.Printf("error naming the address of a bounce: %v", err)
+				_, _ = tx.Exec("ROLLBACK TO SAVEPOINT axm_bounced")
+			}
+		}
+	}
+
+	_, err = tx.Stmtx(c.q.RecordBounce).Exec(b.SubscriberUUID,
 		b.Email,
 		b.CampaignUUID,
 		b.Type,
@@ -72,11 +96,33 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		b.CreatedAt,
 		action.Count,
 		action.Action)
+	if err == nil && permanent {
+		// A bounce that left no record of its own (the subscriber was already blocklisted, or over
+		// the count of the bounce action) still keeps the address named above.
+		if _, e := tx.Exec("SAVEPOINT axm_unrecorded"); e == nil {
+			if _, e := tx.Stmtx(c.q.AxmBouncedUnlessRecorded).Exec(b.SubscriberUUID, b.Email, b.Type); e != nil {
+				c.log.Printf("error remembering a bounced address: %v", e)
+				_, _ = tx.Exec("ROLLBACK TO SAVEPOINT axm_unrecorded")
+			}
+		}
+	}
+	if err == nil {
+		err = tx.Commit()
+	} else {
+		// Give the connection back before the statement below asks the pool for another one.
+		_ = tx.Rollback()
+	}
 
 	if err != nil {
 		// Ignore the error if it complained of no subscriber.
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Column == "subscriber_id" {
 			c.log.Printf("bounced subscriber (%s / %s) not found", b.SubscriberUUID, b.Email)
+			// A bounce for an address that was changed since is still a bounce for that address.
+			if em := strings.TrimSpace(b.Email); permanent && em != "" {
+				if _, err := c.q.AxmBouncedOrphan.Exec(em, b.Type); err != nil {
+					c.log.Printf("error remembering a bounced address: %v", err)
+				}
+			}
 			return nil
 		}
 

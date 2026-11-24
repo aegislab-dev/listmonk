@@ -256,6 +256,7 @@ describe('Address check before sending and on import', () => {
       expect(req.body.emails).to.deep.equal(rows);
       req.reply({
         data: {
+          // The server's own numbers are not used for the counts: the screen counts the rows (LST-56).
           total: 6,
           risky: 4,
           confirmed: 2,
@@ -288,7 +289,7 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=map-mode-mapping]').click();
     cy.wait('@importCheck');
 
-    // Confirmed-risk rows are left out by default; role and disposable rows are only counted.
+    // Rows the server would refuse (dead domain, disposable) are left out by default; a role row is only counted.
     cy.get('[data-cy=map-address-summary]').should('contain', '6').and('contain', '4');
     cy.get('[data-cy=map-address-dead]').should('contain', `3 (${rows[1]})`).and('contain', `4 (${rows[2]})`);
     cy.get('[data-cy=map-address-role]').should('contain', `5 (${rows[3]})`);
@@ -296,36 +297,37 @@ describe('Address check before sending and on import', () => {
     cy.get('[data-cy=map-address-unknown]').should('contain', `7 (${rows[5]})`);
     // No switch for the confirmed rows: they are never imported (a fixed line says so).
     cy.get('[data-cy=map-address-exclude-confirmed]').should('not.exist');
-    cy.get('[data-cy=map-address-fixed]').should('contain', '2');
+    cy.get('[data-cy=map-address-fixed]').should('contain', '3');
     cy.get('[data-cy=map-address-exclude-warning] input').should('not.be.checked');
-    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '4');
-    cy.get('[data-cy=map-summary] .map-counts strong').eq(1).should('have.text', '2');
-    cy.get('[data-cy=map-issue-address]').should('contain', '2');
-    cy.get('[data-cy=map-address-result]').should('contain', '4').and('contain', '2');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '3');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(1).should('have.text', '3');
+    cy.get('[data-cy=map-issue-address]').should('contain', '3');
+    cy.get('[data-cy=map-address-result]').should('contain', '3');
 
     // The left-out rows can be downloaded with their source row and reason.
     cy.get('[data-cy=map-address-download]').click();
     cy.readFile('cypress/downloads/addr-excluded.csv', 'utf8').then((text) => {
       const lines = text.replace(/^﻿/, '').split('\r\n');
-      expect(lines).to.have.length(3);
+      expect(lines).to.have.length(4);
       expect(lines[1]).to.match(new RegExp(`^3,${rows[1]},`));
       expect(lines[2]).to.match(new RegExp(`^4,${rows[2]},`));
+      expect(lines[3]).to.match(new RegExp(`^6,${rows[4]},`));
     });
 
     // The second switch also leaves the warning rows out; the first can be turned off.
     cy.get('[data-cy=map-address-exclude-warning] .check').click();
     cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '2');
     cy.get('[data-cy=map-address-exclude-warning] .check').click();
-    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '4');
+    cy.get('[data-cy=map-summary] .map-counts strong').eq(0).should('have.text', '3');
     // The check ran once: rebuilding the upload does not ask again.
     cy.get('@importCheck.all').should('have.length', 1);
 
     cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
     cy.get('button[type=submit]').should('not.be.disabled').click();
     cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
-    cy.request('/api/import/subscribers').its('body.data.imported').should('eq', 4);
+    cy.request('/api/import/subscribers').its('body.data.imported').should('eq', 3);
     cy.get('[data-cy=map-mismatch]').should('not.exist');
-    [1, 2].forEach((n) => {
+    [1, 2, 4].forEach((n) => {
       cy.request({ url: '/api/subscribers', qs: { query: `email = '${rows[n]}'`, per_page: 1 } })
         .its('body.data.results').should('have.length', 0);
     });

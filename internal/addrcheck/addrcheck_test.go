@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -13,14 +14,18 @@ import (
 
 // fakeDNS answers from a table. A domain that is not in the table does not exist.
 type fakeDNS struct {
-	mu    sync.Mutex
-	mx    map[string][]*net.MX
-	mxErr map[string]error
-	ip    map[string]bool
-	ipErr map[string]error
-	hold  chan struct{} // when set, every MX lookup waits for it
-	mxN   map[string]int
-	ipN   map[string]int
+	mu     sync.Mutex
+	mx     map[string][]*net.MX
+	mxErr  map[string]error
+	ip     map[string]bool
+	ipErr  map[string]error
+	ip6Err map[string]error // only the AAAA lookup fails
+	ipErr4 map[string]error // only the A lookup fails
+	ip6    map[string]bool  // has an AAAA record
+	hold   chan struct{}    // when set, every MX lookup waits for it
+	mxN    map[string]int
+	times  []time.Time // when each MX lookup started
+	ipN    map[string]int
 }
 
 var (
@@ -31,7 +36,7 @@ var (
 
 func newFake() *fakeDNS {
 	return &fakeDNS{
-		mx: map[string][]*net.MX{}, mxErr: map[string]error{}, ip: map[string]bool{}, ipErr: map[string]error{},
+		mx: map[string][]*net.MX{}, mxErr: map[string]error{}, ip: map[string]bool{}, ipErr: map[string]error{}, ip6Err: map[string]error{}, ipErr4: map[string]error{}, ip6: map[string]bool{},
 		mxN: map[string]int{}, ipN: map[string]int{},
 	}
 }
@@ -39,6 +44,7 @@ func newFake() *fakeDNS {
 func (f *fakeDNS) LookupMX(ctx context.Context, name string) ([]*net.MX, error) {
 	f.mu.Lock()
 	f.mxN[name]++
+	f.times = append(f.times, time.Now())
 	hold := f.hold
 	f.mu.Unlock()
 	if hold != nil {
@@ -55,15 +61,27 @@ func (f *fakeDNS) LookupMX(ctx context.Context, name string) ([]*net.MX, error) 
 	return nil, errNX
 }
 
-func (f *fakeDNS) LookupIPAddr(ctx context.Context, name string) ([]net.IPAddr, error) {
+func (f *fakeDNS) LookupIP(ctx context.Context, network, name string) ([]net.IP, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ipN[name]++
 	if err := f.ipErr[name]; err != nil {
 		return nil, err
 	}
+	if network == "ip6" {
+		if err := f.ip6Err[name]; err != nil {
+			return nil, err
+		}
+		if f.ip6[name] {
+			return []net.IP{net.ParseIP("2001:db8::1")}, nil
+		}
+		return nil, errNX
+	}
+	if err := f.ipErr4[name]; err != nil {
+		return nil, err
+	}
 	if f.ip[name] {
-		return []net.IPAddr{{IP: net.IPv4(192, 0, 2, 1)}}, nil
+		return []net.IP{net.IPv4(192, 0, 2, 1)}, nil
 	}
 	return nil, errNX
 }
@@ -144,17 +162,27 @@ func TestResolve(t *testing.T) {
 	f.mxErr["broken.test."] = errServer
 	f.mxErr["plain.test."] = errors.New("connection refused")
 	f.ipErr["ipslow.test."] = errTimeout
+	// No MX, no A, and the AAAA lookup failed: that is a hiccup, not a dead domain, whichever
+	// family fails (the Go resolver would call it "not found").
+	f.ip6Err["half.test."] = errServer
+	f.ipErr4["half4.test."] = errServer
+	f.ip["v6only.test."] = false
+	f.ip6["v6only.test."] = true
+	f.ip6Err["a-ok.test."] = errServer
+	f.ip["a-ok.test."] = true
 	c := NewChecker(Options{Resolver: f})
 
 	got := c.CheckDomains(context.Background(), []string{
 		"ok.test", "null.test", "mixed.test", "aonly.test", "gone.test",
 		"slow.test", "broken.test", "plain.test", "ipslow.test", "ok.test",
+		"half.test", "half4.test", "v6only.test", "a-ok.test",
 	}, time.Second)
 	want := map[string]DomainStatus{
 		"ok.test": StatusOK, "null.test": StatusNullMX, "mixed.test": StatusOK,
 		"aonly.test": StatusOK, "gone.test": StatusDead,
 		"slow.test": StatusUnknown, "broken.test": StatusUnknown, "plain.test": StatusUnknown,
 		"ipslow.test": StatusUnknown,
+		"half.test":   StatusUnknown, "half4.test": StatusUnknown, "v6only.test": StatusOK, "a-ok.test": StatusOK,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("statuses\n got %v\nwant %v", got, want)
@@ -163,7 +191,7 @@ func TestResolve(t *testing.T) {
 	if m, i := f.counts("ok.test."); m != 1 || i != 0 {
 		t.Errorf("ok.test looked up %d MX, %d IP", m, i)
 	}
-	if m, i := f.counts("gone.test."); m != 1 || i != 1 {
+	if m, i := f.counts("gone.test."); m != 1 || i != 2 { // both families are asked
 		t.Errorf("gone.test looked up %d MX, %d IP", m, i)
 	}
 	// A failed MX lookup is not turned into a verdict by an address lookup.
@@ -172,7 +200,7 @@ func TestResolve(t *testing.T) {
 	}
 }
 
-func TestCacheTTLAndUnknownNotCached(t *testing.T) {
+func TestCacheTTLAndUnknownCachedBriefly(t *testing.T) {
 	f := newFake()
 	f.mx["ok.test."] = mx("mx.ok.test.")
 	f.mxErr["slow.test."] = errTimeout
@@ -196,7 +224,13 @@ func TestCacheTTLAndUnknownNotCached(t *testing.T) {
 
 	check()
 	lookups(1, 1, 1)
-	check() // ok and gone come from the cache; the unknown one is asked again
+	check() // all three come from the cache, the unknown one for UnknownTTL only
+	lookups(1, 1, 1)
+	advance(59 * time.Second)
+	check()
+	lookups(1, 1, 1)
+	advance(2 * time.Second) // past the 60 seconds of an unknown answer
+	check()
 	lookups(1, 1, 2)
 
 	advance(25 * time.Hour) // past the 1 day of a dead domain, within the 7 days of a working one
@@ -470,5 +504,58 @@ func TestAddressLiteralIsUnknownAndNotLookedUp(t *testing.T) {
 	defer f.mu.Unlock()
 	if len(f.mxN) != 0 || len(f.ipN) != 0 {
 		t.Fatalf("looked up %v %v", f.mxN, f.ipN)
+	}
+}
+
+// Lookups start at most MaxPerSecond times a second however many callers ask, and the
+// concurrency limit still holds.
+func TestLookupsAreRateLimited(t *testing.T) {
+	f := newFake()
+	domains := make([]string, 60)
+	for i := range domains {
+		domains[i] = "d" + string(rune('a'+i/26)) + string(rune('a'+i%26)) + ".test"
+		f.mx[domains[i]+"."] = mx("mx.test.")
+	}
+	c := NewChecker(Options{Resolver: f, MaxPerSecond: 20, Concurrency: 8})
+	start := time.Now()
+	got := c.CheckDomains(context.Background(), domains, 10*time.Second)
+	took := time.Since(start)
+	for _, d := range domains {
+		if got[d] != StatusOK {
+			t.Fatalf("%s: %s", d, got[d])
+		}
+	}
+	// At most 20 lookups start in any second: of the start times in order, each one and the one
+	// 20 later are a second apart (less the scheduling slack between taking the slot and the
+	// resolver noting the time). 60 lookups at 20 a second take at least two seconds.
+	f.mu.Lock()
+	times := append([]time.Time(nil), f.times...)
+	f.mu.Unlock()
+	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
+	if len(times) != 60 {
+		t.Fatalf("%d lookups started", len(times))
+	}
+	for i := 0; i+20 < len(times); i++ {
+		if gap := times[i+20].Sub(times[i]); gap < 950*time.Millisecond {
+			t.Fatalf("lookups %d and %d started %v apart: more than 20 in a second", i, i+20, gap)
+		}
+	}
+	if took < 1900*time.Millisecond || took > 6*time.Second {
+		t.Fatalf("60 lookups took %v, want about 2s at 20 a second", took)
+	}
+}
+
+// A domain that does not answer is not asked again by the next batch within UnknownTTL.
+func TestUnknownIsNotAskedAgainWithinTTL(t *testing.T) {
+	f := newFake()
+	f.mxErr["silent.test."] = errTimeout
+	c := NewChecker(Options{Resolver: f})
+	for i := 0; i < 3; i++ {
+		if got := c.CheckDomains(context.Background(), []string{"silent.test"}, time.Second); got["silent.test"] != StatusUnknown {
+			t.Fatalf("round %d: %v", i, got)
+		}
+	}
+	if mxN, _ := f.counts("silent.test."); mxN != 1 {
+		t.Fatalf("silent.test looked up %d times", mxN)
 	}
 }

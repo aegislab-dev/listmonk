@@ -74,7 +74,25 @@ type Importer struct {
 	importSeq int
 	// owner is the user who started the import whose rejected rows are kept.
 	owner int
+	// verify decides the rows of a file in batches (LST-56); nil means the address rules of
+	// step 1 only, row by row. The app sets it once it exists.
+	verify func(emails []string) []AxmVerdict
 	sync.RWMutex
+}
+
+// AxmVerdict is the answer of the address gate for one row: Reject is the reason the row is
+// not imported ("" = it is), Warn the reason it is imported with a warning ("role", "unknown"),
+// Suggest the corrected address of a misspelled domain.
+type AxmVerdict struct {
+	Reject, Warn, Suggest string
+}
+
+// SetAxmVerify sets the gate that decides the rows of a subscribe-mode import, a batch at a
+// time. It is set once, before any import runs.
+func (im *Importer) SetAxmVerify(fn func(emails []string) []AxmVerdict) {
+	im.Lock()
+	im.verify = fn
+	im.Unlock()
 }
 
 // Options represents import options.
@@ -146,11 +164,15 @@ type Status struct {
 	// by reason (the Reject* constants). AxmRejectedTotal is their sum. See FORK.md, LST-53.
 	AxmRejected      map[string]int `json:"axm_rejected,omitempty"`
 	AxmRejectedTotal int            `json:"axm_rejected_total"`
+	// AxmWarned counts the rows that were imported with a warning, by reason ("role",
+	// "unknown"). AxmWarnedTotal is their sum. They are in Imported. See FORK.md, LST-56.
+	AxmWarned      map[string]int `json:"axm_warned,omitempty"`
+	AxmWarnedTotal int            `json:"axm_warned_total"`
 	// AxmExcluded is how many of those rows the column mapping left out before the upload.
 	AxmExcluded int `json:"axm_excluded"`
 	// AxmImportID is the number of this import; the rejected rows are asked for by it.
 	AxmImportID int `json:"axm_import_id"`
-	logBuf           *bytes.Buffer
+	logBuf      *bytes.Buffer
 }
 
 // The reasons a row is refused. format, provider and typo are the codes of addrcheck.
@@ -159,7 +181,17 @@ const (
 	RejectDomain   = "domain"                // the domain is blocked or not allowed by the settings
 	RejectProvider = addrcheck.ClassProvider // breaks the mailbox name rules of the provider
 	RejectTypo     = addrcheck.ClassTypo     // the domain is a known misspelling
+
+	// LST-56: what the database and DNS say.
+	RejectSuppressed = addrcheck.ClassSuppressed // blocklisted before
+	RejectBounced    = addrcheck.ClassBounced    // a hard bounce or a complaint is on record
+	RejectDisposable = addrcheck.ClassDisposable // a throwaway mailbox provider
+	RejectNullMX     = addrcheck.ClassNullMX     // the domain accepts no mail
+	RejectDead       = addrcheck.ClassDead       // no such domain, or no mail server
 )
+
+// gateBatch is how many rows of a file the gate decides at a time.
+const gateBatch = 500
 
 // MaxRejectedRows is how many refused rows an import keeps for the download.
 const MaxRejectedRows = 50000
@@ -180,6 +212,13 @@ type SubReq struct {
 	Lists          []int    `json:"lists"`
 	ListUUIDs      []string `json:"list_uuids"`
 	PreconfirmSubs bool     `json:"preconfirm_subscriptions"`
+	// AxmWarn is the warning the address gate gave the row ("role", "unknown"; LST-56). It is
+	// counted when the row is committed, so a rolled back row is not counted.
+	AxmWarn string `json:"-"`
+	// axmFlush is not a row: the gate is about to read the database (LST-56), and the rows queued
+	// so far are committed first, so that the import's own open transaction never keeps the
+	// gate waiting for a connection (a pool of one connection would wait for good).
+	axmFlush bool
 }
 
 type importStatusTpl struct {
@@ -189,6 +228,8 @@ type importStatusTpl struct {
 	Total    int
 	// AxmRejected: rows refused by the address rules, by reason (LST-53).
 	AxmRejected map[string]int
+	// AxmWarned: rows imported with a warning, by reason (LST-56).
+	AxmWarned map[string]int
 }
 
 var (
@@ -249,6 +290,11 @@ func (im *Importer) NewSession(opt SessionOpt) (*Session, error) {
 		opt.OverwriteSubStatus = true
 	}
 
+	// A stop request that arrived after the last import had read its file is of that import.
+	select {
+	case <-im.stop:
+	default:
+	}
 	im.Lock()
 	im.status = Status{Status: StatusImporting,
 		Name:        opt.Filename,
@@ -288,6 +334,13 @@ func (im *Importer) GetStats() Status {
 			rejected[k] = v
 		}
 	}
+	var warned map[string]int
+	if im.status.AxmWarnedTotal > 0 {
+		warned = make(map[string]int, len(im.status.AxmWarned))
+		for k, v := range im.status.AxmWarned {
+			warned[k] = v
+		}
+	}
 	return Status{
 		Name:             im.status.Name,
 		Status:           im.status.Status,
@@ -295,6 +348,8 @@ func (im *Importer) GetStats() Status {
 		Imported:         im.status.Imported,
 		AxmRejected:      rejected,
 		AxmRejectedTotal: im.status.AxmRejectedTotal,
+		AxmWarned:        warned,
+		AxmWarnedTotal:   im.status.AxmWarnedTotal,
 		AxmExcluded:      im.status.AxmExcluded,
 		AxmImportID:      im.importSeq,
 	}
@@ -325,7 +380,8 @@ func (im *Importer) GetRejected(id, userID int, all bool) ([]RejectedRow, error)
 // gives are taken, and the values are cut to what a download can carry.
 func (im *Importer) rejectExcluded(session int, r ExcludedRow) {
 	switch r.Reason {
-	case RejectFormat, RejectProvider, RejectTypo, addrcheck.ClassDead, addrcheck.ClassNullMX:
+	case RejectFormat, RejectProvider, RejectTypo, RejectDead, RejectNullMX,
+		RejectSuppressed, RejectBounced, RejectDisposable:
 	default:
 		return
 	}
@@ -349,6 +405,26 @@ func (im *Importer) reject(session int, row RejectedRow) {
 	im.status.AxmRejectedTotal++
 	if len(im.rejected) < MaxRejectedRows {
 		im.rejected = append(im.rejected, row)
+	}
+}
+
+// addWarned counts rows that were imported with a warning, by reason. It is called when the
+// rows are committed.
+func (im *Importer) addWarned(session int, counts map[string]int) {
+	if len(counts) == 0 {
+		return
+	}
+	im.Lock()
+	defer im.Unlock()
+	if session != im.importSeq {
+		return
+	}
+	if im.status.AxmWarned == nil {
+		im.status.AxmWarned = map[string]int{}
+	}
+	for reason, n := range counts {
+		im.status.AxmWarned[reason] += n
+		im.status.AxmWarnedTotal += n
 	}
 }
 
@@ -409,6 +485,7 @@ func (im *Importer) sendNotif(status string) error {
 			Total:    s.Total,
 
 			AxmRejected: s.AxmRejected,
+			AxmWarned:   s.AxmWarned,
 		}
 		subject = fmt.Sprintf("%s: %s import", cases.Title(language.Und).String(status), s.Name)
 	)
@@ -430,8 +507,24 @@ func (s *Session) Start() {
 	listIDs := make([]int, len(s.opt.ListIDs))
 	copy(listIDs, s.opt.ListIDs)
 
+	// warned counts the rows of the open transaction that came in with a warning (LST-56).
+	warned := map[string]int{}
 	for sub := range s.subQueue {
+		if sub.axmFlush {
+			if cur > 0 {
+				if err := tx.Commit(); err != nil {
+					tx.Rollback()
+					s.log.Printf("error committing to DB: %v", err)
+				} else {
+					s.im.incrementImportCount(cur)
+					s.im.addWarned(s.id, warned)
+				}
+				cur = 0
+			}
+			continue
+		}
 		if cur == 0 {
+			warned = map[string]int{}
 			// New transaction batch.
 			tx, err = s.im.db.Begin()
 			if err != nil {
@@ -465,6 +558,9 @@ func (s *Session) Start() {
 		}
 		cur++
 		total++
+		if sub.AxmWarn != "" {
+			warned[sub.AxmWarn]++
+		}
 
 		// Batch size is met. Commit.
 		if cur%commitBatchSize == 0 {
@@ -473,6 +569,7 @@ func (s *Session) Start() {
 				s.log.Printf("error committing to DB: %v", err)
 			} else {
 				s.im.incrementImportCount(cur)
+				s.im.addWarned(s.id, warned)
 				s.log.Printf("imported %d", total)
 			}
 
@@ -501,6 +598,7 @@ func (s *Session) Start() {
 	}
 
 	s.im.incrementImportCount(cur)
+	s.im.addWarned(s.id, warned)
 	s.im.setStatus(StatusFinished)
 	s.log.Printf("imported finished")
 	if _, err := s.im.opt.UpdateListDateStmt.Exec(pq.Array(listIDs)); err != nil {
@@ -667,7 +765,22 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		lnHdr = len(hdrKeys)
 		i     = 0
 		rec   = 0 // the records read so far, the header not counted
+		// batch holds the rows the address gate has not decided yet (LST-56). The gate looks
+		// at the database and at DNS, so it takes a batch at a time; the rows leave it, and
+		// reach the queue, in the order of the file.
+		batch []gateRow
 	)
+	flush := func() {
+		s.decide(batch)
+		batch = batch[:0]
+	}
+	// A read error ends the import as failed, but the rows read before it were queued before
+	// this change and are still.
+	defer func() {
+		if failed {
+			flush()
+		}
+	}()
 	for {
 		i++
 
@@ -675,6 +788,7 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		select {
 		case <-s.im.stop:
 			failed = false
+			flush() // the rows already read are decided and queued, as they were row by row
 			close(s.subQueue)
 			s.log.Println("stop request received")
 			return nil
@@ -740,13 +854,22 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 			if _, ferr := utils.SanitizeEmail(rawEmail); ferr != nil || len(rawEmail) > 1000 {
 				reason = RejectFormat
 			}
-			s.im.reject(s.id, RejectedRow{Row: s.rowOf(rec, fileLine), Email: clip(rawEmail), Reason: reason})
+			row := RejectedRow{Row: s.rowOf(rec, fileLine), Email: clip(rawEmail), Reason: reason}
+			if s.opt.Mode == ModeSubscribe && s.im.verify != nil {
+				// Kept in the batch, so that the refused rows of the download keep the order of the file.
+				batch = append(batch, gateRow{pre: &row})
+				if len(batch) >= gateBatch {
+					flush()
+				}
+			} else {
+				s.im.reject(s.id, row)
+			}
 			continue
 		}
 
 		// An address that cannot receive mail is not added to a list (LST-53). Blocklisting
 		// takes any address: the point there is to keep it out.
-		if s.opt.Mode == ModeSubscribe {
+		if s.opt.Mode == ModeSubscribe && s.im.verify == nil {
 			if reason, suggest := addrcheck.Rules(sub.Email); reason != "" {
 				// The log is shown to everyone who may import: the address is not written to it.
 				s.log.Printf("skipping line %d: address refused (%s)", i, reason)
@@ -762,20 +885,87 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 				b       = []byte(row["attributes"])
 			)
 			if err := json.Unmarshal(b, &attribs); err != nil {
-				s.log.Printf("skipping invalid attributes JSON on line %d for '%s': %v", i, sub.Email, err)
+				s.log.Printf("skipping invalid attributes JSON on line %d: %v", i, err)
 			} else {
 				sub.Attribs = attribs
 			}
 		}
 
-		// Send the subscriber to the queue.
+		// Send the subscriber to the queue, after the address gate has decided it (LST-56).
+		if s.opt.Mode == ModeSubscribe && s.im.verify != nil {
+			batch = append(batch, gateRow{sub: sub, row: s.rowOf(rec, fileLine), line: i})
+			if len(batch) >= gateBatch {
+				flush()
+			}
+			continue
+		}
 		s.subQueue <- sub
 	}
 
+	flush()
 	close(s.subQueue)
 	failed = false
+	// A stop request that came while the last batch waited for DNS has nothing left to stop. Left
+	// in the channel it would cancel the next import.
+	select {
+	case <-s.im.stop:
+	default:
+	}
 
 	return nil
+}
+
+// gateRow is a row of the file waiting for the address gate.
+type gateRow struct {
+	sub  SubReq
+	row  int // the row number it is reported under
+	line int // the line of the file, for the log
+	// pre is a row that was refused before the gate (malformed, or a domain the settings do
+	// not allow): the gate does not look at it, it is only kept in order.
+	pre *RejectedRow
+}
+
+// decide asks the address gate about a batch of rows and queues the rows that may come in,
+// in order. A refused row is counted and kept for the download; a row that comes in with a
+// warning is counted. The log gets the reason code only: it is shown to everyone who may import.
+func (s *Session) decide(rows []gateRow) {
+	if len(rows) == 0 {
+		return
+	}
+	var emails []string
+	at := make([]int, len(rows)) // the position in emails of each row the gate decides
+	for i, r := range rows {
+		if r.pre != nil {
+			at[i] = -1
+			continue
+		}
+		at[i] = len(emails)
+		emails = append(emails, r.sub.Email)
+	}
+	var verdicts []AxmVerdict
+	if len(emails) > 0 {
+		// The writer commits what it has before the gate asks the database for a connection. It
+		// begins its next transaction only with the next row, which comes after the gate is done.
+		s.subQueue <- SubReq{axmFlush: true}
+		verdicts = s.im.verify(emails)
+	}
+	for i, r := range rows {
+		if r.pre != nil {
+			s.im.reject(s.id, *r.pre)
+			continue
+		}
+		var v AxmVerdict
+		if at[i] < len(verdicts) {
+			v = verdicts[at[i]]
+		}
+		if v.Reject != "" {
+			s.log.Printf("skipping line %d: address refused (%s)", r.line, v.Reject)
+			s.im.reject(s.id, RejectedRow{Row: r.row, Email: r.sub.Email, Reason: v.Reject, Suggest: v.Suggest})
+			continue
+		}
+		r.sub.AxmWarn = v.Warn
+		s.subQueue <- r.sub
+	}
 }
 
 // sheetRows numbers the records a csv.Reader returns as a spreadsheet numbers rows: blank

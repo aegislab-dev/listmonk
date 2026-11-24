@@ -45,6 +45,8 @@ type App struct {
 	emailMsgr  manager.Messenger
 	importer   *subimporter.Importer
 	addrCheck  *addrcheck.Checker
+	// addrGate is how strict the address gate is: full (default), nodns or basic (LST-56).
+	addrGate string
 	auth       *auth.Auth
 	media      media.Store
 	bounce     *bounce.Manager
@@ -296,6 +298,7 @@ func main() {
 		emailMsgr:  emailMsgr,
 		importer:   importer,
 		addrCheck:  initAddrCheck(),
+		addrGate:   ko.String("app.axm_address_gate"),
 		auth:       auth,
 		media:      media,
 		bounce:     bounce,
@@ -330,6 +333,7 @@ func main() {
 	}
 
 	importAuditHook = app.auditImportFinish
+	importer.SetAxmVerify(app.importVerify)
 
 	// Star the update checker.
 	if ko.Bool("app.check_updates") {

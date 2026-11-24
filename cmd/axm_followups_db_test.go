@@ -534,8 +534,8 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	e := newFollowupEnv(t)
 	root := repoRoot(t)
 	schema, _ := os.ReadFile(filepath.Join(root, "schema.sql"))
-	mig, _ := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm.16.go"))
-	const start, end = "-- AXM campaign follow-ups (LST-47). Keep this block identical to V6_2_1_axm_16.", "-- End of AXM campaign follow-ups."
+	mig, _ := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm.17.go"))
+	const start, end = "-- AXM campaign follow-ups (LST-47). Keep this block identical to V6_2_1_axm_17.", "-- End of AXM campaign follow-ups."
 	_, tail, ok := strings.Cut(string(schema), start)
 	block, _, endOK := strings.Cut(tail, end)
 	if !ok || !endOK || !strings.Contains(string(mig), "`"+start+block+end+"`") {
@@ -543,7 +543,7 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	}
 	e.db.MustExec(`DROP TABLE axm_campaign_followup_holds, axm_campaign_followup_claims, axm_campaign_followup_members, axm_campaign_followup_reactions, axm_campaign_followups, axm_tracking_off`)
 	for i := 0; i < 2; i++ {
-		if err := migrations.V6_2_1_axm_16(e.db, nil, nil, nil); err != nil {
+		if err := migrations.V6_2_1_axm_17(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -555,7 +555,7 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	}
 	var last string
 	last = migList[len(migList)-1].version
-	if last != "v6.2.1-axm.16" {
+	if last != "v6.2.1-axm.17" {
 		t.Fatal(last)
 	}
 }

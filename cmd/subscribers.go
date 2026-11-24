@@ -277,8 +277,10 @@ func (a *App) CreateSubscriber(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
-	// An address that cannot receive mail is not added (LST-53).
-	if err := a.addressRuleError(c, req.Email); err != nil {
+	// An address that cannot receive mail, or that bounced or was blocklisted before, is not
+	// added (LST-53, LST-56). An address added as blocklisted may be anything.
+	if err := a.addressGateError(c, req.Email, gateOpt{Budget: singleGateBudget, DBFacts: true,
+		RulesOnly: req.Status == models.SubscriberStatusBlockListed}); err != nil {
 		return err
 	}
 
@@ -340,8 +342,9 @@ func (a *App) UpdateSubscriber(c echo.Context) error {
 	if err := a.hasSubPerm(user, []int{id}); err != nil {
 		return err
 	}
-	// A new address is held to the address rules; one that was not changed is not (LST-53).
-	if err := a.addressChangeError(c, id, req.Email, ""); err != nil {
+	// A new address is held to the address rules; one that was not changed is not (LST-53, LST-56).
+	if err := a.addressChangeGateError(c, id, req.Email, "", gateOpt{Budget: singleGateBudget, DBFacts: true,
+		RulesOnly: req.Status == models.SubscriberStatusBlockListed}); err != nil {
 		return err
 	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {
@@ -409,8 +412,9 @@ func (a *App) PatchSubscriber(c echo.Context) error {
 	} else {
 		req.Email = em
 	}
-	// A new address is held to the address rules; one that was not changed is not (LST-53).
-	if err := a.addressChangeError(c, id, req.Email, sub.Email); err != nil {
+	// A new address is held to the address rules; one that was not changed is not (LST-53, LST-56).
+	if err := a.addressChangeGateError(c, id, req.Email, sub.Email, gateOpt{Budget: singleGateBudget, DBFacts: true,
+		RulesOnly: req.Status == models.SubscriberStatusBlockListed}); err != nil {
 		return err
 	}
 	if err := a.checkUnblock(user, id, req.Status); err != nil {

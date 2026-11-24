@@ -1425,7 +1425,9 @@ def _start_app(ctx, steps, image, pg):
     env = {'LISTMONK_db__host': '127.0.0.1', 'LISTMONK_db__port': str(ctx.pg_port), 'LISTMONK_db__user': 'postgres',
            'LISTMONK_db__password': 'pw', 'LISTMONK_db__database': dsn_db, 'LISTMONK_db__ssl_mode': 'disable',
            'LISTMONK_app__address': f'127.0.0.1:{port}', 'LISTMONK_ADMIN_USER': 'ci-admin',
-           'LISTMONK_ADMIN_PASSWORD': 'ci-only-password'}
+           'LISTMONK_ADMIN_PASSWORD': 'ci-only-password',
+           # The sandbox has no DNS, as in CI: the address gate leaves DNS out (LST-56).
+           'LISTMONK_app__axm_address_gate': 'nodns'}
     eargs = [x for k, v in env.items() for x in ('-e', f'{k}={v}')]
     t0 = time.time()
     r = docker('run', '--rm', '--network', 'host', *eargs, image, './listmonk', '--install', '--yes', check=False)

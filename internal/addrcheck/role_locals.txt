@@ -1,0 +1,61 @@
+# Mailbox names that usually belong to a team or a function, not to one person (info@, support@).
+# They bounce and complain more often, but many are real contact points, so an address with
+# one of these names is let in with a warning, never refused.
+# Source: the mailbox names of RFC 2142 (abuse, postmaster, webmaster, hostmaster, noc, security,
+# info, marketing, sales, support) plus common contact names this fork added by hand. It is not
+# copied from an outside list.
+# To update: add or remove a line below, then run: go test ./internal/addrcheck/
+# Updated: 2026-11-23 (the names are the ones of the table that was in roles.go before).
+info
+admin
+admins
+administrator
+contact
+contacts
+sales
+support
+help
+helpdesk
+office
+marketing
+booking
+bookings
+reservation
+reservations
+hello
+team
+hr
+webmaster
+postmaster
+hostmaster
+abuse
+noreply
+no-reply
+no_reply
+donotreply
+do-not-reply
+mailer-daemon
+root
+billing
+careers
+jobs
+recruit
+press
+pr
+newsletter
+service
+cs
+customerservice
+enquiry
+enquiries
+inquiry
+inquiries
+security
+privacy
+legal
+accounts
+accounting
+finance
+media
+partners
+partnership
