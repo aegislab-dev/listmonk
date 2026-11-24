@@ -181,7 +181,7 @@
         </div>
       </b-table-column>
 
-      <b-table-column v-slot="props" cell-class="actions" width="15%" align="right">
+      <b-table-column v-slot="props" cell-class="actions" width="215" align="right">
         <div>
           <!-- start / pause / resume / scheduled -->
           <template v-if="$can('campaigns:send')">
@@ -252,9 +252,11 @@
               <b-icon icon="chart-bar" size="is-small" />
             </b-tooltip>
           </router-link>
-          <a v-if="canReact(props.row)" href="#" data-cy="btn-campaign-reaction"
+          <!-- A finished campaign gets its follow-up as a button with words (LST-62); the other
+               statuses cannot make a follow-up and keep the icon for the plain reaction list. -->
+          <a v-if="canReact(props.row) && !isFinished(props.row)" href="#" data-cy="btn-campaign-reaction"
             class="campaign-reaction-action" :aria-label="$t('campaigns.reactionList.title')"
-            @click.prevent="reactionCampaign = props.row">
+            @click.prevent="openReaction(props.row)">
             <b-tooltip :label="$t('campaigns.reactionList.title')" type="is-dark">
               <b-icon icon="format-list-bulleted-square" size="is-small" />
             </b-tooltip>
@@ -274,6 +276,11 @@
             <b-icon icon="trash-can-outline" size="is-small" />
           </a>
         </div>
+        <b-button v-if="canReact(props.row) && isFinished(props.row)" size="is-small" type="is-primary is-light"
+          icon-left="format-list-bulleted-square" class="campaign-followup-button" data-cy="btn-campaign-reaction"
+          @click="openReaction(props.row)">
+          {{ $t('campaigns.followup.entry') }}
+        </b-button>
       </b-table-column>
 
       <template #empty v-if="!loading.campaigns">
@@ -284,7 +291,7 @@
     <campaign-preview v-if="previewItem" type="campaign" :id="previewItem.id" :title="previewItem.name"
       @close="closePreview" />
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
-      @close="reactionCampaign = null" />
+      :preset="reactionPreset" @close="reactionCampaign = null" />
     <!-- The copy asks for its own lists (LST-59): the original's lists are not carried over. -->
     <b-modal has-modal-card scroll="keep" :aria-modal="true" :active="!!cloneAsk" :width="520" trap-focus
       :can-cancel="['escape', 'outside']" @close="cloneAsk = null">
@@ -331,6 +338,7 @@ export default Vue.extend({
       sendAsk: null,
       previewItem: null,
       reactionCampaign: null,
+      reactionPreset: '',
       // The campaign whose copy window is open (LST-59).
       cloneAsk: null,
       queryParams: {
@@ -351,6 +359,14 @@ export default Vue.extend({
   },
 
   methods: {
+    isFinished(campaign) {
+      return campaign.status === 'finished';
+    },
+    // The follow-up entry opens the window with its conditions preset (LST-62).
+    openReaction(campaign) {
+      this.reactionPreset = this.isFinished(campaign) ? 'followup' : '';
+      this.reactionCampaign = campaign;
+    },
     canReact(campaign) {
       return this.$canCreateList() && this.$can('campaigns:get_analytics')
         && this.$can('campaigns:get', 'campaigns:get_all') && reactionStatuses.includes(campaign.status);
@@ -667,4 +683,5 @@ export default Vue.extend({
 
 <style scoped>
 .campaign-reaction-action { background: #e8f0fe; border-radius: 4px; }
+.campaign-followup-button { display: flex; width: 100%; height: auto; margin-top: 6px; white-space: normal; }
 </style>

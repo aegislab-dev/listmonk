@@ -35,21 +35,26 @@ describe('follow-up campaign draft', () => {
 
   beforeEach(() => cy.viewport(1280, 1000));
 
-  it('shows the box only after the people are checked, and its parts only when it is ticked', () => {
+  it('opens ready to send again: the click filter preset, the box ticked once the people are checked', () => {
     openDialog();
+    cy.get('#reaction-title').should('contain', "Send again to people who didn't click");
+    cy.get(input('click', 'no')).should('be.checked');
+    cy.get(input('open', 'any')).should('be.checked');
     cy.get('[data-cy=followup-box]').should('not.exist');
     checkOpenedNotClicked();
     cy.get('[data-cy=followup-box]').should('be.visible');
-    cy.get(toggle).should('not.be.checked');
-    cy.get('[data-cy=followup-warn], [data-cy=followup-name], [data-cy=followup-note]').should('not.exist');
-    cy.get('[data-cy=reaction-create]').invoke('text').should('not.contain', 'follow-up');
-
-    cy.get(toggle).check({ force: true });
+    cy.get(toggle).should('be.checked');
     // The fixture was sent just now, so the warning about the first days shows.
     cy.get('[data-cy=followup-warn]').scrollIntoView().should('be.visible').and('contain', '3 days');
     cy.get('[data-cy=followup-name] input, input[data-cy=followup-name]').invoke('val').should('contain', campaign);
     cy.get('[data-cy=followup-note]').should('contain', 'checked again when sending starts');
     cy.get('[data-cy=reaction-create]').invoke('text').should('contain', 'follow-up draft');
+
+    // The box can still be unticked: its parts go and the list is made alone.
+    cy.get(toggle).uncheck({ force: true });
+    cy.get('[data-cy=followup-warn], [data-cy=followup-name], [data-cy=followup-note]').should('not.exist');
+    cy.get('[data-cy=reaction-create]').invoke('text').should('not.contain', 'follow-up');
+    cy.get(toggle).check({ force: true });
 
     // A change of condition asks for a new check, and the box goes with it.
     cy.get(input('click', 'any')).check({ force: true });
@@ -57,8 +62,27 @@ describe('follow-up campaign draft', () => {
     cy.get(input('click', 'no')).check({ force: true });
     cy.get('[data-cy=reaction-check]').click();
     cy.get(toggle).should('be.checked');
-    cy.get(toggle).uncheck({ force: true });
-    cy.get('[data-cy=followup-name]').should('not.exist');
+  });
+
+  it('shows the entry as a button with words on the finished row and on the campaign page', () => {
+    cy.visit('/admin/campaigns');
+    cy.get('tbody tr').filter(`:contains("${campaign}")`).filter(':has(.tag.finished)')
+      .find('[data-cy=btn-campaign-reaction]').should('contain', "Send again to people who didn't click");
+    cy.visit(`/admin/campaigns/${campaignId}`);
+    cy.get('[data-cy=btn-campaign-followup]').should('contain', "Send again to people who didn't click").click();
+    cy.get(modal).should('be.visible');
+    cy.get(input('click', 'no')).should('be.checked');
+    cy.get('#reaction-title').should('contain', "Send again to people who didn't click");
+  });
+
+  it('falls back to "did not open" where clicks cannot be told apart, and to neither where nothing can', () => {
+    cy.intercept('POST', '**/reaction-list/preview', (request) => {
+      request.continue((response) => { response.body.data.tracking.clickers = 0; });
+    });
+    openDialog();
+    cy.get(input('click', 'any')).should('be.checked');
+    cy.get(input('click', 'no')).should('be.disabled');
+    cy.get(input('open', 'no')).should('be.checked');
   });
 
   it('does not warn after the first days', () => {

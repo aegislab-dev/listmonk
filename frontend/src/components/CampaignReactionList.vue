@@ -5,7 +5,7 @@
     <form @submit.prevent="createList">
       <div class="modal-card content reaction-card" data-cy="reaction-list">
         <header class="modal-card-head">
-          <h4 id="reaction-title">{{ result && result.followup ? f('doneBoth') : t(result ? 'done' : 'title') }}</h4>
+          <h4 id="reaction-title">{{ heading }}</h4>
           <template v-if="metadata">
             <p class="reaction-source">
               {{ metadata.campaign.name }} · #{{ metadata.campaign.id }} ·
@@ -203,6 +203,10 @@ export default Vue.extend({
   name: 'CampaignReactionList',
   props: {
     campaignId: { type: Number, required: true },
+    // 'followup': opened from "Send again to people who didn't click" (LST-62). The click axis
+    // starts on "did not click" and the follow-up draft box starts checked. Without it the window
+    // starts neutral, as it always did.
+    preset: { type: String, default: '' },
   },
   data() {
     return {
@@ -221,13 +225,17 @@ export default Vue.extend({
       loadingTeams: false,
       checking: false,
       creating: false,
-      followup: false,
+      followup: this.preset === 'followup',
       followupName: '',
       followupNameTouched: false,
     };
   },
   computed: {
     isAdmin() { return this.$can('lists:manage_all'); },
+    heading() {
+      if (this.result) return this.result.followup ? this.f('doneBoth') : this.t('done');
+      return this.preset === 'followup' ? this.f('entry') : this.t('title');
+    },
     tracking() { return this.metadata.tracking; },
     noSends() { return this.tracking.sends === 0; },
     noOpen() { return !this.tracking.individualTracking || this.tracking.viewers === 0; },
@@ -302,11 +310,19 @@ export default Vue.extend({
     async loadTracking() {
       try {
         this.metadata = await this.$api.previewCampaignReactionList(this.campaignId, { tracking_only: true });
+        this.applyPreset();
       } catch (e) {
         this.showError(e);
       } finally {
         this.loading = false;
       }
+    },
+    // "Didn't click" first; where clicks cannot be told apart, "didn't open"; else leave both open.
+    // The lock notice of the axis says why.
+    applyPreset() {
+      if (this.preset !== 'followup' || this.noSends) return;
+      if (!this.noClick) this.settings.click = 'no';
+      else if (!this.noOpen) this.settings.open = 'no';
     },
     async loadTeams() {
       this.loadingTeams = true;

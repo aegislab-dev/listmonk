@@ -51,8 +51,16 @@
             </b-field>
           </b-field>
         </div>
+        <!-- A finished campaign has no other button here: the follow-up entry goes in its place (LST-62). -->
+        <div v-if="canFollowup" class="buttons is-right">
+          <b-button type="is-primary is-light" icon-left="format-list-bulleted-square" data-cy="btn-campaign-followup"
+            @click="followupOpen = true">
+            {{ $t('campaigns.followup.entry') }}
+          </b-button>
+        </div>
       </div>
     </header>
+    <campaign-reaction-list v-if="followupOpen" :campaign-id="data.id" preset="followup" @close="followupOpen = false" />
 
     <b-loading :active="loading.campaigns || savingCampaign" />
 
@@ -387,6 +395,7 @@ import Editor from '../components/Editor.vue';
 import ListSelector from '../components/ListSelector.vue';
 import AddressCheck from '../components/AddressCheck.vue';
 import CampaignFollowupBanner from '../components/CampaignFollowupBanner.vue';
+import CampaignReactionList from '../components/CampaignReactionList.vue';
 import RecentSendExclude from '../components/RecentSendExclude.vue';
 import TimezonePicker from '../components/TimezonePicker.vue';
 import Media from './Media.vue';
@@ -414,6 +423,7 @@ export default Vue.extend({
     SenderAddressInput,
     AddressCheck,
     CampaignFollowupBanner,
+    CampaignReactionList,
     RecentSendExclude,
     TimezonePicker,
     TrackingCheck,
@@ -432,6 +442,7 @@ export default Vue.extend({
 
       isNew: false,
       isFollowup: false,
+      followupOpen: false,
       isEditing: false,
       isHeadersVisible: false,
       isAttachFieldVisible: false,
@@ -1168,6 +1179,12 @@ export default Vue.extend({
 
     canSend() {
       return this.$can('campaigns:send');
+    },
+
+    // Same conditions as the campaign list's entry.
+    canFollowup() {
+      return this.isEditing && this.data.status === 'finished' && this.$canCreateList()
+        && this.$can('campaigns:get_analytics') && this.$can('campaigns:get', 'campaigns:get_all');
     },
 
     // The target can change only while the campaign has not started (not while paused).

@@ -90,10 +90,10 @@
     <b-button v-if="canReact" type="is-light" icon-left="format-list-bulleted-square"
       class="reaction-analytics-action" data-cy="btn-analytics-reaction"
       @click="reactionCampaign = form.campaigns[0]">
-      {{ $t('campaigns.reactionList.title') }}
+      {{ reactionFinished ? $t('campaigns.followup.entry') : $t('campaigns.reactionList.title') }}
     </b-button>
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
-      @close="reactionCampaign = null" />
+      :preset="reactionCampaign.status === 'finished' ? 'followup' : ''" @close="reactionCampaign = null" />
 
     <section class="charts mt-5">
       <div class="chart" v-for="(v, k) in charts" :key="k">
@@ -454,6 +454,11 @@ export default Vue.extend({
         return 'one';
       }
       return ['draft', 'scheduled'].includes(this.form.campaigns[0].status) ? 'notSent' : '';
+    },
+
+    // The follow-up wording is for a finished campaign only (LST-62).
+    reactionFinished() {
+      return this.form.campaigns.length === 1 && this.form.campaigns[0].status === 'finished';
     },
 
     canReact() {
