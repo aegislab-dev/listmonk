@@ -285,9 +285,19 @@ func (s *store) GetCampaignSentIDs(campID, lastSubID int) ([]int, error) {
 
 	var pqErr *pq.Error
 	if errors.As(err, &pqErr) && pqErr.Code == pgUndefinedTable {
-		return nil, nil
+		out, err = nil, nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+
+	// AXM (LST-47): a follow-up also leaves out whom its decisions say it was sent to, so that a
+	// send record that expired while it was paused does not send it to them again.
+	var sent []int
+	if err := s.queries.AxmFollowupSentIDs.Select(&sent, campID, lastSubID); err != nil {
+		return nil, err
+	}
+	return append(out, sent...), nil
 }
 
 // HoldCampaignLock reports whether this app instance holds the campaign sending lock.

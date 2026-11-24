@@ -59,6 +59,7 @@ type Queries struct {
 	AxmFollowupToSend              *sqlx.Stmt `query:"axm-followup-to-send"`
 	AxmFollowupPickup              *sqlx.Stmt `query:"axm-followup-pickup"`
 	AxmFollowupRecount             *sqlx.Stmt `query:"axm-followup-recount"`
+	AxmFollowupSentIDs             *sqlx.Stmt `query:"axm-followup-sent-ids"`
 	AxmFollowupFinishEmpty         *sqlx.Stmt `query:"axm-followup-finish-empty"`
 	AxmFollowupMembers             *sqlx.Stmt `query:"axm-followup-members"`
 	AxmFollowupReactionsNow        *sqlx.Stmt `query:"axm-followup-reactions-now"`

@@ -130,6 +130,12 @@ FROM verdict v LEFT JOIN held h ON h.subscriber_id = v.sid;
 DELETE FROM axm_campaign_followup_claims c
 WHERE c.campaign_id = $1 AND c.subscriber_id > $2 AND NOT c.sent;
 
+-- name: axm-followup-sent-ids
+-- The people above checkpoint $2 whom follow-up $1 was sent to, by its decisions (kept when a send
+-- record expires or goes with the subscriber's data). The sender leaves them out when it picks the
+-- campaign up, as it does the people with a send record, so nobody gets the follow-up twice.
+SELECT subscriber_id FROM axm_campaign_followup_claims WHERE campaign_id = $1 AND subscriber_id > $2 AND sent;
+
 -- name: axm-followup-recount
 UPDATE campaigns SET to_send = axm_followup_to_send(id) WHERE id = $1;
 

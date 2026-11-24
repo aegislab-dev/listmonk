@@ -1684,3 +1684,36 @@ func TestFollowupToSendAndAuditCountEachLeftOutPersonOnce(t *testing.T) {
 		t.Fatalf("an ordinary campaign's to_send became %d", n)
 	}
 }
+
+// F82 (LST-47, decision 11/24): a follow-up is paused after Manual got it, with its checkpoint below
+// Manual (a message before Manual's was dropped by the pause), and Manual's send record expires
+// while it is paused. When it is resumed, the sender knows from the follow-up's decisions that
+// Manual got it and does not send it to them again.
+func TestFollowupResumedAfterTheSendRecordExpiredSendsNobodyTwice(t *testing.T) {
+	t.Parallel()
+	e := newScanningFollowupEnv(t, true)
+	got, manual := e.followupWithManualMember(`{"open":"no","no_team":true,"followup":true}`)
+	camp := got.Followup.ID
+	charlie, daniel := e.ids[2], e.ids[3]
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, daniel)
+	// The state the pause left: Manual was decided and sent (the send record marks the decision),
+	// nobody below Manual is settled, the checkpoint is 0.
+	e.db.MustExec(`INSERT INTO axm_campaign_followup_claims (campaign_id, subscriber_id) VALUES ($1, $2)`, camp, manual)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() - INTERVAL '400 days')`, camp, manual)
+	e.db.MustExec(`UPDATE campaigns SET status = 'paused', sent = 1, last_subscriber_id = 0 WHERE id = $1`, camp)
+	// The send records expire while it is paused.
+	var deleted int
+	if err := e.q.AxmDeleteCampaignSends.Get(&deleted, time.Now().Add(-365*24*time.Hour), 1000); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1`, camp); deleted == 0 || n != 0 {
+		t.Fatalf("expired %d, left %d", deleted, n)
+	}
+	e.db.MustExec(`UPDATE campaigns SET status = 'running' WHERE id = $1`, camp)
+	waitFor(t, "the follow-up to finish", func() bool {
+		var s string
+		e.get(&s, `SELECT status FROM campaigns WHERE id = $1`, camp)
+		return s == "finished"
+	})
+	wantSame(t, "sent to", e.gate.sentIDs(), []int{charlie})
+}
