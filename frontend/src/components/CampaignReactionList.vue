@@ -5,7 +5,7 @@
     <form @submit.prevent="createList">
       <div class="modal-card content reaction-card" data-cy="reaction-list">
         <header class="modal-card-head">
-          <h4 id="reaction-title">{{ t(result ? 'done' : 'title') }}</h4>
+          <h4 id="reaction-title">{{ result && result.followup ? f('doneBoth') : t(result ? 'done' : 'title') }}</h4>
           <template v-if="metadata">
             <p class="reaction-source">
               {{ metadata.campaign.name }} · #{{ metadata.campaign.id }} ·
@@ -112,7 +112,40 @@
                   <b-input v-model="name" :maxlength="200" required :disabled="creating"
                     data-cy="reaction-name" @input="nameTouched = true" />
                 </b-field>
+
+                <div v-if="offer && offer.available" class="followup-box" data-cy="followup-box">
+                  <b-checkbox v-model="followup" :disabled="creating" data-cy="followup-toggle">
+                    <strong>{{ f('toggle') }}</strong>
+                    <span class="followup-hint">{{ f('toggleHint') }}</span>
+                  </b-checkbox>
+                  <template v-if="followup">
+                    <p v-if="followupSoon" class="reaction-note is-warning" data-cy="followup-warn">
+                      {{ f('warn', { days: offer.warnDays }) }}
+                    </p>
+                    <b-field :label="f('name')">
+                      <b-input v-model="followupName" :maxlength="200" :disabled="creating"
+                        data-cy="followup-name" @input="followupNameTouched = true" />
+                    </b-field>
+                    <p class="reaction-note" data-cy="followup-note">
+                      <strong>{{ f('recheckTitle') }}</strong> {{ f('recheckBody') }}
+                    </p>
+                  </template>
+                </div>
               </template>
+
+              <!-- Shown whatever this check found, even for nobody: the follow-up already made. -->
+              <div v-if="offer && offer.existing" class="followup-box" data-cy="followup-box">
+                <p>
+                  <strong>{{ f('existing') }}</strong>
+                  <a href="#" data-cy="followup-open-existing" @click.prevent="openFollowup(offer.existing.id)">
+                    {{ f('open', { id: offer.existing.id }) }}
+                  </a>
+                  · {{ $t(`campaigns.status.${offer.existing.status}`) }}
+                  <template v-if="existingCondition"> · {{ f('condition') }} {{ existingCondition }}</template>
+                  <template v-if="offer.existing.condition"> · {{ f('listCount', { count: num(offer.existing.count || 0) }) }}</template>
+                </p>
+                <p class="help">{{ f('existsHint') }}</p>
+              </div>
             </template>
           </template>
           <p v-if="error" class="reaction-note is-warning" role="alert" data-cy="reaction-error">{{ error }}</p>
@@ -120,14 +153,21 @@
 
         <section v-else class="modal-card-body" data-cy="reaction-done">
           <p class="reaction-note is-success" data-cy="reaction-done-count">
-            {{ t('added', { count: num(result.counts.eligible) }) }}
+            {{ result.followup ? f('addedBoth', { count: num(result.counts.eligible) }) : t('added', { count: num(result.counts.eligible) }) }}
           </p>
           <p class="reaction-done-name"><strong>{{ result.list.name }}</strong></p>
           <div class="reaction-metrics">
             <b-tag type="is-info is-light">{{ $t('lists.types.private') }}</b-tag>
             <b-tag v-for="tag in result.list.tags" :key="tag" type="is-info is-light">{{ teamName(tag) }}</b-tag>
           </div>
-          <p class="help">{{ t('checkedAt', { time: date(result.checkedAt) }) }}</p>
+          <p v-if="result.followup" class="reaction-done-name" data-cy="followup-done">
+            {{ f('draft') }} <strong>{{ result.followup.name }}</strong> · #{{ result.followup.id }}
+            · {{ $t(`campaigns.status.${result.followup.status}`) }}
+          </p>
+          <p class="help">
+            {{ t('checkedAt', { time: date(result.checkedAt) }) }}
+            <template v-if="result.followup">{{ f('bannerRecheck') }}</template>
+          </p>
         </section>
 
         <footer class="modal-card-foot">
@@ -138,7 +178,11 @@
           </b-button>
           <template v-else>
             <b-button data-cy="reaction-view" @click="viewList">{{ $t('lists.draw.viewList') }}</b-button>
-            <b-button v-if="$can('campaigns:manage', 'campaigns:manage_all')" type="is-primary"
+            <b-button v-if="result.followup" type="is-primary" data-cy="followup-view"
+              @click="openFollowup(result.followup.id)">
+              {{ f('openDraft') }}
+            </b-button>
+            <b-button v-else-if="$can('campaigns:manage', 'campaigns:manage_all')" type="is-primary"
               data-cy="reaction-campaign" @click="makeCampaign">
               {{ $t('lists.draw.makeCampaign') }}
             </b-button>
@@ -153,6 +197,7 @@
 import Vue from 'vue';
 import dayjs from 'dayjs';
 import { NO_TEAM, teamName } from '../teams';
+import { conditionWords } from '../followup';
 
 export default Vue.extend({
   name: 'CampaignReactionList',
@@ -176,6 +221,9 @@ export default Vue.extend({
       loadingTeams: false,
       checking: false,
       creating: false,
+      followup: false,
+      followupName: '',
+      followupNameTouched: false,
     };
   },
   computed: {
@@ -212,11 +260,25 @@ export default Vue.extend({
     sourceTeamNames() { return this.sourceTeams.map(teamName).join(', '); },
     canCreate() {
       return this.eligible > 0 && !!this.name.trim() && !this.checking && !this.creating
-        && (!this.isAdmin || (!this.loadingTeams && this.team !== null));
+        && (!this.isAdmin || (!this.loadingTeams && this.team !== null))
+        && (!this.wantsFollowup || !!this.followupName.trim());
+    },
+    // What the server says about making a follow-up draft with the list.
+    offer() { return this.metadata?.followup || null; },
+    // The condition the existing follow-up was made with, in words.
+    existingCondition() {
+      return conditionWords(this.offer?.existing?.condition, (key) => this.$t(key));
+    },
+    wantsFollowup() { return this.followup && !!this.offer?.available; },
+    followupSoon() {
+      return this.offer && this.offer.daysSince !== null && this.offer.daysSince < this.offer.warnDays;
     },
     createLabel() {
       if (!this.metadata || this.noSends || (this.preview && this.eligible === 0)) return this.t('create');
-      return this.preview ? this.t('createCount', { count: this.num(this.eligible) }) : this.t('checkFirst');
+      if (!this.preview) return this.t('checkFirst');
+      return this.wantsFollowup
+        ? this.f('createBoth', { count: this.num(this.eligible) })
+        : this.t('createCount', { count: this.num(this.eligible) });
     },
     conditionKey() { return `${this.settings.open}/${this.settings.click}`; },
   },
@@ -233,6 +295,7 @@ export default Vue.extend({
   methods: {
     teamName,
     t(key, params) { return this.$t(`campaigns.reactionList.${key}`, params); },
+    f(key, params) { return this.$t(`campaigns.followup.${key}`, params); },
     num(value) { return this.$utils.formatNumber(value); },
     date(value, format = 'YYYY-MM-DD HH:mm Z') { return dayjs(value).format(format); },
     showError(e) { this.error = e.response?.data?.message || this.t('error'); },
@@ -268,6 +331,7 @@ export default Vue.extend({
           this.metadata = data;
           this.preview = data;
           if (!this.nameTouched) this.name = data.defaultName || '';
+          if (!this.followupNameTouched) this.followupName = data.followup?.defaultName || '';
         }
       } catch (e) {
         if (key === this.conditionKey) this.showError(e);
@@ -288,7 +352,11 @@ export default Vue.extend({
       try {
         // Let the server use the final eligible count for the suggested name.
         const name = this.nameTouched ? this.name.trim() : '';
-        const result = await this.$api.makeCampaignReactionList(this.campaignId, { ...this.settings, ...teamBody, name });
+        const followupBody = this.wantsFollowup
+          ? { followup: true, followup_name: this.followupNameTouched ? this.followupName.trim() : '' } : {};
+        const result = await this.$api.makeCampaignReactionList(this.campaignId, {
+          ...this.settings, ...teamBody, ...followupBody, name,
+        });
         // Campaign drafts use the shared list options. A refresh failure leaves the saved list intact.
         await this.refreshLists().catch(() => {});
         this.result = result;
@@ -296,9 +364,18 @@ export default Vue.extend({
         this.$refreshProfile().catch(() => {});
       } catch (e) {
         this.showError(e);
+        // Someone else made the follow-up first: show it instead of the checkbox.
+        if (e.response?.status === 409) {
+          this.followup = false;
+          this.loadTracking();
+        }
       } finally {
         this.creating = false;
       }
+    },
+    openFollowup(id) {
+      this.$router.push({ name: 'campaign', params: { id } });
+      this.$emit('close');
     },
     viewList() {
       this.$router.push({ name: 'list', params: { id: this.result.list.id } });
@@ -360,6 +437,10 @@ export default Vue.extend({
 .reaction-box h5 { font-size: .9rem; margin-bottom: 5px; }
 .reaction-box table { font-size: .8rem; }
 .reaction-box td, .reaction-box th { padding: 4px 1px; border-color: #e5e7eb; }
+.followup-box { margin-top: 14px; padding-top: 12px; border-top: 1px solid #e5e7eb; }
+.followup-box p { margin: 0 0 4px; }
+.followup-box .reaction-note { margin: 8px 0; }
+.followup-hint { color: #5b6573; margin-left: 4px; }
 .reaction-box td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
 .reaction-box .deduction { color: #535b65; }
 .reaction-box .total { color: #1451a6; font-weight: 700; }

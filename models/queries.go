@@ -54,6 +54,27 @@ type Queries struct {
 	AxmReactionCounts              *sqlx.Stmt `query:"axm-reaction-counts"`
 	AxmReactionSample              *sqlx.Stmt `query:"axm-reaction-sample"`
 	AxmReactionAddMembers          *sqlx.Stmt `query:"axm-reaction-add-members"`
+	AxmFollowupExisting            *sqlx.Stmt `query:"axm-followup-existing"`
+	AxmFollowupIsFollowup          *sqlx.Stmt `query:"axm-followup-is-followup"`
+	AxmFollowupInsert              *sqlx.Stmt `query:"axm-followup-insert"`
+	AxmFollowupGet                 *sqlx.Stmt `query:"axm-followup-get"`
+	AxmFollowupByIDs               *sqlx.Stmt `query:"axm-followup-by-ids"`
+	AxmFollowupClaimLock           *sqlx.Stmt `query:"axm-followup-claim-lock"`
+	AxmFollowupClaimRecipients     *sqlx.Stmt `query:"axm-followup-claim-recipients"`
+	AxmFollowupClaim               *sqlx.Stmt `query:"axm-followup-claim"`
+	AxmFollowupToSend              *sqlx.Stmt `query:"axm-followup-to-send"`
+	AxmFollowupPickup              *sqlx.Stmt `query:"axm-followup-pickup"`
+	AxmFollowupRecount             *sqlx.Stmt `query:"axm-followup-recount"`
+	AxmFollowupSentIDs             *sqlx.Stmt `query:"axm-followup-sent-ids"`
+	AxmFollowupFinishEmpty         *sqlx.Stmt `query:"axm-followup-finish-empty"`
+	AxmFollowupMembers             *sqlx.Stmt `query:"axm-followup-members"`
+	AxmFollowupReactionsNow        *sqlx.Stmt `query:"axm-followup-reactions-now"`
+	AxmFollowupLockOriginal        *sqlx.Stmt `query:"axm-followup-lock-original"`
+	AxmFollowupRecipientsNow       *sqlx.Stmt `query:"axm-followup-recipients-now"`
+	AxmTrackingOffStart            *sqlx.Stmt `query:"axm-tracking-off-start"`
+	AxmTrackingOffEnd              *sqlx.Stmt `query:"axm-tracking-off-end"`
+	AxmFollowupPending             *sqlx.Stmt `query:"axm-followup-pending"`
+	AxmFollowupRecord              *sqlx.Stmt `query:"axm-followup-record"`
 	AxmGetColumnPresets            *sqlx.Stmt `query:"axm-get-column-presets"`
 	AxmGetColumnPreset             *sqlx.Stmt `query:"axm-get-column-preset"`
 	AxmColumnPresetExists          *sqlx.Stmt `query:"axm-column-preset-exists"`

@@ -835,6 +835,21 @@ section.lists {
 /* List selector */
 .list-tags {
   margin-bottom: 1rem;
+  min-width: 0;
+
+  /* A long list name (a list made from a campaign reaction has one) wraps inside the tag
+     instead of pushing the page wider than a phone screen. */
+  .tags {
+    max-width: 100%;
+  }
+
+  .tag.list {
+    max-width: 100%;
+    height: auto;
+    min-height: 2em;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 
   .is-restricted {
     opacity: 0.6;

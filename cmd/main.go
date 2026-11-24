@@ -324,6 +324,13 @@ func main() {
 		// If there are no users, then the app needs to prompt for new user setup.
 		needsUserSetup: !hasUsers,
 	}
+	// AXM (LST-47): the check before a follow-up starts needs to know whether opens and clicks
+	// are recorded per subscriber now (settings can change it while the app runs).
+	app.core.SetIndividualTracking(app.followupTracking)
+	// Settings take effect at a start: note whether reactions are recorded per subscriber from now on.
+	if err := app.core.NoteTracking(app.followupTracking()); err != nil {
+		lo.Printf("error noting the tracking state for follow-up campaigns: %v", err)
+	}
 
 	importAuditHook = app.auditImportFinish
 	importer.SetAxmVerify(app.importVerify)

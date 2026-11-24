@@ -3,7 +3,6 @@ package main
 import (
 	"log"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +53,8 @@ const (
 	auditCampaignCancel     = "campaign.cancel"
 	auditCampaignDelete     = "campaign.delete"
 	auditCampaignTest       = "campaign.test"
+	auditCampaignFollowup   = "campaign.followup"
+	auditCampaignFollowupCk = models.AuditActionFollowupCheck
 
 	auditRoleCreate     = "role.create"
 	auditRoleUpdate     = "role.update"
@@ -87,7 +88,7 @@ const auditNoCount = -1
 
 // auditMaxText is the longest text (a bulk condition, a name) a row keeps.
 const (
-	auditMaxText = 500
+	auditMaxText = core.AuditMaxText
 	auditMaxName = 200
 )
 
@@ -107,52 +108,12 @@ type auditTarget struct {
 	Name string
 }
 
-var (
-	// Any run of characters around an "@" (a whole address, or a part of one such as "kim.lee@"
-	// or "%@example.com") is hidden. An address typed URL-encoded (%40) is read as one first.
-	reAuditEmail = regexp.MustCompile(`[^\s'",()=<>;]*@[^\s'",()=<>;]*`)
-	reAuditPct40 = regexp.MustCompile(`(?i)%40`)
-)
-
 // scrubAuditText hides e-mail addresses in a text that will be stored in the audit log and
-// cuts it to auditMaxText characters. Any "@" that is left over is replaced too, so a row
-// never holds one.
-func scrubAuditText(s string) string {
-	s = reAuditPct40.ReplaceAllString(s, "@")
-	s = reAuditEmail.ReplaceAllString(s, "[email]")
-	s = strings.ReplaceAll(s, "@", "(at)")
-	if utf8.RuneCountInString(s) > auditMaxText {
-		s = string([]rune(s)[:auditMaxText]) + "…"
-	}
-	return s
-}
+// cuts it to auditMaxText characters (core.ScrubAuditText).
+func scrubAuditText(s string) string { return core.ScrubAuditText(s) }
 
 // scrubAuditDetail applies scrubAuditText to every text in a detail value.
-func scrubAuditDetail(v any) any {
-	switch t := v.(type) {
-	case string:
-		return scrubAuditText(t)
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, x := range t {
-			out[k] = scrubAuditDetail(x)
-		}
-		return out
-	case []string:
-		out := make([]string, len(t))
-		for i, x := range t {
-			out[i] = scrubAuditText(x)
-		}
-		return out
-	case []any:
-		out := make([]any, len(t))
-		for i, x := range t {
-			out[i] = scrubAuditDetail(x)
-		}
-		return out
-	}
-	return v
-}
+func scrubAuditDetail(v any) any { return core.ScrubAuditDetail(v) }
 
 func cutName(s string) string {
 	if utf8.RuneCountInString(s) > auditMaxName {
@@ -166,7 +127,8 @@ func auditEntry(user *auth.User, action string, t auditTarget, count int) models
 	e := models.AuditEntry{
 		Action:     action,
 		TargetType: t.Type,
-		TargetName: cutName(t.Name),
+		// Names (of a campaign, a list) can hold an address: hidden as in every audit text.
+		TargetName: cutName(scrubAuditText(t.Name)),
 	}
 	if t.ID > 0 {
 		e.TargetID = null.IntFrom(t.ID)

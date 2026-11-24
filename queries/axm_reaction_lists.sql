@@ -1,8 +1,9 @@
 -- name: axm-reaction-tracking
-SELECT c.id, c.name, c.status, c.started_at,
+SELECT c.id, c.name, c.status, c.type, c.started_at,
     (SELECT COUNT(*) FROM axm_campaign_sends cs WHERE cs.campaign_id = c.id) AS sends,
     (SELECT COUNT(DISTINCT v.subscriber_id) FROM campaign_views v WHERE v.campaign_id = c.id) AS viewers,
-    (SELECT COUNT(DISTINCT k.subscriber_id) FROM link_clicks k WHERE k.campaign_id = c.id) AS clickers
+    (SELECT COUNT(DISTINCT k.subscriber_id) FROM link_clicks k WHERE k.campaign_id = c.id) AS clickers,
+    (SELECT MAX(cs.sent_at) FROM axm_campaign_sends cs WHERE cs.campaign_id = c.id) AS last_sent_at
 FROM campaigns c WHERE c.id = $1;
 
 -- name: axm-reaction-campaign-lists
@@ -35,12 +36,14 @@ WITH reaction_candidates AS (
     FROM axm_campaign_sends cs
     JOIN subscribers s ON s.id = cs.subscriber_id
     WHERE cs.campaign_id = $1
-        AND ($2::TEXT = 'any' OR ($2 = 'yes') = EXISTS (
+        -- AXM (LST-47) an open or click counts also when only the send record still has its time
+        -- (the statistics can be cleared).
+        AND ($2::TEXT = 'any' OR ($2 = 'yes') = (cs.opened_at IS NOT NULL OR EXISTS (
             SELECT 1 FROM campaign_views v WHERE v.campaign_id = $1 AND v.subscriber_id = cs.subscriber_id
-        ))
-        AND ($3::TEXT = 'any' OR ($3 = 'yes') = EXISTS (
+        )))
+        AND ($3::TEXT = 'any' OR ($3 = 'yes') = (cs.clicked_at IS NOT NULL OR EXISTS (
             SELECT 1 FROM link_clicks k WHERE k.campaign_id = $1 AND k.subscriber_id = cs.subscriber_id
-        ))
+        )))
 )
 
 -- name: axm-reaction-counts

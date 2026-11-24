@@ -9,6 +9,10 @@ import (
 
 // AuditEntry is one row of the audit log (axm_audit_log): who did what to what, and when.
 // It never carries a subscriber's e-mail, name or attribute values.
+// AuditActionFollowupCheck is the check before a follow-up campaign is sent (LST-47), written
+// by the server (internal/core) with who it held back.
+const AuditActionFollowupCheck = "campaign.followup_check"
+
 type AuditEntry struct {
 	ID         int64          `db:"id" json:"id"`
 	CreatedAt  time.Time      `db:"created_at" json:"created_at"`
