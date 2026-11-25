@@ -309,4 +309,51 @@ describe('teams', () => {
     cy.contains('tr', teamA).find('[data-cy=team-wide-fix]').should('have.attr', 'href').and('contain', '/users/roles/users');
     cy.contains('tr', teamB).find('[data-cy=team-wide]').should('not.exist');
   });
+
+  // LST-68: lists:get_all is reading. A member who has it and campaigns:manage reads every campaign
+  // but changes only the campaigns of their own lists.
+  it('lets a member who reads every list read another team\'s campaign but not change it', () => {
+    const readerUser = `reader${stamp}`;
+    let readerRoleId;
+    let readerId;
+    let campBId;
+    cy.loginAndVisit('/admin/users/teams');
+    cy.request('/api/teams').then(({ body }) => {
+      const teamAId = body.data.find((t) => t.name === teamA).id;
+      return cy.request('POST', '/api/roles/users', {
+        name: `읽기 시험 ${stamp}`, permissions: ['lists:get_all', 'campaigns:get', 'campaigns:manage'],
+      }).then(({ body: role }) => {
+        readerRoleId = role.data.id;
+        return cy.request('POST', '/api/users', {
+          username: readerUser, email: `${readerUser}@example.invalid`, name: `읽기 ${stamp}`, type: 'user', status: 'enabled',
+          password_login: true, password: memberPass, password2: memberPass, user_role_id: readerRoleId, list_role_id: teamAId,
+        });
+      });
+    }).then(({ body }) => { readerId = body.data.id; });
+    cy.request('POST', '/api/campaigns', {
+      name: `B 캠페인 ${stamp}`, subject: 'Other team', type: 'regular', messenger: 'email', content_type: 'richtext',
+      body: '<p>Hello</p>', lists: [listBId],
+    }).then(({ body }) => { campBId = body.data.id; });
+
+    loginAs(readerUser, memberPass, '/admin/campaigns');
+    cy.then(() => {
+      cy.request(`/api/campaigns/${campBId}`).its('status').should('eq', 200);
+      cy.request({
+        method: 'PUT',
+        url: `/api/campaigns/${campBId}`,
+        body: {
+          name: `B 캠페인 ${stamp}`, subject: 'Changed', type: 'regular', messenger: 'email', content_type: 'richtext', body: '<p>x</p>', lists: [listAId],
+        },
+        failOnStatusCode: false,
+      }).its('status').should('eq', 403);
+      cy.request({ method: 'DELETE', url: `/api/campaigns/${campBId}`, failOnStatusCode: false }).its('status').should('eq', 403);
+    });
+
+    cy.loginAndVisit('/admin/campaigns');
+    cy.then(() => {
+      cy.request('DELETE', `/api/campaigns/${campBId}`);
+      cy.request('DELETE', `/api/users/${readerId}`);
+      cy.request('DELETE', `/api/roles/${readerRoleId}`);
+    });
+  });
 });
