@@ -106,6 +106,9 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/dashboard/charts", a.GetDashboardCharts)
 		g.GET("/api/dashboard/counts", a.GetDashboardCounts)
 
+		g.GET("/api/stats/campaigns", pm(a.GetStatsCampaigns, "campaigns:get_analytics"))
+		g.GET("/api/stats/recipients", pm(a.GetStatsRecipients, "campaigns:get_analytics"))
+
 		g.GET("/api/sender-addresses", pm(a.ListSenderAddresses, auth.PermCampaignsManage, auth.PermCampaignsManageAll))
 		g.POST("/api/sender-addresses", pm(a.RequestSenderAddress, auth.PermCampaignsManage, auth.PermCampaignsManageAll))
 		g.DELETE("/api/sender-addresses/:id", pm(hasID(a.senderPolicyGuard(a.DeleteSenderAddress)), auth.PermCampaignsManage, auth.PermCampaignsManageAll, auth.PermSettingsManage))

@@ -95,6 +95,17 @@
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
       @close="reactionCampaign = null" />
 
+    <campaign-result-summary v-if="form.campaigns.length === 1 && form.campaigns[0].startedAt" class="st"
+      :campaign-id="form.campaigns[0].id" :started-at="form.campaigns[0].startedAt" />
+    <div v-if="form.campaigns.length === 0" class="st" data-cy="analytics-empty">
+      <p class="notification is-light">{{ $t('stats.analyticsEmpty') }}</p>
+      <div v-if="recent.length" class="st-card">
+        <div v-for="c in recent" :key="c.id" class="p-3" style="border-bottom:1px solid #e5e7eb">
+          <b>#{{ c.id }} {{ c.name }}</b>
+          <a class="is-pulled-right" :data-cy="`pick-${c.id}`" href="#" @click.prevent="pickRecent(c)" @keyup.enter="pickRecent(c)">{{ $t('stats.pick') }}</a>
+        </div>
+      </div>
+    </div>
     <section class="charts mt-5">
       <div class="chart" v-for="(v, k) in charts" :key="k">
         <div class="columns">
@@ -123,6 +134,7 @@ import { colors } from '../constants';
 import reactionStatuses from '../campaign-reaction-list';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import Chart from '../components/Chart.vue';
+import CampaignResultSummary from '../components/CampaignResultSummary.vue';
 import { buildProofSummaryV1, teamsOfCampaign, trackingStateFor } from '../proof-summary';
 
 const chartColorRed = '#ee7d5b';
@@ -140,12 +152,14 @@ const chartColors = [
 export default Vue.extend({
   components: {
     Chart,
+    CampaignResultSummary,
     CampaignReactionList,
   },
 
   data() {
     return {
       isSearchLoading: false,
+      recent: [],
       queriedCampaigns: [],
       reactionCampaign: null,
 
@@ -299,6 +313,20 @@ export default Vue.extend({
 
     onSubmit() {
       this.$router.push({ query: { id: this.form.campaigns.map((c) => c.id), from: dayjs(this.form.from).unix(), to: dayjs(this.form.to).unix() } });
+    },
+
+    // The campaigns the caller may open, newest first, for the empty screen (LST-64).
+    loadRecent() {
+      if (!this.$can('campaigns:get_analytics')) {
+        return;
+      }
+      this.$api.getStatsCampaigns({}).then((d) => {
+        this.recent = d.campaigns.filter((c) => c.own).slice(0, 3);
+      }).catch(() => {});
+    },
+
+    pickRecent(c) {
+      this.$router.replace({ query: { id: c.id } }).then(() => this.$router.go(0)).catch(() => this.$router.go(0));
     },
 
     queryCampaigns(q) {
@@ -474,6 +502,7 @@ export default Vue.extend({
   },
 
   mounted() {
+    this.loadRecent();
     // Fetch one or more campaigns if there are ?id params, wait for the fetches
     // to finish, add them to the campaign selector and submit the form.
     const ids = this.$utils.parseQueryIDs(this.$route.query.id);
@@ -488,6 +517,12 @@ export default Vue.extend({
           const camp = d.value;
           camp.name = `#${camp.id}: ${camp.name}`;
           this.form.campaigns.push(camp);
+          // No dates in the address: from the start of the campaign to now (LST-64), not the
+          // last 7 days, which read as zero for an older campaign.
+          const began = camp.startedAt || camp.createdAt;
+          if (!this.$route.query.from && began && dayjs(began).isBefore(this.form.from)) {
+            this.form.from = dayjs(began).startOf('hour').toDate();
+          }
         });
 
         this.$nextTick(() => {

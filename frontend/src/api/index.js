@@ -118,6 +118,10 @@ export const getDashboardCharts = () => http.get(
   { loading: models.dashboard },
 );
 
+// Statistics dashboard (LST-64).
+export const getStatsCampaigns = (params) => http.get('/api/stats/campaigns', { params, disableToast: true });
+export const getStatsRecipients = (params) => http.get('/api/stats/recipients', { params, disableToast: true });
+
 // Lists.
 export const previewDynamicList = (data) => http.post('/api/lists/dynamic/preview', data, {
   disableToast: true,

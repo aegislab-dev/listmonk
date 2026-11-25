@@ -1,14 +1,43 @@
 <template>
-  <section class="dashboard content">
-    <header class="columns">
-      <div class="column is-two-thirds">
-        <h1 class="title is-5">
-          {{ $utils.niceDate(new Date()) }}
-        </h1>
-      </div>
+  <section class="dashboard content st">
+    <header>
+      <h1 class="title is-5 mb-1">{{ $t('stats.title') }}</h1>
+      <div class="st-note">{{ $t('stats.asOf', { at: asOf }) }}</div>
     </header>
 
-    <section class="counts wrap">
+    <template v-if="canStats">
+      <div class="is-flex is-align-items-center my-3 py-2" style="gap:14px;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb">
+        <span class="st-note">{{ $t('stats.period') }}</span>
+        <span class="st-seg" data-cy="period">
+          <button v-for="p in periods" :key="String(p)" type="button" :class="{ on: period === p }" :data-cy="`period-${p === null ? 'all' : p}`" @click="setPeriod(p)">
+            {{ p === null ? $t('stats.periodAll') : p === 365 ? $t('stats.periodYear') : $t('stats.periodDays', { n: p }) }}
+          </button>
+        </span>
+        <span class="st-note">{{ rangeText }}</span>
+        <a class="is-size-7" style="margin-left:auto" href="#" data-cy="defs-link" @click.prevent="openDefs" @keyup.enter="openDefs">{{ $t('stats.defsLink') }}</a>
+      </div>
+
+      <b-loading v-if="loading" active :is-full-page="false" />
+      <div v-if="error" class="notification is-danger is-light">{{ error }}</div>
+
+      <template v-if="loaded">
+        <div v-if="summary" class="st-sum" data-cy="stats-summary">{{ summary }}</div>
+        <stats-team-table :rows="rows" :all="all" :prev-by-team="prevByTeam" :prev-all="prevAll" :my-tag="myTeam"
+          :selected="team" :now="now" @select="setTeam" />
+        <stats-campaign-table :camps="teamCamps" :all="camps" :team="team" :limit="limit" :now="now" @clear="setTeam('')" @more="limit += 20" />
+        <stats-insights :camps="teamCamps" :age="age" :country="country" :team-key="team" :scope="scopeText" :now="now" />
+      </template>
+    </template>
+    <div v-else class="notification is-light" data-cy="stats-noperm">{{ $t('stats.noPerm') }}</div>
+
+    <div class="st-fold" data-cy="counts-toggle" tabindex="0" role="button"
+      @click="showCounts = !showCounts" @keyup.enter="showCounts = !showCounts">
+      ④ {{ $t('stats.status') }} <i class="st-tri" :class="showCounts ? 'down' : 'right'" />
+      <span class="st-note">{{ $t('stats.statusNote', {
+ lists: counts.lists.total || 0, subs: counts.subscribers.total || 0, camps: counts.campaigns.total || 0, msgs: counts.messages || 0,
+}) }}</span>
+    </div>
+    <section v-show="showCounts || !canStats" class="counts wrap">
       <div class="tile is-ancestor">
         <div class="tile is-vertical is-12">
           <div class="tile">
@@ -118,22 +147,6 @@
           </div>
           <div class="tile is-parent relative">
             <b-loading v-if="isChartsLoading" active :is-full-page="false" />
-            <article class="tile is-child notification charts">
-              <div class="columns">
-                <div class="column is-6">
-                  <h3 class="title is-size-6">
-                    {{ $t('dashboard.campaignViews') }}
-                  </h3><br />
-                  <chart type="line" v-if="campaignViews" :data="campaignViews" />
-                </div>
-                <div class="column is-6">
-                  <h3 class="title is-size-6 has-text-right">
-                    {{ $t('dashboard.linkClicks') }}
-                  </h3><br />
-                  <chart type="line" v-if="campaignClicks" :data="campaignClicks" />
-                </div>
-              </div>
-            </article>
           </div>
         </div>
       </div><!-- tile block -->
@@ -145,87 +158,148 @@
         </a>
       </p>
     </section>
+
+    <stats-definitions v-if="canStats" ref="defs" v-model="defsOpen" />
   </section>
 </template>
-
 <script>
-import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
-import { colors } from '../constants';
-import Chart from '../components/Chart.vue';
+import StatsTeamTable from '../components/StatsTeamTable.vue';
+import StatsCampaignTable from '../components/StatsCampaignTable.vue';
+import StatsInsights from '../components/StatsInsights.vue';
+import StatsDefinitions from '../components/StatsDefinitions.vue';
+import { PERIODS, PERIOD_DEFAULT, PERIOD_ALL_DAYS } from '../stats-definitions';
+import {
+  aggregate, teamRows, teamSummary, campaignTeams, formatKST,
+} from '../stats';
 
+const DAY = 86400000;
+
+// The dashboard (LST-64): team comparison, the recent campaigns, hints for the next send and
+// the old counts folded at the bottom. The numbers are the results of every team (the
+// server hides lists, members and addresses of other teams, not the results).
 export default Vue.extend({
   components: {
-    Chart,
+    StatsTeamTable, StatsCampaignTable, StatsInsights, StatsDefinitions,
   },
-
   data() {
     return {
-      isChartsLoading: true,
+      periods: PERIODS,
+      period: PERIOD_DEFAULT,
+      team: this.$route.query.team || '',
+      limit: 6,
+      loading: false,
+      loaded: false,
+      error: '',
+      now: new Date(),
+      generatedAt: null,
+      camps: [],
+      prevCamps: [],
+      teams: [],
+      myTeam: '',
+      age: [],
+      country: [],
+      showCounts: false,
+      defsOpen: false,
       isCountsLoading: true,
-      campaignViews: null,
-      campaignClicks: null,
       counts: {
-        lists: {},
-        subscribers: {},
-        campaigns: {},
-        messages: 0,
+        lists: {}, subscribers: {}, campaigns: {}, messages: 0,
       },
     };
   },
-
+  computed: {
+    ...mapState(['settings']),
+    canStats() { return this.$can('campaigns:get_analytics'); },
+    days() { return this.period === null ? PERIOD_ALL_DAYS : this.period; },
+    range() {
+      const to = new Date(this.now.getTime() + 60000);
+      const from = new Date(this.now.getTime() - this.days * DAY);
+      const prevFrom = new Date(from.getTime() - this.days * DAY);
+      return { from, to, prevFrom };
+    },
+    rangeText() {
+      const f = (d) => formatKST(d.toISOString()).slice(0, 5);
+      return `${f(this.range.from)} ~ ${f(this.now)}`;
+    },
+    asOf() { return this.generatedAt ? formatKST(this.generatedAt) : ''; },
+    rows() { return teamRows(this.camps, this.teams, this.now); },
+    all() { return aggregate(this.camps, this.now); },
+    prevRows() { return teamRows(this.prevCamps, this.teams, this.now); },
+    prevByTeam() { return Object.fromEntries(this.prevRows.map((r) => [r.tag, r.a])); },
+    prevAll() { return aggregate(this.prevCamps, this.now); },
+    teamCamps() { return this.team ? this.camps.filter((c) => campaignTeams(c).includes(this.team)) : this.camps; },
+    summary() { return teamSummary(this.rows, this.all, this.prevAll, this.myTeam); },
+    scopeText() {
+      const r = this.rows.find((x) => x.tag === this.team);
+      return this.team ? this.$t('stats.scopeTeam', { team: r ? r.name : this.team }) : this.$t('stats.scopeAll');
+    },
+  },
   methods: {
-    fetchData() {
+    setPeriod(p) {
+      this.period = p;
+      this.fetchStats();
+    },
+    setTeam(tag) {
+      this.team = tag;
+      this.limit = 6;
+      const query = { ...this.$route.query };
+      if (tag) {
+        query.team = tag;
+      } else {
+        delete query.team;
+      }
+      this.$router.replace({ query }).catch(() => {});
+    },
+    openDefs() {
+      this.defsOpen = true;
+      this.$nextTick(() => { if (this.$refs.defs) { this.$refs.defs.$el.scrollIntoView({ behavior: 'smooth' }); } });
+    },
+    fetchStats() {
+      if (!this.canStats) {
+        return;
+      }
+      this.now = new Date();
+      this.loading = true;
+      this.error = '';
+      const { from, to, prevFrom } = this.range;
+      const q = (f, t) => ({ from: f.toISOString(), to: t.toISOString() });
+      Promise.all([
+        this.$api.getStatsCampaigns(q(from, to)),
+        this.$api.getStatsCampaigns(q(prevFrom, from)).catch(() => ({ campaigns: [] })),
+        this.$api.getStatsRecipients({ ...q(from, to), by: 'age' }).catch(() => []),
+        this.$api.getStatsRecipients({ ...q(from, to), by: 'country' }).catch(() => []),
+      ]).then(([cur, prev, age, country]) => {
+        this.camps = cur.campaigns;
+        this.teams = cur.teams;
+        this.myTeam = cur.myTeam;
+        this.generatedAt = cur.generatedAt;
+        this.prevCamps = prev.campaigns;
+        this.age = age;
+        this.country = country;
+        this.loaded = true;
+      }).catch((e) => {
+        this.error = (e && e.message) || String(e);
+      }).finally(() => { this.loading = false; });
+    },
+    fetchCounts() {
       this.isCountsLoading = true;
-      this.isChartsLoading = true;
-
       this.$api.getDashboardCounts().then((data) => {
         this.counts = data;
         this.isCountsLoading = false;
       });
-
-      this.$api.getDashboardCharts().then((data) => {
-        this.isChartsLoading = false;
-        this.campaignViews = this.makeChart(data.campaignViews);
-        this.campaignClicks = this.makeChart(data.linkClicks);
-      });
     },
-
-    makeChart(data) {
-      if (data.length === 0) {
-        return {};
-      }
-      return {
-        labels: data.map((d) => dayjs(d.date).format('DD MMM')),
-        datasets: [
-          {
-            data: [...data.map((d) => d.count)],
-            borderColor: colors.primary,
-            borderWidth: 2,
-            pointHoverBorderWidth: 5,
-            pointBorderWidth: 0.5,
-          },
-        ],
-      };
+    fetchData() {
+      this.fetchCounts();
+      this.fetchStats();
     },
   },
-
-  computed: {
-    ...mapState(['settings']),
-    dayjs() {
-      return dayjs;
-    },
-  },
-
   created() {
     this.$root.$on('page.refresh', this.fetchData);
   },
-
   destroyed() {
     this.$root.$off('page.refresh', this.fetchData);
   },
-
   mounted() {
     this.fetchData();
   },
