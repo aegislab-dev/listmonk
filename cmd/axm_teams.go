@@ -295,3 +295,81 @@ func (a *App) attachOtherTeams(user auth.User, subs []models.Subscriber) {
 		subs[i].OtherTeams = m[subs[i].ID]
 	}
 }
+
+// The campaign write rule (LST-68). Upstream reads "get or manage" access to a list as one:
+// GetPermittedLists(Get|Manage) answers "all" for a user with lists:get_all, and so a member who
+// may only read every list (lists:get_all, no lists:manage_all) could edit, delete, send and
+// aim campaigns at the lists of other teams. Writing to campaigns follows the lists the user
+// may really use: everything for lists:manage_all and the super admin, otherwise the lists of
+// their own list role (a team's lists), whatever lists:get_all lets them read.
+
+// campaignWriteLists is GetPermittedLists(Get|Manage) for a campaign write.
+func campaignWriteLists(user auth.User) (bool, []int) {
+	all, ids := user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage)
+	if !all || user.UserRole.ID == auth.SuperAdminRoleID || user.HasPerm(auth.PermListManageAll) {
+		return all, ids
+	}
+	// lists:get_all only: the lists of the list role.
+	seen := map[int]bool{}
+	own := []int{}
+	for _, id := range append(append([]int{}, user.GetListIDs...), user.ManageListIDs...) {
+		if !seen[id] {
+			seen[id] = true
+			own = append(own, id)
+		}
+	}
+	return false, own
+}
+
+// campaignWriteListIDs is FilterListsByPerm(Get|Manage) for the lists a campaign is saved with.
+// For a user with lists:get_all (and no lists:manage_all) the lists must all be their own: a
+// list outside them is refused (403) instead of being left out, so that a campaign is never
+// saved or sent to fewer lists than were asked for. Everybody else keeps upstream's filter.
+func campaignWriteListIDs(user auth.User, ids []int) ([]int, error) {
+	all, own := campaignWriteLists(user)
+	if all || !user.HasPerm(auth.PermListGetAll) {
+		return user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, ids), nil
+	}
+	allowed := map[int]bool{}
+	for _, id := range own {
+		allowed[id] = true
+	}
+	out := []int{}
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if !allowed[id] {
+			return nil, auth.ErrPermDenied
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// campaignIsOwn tells whether a campaign that sends to the lists is the user's own, by the rule
+// of a campaign write (checkCampaignPerm, manage): lists:manage_all and the super admin own every
+// campaign; anybody else owns a campaign whose lists are all among theirs. Reading is wider
+// (lists:get_all, campaigns:get_all read every campaign), so a screen that must tell a team's own
+// campaigns from the others' (LST-64's dashboard rows) uses this and not the read rule.
+func campaignIsOwn(user auth.User, listIDs []int) bool {
+	all, ids := campaignWriteLists(user)
+	if all {
+		return true
+	}
+	allowed := map[int]bool{}
+	for _, id := range ids {
+		allowed[id] = true
+	}
+	n := 0
+	for _, id := range listIDs {
+		if id <= 0 {
+			continue
+		}
+		if !allowed[id] {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}

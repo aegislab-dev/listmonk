@@ -82,13 +82,15 @@ func (a *App) followupDraft(c echo.Context, user auth.User, parentID int, name s
 }
 
 // canMakeFollowup is true for a user who may change the campaign: the draft is a campaign
-// the user makes, so the campaign permissions apply as they do to any new campaign.
+// the user makes, so the campaign permissions apply as they do to any new campaign. The
+// original is not changed, so one of its lists being the user's is enough (LST-68: a change
+// to the original asks for all of them).
 func (a *App) canMakeFollowup(c echo.Context, user auth.User, id int) bool {
 	if user.UserRole.ID != auth.SuperAdminRoleID &&
 		!user.HasPerm(auth.PermCampaignsManage) && !user.HasPerm(auth.PermCampaignsManageAll) {
 		return false
 	}
-	return a.checkCampaignPerm(auth.PermTypeManage, id, c) == nil
+	return a.checkCampaignPermMode(auth.PermTypeManage, id, c, false) == nil
 }
 
 // GetCampaignFollowup answers whether a campaign is the original or the follow-up of a link,

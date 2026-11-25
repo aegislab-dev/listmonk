@@ -1,8 +1,14 @@
 -- name: axm-get-teams
--- The team roles with the number of their lists and members.
+-- The team roles with the number of their lists and members. $1 are the team-wide
+-- permissions (LST-68): wide is the ones the default user role has, wide_members the number
+-- of members whose user role has one of them (or is the super admin role).
 SELECT r.id, r.name, r.axm_team_tag AS tag, r.axm_team_user_role_id AS user_role_id,
     (SELECT COUNT(*) FROM roles c WHERE c.parent_id = r.id) AS lists,
-    (SELECT COUNT(*) FROM users u WHERE u.list_role_id = r.id) AS members
+    (SELECT COUNT(*) FROM users u WHERE u.list_role_id = r.id) AS members,
+    COALESCE((SELECT ARRAY(SELECT p FROM UNNEST(d.permissions) AS p WHERE p = ANY($1::TEXT[]) ORDER BY p)
+        FROM roles d WHERE d.id = r.axm_team_user_role_id), '{}') AS wide,
+    (SELECT COUNT(*) FROM users u JOIN roles ur ON ur.id = u.user_role_id
+        WHERE u.list_role_id = r.id AND (ur.id = 1 OR ur.permissions && $1::TEXT[])) AS wide_members
 FROM roles r
 WHERE r.parent_id IS NULL AND r.type = 'list' AND r.axm_team_tag IS NOT NULL
 ORDER BY r.name;
@@ -46,16 +52,28 @@ SELECT COUNT(*) FROM users WHERE list_role_id = $1;
 SELECT COUNT(*) FROM lists WHERE $1 = ANY(tags);
 
 -- name: axm-user-role-facts
--- For each user role id: whether it is the super admin role or carries a lists:*_all permission.
-SELECT id, (id = 1) AS super_admin, (permissions && ARRAY['lists:get_all', 'lists:manage_all']) AS all_lists
+-- For each user role id: whether it is the super admin role, and which of the team-wide
+-- permissions $2 it carries (LST-68: lists:*_all, subscribers:get_all, campaigns:*_all).
+SELECT id, (id = 1) AS super_admin, (permissions && $2::TEXT[]) AS wide,
+    ARRAY(SELECT p FROM UNNEST(permissions) AS p WHERE p = ANY($2::TEXT[]) ORDER BY p) AS wide_perms
 FROM roles WHERE id = ANY($1::INT[]) AND type = 'user' AND parent_id IS NULL;
 
 -- name: axm-team-candidate-users
--- The users with the given IDs and their user role, to check who may join a team.
-SELECT u.id, (u.user_role_id = 1) AS super_admin,
-    COALESCE(ur.permissions && ARRAY['lists:get_all', 'lists:manage_all'], FALSE) AS all_lists
+-- The users with the given IDs, their user role and list role, to check who may join a
+-- team. $2 are the team-wide permissions.
+SELECT u.id, (u.user_role_id = 1) AS super_admin, u.list_role_id,
+    COALESCE(ur.permissions && $2::TEXT[], FALSE) AS wide
 FROM users u LEFT JOIN roles ur ON ur.id = u.user_role_id
 WHERE u.id = ANY($1::INT[]);
+
+-- name: axm-user-role-team-use
+-- The teams that use the user role $1: as their default user role, or by a member (LST-68).
+SELECT r.name AS team, COALESCE(r.axm_team_user_role_id = $1, FALSE) AS is_default,
+    (SELECT COUNT(*) FROM users u WHERE u.list_role_id = r.id AND u.user_role_id = $1) AS members
+FROM roles r
+WHERE r.parent_id IS NULL AND r.type = 'list' AND r.axm_team_tag IS NOT NULL
+    AND (r.axm_team_user_role_id = $1 OR EXISTS (SELECT 1 FROM users u WHERE u.list_role_id = r.id AND u.user_role_id = $1))
+ORDER BY r.name;
 
 -- name: axm-release-team-members
 UPDATE users SET list_role_id = NULL, updated_at = NOW()
@@ -186,3 +204,11 @@ INSERT INTO subscriber_lists (subscriber_id, list_id, status)
             ELSE $3::subscription_status
         END
     );
+
+-- name: axm-campaign-lists-within
+-- LST-68: TRUE when the campaign $1 sends to at least one list of $2 and to no list outside $2
+-- (a deleted list, whose row has no list ID, does not count). A user who changes a campaign
+-- for a write right on some lists may change it only then: the change (a send, a delete) reaches
+-- all of its lists.
+SELECT EXISTS (SELECT 1 FROM campaign_lists WHERE campaign_id = $1 AND list_id = ANY($2::INT[]))
+    AND NOT EXISTS (SELECT 1 FROM campaign_lists WHERE campaign_id = $1 AND list_id IS NOT NULL AND NOT (list_id = ANY($2::INT[])));

@@ -297,4 +297,106 @@ describe('teams', () => {
     cy.get('[data-cy=btn-save]').click();
     cy.contains('tr', `운영 리스트 ${stamp}`).find('[data-cy=team-badge]').should('contain', teamA);
   });
+
+  // LST-68: a default role keeps no permission that shows other teams' data.
+  it('keeps roles with team-wide permissions out of the default role and says why', () => {
+    const wideName = `전사 시험 ${stamp}`;
+    let wideId;
+    cy.loginAndVisit('/admin/users/teams');
+    cy.request('POST', '/api/roles/users', {
+      name: wideName, permissions: ['subscribers:get', 'lists:manage_all'],
+    }).then(({ body }) => { wideId = body.data.id; });
+    cy.reload();
+    cy.get('[data-cy=btn-new]').click();
+    cy.get('[data-cy=team-user-role] option').then(($o) => {
+      const names = [...$o].map((o) => o.textContent.trim());
+      expect(names).to.include(`팀원 시험 ${stamp}`);
+      expect(names.some((n) => n.includes(wideName))).to.eq(false);
+    });
+    cy.get('[data-cy=team-form] [data-cy=btn-save]').should('exist');
+
+    // The API refuses it too, and the message names the permissions (wideId is known only now).
+    cy.then(() => cy.request({
+      method: 'POST', url: '/api/teams', body: { name: `시험C팀${stamp}`, user_role_id: wideId }, failOnStatusCode: false,
+    })).then((res) => {
+      expect(res.status).to.eq(400);
+      expect(res.body.message).to.contain('lists:manage_all').and.to.contain('campaigns:manage_all');
+    });
+    // The roles screen refuses to give a team's role such a permission.
+    cy.request({
+      method: 'PUT',
+      url: `/api/roles/users/${memberRoleId}`,
+      body: { name: `팀원 시험 ${stamp}`, permissions: ['subscribers:get', 'campaigns:manage_all'] },
+      failOnStatusCode: false,
+    }).then((res) => {
+      expect(res.status).to.eq(400);
+      expect(res.body.message).to.contain(teamA).and.to.contain('campaigns:manage_all');
+    });
+    cy.then(() => cy.request('DELETE', `/api/roles/${wideId}`));
+  });
+
+  it('warns on the teams screen about a team whose role shows other teams\' data', () => {
+    // The API cannot make such a team any more, so the answer is replaced.
+    cy.intercept('GET', '/api/teams', (req) => {
+      req.continue((res) => {
+        res.body.data.forEach((t) => {
+          if (t.name === teamA) {
+            t.wide = ['lists:manage_all'];
+            t.wide_members = 1;
+          }
+        });
+      });
+    });
+    cy.loginAndVisit('/admin/users/teams');
+    cy.contains('tr', teamA).find('[data-cy=team-wide-tag]').should('be.visible');
+    cy.contains('tr', teamA).find('[data-cy=team-wide-fix]').should('have.attr', 'href').and('contain', '/users/roles/users');
+    cy.contains('tr', teamB).find('[data-cy=team-wide]').should('not.exist');
+  });
+
+  // LST-68: lists:get_all is reading. A member who has it and campaigns:manage reads every campaign
+  // but changes only the campaigns of their own lists.
+  it('lets a member who reads every list read another team\'s campaign but not change it', () => {
+    const readerUser = `reader${stamp}`;
+    let readerRoleId;
+    let readerId;
+    let campBId;
+    cy.loginAndVisit('/admin/users/teams');
+    cy.request('/api/teams').then(({ body }) => {
+      const teamAId = body.data.find((t) => t.name === teamA).id;
+      return cy.request('POST', '/api/roles/users', {
+        name: `읽기 시험 ${stamp}`, permissions: ['lists:get_all', 'campaigns:get', 'campaigns:manage'],
+      }).then(({ body: role }) => {
+        readerRoleId = role.data.id;
+        return cy.request('POST', '/api/users', {
+          username: readerUser, email: `${readerUser}@example.invalid`, name: `읽기 ${stamp}`, type: 'user', status: 'enabled',
+          password_login: true, password: memberPass, password2: memberPass, user_role_id: readerRoleId, list_role_id: teamAId,
+        });
+      });
+    }).then(({ body }) => { readerId = body.data.id; });
+    cy.request('POST', '/api/campaigns', {
+      name: `B 캠페인 ${stamp}`, subject: 'Other team', type: 'regular', messenger: 'email', content_type: 'richtext',
+      body: '<p>Hello</p>', lists: [listBId],
+    }).then(({ body }) => { campBId = body.data.id; });
+
+    loginAs(readerUser, memberPass, '/admin/campaigns');
+    cy.then(() => {
+      cy.request(`/api/campaigns/${campBId}`).its('status').should('eq', 200);
+      cy.request({
+        method: 'PUT',
+        url: `/api/campaigns/${campBId}`,
+        body: {
+          name: `B 캠페인 ${stamp}`, subject: 'Changed', type: 'regular', messenger: 'email', content_type: 'richtext', body: '<p>x</p>', lists: [listAId],
+        },
+        failOnStatusCode: false,
+      }).its('status').should('eq', 403);
+      cy.request({ method: 'DELETE', url: `/api/campaigns/${campBId}`, failOnStatusCode: false }).its('status').should('eq', 403);
+    });
+
+    cy.loginAndVisit('/admin/campaigns');
+    cy.then(() => {
+      cy.request('DELETE', `/api/campaigns/${campBId}`);
+      cy.request('DELETE', `/api/users/${readerId}`);
+      cy.request('DELETE', `/api/roles/${readerRoleId}`);
+    });
+  });
 });
