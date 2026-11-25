@@ -277,3 +277,15 @@ func (a *App) bulkByQuery(u auth.User, blocklist bool, req subQueryReq, cond str
 	bq.count, bq.counted = done, true
 	return nil
 }
+
+// bulkByQueryResp is the answer of a bulk delete or blocklist by query. Whoever may manage all
+// lists gets true, as upstream answers (its statement does not say how many it changed). Everybody
+// else went through core.BulkByQueryBounded, which knows how many it changed and how many it left
+// out because they are on another team's list too, so the page can say so (0 included).
+func bulkByQueryResp(u auth.User, bq bulkQuery) any {
+	if all, _ := u.GetPermittedLists(auth.PermTypeManage); all {
+		return true
+	}
+	skipped, _ := bq.detail["skipped_shared"].(int)
+	return map[string]int{"done": bq.count, "skipped": skipped}
+}

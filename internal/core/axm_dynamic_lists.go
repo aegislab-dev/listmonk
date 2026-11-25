@@ -25,6 +25,31 @@ import (
 // dynamic list is deleted.
 const axmExcludeListInUse pq.ErrorCode = "AX001"
 
+// excludeInUseNamed is what the DB message has in front of the name of the dynamic list: the
+// trigger raises: list <id> is an exclude list of the dynamic list "<name>".
+const excludeInUseNamed = `of the dynamic list "`
+
+// excludeInUseName is the name of the dynamic list in the DB message of axmExcludeListInUse.
+// The name is the rest of the message without its closing quote, so a name with quotes in it
+// stays whole. It is empty when the message is not of that form.
+func excludeInUseName(msg string) string {
+	i := strings.Index(msg, excludeInUseNamed)
+	if i < 0 {
+		return ""
+	}
+	name := msg[i+len(excludeInUseNamed):]
+	return strings.TrimSuffix(name, `"`)
+}
+
+// excludeInUseErr is the 400 for the delete of a list that a dynamic list excludes people of,
+// in the language of the instance. The DB message is English and is not shown.
+func (c *Core) excludeInUseErr(pe *pq.Error) error {
+	if name := excludeInUseName(pe.Message); name != "" {
+		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.Ts("lists.dynamic.excludeInUse", "name", name))
+	}
+	return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("lists.dynamic.excludeInUseAny"))
+}
+
 // DynamicFilter is a versioned data format, never an SQL expression.
 type DynamicFilter struct {
 	Version int         `json:"version"`

@@ -702,7 +702,7 @@ func (a *App) DeleteSubscribersByQuery(c echo.Context) error {
 	}
 	a.auditBulkQuery(c, auditSubDelete, bq, nil)
 
-	return c.JSON(http.StatusOK, okResp{true})
+	return c.JSON(http.StatusOK, okResp{bulkByQueryResp(user, bq)})
 }
 
 // BlocklistSubscribersByQuery bulk blocklists subscribers
@@ -752,7 +752,7 @@ func (a *App) BlocklistSubscribersByQuery(c echo.Context) error {
 	}
 	a.auditBulkQuery(c, auditSubBlocklist, bq, nil)
 
-	return c.JSON(http.StatusOK, okResp{true})
+	return c.JSON(http.StatusOK, okResp{bulkByQueryResp(user, bq)})
 }
 
 // ManageSubscriberListsByQuery bulk adds/removes/unsubscribes subscribers
