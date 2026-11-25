@@ -1,18 +1,24 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/csv"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/subimporter"
+	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 )
 
@@ -39,6 +45,77 @@ func newRulesEnv(t *testing.T) *boundaryEnv {
 		PostCB:             func(string, any) error { return nil },
 	}, e.db.DB, lang)
 	return e
+}
+
+func TestStoppedZIPImportKeepsPartialRowsAndReportsStopped(t *testing.T) {
+	e := newRulesEnv(t)
+	started, proceed := make(chan struct{}), make(chan struct{})
+	begin := sync.OnceFunc(func() { close(started) })
+	release := sync.OnceFunc(func() { close(proceed) })
+	defer release()
+	e.a.importer.SetAxmVerify(func(emails []string) []subimporter.AxmVerdict {
+		begin()
+		<-proceed
+		return make([]subimporter.AxmVerdict, len(emails))
+	})
+	archive := filepath.Join(t.TempDir(), "partial.zip")
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z := zip.NewWriter(f)
+	w, err := z.Create("partial.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(w, "email,name")
+	for i := range 600 {
+		fmt.Fprintf(w, "stop-import-%d@example.org,Partial\n", i)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := e.a.newImportSession(subimporter.SessionOpt{
+		Filename: "partial.zip", ListIDs: []int{e.aList}, Mode: subimporter.ModeSubscribe, SubStatus: models.SubscriptionStatusConfirmed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, files, err := s.ExtractZIP(archive, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	go s.Start()
+	loaded := make(chan error, 1)
+	go func() { loaded <- s.LoadCSV(filepath.Join(dir, files[0]), ',') }()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first batch never reached the address check")
+	}
+	id := e.a.importer.GetStats().AxmImportID
+	code, data := e.call(e.a.StopImportSubscribers, e.as(e.superAdmin), "DELETE", "/api/import/subscribers?axm_import_id="+itoa(id), "", "")
+	var stopped subimporter.Status
+	if err := json.Unmarshal(data, &stopped); err != nil || code != 200 || stopped.Status != subimporter.StatusStopping {
+		t.Fatalf("stop request: %d %s (%v)", code, data, err)
+	}
+	release()
+	if err := <-loaded; err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "a terminal import status", func() bool { return e.a.importer.GetStats().Status != subimporter.StatusStopping })
+	st := e.a.importer.GetStats()
+	var count int
+	e.get(&count, `SELECT COUNT(*) FROM subscriber_lists sl JOIN subscribers s ON s.id = sl.subscriber_id
+		WHERE sl.list_id = $1 AND s.email LIKE 'stop-import-%'`, e.aList)
+	if st.AxmImportID != id || st.Status != subimporter.StatusStopped || st.Imported != 500 || st.Total != 600 || count != st.Imported {
+		t.Fatalf("partial import: %+v (stored %d)", st, count)
+	}
 }
 
 func (e *boundaryEnv) count(email string) int {

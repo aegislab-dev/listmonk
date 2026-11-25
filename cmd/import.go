@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/knadh/listmonk/internal/auth"
@@ -104,6 +105,8 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			a.i18n.Ts("import.errorStarting", "error", err.Error()))
 	}
+	// Answer for the accepted upload even if the worker finishes before the response is sent.
+	started := a.importer.GetStats()
 	a.importStarted(c, opt)
 	go sess.Start()
 
@@ -125,7 +128,7 @@ func (a *App) ImportSubscribers(c echo.Context) error {
 		go sess.LoadCSV(dir+"/"+files[0], rune(opt.Delim[0]))
 	}
 
-	return c.JSON(http.StatusOK, okResp{a.importer.GetStats()})
+	return c.JSON(http.StatusOK, okResp{started})
 }
 
 // GetImportSubscribers returns import statistics.
@@ -171,21 +174,36 @@ func (a *App) importStatus() (subimporter.Status, []int) {
 	return s, a.importLists
 }
 
-// GetImportSubscriberStats returns import statistics.
+// GetImportSubscriberStats returns logs for the requested import or, by default, the current one.
 func (a *App) GetImportSubscriberStats(c echo.Context) error {
-	return c.JSON(http.StatusOK, okResp{string(a.importer.GetLogs())})
+	id := 0
+	if v := c.QueryParam("axm_import_id"); v != "" {
+		var err error
+		if id, err = strconv.Atoi(v); err != nil || id <= 0 {
+			return c.JSON(http.StatusOK, okResp{""})
+		}
+	}
+	return c.JSON(http.StatusOK, okResp{string(a.importer.GetLogsForImport(id))})
 }
 
 // StopImportSubscribers sends a stop signal to the importer.
 // If there's an ongoing import, it'll be stopped, and if an import
 // is finished, it's state is cleared.
 func (a *App) StopImportSubscribers(c echo.Context) error {
-	st := a.importer.GetStats()
-	a.importer.Stop()
-	if st.Status == subimporter.StatusImporting || st.Status == subimporter.StatusStopping {
+	// ?axm_import_id= clears only that import: a screen that still shows an older one must not
+	// stop or clear the import that came after it (LST-63). The current state comes back as is.
+	id := 0
+	if v := c.QueryParam("axm_import_id"); v != "" {
+		var err error
+		if id, err = strconv.Atoi(v); err != nil || id <= 0 {
+			return c.JSON(http.StatusOK, okResp{a.importer.GetStats()})
+		}
+	}
+	st, changed := a.importer.StopImport(id)
+	if changed && st.Status == subimporter.StatusStopping {
 		a.audit(c, auditImportStop, auditTarget{Type: auditTargetImport}, auditNoCount, map[string]any{
 			"imported": st.Imported, "total": st.Total,
 		})
 	}
-	return c.JSON(http.StatusOK, okResp{a.importer.GetStats()})
+	return c.JSON(http.StatusOK, okResp{st})
 }
