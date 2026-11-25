@@ -95,7 +95,13 @@ describe('list draws and exclude lists', () => {
     cy.get('[data-cy=draw-check]').click();
     cy.get('[data-cy=draw-already-drawn]').should('contain', '10');
     cy.get('[data-cy=draw-candidates]').should('contain', String(people - 10));
-    cy.get('[data-cy=draw-short]').should('be.visible');
+    cy.get('[data-cy=draw-short]').should('be.visible').and(($warning) => {
+      const warning = $warning[0];
+      const bounds = warning.getBoundingClientRect();
+      const body = warning.closest('.modal-card-body').getBoundingClientRect();
+      expect(bounds.top).to.be.at.least(body.top);
+      expect(bounds.bottom).to.be.at.most(body.bottom);
+    });
     cy.get('[data-cy=draw-create]').should('contain', String(people - 10));
     cy.get('[data-cy=draw-create]').click();
     cy.get('[data-cy=draw-done-count]').should('contain', String(people - 10));
