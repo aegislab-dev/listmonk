@@ -930,14 +930,14 @@ export default Vue.extend({
     showImportCheck() {
       return this.isSuccessful() && (this.status.axmLists || []).length > 0;
     },
-    // The range line of the finished box's address check. A person just put on a double opt-in
-    // list as unconfirmed has not confirmed yet, so is not in the audience that check counts (one
-    // imported as confirmed is).
+    // Describe the audience rule per list. The check counts current subscriptions across
+    // the whole list, including subscriptions that already existed before the import.
     importScopeNote() {
       const all = this.lists.results || [];
-      const doubleOptin = (this.status.axmLists || []).some((id) => (all.find((l) => l.id === id) || {}).optin === 'double');
+      const ids = this.status.axmLists || [];
+      const doubleOptin = all.some((list) => list.optin === 'double' && ids.includes(list.id));
       const note = this.$t('addressCheck.listScope', { lists: this.importListNames });
-      return doubleOptin && this.form.subStatus !== 'confirmed' ? `${note} ${this.$t('addressCheck.listScopeOptin')}` : note;
+      return doubleOptin ? `${note} ${this.$t('addressCheck.listScopeOptin')}` : note;
     },
     importListNames() {
       const all = this.lists.results || [];

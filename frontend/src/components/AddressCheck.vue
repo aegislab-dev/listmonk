@@ -66,7 +66,7 @@
 
       <p class="ac-note" data-cy="address-note">
         {{ $t('addressCheck.noBlock') }}
-        <template v-if="result.detail && $can('subscribers:manage')">
+        <template v-if="result.risky && result.detail && $can('subscribers:manage')">
           {{ $t(targetIds.length ? 'addressCheck.unsubscribeNote' : 'addressCheck.dynamicOnly') }}
           <template v-if="targetIds.length && hasDynamic"> {{ $t('addressCheck.dynamicMixed') }}</template>
           <template v-if="targetIds.length && linkedText"> {{ $t('addressCheck.linked', { lists: linkedText }) }}</template>
@@ -196,7 +196,7 @@ export default {
 
     canOpen() {
       const r = this.result;
-      return !!r && !this.error && !r.tooLarge && !!r.checkedLists && (r.risky > 0 || r.unknown > 0 || r.pending > 0);
+      return !!r && !this.error && !r.tooLarge && !!r.checkedLists;
     },
 
     groups() {
