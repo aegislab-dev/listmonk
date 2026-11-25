@@ -242,7 +242,7 @@
       </b-tab-item><!-- campaign -->
 
       <b-tab-item :label="$t('campaigns.content')" icon="text" :disabled="isNew" value="content">
-        <editor v-if="data.id" v-model="form.content" :id="data.id" :title="data.name" :disabled="!canEdit"
+        <editor v-if="data.id" :key="editorRevision" v-model="form.content" :id="data.id" :title="data.name" :disabled="!canEdit"
           :templates="templates" :content-types="contentTypes" :list-ids="form.lists.map((l) => l.id)"
           :preview-sample="previewSample" :preview-sample-label="previewSampleLabel" />
 
@@ -468,6 +468,7 @@ export default Vue.extend({
       createdLists: [],
       savingCampaign: false,
       campaignNeedsRefresh: false,
+      editorRevision: 0,
       // The list made from the recent-send exclusion result: { id, error }. Whether the server
       // has it as the target is read from the saved campaign (madeSaved), never remembered.
       madeList: null,
@@ -696,6 +697,16 @@ export default Vue.extend({
     applyCampaign(data) {
       this.data = data;
       const { tz, rest } = splitAttribs(data.attribs);
+      const content = {
+        contentType: data.contentType,
+        body: data.body,
+        bodySource: data.bodySource,
+        templateId: data.templateId,
+      };
+      // The visual editor reads its document when its iframe mounts.
+      if (Object.keys(content).some((field) => content[field] !== this.form.content[field])) {
+        this.editorRevision += 1;
+      }
       this.form = {
         ...this.form,
         ...data,
@@ -705,12 +716,7 @@ export default Vue.extend({
         headersStr: JSON.stringify(data.headers, null, 4),
         archiveMetaStr: data.archiveMeta ? JSON.stringify(data.archiveMeta, null, 4) : '{}',
         attribsStr: data.attribs ? JSON.stringify(rest, null, 4) : '{}',
-        content: {
-          contentType: data.contentType,
-          body: data.body,
-          bodySource: data.bodySource,
-          templateId: data.templateId,
-        },
+        content,
         media: (data.media || []).map((f) => (f.id ? f : { ...f, filename: `❌ ${f.filename}` })),
       };
       this.form.fromChoice = this.fromChoiceOf(data);

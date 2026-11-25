@@ -5,6 +5,9 @@
 const stamp = Date.now();
 const win = '[data-cy=send-confirm]';
 const camp = {};
+const oldOffer = 'Original offer: 5 percent';
+const newOffer = 'Approved offer: 20 percent';
+const oldFooter = 'Original footer';
 let listOk;
 let listEmpty;
 let tplBare;
@@ -29,6 +32,17 @@ const create = (key, data) => cy.request('POST', '/api/campaigns', {
 
 const status = (key) => cy.request(`/api/campaigns/${camp[key]}`).its('body.data');
 
+const visualContent = (offer) => ({
+  content_type: 'visual',
+  template_id: 0,
+  body: `<p>${offer}</p><p>${oldFooter}</p>`,
+  body_source: JSON.stringify({
+    root: { type: 'EmailLayout', data: { childrenIds: ['offer', 'footer'] } },
+    offer: { type: 'Text', data: { props: { text: offer } } },
+    footer: { type: 'Text', data: { props: { text: oldFooter } } },
+  }),
+});
+
 describe('Saving a scheduled campaign', () => {
   before(() => {
     cy.loginAndVisit('/admin/lists');
@@ -52,6 +66,7 @@ describe('Saving a scheduled campaign', () => {
       create('warn', {});
       create('undo', {});
       create('conflict', {});
+      create('visualConflict', visualContent(oldOffer));
       create('draftDuringCheck', {});
       create('pass', {
         body: '<p>Hi <a href="https://example.invalid/x@TrackLink">x</a> <a href="{{ UnsubscribeURL }}">leave</a></p>{{ TrackView }}',
@@ -147,6 +162,42 @@ describe('Saving a scheduled campaign', () => {
     cy.get('[data-cy=btn-schedule]').should('exist');
     cy.get('[data-cy=btn-unschedule]').should('not.exist');
     cy.get(win).should('not.exist');
+  });
+
+  it('preserves the other editor’s visual block when only the footer is edited after a conflict', () => {
+    const path = `/api/campaigns/${camp.visualConflict}`;
+    const newFooter = 'Updated footer only';
+    const checkOffer = (offer) => cy.get('#visual-editor').should(($iframe) => {
+      expect($iframe[0].contentDocument?.body?.textContent || '').to.contain(offer);
+    });
+    cy.intercept('PUT', `${path}/status`).as('unschedule');
+    cy.visit(`/admin/campaigns/${camp.visualConflict}#content`);
+    checkOffer(oldOffer);
+    cy.get('[data-cy=btn-save]').click();
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+
+    status('visualConflict').then((d) => cy.request('PUT', path, {
+      ...d, ...visualContent(newOffer), lists: [listOk], media: [], subject: 'Updated visual subject',
+    }));
+    cy.get('[data-cy=send-unschedule]').click();
+    cy.wait('@unschedule').its('response.statusCode').should('equal', 409);
+    cy.get(win).should('not.exist');
+    checkOffer(newOffer);
+
+    cy.get('#visual-editor').its('0.contentDocument.body').then((body) => {
+      cy.wrap(body).contains(oldFooter).click();
+      cy.wrap(body).find('[contenteditable=true]:visible').first().clear().type(newFooter);
+    });
+    cy.get('[data-cy=btn-save]').click();
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+    status('visualConflict').then((d) => {
+      const source = JSON.parse(d.body_source);
+      expect(d.status).to.equal('scheduled');
+      expect(d.subject).to.equal('Updated visual subject');
+      expect(d.body).to.include(newOffer).and.to.include(newFooter).and.not.to.include(oldOffer);
+      expect(source.offer.data.props.text).to.equal(newOffer);
+      expect(source.footer.data.props.text).to.equal(newFooter);
+    });
   });
 
   it('says that all is well in one line, with no window', () => {
