@@ -40,3 +40,17 @@ export function defaultTeamTag(candidates, known) {
   const knownTags = new Set((known || []).map((t) => t.tag));
   return (candidates || []).find((t) => knownTags.has(t)) || '';
 }
+
+// The permissions a team member must not have (LST-68): each shows other teams' lists,
+// subscribers or campaigns. The server keeps the same list (core.TeamWidePerms).
+// campaigns:get_analytics is not one of them (aggregate numbers only).
+export const TEAM_WIDE_PERMS = [
+  'lists:get_all', 'lists:manage_all', 'subscribers:get_all', 'campaigns:get_all', 'campaigns:manage_all',
+];
+
+// The team-wide permissions of a user role (the super admin role has them all).
+export const widePermsOf = (role) => {
+  if (!role) return [];
+  if (role.id === 1) return TEAM_WIDE_PERMS;
+  return TEAM_WIDE_PERMS.filter((p) => (role.permissions || []).includes(p));
+};

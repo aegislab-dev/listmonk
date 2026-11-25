@@ -1,8 +1,14 @@
 -- name: axm-get-teams
--- The team roles with the number of their lists and members.
+-- The team roles with the number of their lists and members. $1 are the team-wide
+-- permissions (LST-68): wide is the ones the default user role has, wide_members the number
+-- of members whose user role has one of them (or is the super admin role).
 SELECT r.id, r.name, r.axm_team_tag AS tag, r.axm_team_user_role_id AS user_role_id,
     (SELECT COUNT(*) FROM roles c WHERE c.parent_id = r.id) AS lists,
-    (SELECT COUNT(*) FROM users u WHERE u.list_role_id = r.id) AS members
+    (SELECT COUNT(*) FROM users u WHERE u.list_role_id = r.id) AS members,
+    COALESCE((SELECT ARRAY(SELECT p FROM UNNEST(d.permissions) AS p WHERE p = ANY($1::TEXT[]) ORDER BY p)
+        FROM roles d WHERE d.id = r.axm_team_user_role_id), '{}') AS wide,
+    (SELECT COUNT(*) FROM users u JOIN roles ur ON ur.id = u.user_role_id
+        WHERE u.list_role_id = r.id AND (ur.id = 1 OR ur.permissions && $1::TEXT[])) AS wide_members
 FROM roles r
 WHERE r.parent_id IS NULL AND r.type = 'list' AND r.axm_team_tag IS NOT NULL
 ORDER BY r.name;
@@ -46,16 +52,28 @@ SELECT COUNT(*) FROM users WHERE list_role_id = $1;
 SELECT COUNT(*) FROM lists WHERE $1 = ANY(tags);
 
 -- name: axm-user-role-facts
--- For each user role id: whether it is the super admin role or carries a lists:*_all permission.
-SELECT id, (id = 1) AS super_admin, (permissions && ARRAY['lists:get_all', 'lists:manage_all']) AS all_lists
+-- For each user role id: whether it is the super admin role, and which of the team-wide
+-- permissions $2 it carries (LST-68: lists:*_all, subscribers:get_all, campaigns:*_all).
+SELECT id, (id = 1) AS super_admin, (permissions && $2::TEXT[]) AS wide,
+    ARRAY(SELECT p FROM UNNEST(permissions) AS p WHERE p = ANY($2::TEXT[]) ORDER BY p) AS wide_perms
 FROM roles WHERE id = ANY($1::INT[]) AND type = 'user' AND parent_id IS NULL;
 
 -- name: axm-team-candidate-users
--- The users with the given IDs and their user role, to check who may join a team.
-SELECT u.id, (u.user_role_id = 1) AS super_admin,
-    COALESCE(ur.permissions && ARRAY['lists:get_all', 'lists:manage_all'], FALSE) AS all_lists
+-- The users with the given IDs, their user role and list role, to check who may join a
+-- team. $2 are the team-wide permissions.
+SELECT u.id, (u.user_role_id = 1) AS super_admin, u.list_role_id,
+    COALESCE(ur.permissions && $2::TEXT[], FALSE) AS wide
 FROM users u LEFT JOIN roles ur ON ur.id = u.user_role_id
 WHERE u.id = ANY($1::INT[]);
+
+-- name: axm-user-role-team-use
+-- The teams that use the user role $1: as their default user role, or by a member (LST-68).
+SELECT r.name AS team, COALESCE(r.axm_team_user_role_id = $1, FALSE) AS is_default,
+    (SELECT COUNT(*) FROM users u WHERE u.list_role_id = r.id AND u.user_role_id = $1) AS members
+FROM roles r
+WHERE r.parent_id IS NULL AND r.type = 'list' AND r.axm_team_tag IS NOT NULL
+    AND (r.axm_team_user_role_id = $1 OR EXISTS (SELECT 1 FROM users u WHERE u.list_role_id = r.id AND u.user_role_id = $1))
+ORDER BY r.name;
 
 -- name: axm-release-team-members
 UPDATE users SET list_role_id = NULL, updated_at = NOW()
@@ -186,3 +204,78 @@ INSERT INTO subscriber_lists (subscriber_id, list_id, status)
             ELSE $3::subscription_status
         END
     );
+
+-- name: axm-query-bounces
+-- Bounce rows for a user who may not read all lists (LST-68): the people with a subscription
+-- row (any status) on a list in $5. Same columns and filters as query-bounces ($1 bounce,
+-- $2 campaign, $3 subscriber, $4 source). The sort is one of the five fields in $6 and $7
+-- ('asc' or 'desc'), written as CASE branches, so that no text goes into the statement.
+SELECT COUNT(*) OVER () AS total,
+    bounces.id,
+    bounces.type,
+    bounces.source,
+    bounces.meta,
+    bounces.created_at,
+    bounces.subscriber_id,
+    subscribers.uuid AS subscriber_uuid,
+    subscribers.email AS email,
+    subscribers.status as subscriber_status,
+    (
+        CASE WHEN bounces.campaign_id IS NOT NULL
+        THEN JSON_BUILD_OBJECT('id', bounces.campaign_id, 'name', campaigns.name)
+        ELSE NULL END
+    ) AS campaign
+FROM bounces
+LEFT JOIN subscribers ON (subscribers.id = bounces.subscriber_id)
+LEFT JOIN campaigns ON (campaigns.id = bounces.campaign_id)
+WHERE ($1 = 0 OR bounces.id = $1)
+    AND ($2 = 0 OR bounces.campaign_id = $2)
+    AND ($3 = 0 OR bounces.subscriber_id = $3)
+    AND ($4 = '' OR bounces.source = $4)
+    AND EXISTS (SELECT 1 FROM subscriber_lists sl WHERE sl.subscriber_id = bounces.subscriber_id AND sl.list_id = ANY($5::INT[]))
+ORDER BY
+    (CASE WHEN $6 = 'email' AND $7 = 'asc' THEN subscribers.email END) ASC,
+    (CASE WHEN $6 = 'email' AND $7 = 'desc' THEN subscribers.email END) DESC,
+    (CASE WHEN $6 = 'campaign_name' AND $7 = 'asc' THEN campaigns.name END) ASC,
+    (CASE WHEN $6 = 'campaign_name' AND $7 = 'desc' THEN campaigns.name END) DESC,
+    (CASE WHEN $6 = 'source' AND $7 = 'asc' THEN bounces.source END) ASC,
+    (CASE WHEN $6 = 'source' AND $7 = 'desc' THEN bounces.source END) DESC,
+    (CASE WHEN $6 = 'created_at' AND $7 = 'asc' THEN bounces.created_at END) ASC,
+    (CASE WHEN $6 = 'created_at' AND $7 = 'desc' THEN bounces.created_at END) DESC,
+    (CASE WHEN $6 = 'type' AND $7 = 'asc' THEN bounces.type END) ASC,
+    (CASE WHEN $6 = 'type' AND $7 = 'desc' THEN bounces.type END) DESC,
+    bounces.id DESC
+OFFSET $8 LIMIT (CASE WHEN $9 < 1 THEN NULL ELSE $9 END);
+
+-- name: axm-bounce-scope
+-- For bounces $1: their subscriber, and whether that subscriber has a subscription row (any
+-- status) on a list in $2, the lists the user may read (LST-68). IDs that are no bounce are left out.
+SELECT b.id, b.subscriber_id,
+    EXISTS (SELECT 1 FROM subscriber_lists sl WHERE sl.subscriber_id = b.subscriber_id AND sl.list_id = ANY($2::INT[])) AS readable
+FROM bounces b WHERE b.id = ANY($1::INT[]) ORDER BY b.id;
+
+-- name: axm-bounces-in-scope
+-- Every bounce whose subscriber has a subscription row (any status) on a list in $1 (LST-68).
+SELECT b.id, b.subscriber_id FROM bounces b
+WHERE EXISTS (SELECT 1 FROM subscriber_lists sl WHERE sl.subscriber_id = b.subscriber_id AND sl.list_id = ANY($1::INT[]))
+ORDER BY b.id;
+
+-- name: axm-delete-bounces-scoped
+-- Deletes the bounces of subscribers $1 that are still in the user's reach ($2, the lists
+-- the user may read) (LST-68).
+DELETE FROM bounces
+WHERE subscriber_id = ANY($1::INT[])
+    AND EXISTS (SELECT 1 FROM subscriber_lists sl WHERE sl.subscriber_id = bounces.subscriber_id AND sl.list_id = ANY($2::INT[]));
+
+-- name: axm-bounced-subscribers-in-lists
+-- The subscribers that have a bounce record and a subscription row (any status) on a list in
+-- $1 (LST-68), for "blocklist all bounced subscribers" by a user who manages those lists.
+SELECT DISTINCT b.subscriber_id FROM bounces b
+WHERE EXISTS (SELECT 1 FROM subscriber_lists sl WHERE sl.subscriber_id = b.subscriber_id AND sl.list_id = ANY($1::INT[]))
+ORDER BY b.subscriber_id;
+
+-- name: axm-readable-campaigns
+-- Of campaigns $1, the ones that send to a list in $2, the lists the user may read (LST-68).
+SELECT c.id FROM campaigns c
+WHERE c.id = ANY($1::INT[])
+    AND EXISTS (SELECT 1 FROM campaign_lists cl WHERE cl.campaign_id = c.id AND cl.list_id = ANY($2::INT[]));

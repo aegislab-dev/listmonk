@@ -88,6 +88,10 @@ func (a *App) UpdateUserRole(c echo.Context) error {
 	if err := a.validateUserRole(r); err != nil {
 		return err
 	}
+	// AXM (LST-68): a team's user role keeps no team-wide permission.
+	if err := a.guardTeamUserRole(id, r); err != nil {
+		return err
+	}
 
 	// Validate.
 	r.Name.String = strings.TrimSpace(r.Name.String)

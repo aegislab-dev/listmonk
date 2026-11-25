@@ -16,6 +16,9 @@ import (
 func (a *App) GetBounce(c echo.Context) error {
 	// Fetch one bounce from the DB.
 	id := getID(c)
+	if sc := a.bounceScopeOf(auth.GetUser(c)); !sc.all { // AXM (LST-68)
+		return a.getBounceScoped(c, sc, id)
+	}
 	out, err := a.core.GetBounce(id)
 	if err != nil {
 		return err
@@ -34,6 +37,10 @@ func (a *App) GetBounces(c echo.Context) error {
 
 		pg = a.pg.NewFromURL(c.Request().URL.Query())
 	)
+
+	if sc := a.bounceScopeOf(auth.GetUser(c)); !sc.all { // AXM (LST-68)
+		return a.getBouncesScoped(c, sc, campID, source, orderBy, order, pg.Offset, pg.Limit, pg.Page, pg.PerPage)
+	}
 
 	// Query and fetch bounces from the DB.
 	res, total, err := a.core.QueryBounces(campID, 0, source, orderBy, order, pg.Offset, pg.Limit)
@@ -70,6 +77,10 @@ func (a *App) GetSubscriberBounces(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	// AXM (LST-68): another team's campaign name is not shown.
+	if err := a.maskBounceCampaigns(a.bounceScopeOf(auth.GetUser(c)), out); err != nil {
+		return err
+	}
 
 	return c.JSON(http.StatusOK, okResp{out})
 }
@@ -92,6 +103,10 @@ func (a *App) DeleteBounces(c echo.Context) error {
 		ids = res
 	}
 
+	if sc := a.bounceScopeOf(auth.GetUser(c)); !sc.all { // AXM (LST-68)
+		return a.deleteBouncesScoped(c, sc, ids, all)
+	}
+
 	// Delete bounces from the DB.
 	if err := a.core.DeleteBounces(ids, all); err != nil {
 		return err
@@ -104,6 +119,9 @@ func (a *App) DeleteBounces(c echo.Context) error {
 func (a *App) DeleteBounce(c echo.Context) error {
 	// Delete bounces from the DB.
 	id := getID(c)
+	if sc := a.bounceScopeOf(auth.GetUser(c)); !sc.all { // AXM (LST-68)
+		return a.deleteBouncesScoped(c, sc, []int{id}, false)
+	}
 	if err := a.core.DeleteBounces([]int{id}, false); err != nil {
 		return err
 	}
@@ -113,6 +131,9 @@ func (a *App) DeleteBounce(c echo.Context) error {
 
 // BlocklistBouncedSubscribers handles blocklisting of all bounced subscribers.
 func (a *App) BlocklistBouncedSubscribers(c echo.Context) error {
+	if sc := a.bounceScopeOf(auth.GetUser(c)); !sc.all { // AXM (LST-68)
+		return a.blocklistBouncedScoped(c, sc)
+	}
 	n, err := a.core.CountBouncedSubscribers()
 	if err != nil {
 		a.log.Printf("error counting bounced subscribers for the audit log: %v", err)

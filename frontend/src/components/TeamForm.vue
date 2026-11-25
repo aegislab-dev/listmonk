@@ -13,9 +13,17 @@
         <b-field :label="$t('teams.defaultUserRole')" label-position="on-border" :message="$t('teams.defaultUserRoleHelp')">
           <b-select v-model="form.userRoleId" expanded data-cy="team-user-role">
             <option :value="0">{{ $t('teams.noDefaultRole') }}</option>
-            <option v-for="r in choices" :key="r.id" :value="r.id">{{ r.name }}</option>
+            <option v-for="r in choices" :key="r.id" :value="r.id">
+              {{ r.name }}{{ isWide(r) ? ` ${$t('teams.wideRoleOption')}` : '' }}
+            </option>
           </b-select>
         </b-field>
+        <p v-if="selectedWide.length" class="notification is-danger is-light" data-cy="team-wide-blocked">
+          {{ $t('teams.wideRoleBlocked', { perms: selectedWide.join(', ') }) }}
+          <router-link :to="{ path: '/users/roles/users' }" @click.native="$parent.close()">
+            {{ $t('teams.wideFix') }}
+          </router-link>
+        </p>
         <b-checkbox v-if="isEditing && data.members.length && form.userRoleId" v-model="form.applyToMembers"
           data-cy="team-apply">
           {{ $t('teams.applyToMembers', { num: data.members.length }) }}
@@ -29,7 +37,8 @@
       </section>
       <footer class="modal-card-foot has-text-right">
         <b-button @click="$parent.close()">{{ $t('globals.buttons.close') }}</b-button>
-        <b-button native-type="submit" type="is-primary" :loading="saving" data-cy="btn-save">
+        <b-button native-type="submit" type="is-primary" :loading="saving" :disabled="selectedWide.length > 0"
+          data-cy="btn-save">
           {{ isEditing ? $t('globals.buttons.save') : $t('teams.create') }}
         </b-button>
       </footer>
@@ -39,7 +48,7 @@
 
 <script>
 import Vue from 'vue';
-import { teamTagOf } from '../teams';
+import { teamTagOf, widePermsOf } from '../teams';
 
 export default Vue.extend({
   name: 'TeamForm',
@@ -68,14 +77,22 @@ export default Vue.extend({
 
     renames() { return this.isEditing && this.data.lists > 0 && this.newTag !== this.data.tag; },
 
-    // A default role must not read every list: such a role would show all teams' lists.
+    // A default role must not have a team-wide permission (LST-68): such a role would show
+    // other teams' lists, subscribers or campaigns. A team whose role already has one keeps
+    // that role in the list, marked, so that it does not look like "none".
     choices() {
       return (this.userRoles || []).filter((r) => r.id !== 1
-        && !(r.permissions || []).some((p) => p === 'lists:get_all' || p === 'lists:manage_all'));
+        && (!this.isWide(r) || r.id === (this.data && this.data.userRoleId)));
+    },
+
+    selectedWide() {
+      return widePermsOf((this.userRoles || []).find((r) => r.id === this.form.userRoleId));
     },
   },
 
   methods: {
+    isWide(role) { return widePermsOf(role).length > 0; },
+
     onSubmit() {
       this.error = '';
       this.saving = true;

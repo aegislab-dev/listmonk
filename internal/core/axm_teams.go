@@ -11,6 +11,73 @@ import (
 	"github.com/lib/pq"
 )
 
+// TeamWidePerms are the permissions a team member must not have (LST-68): each one shows or
+// changes other teams' lists, subscribers or campaigns. The frontend keeps the same list in
+// frontend/src/teams.js. campaigns:get_analytics is not one of them: it only gives the
+// aggregate numbers the dashboard shows to every team.
+var TeamWidePerms = []string{
+	"lists:get_all", "lists:manage_all", "subscribers:get_all", "campaigns:get_all", "campaigns:manage_all",
+}
+
+// WideOf returns the team-wide permissions among perms, in the order of TeamWidePerms.
+func WideOf(perms []string) []string {
+	have := map[string]bool{}
+	for _, p := range perms {
+		have[p] = true
+	}
+	out := []string{}
+	for _, p := range TeamWidePerms {
+		if have[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// teamRoleFact is what a user role is worth for a team (axm-user-role-facts).
+type teamRoleFact struct {
+	ID         int            `db:"id"`
+	SuperAdmin bool           `db:"super_admin"`
+	Wide       bool           `db:"wide"`
+	WidePerms  pq.StringArray `db:"wide_perms"`
+}
+
+// teamRoleFacts reads the facts of the user roles with the given IDs.
+func (c *Core) teamRoleFacts(ids []int) ([]teamRoleFact, error) {
+	var facts []teamRoleFact
+	if err := c.q.AxmUserRoleFacts.Select(&facts, pq.Array(ids), pq.Array(TeamWidePerms)); err != nil {
+		return nil, c.teamFail(err)
+	}
+	return facts, nil
+}
+
+// WidePermsOfRole returns the team-wide permissions of a user role and whether it is the
+// super admin role. A role that does not exist has none.
+func (c *Core) WidePermsOfRole(id int) ([]string, bool, error) {
+	facts, err := c.teamRoleFacts([]int{id})
+	if err != nil || len(facts) != 1 {
+		return nil, false, err
+	}
+	return facts[0].WidePerms, facts[0].SuperAdmin, nil
+}
+
+// TeamRoleUse is a team that uses a user role (LST-68): as the default user role of the
+// team, or by members.
+type TeamRoleUse struct {
+	Team      string `db:"team"`
+	IsDefault bool   `db:"is_default"`
+	Members   int    `db:"members"`
+}
+
+// TeamRoleUses returns the teams that use the user role.
+func (c *Core) TeamRoleUses(userRoleID int) ([]TeamRoleUse, error) {
+	out := []TeamRoleUse{}
+	if err := c.q.AxmUserRoleTeamUse.Select(&out, userRoleID); err != nil {
+		return nil, c.teamFail(err)
+	}
+	return out, nil
+}
+
 // teamNameMax keeps the tag ("팀:" + name) within the 100 characters of roles.axm_team_tag.
 const teamNameMax = 90
 
@@ -63,7 +130,7 @@ func (c *Core) TeamTagOfRole(id int) string {
 // GetTeams returns the teams with their members.
 func (c *Core) GetTeams() ([]models.Team, error) {
 	teams := []models.Team{}
-	if err := c.q.AxmGetTeams.Select(&teams); err != nil {
+	if err := c.q.AxmGetTeams.Select(&teams, pq.Array(TeamWidePerms)); err != nil {
 		return nil, c.teamFail(err)
 	}
 	members := []models.TeamMember{}
@@ -98,20 +165,17 @@ func (c *Core) GetTeam(id int) (models.Team, error) {
 }
 
 // validTeamUserRole checks the default user role of a team: it must exist and must not be
-// the super admin role or carry lists:get_all / lists:manage_all, which would show every list.
+// the super admin role or carry a team-wide permission (TeamWidePerms), which would show other
+// teams' lists, subscribers or campaigns.
 func (c *Core) validTeamUserRole(id int) error {
 	if id == 0 {
 		return nil
 	}
-	var facts []struct {
-		ID         int  `db:"id"`
-		SuperAdmin bool `db:"super_admin"`
-		AllLists   bool `db:"all_lists"`
+	facts, err := c.teamRoleFacts([]int{id})
+	if err != nil {
+		return err
 	}
-	if err := c.q.AxmUserRoleFacts.Select(&facts, pq.Array([]int{id})); err != nil {
-		return c.teamFail(err)
-	}
-	if len(facts) != 1 || facts[0].SuperAdmin || facts[0].AllLists {
+	if len(facts) != 1 || facts[0].SuperAdmin || facts[0].Wide {
 		return c.teamBad("teams.invalidUserRole")
 	}
 	return nil
@@ -241,8 +305,10 @@ func (c *Core) DeleteTeam(id int) error {
 
 // SetTeamMembers makes the users the members of the team: everybody else leaves it, and a
 // user who was in another team (or had another list role) moves. A new member gets the
-// team's default user role. Super admins cannot join, and nobody who would still read every
-// list (lists:*_all) can join a team that gives no default user role.
+// team's default user role. Super admins cannot join, and nobody who has a team-wide
+// permission (TeamWidePerms) can join a team that gives no default user role. A team whose own
+// default user role has such a permission takes nobody new (LST-68); saving the members it
+// already has, or fewer, still works.
 func (c *Core) SetTeamMembers(id int, userIDs []int) (models.Team, error) {
 	t, err := c.GetTeam(id)
 	if err != nil {
@@ -259,9 +325,10 @@ func (c *Core) SetTeamMembers(id int, userIDs []int) (models.Team, error) {
 	var cands []struct {
 		ID         int  `db:"id"`
 		SuperAdmin bool `db:"super_admin"`
-		AllLists   bool `db:"all_lists"`
+		ListRoleID *int `db:"list_role_id"`
+		Wide       bool `db:"wide"`
 	}
-	if err := c.q.AxmTeamCandidateUsers.Select(&cands, pq.Array(ids)); err != nil {
+	if err := c.q.AxmTeamCandidateUsers.Select(&cands, pq.Array(ids), pq.Array(TeamWidePerms)); err != nil {
 		return t, c.teamFail(err)
 	}
 	if len(cands) != len(ids) {
@@ -275,8 +342,18 @@ func (c *Core) SetTeamMembers(id int, userIDs []int) (models.Team, error) {
 		if u.SuperAdmin {
 			return t, c.teamBad("teams.superAdmin")
 		}
-		if u.AllLists && role == 0 {
+		if u.ListRoleID != nil && *u.ListRoleID == id {
+			// A member who stays is not checked again: a team that is wide already is mended
+			// by the roles, not by taking its members out.
+			continue
+		}
+		if u.Wide && role == 0 {
 			return t, c.teamBad("teams.needsUserRole")
+		}
+		if role != 0 {
+			if err := c.validTeamUserRole(role); err != nil {
+				return t, err
+			}
 		}
 	}
 

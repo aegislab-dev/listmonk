@@ -84,6 +84,11 @@ func (a *App) CreateUser(c echo.Context) error {
 		u.Name = u.Username
 	}
 
+	// AXM (LST-68): a team member keeps no team-wide permission.
+	if err := a.guardTeamMemberRole(0, u); err != nil {
+		return err
+	}
+
 	// Create the user in the DB.
 	user, err := a.core.CreateUser(u)
 	if err != nil {
@@ -160,6 +165,11 @@ func (a *App) UpdateUser(c echo.Context) error {
 	// Default the name to username if not set.
 	if u.Name == "" {
 		u.Name = u.Username
+	}
+
+	// AXM (LST-68): a team member keeps no team-wide permission.
+	if err := a.guardTeamMemberRole(id, u); err != nil {
+		return err
 	}
 
 	// Update the user in the DB.

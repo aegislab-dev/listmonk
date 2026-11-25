@@ -42,6 +42,13 @@
       <b-table-column v-slot="props" field="userRole" :label="$t('teams.defaultUserRole')" cell-class="team-role-col"
         header-class="team-role-col">
         {{ userRoleName(props.row.userRoleId) }}
+        <div v-if="isWide(props.row)" class="team-wide" data-cy="team-wide">
+          <b-tag type="is-warning" icon="alert-outline" data-cy="team-wide-tag">{{ $t('teams.wideWarn') }}</b-tag>
+          <p class="is-size-7">
+            {{ $t('teams.wideWarnHelp', wideInfo(props.row)) }}
+            <router-link :to="{ path: '/users/roles/users' }" data-cy="team-wide-fix">{{ $t('teams.wideFix') }}</router-link>
+          </p>
+        </div>
       </b-table-column>
 
       <b-table-column v-slot="props" cell-class="actions" align="right">
@@ -82,6 +89,7 @@
 
 <script>
 import Vue from 'vue';
+import { widePermsOf } from '../teams';
 import { mapState } from 'vuex';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
 import TeamForm from '../components/TeamForm.vue';
@@ -107,6 +115,23 @@ export default Vue.extend({
     load() {
       this.$api.getTeams().then((teams) => { this.teams = teams; });
       this.$api.getUserRoles();
+    },
+
+    // Teams whose default role or members' roles have a team-wide permission (LST-68).
+    isWide(team) {
+      return (team.wide || []).length > 0 || team.wideMembers > 0;
+    },
+
+    // The roles and permissions to name in the warning.
+    wideInfo(team) {
+      const ids = new Set([team.userRoleId, ...team.members.map((m) => m.userRoleId)]);
+      const roles = (this.userRoles || []).filter((r) => ids.has(r.id) && widePermsOf(r).length);
+      const perms = [...new Set(roles.flatMap((r) => widePermsOf(r)))];
+      return {
+        roles: roles.map((r) => `「${r.name}」`).join(', '),
+        perms: (perms.length ? perms : team.wide || []).join(', '),
+        num: team.wideMembers,
+      };
     },
 
     isEmpty(team) {
@@ -161,6 +186,8 @@ export default Vue.extend({
 
 <style scoped>
 .team-tag { margin-top: 4px; }
+.team-wide { margin-top: 6px; max-width: 340px; }
+.team-wide p { margin-top: 4px; }
 .is-disabled { opacity: .35; cursor: not-allowed; }
 @media screen and (max-width: 768px) {
   .team-role-col { display: none; }

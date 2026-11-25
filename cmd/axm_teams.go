@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 )
@@ -294,4 +295,56 @@ func (a *App) attachOtherTeams(user auth.User, subs []models.Subscriber) {
 	for i := range subs {
 		subs[i].OtherTeams = m[subs[i].ID]
 	}
+}
+
+// guardTeamUserRole refuses a save of the user role id (roles screen) that would give a team
+// member a team-wide permission (core.TeamWidePerms), LST-68: the role is the default user
+// role of a team or a member uses it, and the permissions to save include such a permission.
+// A save without them passes, so a wide role is mended by this very screen.
+func (a *App) guardTeamUserRole(id int, r auth.Role) error {
+	wide := core.WideOf(r.Permissions)
+	if len(wide) == 0 {
+		return nil
+	}
+	uses, err := a.core.TeamRoleUses(id)
+	if err != nil {
+		return err
+	}
+	if len(uses) == 0 {
+		return nil
+	}
+	teams := make([]string, len(uses))
+	for i, u := range uses {
+		teams[i] = u.Team
+	}
+	return echo.NewHTTPError(http.StatusBadRequest,
+		a.i18n.Ts("teams.roleInUseByTeam", "team", strings.Join(teams, ", "), "perms", strings.Join(wide, ", ")))
+}
+
+// guardTeamMemberRole refuses a save of a user (users screen) that makes a team member of
+// somebody whose user role has a team-wide permission or is the super admin role (LST-68).
+// id is 0 for a new user. A save that changes neither the user role nor the list role
+// passes, so that a member of a team that is already wide can still change their name or
+// password.
+func (a *App) guardTeamMemberRole(id int, u auth.User) error {
+	if u.ListRoleID == nil || a.core.TeamTagOfRole(*u.ListRoleID) == "" {
+		return nil
+	}
+	if id > 0 {
+		cur, err := a.core.GetUser(id, "", "")
+		if err == nil && cur.UserRole.ID == u.UserRoleID && cur.ListRoleID != nil && *cur.ListRoleID == *u.ListRoleID {
+			return nil
+		}
+	}
+	perms, super, err := a.core.WidePermsOfRole(u.UserRoleID)
+	if err != nil {
+		return err
+	}
+	if !super && len(perms) == 0 {
+		return nil
+	}
+	if super {
+		perms = []string{"Super Admin"}
+	}
+	return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("teams.memberWideRole", "perms", strings.Join(perms, ", ")))
 }

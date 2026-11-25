@@ -254,4 +254,67 @@ describe('teams', () => {
     cy.get('[data-cy=btn-save]').click();
     cy.contains('tr', `운영 리스트 ${stamp}`).find('[data-cy=team-badge]').should('contain', teamA);
   });
+
+  // LST-68: a default role keeps no permission that shows other teams' data.
+  it('keeps roles with team-wide permissions out of the default role and says why', () => {
+    const wideName = `전사 시험 ${stamp}`;
+    let wideId;
+    cy.loginAndVisit('/admin/users/teams');
+    cy.request('POST', '/api/roles/users', {
+      name: wideName, permissions: ['subscribers:get', 'subscribers:get_all'],
+    }).then(({ body }) => { wideId = body.data.id; });
+    cy.reload();
+    cy.get('[data-cy=btn-new]').click();
+    cy.get('[data-cy=team-user-role] option').then(($o) => {
+      const names = [...$o].map((o) => o.textContent.trim());
+      expect(names).to.include(`팀원 시험 ${stamp}`);
+      expect(names.some((n) => n.includes(wideName))).to.eq(false);
+    });
+    cy.get('[data-cy=team-form] [data-cy=btn-save]').should('exist');
+
+    // The API refuses it too, and the message names the permissions.
+    cy.request({
+      method: 'POST', url: '/api/teams', body: { name: `시험C팀${stamp}`, user_role_id: wideId }, failOnStatusCode: false,
+    }).then((res) => {
+      expect(res.status).to.eq(400);
+      expect(res.body.message).to.contain('subscribers:get_all').and.to.contain('campaigns:get_all');
+    });
+    // The roles screen refuses to give a team's role such a permission.
+    cy.request({
+      method: 'PUT',
+      url: `/api/roles/users/${memberRoleId}`,
+      body: { name: `팀원 시험 ${stamp}`, permissions: ['subscribers:get', 'campaigns:get_all'] },
+      failOnStatusCode: false,
+    }).then((res) => {
+      expect(res.status).to.eq(400);
+      expect(res.body.message).to.contain(teamA).and.to.contain('campaigns:get_all');
+    });
+    cy.request('DELETE', `/api/roles/${wideId}`);
+  });
+
+  it('warns on the teams screen about a team whose role shows other teams\' data', () => {
+    // The API cannot make such a team any more, so the answer is replaced.
+    cy.intercept('GET', '/api/teams', (req) => {
+      req.continue((res) => {
+        res.body.data.forEach((t) => {
+          if (t.name === teamA) {
+            t.wide = ['lists:get_all', 'lists:manage_all', 'subscribers:get_all'];
+            t.wide_members = 1;
+          }
+        });
+      });
+    });
+    cy.loginAndVisit('/admin/users/teams');
+    cy.contains('tr', teamA).find('[data-cy=team-wide-tag]').should('be.visible');
+    cy.contains('tr', teamA).find('[data-cy=team-wide-fix]').should('have.attr', 'href').and('contain', '/users/roles/users');
+    cy.contains('tr', teamB).find('[data-cy=team-wide]').should('not.exist');
+  });
+
+  it('tells a team member that the bounce screen shows only their own lists', () => {
+    loginAs(memberUser, memberPass, '/admin/subscribers/bounces');
+    cy.get('[data-cy=bounces-scoped]').should('be.visible');
+    cy.request('/api/bounces').its('status').should('eq', 200);
+    cy.loginAndVisit('/admin/subscribers/bounces');
+    cy.get('[data-cy=bounces-scoped]').should('not.exist');
+  });
 });
