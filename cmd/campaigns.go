@@ -1064,6 +1064,12 @@ func (a *App) makeOptinCampaignMessage(o campReq) (campReq, error) {
 // Either the user has blanket get_all/manage_all permissions, or the campaign
 // belongs to lists that the user has access to.
 func (a *App) checkCampaignPerm(types auth.PermType, id int, c echo.Context) error {
+	return a.checkCampaignPermMode(types, id, c, types&auth.PermTypeGet == 0)
+}
+
+// checkCampaignPermMode is checkCampaignPerm. strict (AXM, LST-68) asks for a write that reaches
+// every list of the campaign (a send, an edit, a delete): all of them must be the user's.
+func (a *App) checkCampaignPermMode(types auth.PermType, id int, c echo.Context, strict bool) error {
 	// Get the authenticated user.
 	user := auth.GetUser(c)
 
@@ -1095,7 +1101,7 @@ func (a *App) checkCampaignPerm(types auth.PermType, id int, c echo.Context) err
 		// AXM (LST-68): a change reaches every list of the campaign, so for a write all of them
 		// must be the user's (upstream: one of them is enough).
 		has := a.core.CampaignHasLists
-		if types&auth.PermTypeGet == 0 {
+		if strict {
 			has = a.core.CampaignListsWithin
 		}
 		if ok, err := has(id, permittedListIDs); err != nil {
