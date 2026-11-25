@@ -142,3 +142,17 @@ func TestDynamicListQueryContainsOnlyIDs(t *testing.T) {
 		t.Fatal(ids, q)
 	}
 }
+
+func TestExcludeInUseName(t *testing.T) {
+	cases := []struct{ msg, want string }{
+		{`list 12 is an exclude list of the dynamic list "VIP 제외"`, "VIP 제외"},
+		{`list 3 is an exclude list of the dynamic list "a "quoted" b"`, `a "quoted" b`},
+		{`list 3 is an exclude list of the dynamic list ""`, ""},
+		{`something else`, ""},
+	}
+	for _, c := range cases {
+		if got := excludeInUseName(c.msg); got != c.want {
+			t.Errorf("%q: got %q, want %q", c.msg, got, c.want)
+		}
+	}
+}

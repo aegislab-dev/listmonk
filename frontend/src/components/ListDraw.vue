@@ -63,6 +63,7 @@
             </b-field>
           </div>
           <p class="help">{{ $t('lists.draw.scopeHelp') }}</p>
+          <p class="draw-info" data-cy="draw-ledger-note">{{ $t('lists.draw.ledgerNote') }}</p>
           <p class="draw-info" data-cy="draw-always">{{ $t('lists.draw.alwaysExcluded') }}</p>
         </div>
 
@@ -87,8 +88,11 @@
             </tbody>
           </table>
         </div>
-        <p v-if="counts && will === 0" class="draw-note is-danger" role="alert" data-cy="draw-none">{{ $t('lists.draw.none') }}</p>
-        <p v-else-if="counts && counts.requested > counts.candidates" class="draw-note is-warning" role="alert" data-cy="draw-short">
+        <p v-if="counts && counts.target > 0 && counts.alreadyReceived === 0" class="draw-note is-warning" data-cy="draw-received-zero">
+          {{ $t('lists.draw.receivedZero') }}
+        </p>
+        <p v-if="counts && will === 0" ref="countWarning" class="draw-note is-danger" role="alert" data-cy="draw-none">{{ $t('lists.draw.none') }}</p>
+        <p v-else-if="counts && counts.requested > counts.candidates" ref="countWarning" class="draw-note is-warning" role="alert" data-cy="draw-short">
           {{ $t('lists.draw.short', { candidates: $utils.formatNumber(counts.candidates), requested: $utils.formatNumber(counts.requested), will: $utils.formatNumber(will) }) }}
         </p>
 
@@ -236,7 +240,12 @@ export default Vue.extend({
       try {
         const data = await this.$api.previewListDraw(this.source.id, drawBody(this.form));
         // Settings that changed while the count was running make it stale.
-        if (key === this.settingsKey) this.counts = data;
+        if (key === this.settingsKey) {
+          this.counts = data;
+          await this.$nextTick();
+          // The explanation must be in view when the footer offers to create a shorter list.
+          this.$refs.countWarning?.scrollIntoView({ block: 'nearest' });
+        }
       } catch (e) {
         this.error = e.response?.data?.message || this.$t('lists.draw.error');
       } finally { this.checking = false; }
@@ -294,7 +303,7 @@ export default Vue.extend({
 .draw-table tr.sub td:first-child { padding-left: 18px; color: #555; }
 .draw-table tr.result td { border-bottom: 0; font-weight: 700; font-size: 1rem; }
 .draw-table tr.result td:last-child { color: #0055d4; }
-.draw-note { margin: 10px 0; padding: 8px 12px; font-size: .85rem; border-left: 3px solid; }
+.draw-note { margin: 10px 0; padding: 8px 12px; font-size: .85rem; border-left: 3px solid; scroll-margin-block: 8px; }
 .draw-note.is-warning { background: #fff8e1; border-color: #d9a100; color: #5c4400; }
 .draw-note.is-danger { background: #fdf0f0; border-color: #d33; color: #7a1d1d; }
 .draw-note.is-success { background: #effaf3; border-color: #1f9d55; color: #14502e; font-size: .95rem; }

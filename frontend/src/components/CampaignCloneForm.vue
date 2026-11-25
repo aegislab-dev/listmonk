@@ -52,7 +52,12 @@
           days: DAYS,
         }) }}</b>
         <span class="clone-sub">{{ $t('campaigns.clone.receivedRisk') }}</span>
+        <span class="clone-sub" data-cy="clone-received-scope">{{ scopeText }}</span>
         <span class="clone-sub" data-cy="clone-received-way">{{ $t('campaigns.clone.receivedWay') }}</span>
+      </div>
+      <div v-else-if="received.state === 'ok'" class="clone-received is-note" data-cy="clone-received" data-state="none">
+        {{ $t('campaigns.clone.receivedNone', { days: DAYS }) }}
+        <span class="clone-sub" data-cy="clone-received-scope">{{ scopeText }}</span>
       </div>
     </section>
 
@@ -119,6 +124,11 @@ export default {
 
     selectedIds() {
       return this.selected.map((l) => l.id);
+    },
+
+    // What the count covers: this one campaign's send records of the last DAYS days.
+    scopeText() {
+      return this.$t('campaigns.clone.receivedScope', { name: this.campaign.name, days: DAYS });
     },
 
     isWarn() {

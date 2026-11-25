@@ -84,6 +84,11 @@ async function initConfig(app) {
     || ((profile.listRole && profile.listRole.lists) || [])
       .some((list) => list.id === id && list.permissions.includes('list:manage'));
 
+  // $userListCount() is how many lists the user's list role gives them (get or manage), archived
+  // ones included: the server reads all of them when a bulk action names no list.
+  Vue.prototype.$userListCount = () => ((profile.listRole && profile.listRole.lists) || [])
+    .filter((list) => list.permissions.some((perm) => perm === 'list:get' || perm === 'list:manage')).length;
+
   // The user's team tag ("팀:이름") when their list role is a team role, else ''.
   Vue.prototype.$teamTag = () => (profile.listRole && profile.listRole.teamTag) || '';
 
