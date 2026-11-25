@@ -66,6 +66,8 @@ describe('Saving a scheduled campaign', () => {
       create('warn', {});
       create('undo', {});
       create('conflict', {});
+      create('retryChanged', {});
+      create('retrySame', {});
       create('visualConflict', visualContent(oldOffer));
       create('draftDuringCheck', {});
       create('pass', {
@@ -144,6 +146,56 @@ describe('Saving a scheduled campaign', () => {
     });
   });
 
+  it('reloads the form and closes a retry that reads another editor’s version', () => {
+    const path = `/api/campaigns/${camp.retryChanged}`;
+    const subject = 'Saved during the preflight outage';
+    const later = new Date(Date.now() + 86400000 * 67).toISOString();
+    cy.intercept({ method: 'GET', url: `${path}/preflight`, times: 2 }, { statusCode: 503 });
+    cy.intercept('PUT', `${path}/status`).as('retryStatus');
+    cy.visit(`/admin/campaigns/${camp.retryChanged}`);
+    cy.get('[data-cy=btn-save]').click();
+    cy.get(`${win}[data-state=error]`);
+    cy.get('[data-cy=send-unschedule]').should('be.disabled');
+
+    status('retryChanged').then((d) => cy.request('PUT', path, {
+      ...d, lists: [listOk], media: [], subject, send_at: later,
+    }));
+    cy.get('[data-cy=send-retry]').click();
+    cy.get(win).should('not.exist');
+    cy.get('[name=subject]').should('have.value', subject);
+    cy.get('@retryStatus.all').should('have.length', 0);
+
+    cy.get('[name=name]').clear().type('Name after retry');
+    cy.get('[data-cy=btn-save]').click();
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+    status('retryChanged').then((d) => {
+      expect(d.name).to.equal('Name after retry');
+      expect(d.subject).to.equal(subject);
+      expect(d.status).to.equal('scheduled');
+      expect(new Date(d.send_at).getTime()).to.equal(new Date(later).getTime());
+    });
+  });
+
+  it('allows unscheduling after a retry of the same saved version', () => {
+    const path = `/api/campaigns/${camp.retrySame}`;
+    cy.intercept({ method: 'GET', url: `${path}/preflight`, times: 2 }, { statusCode: 503 });
+    cy.intercept('PUT', path).as('saveForRetry');
+    cy.intercept('PUT', `${path}/status`).as('unscheduleAfterRetry');
+    cy.visit(`/admin/campaigns/${camp.retrySame}`);
+    cy.get('[data-cy=btn-save]').click();
+    cy.wait('@saveForRetry').its('response.body.data.updated_at').as('retryVersion');
+    cy.get(`${win}[data-state=error]`);
+    cy.get('[data-cy=send-retry]').click();
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+    cy.get('[data-cy=send-unschedule]').click();
+    cy.wait('@unscheduleAfterRetry').then(({ request, response }) => {
+      expect(response.statusCode).to.equal(200);
+      cy.get('@retryVersion').should('equal', request.body.updated_at);
+    });
+    cy.get(win).should('not.exist');
+    status('retrySame').its('status').should('equal', 'draft');
+  });
+
   it('loads the draft into the editor when another session unschedules during the check', () => {
     const path = `/api/campaigns/${camp.draftDuringCheck}`;
     let release;
@@ -208,7 +260,7 @@ describe('Saving a scheduled campaign', () => {
     status('pass').its('status').should('equal', 'scheduled');
   });
 
-  it('marks incomplete send history as a minimum in the review window', () => {
+  it('shows the approved list rows in a review of a resumed schedule', () => {
     cy.intercept('GET', `/api/campaigns/${camp.history}/preflight`, (req) => {
       req.continue((res) => {
         Object.assign(res.body.data, {
@@ -219,8 +271,10 @@ describe('Saving a scheduled campaign', () => {
     cy.visit(`/admin/campaigns/${camp.history}`);
     cy.get('[data-cy=btn-save]').click();
     cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
-    cy.get('[data-cy=send-progress-text]').should('contain', '≥21 sent of 30');
-    cy.get('[data-cy=send-progress]').should('contain', 'Recipients whose send records were deleted may receive this email again.');
+    cy.get('[data-cy=send-title]').should('contain', 'Scheduled · sends to 1 people');
+    cy.get(`[data-cy=send-list-${listOk}] [data-cy=send-list-count]`).should('have.text', '2');
+    cy.get('[data-cy=send-progress]').should('not.exist');
+    cy.get('[data-cy=send-check-unsubscribe\\.missing]').should('have.attr', 'data-level', 'warn');
   });
 
   it('refuses a save that leaves nobody to send to, and keeps what was saved', () => {

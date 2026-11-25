@@ -74,7 +74,7 @@
       :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
       @close="onSendClosed">
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
-        :campaign-name="sendAsk.name" :review="!!sendAsk.review" :initial="sendAsk.initial || null"
+        :campaign-name="sendAsk.name" :review="!!sendAsk.review" :review-version="sendAsk.reviewVersion || ''" :initial="sendAsk.initial || null"
         @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" @failed="onSendFailed"
         @unscheduled="onUnscheduled" @gone="onReviewGone" />
     </b-modal>
@@ -1063,7 +1063,14 @@ export default Vue.extend({
       }
       // The window reads the checks itself when this reading failed.
       this.sendAsk = {
-        id: d.id, name: d.name, status: 'scheduled', review: true, initial: pf, handled: true, busy: false,
+        id: d.id,
+        name: d.name,
+        status: 'scheduled',
+        review: true,
+        reviewVersion: d.updatedAt,
+        initial: pf,
+        handled: true,
+        busy: false,
       };
       this.isSendVisible = true;
       return true;

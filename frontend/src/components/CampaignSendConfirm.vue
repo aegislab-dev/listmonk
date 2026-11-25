@@ -199,7 +199,7 @@ import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 const fingerprint = (pf) => {
   const v = new Set(pf.varies || []);
   const keep = (part, value) => (v.has(part) ? null : value);
-  const progress = pf.mode === 'resume' || pf.resumed ? [pf.sent, pf.sentIsMinimum, pf.toSend] : null;
+  const progress = pf.mode === 'resume' ? [pf.sent, pf.sentIsMinimum, pf.toSend] : null;
   return JSON.stringify([
     pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, [...v].sort(), pf.senderPerSubscriber,
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
@@ -238,6 +238,8 @@ export default Vue.extend({
     // LST-67: the campaign is scheduled and was just saved; the window shows what the send will be
     // (the answer the page already read, in initial) and does not start anything.
     review: { type: Boolean, default: false },
+    // The version saved by the editor, even when the first check failed to load.
+    reviewVersion: { type: String, default: '' },
     initial: { type: Object, default: null },
   },
 
@@ -266,12 +268,12 @@ export default Vue.extend({
   },
 
   computed: {
-    isResume() { return !!this.pf && (this.pf.mode === 'resume' || (this.pf.mode === 'scheduled' && !!this.pf.resumed)); },
+    isResume() { return this.pf?.mode === 'resume'; },
 
     // Taking the schedule off is a status change that needs the right to send (LST-67 review).
     canUnschedule() { return this.$can('campaigns:send'); },
 
-    hasReviewVersion() { return this.state === 'ready' && !!this.pf?.updatedAt; },
+    hasReviewVersion() { return this.state === 'ready' && !!this.reviewVersion && this.pf?.updatedAt === this.reviewVersion; },
 
     // The time zone the scheduled time is shown in: the one it was chosen in on the campaign
     // page (LST-50, attribs.axm_send_tz), Korean time when none is stored, as the picker does.
@@ -443,9 +445,8 @@ export default Vue.extend({
         const pf = await this.$api.getCampaignPreflight(this.campaignId, this.ctl ? { signal: this.ctl.signal } : {});
         this.skew = pf.now ? new Date(pf.now).getTime() - Date.now() : 0;
         if (!Number.isFinite(this.skew)) this.skew = 0;
-        // The window of a saved scheduled campaign that was unscheduled by someone else meanwhile
-        // has nothing true to say: close it (LST-67 review).
-        if (this.review && pf.status !== 'scheduled') {
+        // A retry still checks the saved version. A newer version leaves the form stale.
+        if (this.review && (pf.status !== 'scheduled' || pf.updatedAt !== this.reviewVersion)) {
           this.$utils.toast(this.$t('campaigns.sendConfirm.changed'), 'is-danger');
           this.$emit('gone');
           this.$parent.close();
@@ -469,7 +470,7 @@ export default Vue.extend({
       if (this.busy || !this.hasReviewVersion) return;
       this.busy = true;
       try {
-        const out = await this.$api.changeCampaignStatus(this.campaignId, 'draft', this.pf.updatedAt, { disableToast: true });
+        const out = await this.$api.changeCampaignStatus(this.campaignId, 'draft', this.reviewVersion, { disableToast: true });
         this.$emit('unscheduled', out);
         this.$parent.close();
       } catch (err) {
