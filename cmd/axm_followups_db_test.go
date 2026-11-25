@@ -1708,8 +1708,8 @@ func TestFollowupResumedAfterTheSendRecordExpiredSendsNobodyTwice(t *testing.T) 
 			e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() - INTERVAL '400 days')`, camp, manual)
 			e.db.MustExec(`UPDATE campaigns SET status = 'paused', sent = 1, last_subscriber_id = 0 WHERE id = $1`, camp)
 			// The send records expire while it is paused.
-			var deleted int
-			if err := e.q.AxmDeleteCampaignSends.Get(&deleted, time.Now().Add(-365*24*time.Hour), 1000); err != nil {
+			deleted, err := e.a.core.PurgeOldCampaignSends()
+			if err != nil {
 				t.Fatal(err)
 			}
 			if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1`, camp); deleted == 0 || n != 0 {

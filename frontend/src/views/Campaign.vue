@@ -467,6 +467,7 @@ export default Vue.extend({
       // The list IDs the created draft was saved with (the page stays new while its rule fails).
       createdLists: [],
       savingCampaign: false,
+      campaignNeedsRefresh: false,
       // The list made from the recent-send exclusion result: { id, error }. Whether the server
       // has it as the target is read from the saved campaign (madeSaved), never remembered.
       madeList: null,
@@ -692,36 +693,33 @@ export default Vue.extend({
       this.isFollowup = !!info && info.role === 'followup';
     },
 
+    applyCampaign(data) {
+      this.data = data;
+      const { tz, rest } = splitAttribs(data.attribs);
+      this.form = {
+        ...this.form,
+        ...data,
+        sendLater: !!data.sendAt,
+        sendAtDate: data.sendAt ? dayjs(data.sendAt).toDate() : null,
+        sendTz: tz,
+        headersStr: JSON.stringify(data.headers, null, 4),
+        archiveMetaStr: data.archiveMeta ? JSON.stringify(data.archiveMeta, null, 4) : '{}',
+        attribsStr: data.attribs ? JSON.stringify(rest, null, 4) : '{}',
+        content: {
+          contentType: data.contentType,
+          body: data.body,
+          bodySource: data.bodySource,
+          templateId: data.templateId,
+        },
+        media: (data.media || []).map((f) => (f.id ? f : { ...f, filename: `❌ ${f.filename}` })),
+      };
+      this.form.fromChoice = this.fromChoiceOf(data);
+      this.isAttachFieldVisible = this.form.media.length > 0;
+    },
+
     getCampaign(id) {
       return this.$api.getCampaign(id).then(async (data) => {
-        this.data = data;
-        const { tz, rest } = splitAttribs(data.attribs);
-        this.form = {
-          ...this.form,
-          ...data,
-          sendTz: tz,
-          headersStr: JSON.stringify(data.headers, null, 4),
-          archiveMetaStr: data.archiveMeta ? JSON.stringify(data.archiveMeta, null, 4) : '{}',
-          attribsStr: data.attribs ? JSON.stringify(rest, null, 4) : '{}',
-
-          // The structure that is populated by editor input event.
-          content: {
-            contentType: data.contentType,
-            body: data.body,
-            bodySource: data.bodySource,
-            templateId: data.templateId,
-          },
-        };
-        this.form.fromChoice = this.fromChoiceOf(data);
-        this.isAttachFieldVisible = this.form.media.length > 0;
-
-        this.form.media = this.form.media.map((f) => {
-          if (!f.id) {
-            return { ...f, filename: `❌ ${f.filename}` };
-          }
-          return f;
-        });
-
+        this.applyCampaign(data);
         if (data.type === 'regular') {
           try {
             const rule = await this.$api.getRecentRule(id);
@@ -733,6 +731,12 @@ export default Vue.extend({
           }
         }
       });
+    },
+
+    async refreshCampaign(id) {
+      this.campaignNeedsRefresh = true;
+      await this.getCampaign(id);
+      this.campaignNeedsRefresh = false;
     },
 
     async saveRecentRule(id) {
@@ -890,6 +894,10 @@ export default Vue.extend({
     // quiet: no notice (the start shows it after its questions).
     async updateCampaign(typ, { quiet = false } = {}) {
       if (this.savingCampaign) return undefined;
+      if (this.campaignNeedsRefresh) {
+        if (!this.loading.campaigns) await this.refreshCampaign(this.data.id);
+        return undefined;
+      }
       const attribs = this.attribsToSave();
       if (attribs === undefined) throw new Error('invalid attribs');
       this.form.attribs = attribs;
@@ -1023,9 +1031,13 @@ export default Vue.extend({
       } catch (e) {
         pf = null;
       }
-      // Someone else took the schedule off (or changed the campaign) between the save and this
-      // reading: what it says is not about a scheduled campaign, so it is not shown as one.
-      if (pf && pf.status !== 'scheduled') return false;
+      // A change between the save and the check leaves the editor on another version.
+      // Refresh the whole form, since the title in the check may be rendered from a template.
+      if (pf && (pf.status !== 'scheduled' || pf.updatedAt !== d.updatedAt)) {
+        await this.refreshCampaign(d.id);
+        this.$utils.toast(this.$t('campaigns.sendConfirm.changed'), 'is-danger');
+        return true;
+      }
       if (pf) {
         const m = sendConfirmModel(pf, {
           tz: splitAttribs({ [TZ_ATTRIB]: pf.sendTz }).tz, lang: this.serverConfig.lang || 'ko',
@@ -1046,15 +1058,15 @@ export default Vue.extend({
       return true;
     },
 
-    // The saved campaign was unscheduled by someone else before the window could read it.
+    // The review found a different version or a campaign that is no longer scheduled.
     onReviewGone() {
       if (this.sendAsk) this.sendAsk.handled = true;
-      this.$utils.toast(this.$t('globals.messages.updated', { name: this.data.name }));
+      return this.refreshCampaign(this.data.id).catch(() => {});
     },
 
     onUnscheduled(d) {
       if (this.sendAsk) this.sendAsk.handled = true;
-      this.data = d;
+      this.applyCampaign(d);
     },
 
     onSendDone() {

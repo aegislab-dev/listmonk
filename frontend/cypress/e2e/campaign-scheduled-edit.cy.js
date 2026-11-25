@@ -51,6 +51,8 @@ describe('Saving a scheduled campaign', () => {
     cy.then(() => {
       create('warn', {});
       create('undo', {});
+      create('conflict', {});
+      create('draftDuringCheck', {});
       create('pass', {
         body: '<p>Hi <a href="https://example.invalid/x@TrackLink">x</a> <a href="{{ UnsubscribeURL }}">leave</a></p>{{ TrackView }}',
       });
@@ -94,6 +96,59 @@ describe('Saving a scheduled campaign', () => {
     cy.get('[data-cy=btn-unschedule]').should('not.exist');
   });
 
+  it('keeps the later schedule and reloads the editor after an outdated unschedule request', () => {
+    const path = `/api/campaigns/${camp.conflict}`;
+    const newSubject = 'Subject saved by the second editor';
+    const later = new Date(Date.now() + 86400000 * 67).toISOString();
+    cy.intercept('GET', `${path}/preflight`).as('preflight');
+    cy.intercept('PUT', `${path}/status`).as('unschedule');
+    cy.visit(`/admin/campaigns/${camp.conflict}`);
+    cy.get('[data-cy=btn-save]').click();
+    cy.wait('@preflight').its('response.body.data.updated_at').as('seenVersion');
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+
+    status('conflict').then((d) => cy.request('PUT', path, {
+      ...d, lists: [listOk], media: [], subject: newSubject, send_at: later,
+    }));
+    cy.get('[data-cy=send-unschedule]').click();
+    cy.wait('@unschedule').then(({ request, response }) => {
+      expect(response.statusCode).to.equal(409);
+      cy.get('@seenVersion').should('equal', request.body.updated_at);
+    });
+    cy.get(win).should('not.exist');
+    cy.get('[name=subject]').should('have.value', newSubject);
+    cy.get('[data-cy=btn-unschedule]').should('exist');
+    cy.get('[name=name]').clear().type('Edited name only');
+    cy.get('[data-cy=btn-save]').click();
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+    status('conflict').then((d) => {
+      expect(d.name).to.equal('Edited name only');
+      expect(d.subject).to.equal(newSubject);
+      expect(d.status).to.equal('scheduled');
+      expect(new Date(d.send_at).getTime()).to.equal(new Date(later).getTime());
+    });
+  });
+
+  it('loads the draft into the editor when another session unschedules during the check', () => {
+    const path = `/api/campaigns/${camp.draftDuringCheck}`;
+    let release;
+    cy.intercept('GET', `${path}/preflight`, (req) => new Cypress.Promise((resolve) => {
+      release = () => {
+        req.continue();
+        resolve();
+      };
+    })).as('preflight');
+    cy.visit(`/admin/campaigns/${camp.draftDuringCheck}`);
+    cy.get('[data-cy=btn-save]').click();
+    cy.wrap(null).should(() => expect(release).to.be.a('function'));
+    cy.request('PUT', `${path}/status`, { status: 'draft' });
+    cy.then(() => release());
+    cy.wait('@preflight').its('response.body.data.status').should('equal', 'draft');
+    cy.get('[data-cy=btn-schedule]').should('exist');
+    cy.get('[data-cy=btn-unschedule]').should('not.exist');
+    cy.get(win).should('not.exist');
+  });
+
   it('says that all is well in one line, with no window', () => {
     cy.visit(`/admin/campaigns/${camp.pass}`);
     cy.get('[data-cy=btn-save]').click();
@@ -114,6 +169,7 @@ describe('Saving a scheduled campaign', () => {
     cy.get('[data-cy=btn-save]').click();
     cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
     cy.get('[data-cy=send-progress-text]').should('contain', '≥21 sent of 30');
+    cy.get('[data-cy=send-progress]').should('contain', 'Recipients whose send records were deleted may receive this email again.');
   });
 
   it('refuses a save that leaves nobody to send to, and keeps what was saved', () => {

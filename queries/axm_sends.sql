@@ -49,18 +49,18 @@ SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1;
 -- name: axm-delete-campaign-sends
 -- Delete a batch. The ledger's delete trigger carries its count forward.
 WITH due AS MATERIALIZED (
-    SELECT ctid, campaign_id FROM axm_campaign_sends WHERE sent_at < $1 LIMIT $2
-),
-locked AS MATERIALIZED (
     -- Lock the parent before its send records. Deleting a campaign takes the same
-    -- locks in that order; let its cascade handle any records that are being deleted.
-    SELECT c.id FROM campaigns c
-    WHERE c.id IN (SELECT campaign_id FROM due)
+    -- locks in that order. Apply the limit to rows whose parent can be locked so a
+    -- busy campaign does not use up the batch before other campaigns are reached.
+    SELECT s.ctid, s.campaign_id
+    FROM axm_campaign_sends s JOIN campaigns c ON c.id = s.campaign_id
+    WHERE s.sent_at < $1
+    LIMIT $2
     FOR KEY SHARE OF c SKIP LOCKED
 ),
 d AS (
-    DELETE FROM axm_campaign_sends s USING due, locked
-    WHERE s.ctid = due.ctid AND s.campaign_id = locked.id
+    DELETE FROM axm_campaign_sends s USING due
+    WHERE s.ctid = due.ctid AND s.campaign_id = due.campaign_id
     RETURNING 1
 )
-SELECT COUNT(*) FROM d;
+SELECT (SELECT COUNT(*) FROM due) AS selected, (SELECT COUNT(*) FROM d) AS deleted;

@@ -159,7 +159,7 @@
       <!-- The window of a scheduled campaign that was just saved (LST-67): the schedule stays, or
            is taken off to edit. Nothing is sent or started from here. -->
       <template v-if="review">
-        <b-button v-if="canUnschedule" data-cy="send-unschedule" :loading="busy" @click="unschedule">
+        <b-button v-if="canUnschedule" data-cy="send-unschedule" :disabled="!hasReviewVersion" :loading="busy" @click="unschedule">
           {{ $t('campaigns.sendConfirm.review.unschedule') }}
         </b-button>
         <b-button type="is-primary" data-cy="send-ok" :class="{ 'send-ok-warn': model && model.warnings }" :disabled="busy"
@@ -270,6 +270,8 @@ export default Vue.extend({
 
     // Taking the schedule off is a status change that needs the right to send (LST-67 review).
     canUnschedule() { return this.$can('campaigns:send'); },
+
+    hasReviewVersion() { return this.state === 'ready' && !!this.pf?.updatedAt; },
 
     // The time zone the scheduled time is shown in: the one it was chosen in on the campaign
     // page (LST-50, attribs.axm_send_tz), Korean time when none is stored, as the picker does.
@@ -444,6 +446,7 @@ export default Vue.extend({
         // The window of a saved scheduled campaign that was unscheduled by someone else meanwhile
         // has nothing true to say: close it (LST-67 review).
         if (this.review && pf.status !== 'scheduled') {
+          this.$utils.toast(this.$t('campaigns.sendConfirm.changed'), 'is-danger');
           this.$emit('gone');
           this.$parent.close();
           return;
@@ -463,14 +466,18 @@ export default Vue.extend({
     // Takes the schedule off (the campaign becomes a draft again) so that it can be edited
     // (LST-67). The page shows the campaign as a draft.
     async unschedule() {
-      if (this.busy) return;
+      if (this.busy || !this.hasReviewVersion) return;
       this.busy = true;
       try {
-        const out = await this.$api.changeCampaignStatus(this.campaignId, 'draft');
+        const out = await this.$api.changeCampaignStatus(this.campaignId, 'draft', this.pf.updatedAt, { disableToast: true });
         this.$emit('unscheduled', out);
         this.$parent.close();
       } catch (err) {
         this.$utils.toast((err.response && err.response.data && err.response.data.message) || err.message, 'is-danger');
+        if (err.response && err.response.status === 409) {
+          this.$emit('gone');
+          this.$parent.close();
+        }
       } finally {
         this.busy = false;
       }

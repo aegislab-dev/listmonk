@@ -16,6 +16,7 @@ import (
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	"gopkg.in/volatiletech/null.v6"
 )
 
 // LST-67: a scheduled campaign that is saved is judged again by the pre-send checks. Nobody to
@@ -688,5 +689,47 @@ func TestScheduledSaveWithoutAnyList(t *testing.T) {
 	}
 	if _, status, lists := e.saved(); status != "scheduled" || len(lists) != 1 {
 		t.Fatalf("%s %v", status, lists)
+	}
+}
+
+func TestScheduledUnscheduleRejectsStaleVersion(t *testing.T) {
+	e := scheduledEnv(t)
+	member := e.as(e.superAdmin)
+	id := strconv.Itoa(e.campID)
+	path := "/api/campaigns/" + id
+	read := func() preflightResponse {
+		t.Helper()
+		var result preflightResponse
+		if err := json.Unmarshal(pfRead(t, e, member, path+"/preflight", id), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	unschedule := func(version null.Time) int {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"status": "draft", "updated_at": version})
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, _ := e.call(e.a.UpdateCampaignStatus, member, http.MethodPut, path+"/status", id, string(body))
+		return code
+	}
+	old := read()
+	later := time.Now().Add(48 * time.Hour).Truncate(time.Second)
+	if code, response := e.save("Other editor's subject", []int{e.aList}, &later, "regular"); code != http.StatusOK {
+		t.Fatalf("second editor save: %d %s", code, response)
+	}
+	if code := unschedule(old.UpdatedAt); code != http.StatusConflict {
+		t.Fatalf("outdated unschedule: %d", code)
+	}
+	fresh := read()
+	if fresh.Status != "scheduled" || fresh.Subject != "Other editor's subject" || !fresh.SendAt.Time.Equal(later) {
+		t.Fatalf("outdated request changed the campaign: %s %q %v", fresh.Status, fresh.Subject, fresh.SendAt)
+	}
+	if code := unschedule(fresh.UpdatedAt); code != http.StatusOK {
+		t.Fatalf("current unschedule: %d", code)
+	}
+	if got := read(); got.Status != "draft" || got.Subject != fresh.Subject {
+		t.Fatalf("current request: %s %q", got.Status, got.Subject)
 	}
 }
