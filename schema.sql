@@ -1597,10 +1597,16 @@ RETURNS TABLE(subscriber_id INT) LANGUAGE SQL STABLE AS $$
     SELECT s.id
     FROM unnest(p_subs) AS s(id), r
     CROSS JOIN LATERAL (
-        SELECT 1 FROM axm_campaign_sends cs
-        WHERE cs.subscriber_id = s.id
-            AND cs.sent_at > NOW() - make_interval(days => r.days)
-            AND cs.campaign_id = ANY(ARRAY(SELECT id FROM camps))
+        SELECT 1
+        FROM (
+            -- Keep the scope filter outside this lookup so Postgres starts with the
+            -- (subscriber_id, sent_at) index instead of probing by every campaign ID.
+            SELECT cs.campaign_id FROM axm_campaign_sends cs
+            WHERE cs.subscriber_id = s.id
+                AND cs.sent_at > NOW() - make_interval(days => r.days)
+            OFFSET 0
+        ) history
+        WHERE history.campaign_id = ANY(ARRAY(SELECT id FROM camps))
         LIMIT 1
     ) received
     WHERE EXISTS (SELECT 1 FROM camps)
