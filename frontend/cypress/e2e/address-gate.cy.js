@@ -414,7 +414,7 @@ describe('Address rules', () => {
     // The counts come from the rows, not from the server's summary (which says 0 here).
     cy.get('[data-cy=map-address-summary]').should('contain', '4');
     cy.get('[data-cy=map-address-role]').should('contain', `6 (${rows[4]})`).and('not.contain', `3 (${rows[1]})`)
-      .and('contain', 'only marked');
+      .and('contain', 'imported as they are');
     cy.get('[data-cy=map-address-unknown]').should('contain', `7 (${rows[5]})`).and('not.contain', `3 (${rows[1]})`);
     // Unknown counts the open rows only: the blocklisted row is not counted again.
     cy.get('[data-cy=map-address-summary]').should('contain', '1 unknown');
