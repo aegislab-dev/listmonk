@@ -116,7 +116,7 @@ describe('Clone window: the copy picks its own lists', () => {
       expect(request.body.campaign_ids).to.deep.equal([origId]);
     });
     cy.get('[data-cy=clone-received][data-state=none]')
-      .should('contain', 'Nobody received the original in the last 30 days')
+      .should('contain', 'Nobody on the chosen lists received the original in the last 30 days')
       .find('[data-cy=clone-received-scope]')
       .should('contain', `Only the send records of the original "${origName}" from the last 30 days are counted`);
     cy.get('[data-cy=clone-received][data-state=warn]').should('not.exist');
