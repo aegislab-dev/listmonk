@@ -135,7 +135,7 @@ export default {
       const missing = data.find((r) => r.key === '(none)');
       const hasNamedCountry = data.some((r) => r.key !== '(none)' && r.key !== '__other__');
       if (!data.length || (country && (!hasNamedCountry || (missing && missing.sent > total / 2)))) return null;
-      const eligible = data.filter((r) => r.ok && r.trackedRecipients >= MIN.recipientSample && r.key !== '(none)');
+      const eligible = data.filter((r) => r.click !== null && r !== missing);
       const best = eligible.length >= 2 ? eligible.reduce((b, r) => (r.click > b.click ? r : b)) : null;
       const label = (r) => {
         const labelKey = {
@@ -147,14 +147,23 @@ export default {
         if (!r.ok || r === missing) {
           return { label: label(r), mute: true, text: `${this.t('small')} · ${this.t('recipientCount', { n: fmt(r.recipients) })}` };
         }
-        const count = this.t('recipientCount', { n: fmt(r.recipients) });
+        const count = this.t('recipientOverallCount', { n: fmt(r.recipients) });
+        const trackedSample = this.t('recipientTrackedSample', { n: fmt(r.trackedRecipients), sent: fmt(r.trackedSent) });
         if (r.click === null) {
+          const bounce = this.t('bounceValue', { rate: pctText(r.bounce) });
+          if (!r.trackedSent) {
+            return { label: label(r), main: this.t('untracked'), sub: `${bounce} · ${count}` };
+          }
           return {
-            label: label(r), main: this.t('untracked'), sub: `${this.t('bounceValue', { rate: pctText(r.bounce) })} · ${count}`,
+            label: label(r),
+            mute: true,
+            main: this.t('recipientTrackingSmall'),
+            sub: [trackedSample, bounce, count].join(' · '),
           };
         }
         const { main, sub } = this.rates(r);
-        sub.push(count);
+        sub.push(trackedSample);
+        if (r.trackedSent !== r.sent) sub.push(count);
         return {
           label: label(r), click: r.click, best: best === r, main, sub: sub.join(' · '),
         };

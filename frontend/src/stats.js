@@ -105,13 +105,14 @@ export function teamMedian(camps, now = new Date()) {
 // colors a good change blue and the rest grey.
 export function change(delta, kind) {
   const width = NEUTRAL[kind];
-  const d = delta;
-  if (Math.abs(d) < width) {
-    return { dir: 'same', good: false, delta: d };
+  // Subtracting two percentages can place an exact boundary a few bits below its value.
+  const ratePrecision = 100 * Number.EPSILON;
+  if (Math.abs(delta) < width - ratePrecision) {
+    return { dir: 'same', good: false, delta };
   }
-  const up = d > 0;
+  const up = delta > 0;
   const higherIsBetter = kind === 'click' || kind === 'open';
-  return { dir: up ? 'up' : 'down', good: up === higherIsBetter, delta: d };
+  return { dir: up ? 'up' : 'down', good: up === higherIsBetter, delta };
 }
 export function previousStatus(previous, failed) {
   if (failed) return 'previousError';
@@ -263,16 +264,21 @@ export function overlapRows(camps, overlaps, team = '') {
 // The groups of recipients the server sent for one team ('' for everyone), as rows with rates
 // in the order of `order` (keys), the rest by size; the merged "other" group last.
 export function recipientRows(groups, team, order = null) {
-  const g = (groups || []).filter((x) => x.team === team).map((x) => ({
-    key: x.key,
-    sent: x.sent,
-    recipients: x.recipients,
-    click: pct(x.clicked, x.trackedSent),
-    open: pct(x.opened, x.trackedSent),
-    trackedRecipients: x.trackedRecipients,
-    bounce: pct(x.bounced, x.sent),
-    ok: x.recipients >= MIN.recipientSample && x.key !== '__other__',
-  }));
+  const g = (groups || []).filter((x) => x.team === team).map((x) => {
+    const ok = x.recipients >= MIN.recipientSample && x.key !== '__other__';
+    const enoughTracking = ok && x.trackedRecipients >= MIN.recipientSample;
+    return {
+      key: x.key,
+      sent: x.sent,
+      recipients: x.recipients,
+      trackedSent: x.trackedSent,
+      trackedRecipients: x.trackedRecipients,
+      click: enoughTracking ? pct(x.clicked, x.trackedSent) : null,
+      open: enoughTracking ? pct(x.opened, x.trackedSent) : null,
+      bounce: pct(x.bounced, x.sent),
+      ok,
+    };
+  });
   const rank = (r) => {
     if (r.key === '__other__') {
       return 1e9;

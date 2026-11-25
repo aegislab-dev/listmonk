@@ -178,8 +178,8 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.loginAndVisit('/');
     cy.get('[data-cy=team-row-__none__]').click();
     cy.get('[data-cy=team-filter]').should('contain', 'No team');
-    cy.get('[data-cy=card-age]').should('contain', '1,500 unique recipients');
-    cy.get('[data-cy=card-country]').should('contain', '4,000 unique recipients');
+    cy.get('[data-cy=card-age]').should('contain', 'Unique recipients 1,500');
+    cy.get('[data-cy=card-country]').should('contain', 'Unique recipients 4,000');
     cy.get('[data-cy=card-followup]')
       .should('contain', 'Combined · click 6.0% · open 27.5%')
       .and('contain', '120 unique clickers ÷ 2,000 original sends')
@@ -199,6 +199,18 @@ describe('Statistics dashboard (fixed answers)', () => {
       .find('[data-cy=help-click]').trigger('mouseenter', { force: true });
     cy.get('[data-cy="team-row-팀:가"] [data-cy=help-click]')
       .should('contain', '270 ÷ 3,000 sent (3 campaigns)').and('contain', 'Vertical line').and('contain', 'Previous period · 1.0% → ▲ +8.0%p').and('contain', '±0.5%p');
+  });
+
+  it('shows an increase at an exact 0.5 percentage point change in the row and help', () => {
+    const cur = mine.slice(0, 3).map((c) => ({ ...c, clickers: 9 }));
+    const prev = cur.map((c) => ({ ...c, started_at: day(105), clickers: 4 }));
+    stub({ cur, prev });
+    cy.loginAndVisit('/');
+    const row = '[data-cy="team-row-팀:가"]';
+    cy.get(row).should('contain', 'vs prev. ▲ +0.5%p');
+    cy.get(`${row} [data-cy=help-click] button`).focus();
+    cy.get(`${row} [data-cy=help-click] .tooltip-content`)
+      .should('be.visible').and('contain', 'Previous period · 0.4% → ▲ +0.5%p');
   });
 
   it('distinguishes an unreadable previous period from absent sends and requests all time', () => {
@@ -233,6 +245,32 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.loginAndVisit('/');
     cy.get('[data-cy=card-country]').should('contain', 'Not tracked').and('contain', 'Bounce 1.3%').and('not.contain', 'Click 0.0%');
     cy.get('[data-cy=card-age]').should('contain', 'Not tracked').and('contain', 'Bounce 4.0%').and('not.contain', 'Open 0.0%');
+  });
+
+  it('separates the tracked sample from the full audience in both recipient cards', () => {
+    const sparse = { team: '', sent: 601, recipients: 200, tracked_sent: 1, tracked_recipients: 1, opened: 1, clicked: 1, bounced: 3 };
+    const enough = { team: '', sent: 200, recipients: 200, tracked_sent: 200, tracked_recipients: 200, opened: 30, clicked: 10, bounced: 0 };
+    stub();
+    cy.intercept('GET', '/api/stats/recipients*', (req) => req.reply({
+      data: req.query.by === 'country'
+        ? [{ ...sparse, key: 'KR' }, { ...enough, key: 'JP' }, { ...enough, key: 'US', clicked: 8 }]
+        : [{ ...sparse, key: 'older' }],
+    }));
+    cy.loginAndVisit('/');
+    const smallRows = [
+      ['[data-cy=card-country] .st-br', 'KR'],
+      ['[data-cy=card-age] .st-br', '30 days or older'],
+    ];
+    smallRows.forEach(([selector, label]) => {
+      cy.contains(selector, label).should('contain', 'Small tracking sample')
+        .and('contain', 'Tracked sample · Unique recipients 1 · Sends 1')
+        .and('contain', '200 unique recipients overall')
+        .and('contain', 'Bounce 0.5%')
+        .and('not.contain', '100.0%');
+    });
+    cy.get('[data-cy=concl-country]').should('contain', 'JP has the highest click rate at 5.0%');
+    cy.contains('[data-cy=card-country] .st-br', 'JP').should('contain', 'Tracked sample · Unique recipients 200 · Sends 200');
+    cy.get('[data-cy=concl-age]').should('contain', '200 tracked recipients');
   });
 
   it('uses the scoped unique recipient count for period overlap', () => {
