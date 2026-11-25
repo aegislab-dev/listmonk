@@ -1306,6 +1306,17 @@ func TestSendRecordRetention(t *testing.T) {
 	if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 0 {
 		t.Fatalf("second run deleted %d, err %v", n, err)
 	}
+	var campaigns, total int
+	e.get(&campaigns, `SELECT COUNT(*) FROM axm_campaign_expired_sends`)
+	e.get(&total, `SELECT SUM(sent) FROM axm_campaign_expired_sends`)
+	if campaigns != 30 || total != 45000 {
+		t.Fatalf("expired totals: %d campaigns, %d records", campaigns, total)
+	}
+	e.db.MustExec(`DELETE FROM campaigns WHERE id=(SELECT MIN(campaign_id) FROM axm_campaign_expired_sends)`)
+	e.get(&total, `SELECT SUM(sent) FROM axm_campaign_expired_sends`)
+	if total != 43500 {
+		t.Fatalf("expired totals left after campaign deletion: %d", total)
+	}
 }
 
 // The view pixel and the tracked link mark the send record, and never fail because of it.
@@ -1509,7 +1520,7 @@ func TestSendRecordMigration(t *testing.T) {
 // Migrations are registered through the latest version and stay in semver order.
 func TestSendRecordMigrationRegistered(t *testing.T) {
 	last := migList[len(migList)-1]
-	if last.version != "v6.2.1-axm.18" {
+	if last.version != "v6.2.1-axm.19" {
 		t.Fatalf("last migration is %s", last.version)
 	}
 	for i := 1; i < len(migList); i++ {

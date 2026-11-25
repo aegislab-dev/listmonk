@@ -551,6 +551,84 @@ func TestScheduledSaveOfAPausedThenScheduledCampaign(t *testing.T) {
 	}
 }
 
+func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
+	const total, checkpoint, delivered = 40, 10, 30
+	for _, tc := range []struct {
+		name    string
+		saved   int
+		decided int
+	}{
+		{name: "stored count covers the expired deliveries", saved: checkpoint},
+		{name: "stored count already includes out-of-order deliveries", saved: delivered},
+		{name: "sent follow-up decisions survive retention", saved: checkpoint, decided: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := scheduledEnv(t)
+			list := e.pfList("single", "")
+			var ids []int
+			for i := 0; i < total; i++ {
+				ids = append(ids, e.pfSub("enabled", "", map[int]string{list: "confirmed"}))
+			}
+			e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, list)
+			e.db.MustExec(`UPDATE campaigns SET status='paused', to_send=$2, sent=$3, last_subscriber_id=$4 WHERE id=$1`,
+				e.campID, total, tc.saved, ids[checkpoint-1])
+			for i, id := range ids[:delivered] {
+				age := "1 day"
+				if i < checkpoint {
+					age = "13 months"
+				}
+				e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id,sent_at) VALUES($1,$2,NOW()-$3::INTERVAL)`,
+					e.campID, id, age)
+				if i < tc.decided {
+					e.db.MustExec(`INSERT INTO axm_campaign_followup_claims(campaign_id,subscriber_id,sent) VALUES($1,$2,TRUE)`, e.campID, id)
+				}
+			}
+			member := e.as(e.superAdmin)
+			path := fmt.Sprintf("/api/campaigns/%d", e.campID)
+			id := strconv.Itoa(e.campID)
+			check := func(mode string) {
+				t.Helper()
+				data := pfRead(t, e, member, path+"/preflight", id)
+				var out preflightResponse
+				if err := json.Unmarshal(data, &out); err != nil {
+					t.Fatal(err)
+				}
+				if out.Mode != mode || out.Sent != delivered || out.ToSend != total || out.Remaining != total-delivered ||
+					(mode == "scheduled" && !out.Resumed) {
+					t.Fatalf("%s: sent=%d, total=%d, remaining=%d, resumed=%t", out.Mode, out.Sent, out.ToSend, out.Remaining, out.Resumed)
+				}
+			}
+			check("resume")
+			if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != checkpoint {
+				t.Fatalf("deleted %d expired records: %v", n, err)
+			}
+			if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 0 {
+				t.Fatalf("second purge deleted %d records: %v", n, err)
+			}
+			var expired, retained int
+			e.get(&expired, `SELECT sent FROM axm_campaign_expired_sends WHERE campaign_id=$1`, e.campID)
+			e.get(&retained, `SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id=$1`, e.campID)
+			if expired != checkpoint-tc.decided || retained != delivered-checkpoint {
+				t.Fatalf("expired tally %d, retained ledger %d", expired, retained)
+			}
+			check("resume")
+			if code, data := e.call(e.a.UpdateCampaignStatus, member, http.MethodPut, path+"/status", id, `{"status":"running"}`); code != http.StatusOK {
+				t.Fatalf("reschedule: %d %s", code, data)
+			}
+			tomorrow := time.Now().Add(24 * time.Hour)
+			if code, data := e.save("Edited", []int{list}, &tomorrow, "regular"); code != http.StatusOK {
+				t.Fatalf("save: %d %s", code, data)
+			}
+			check("scheduled")
+			var sent int
+			e.get(&sent, `SELECT sent FROM campaigns WHERE id=$1`, e.campID)
+			if sent != tc.saved {
+				t.Fatalf("read or retention changed saved progress to %d", sent)
+			}
+		})
+	}
+}
+
 // The last list taken off a scheduled campaign says so, with the way on, not "invalid list IDs".
 func TestScheduledSaveWithoutAnyList(t *testing.T) {
 	e := scheduledEnv(t)

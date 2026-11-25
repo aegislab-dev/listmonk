@@ -190,11 +190,12 @@ func (c *Core) GetCampaignPausedAt(id int, fallback null.Time) null.Time {
 	return at
 }
 
-// CampaignRecordedSends counts deliveries the ledger or follow-up decisions record,
-// including those recorded before the campaign's progress counters were saved.
+// CampaignRecordedSends counts recorded deliveries, including the aggregate carried
+// forward by retention. A ledger row and a sent follow-up decision count once.
 func (c *Core) CampaignRecordedSends(ctx context.Context, id int) (int, error) {
 	var sent int
 	err := c.db.GetContext(ctx, &sent, `SELECT
+		COALESCE((SELECT sent FROM axm_campaign_expired_sends WHERE campaign_id = $1), 0) +
 		(SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1) +
 		(SELECT COUNT(*) FROM axm_campaign_followup_claims k WHERE k.campaign_id = $1 AND k.sent
 			AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends s

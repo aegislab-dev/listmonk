@@ -47,11 +47,32 @@ SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscrib
 SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1;
 
 -- name: axm-delete-campaign-sends
--- Deletes up to $2 send records sent before $1 and returns how many were deleted.
--- The caller repeats it until it returns 0, so no single statement holds many rows.
-WITH d AS (
-    DELETE FROM axm_campaign_sends WHERE ctid = ANY(ARRAY(
-        SELECT ctid FROM axm_campaign_sends WHERE sent_at < $1 LIMIT $2
-    )) RETURNING 1
+-- Delete a batch and carry over its count atomically, without retaining recipient IDs.
+WITH due AS MATERIALIZED (
+    SELECT ctid, campaign_id FROM axm_campaign_sends WHERE sent_at < $1 LIMIT $2
+),
+locked AS MATERIALIZED (
+    -- Lock the parent before its send records. Deleting a campaign takes the same
+    -- locks in that order; let its cascade handle any records that are being deleted.
+    SELECT c.id FROM campaigns c
+    WHERE c.id IN (SELECT campaign_id FROM due)
+    FOR KEY SHARE OF c SKIP LOCKED
+),
+d AS (
+    DELETE FROM axm_campaign_sends s USING due, locked
+    WHERE s.ctid = due.ctid AND s.campaign_id = locked.id
+    RETURNING s.campaign_id, s.subscriber_id
+),
+expired AS (
+    INSERT INTO axm_campaign_expired_sends AS tally (campaign_id, sent)
+    SELECT d.campaign_id, COUNT(*) FROM d
+    -- A surviving follow-up decision already records this delivery.
+    WHERE NOT EXISTS (
+        SELECT 1 FROM axm_campaign_followup_claims k
+        WHERE k.campaign_id = d.campaign_id AND k.subscriber_id = d.subscriber_id AND k.sent
+    )
+    GROUP BY d.campaign_id
+    ORDER BY d.campaign_id
+    ON CONFLICT (campaign_id) DO UPDATE SET sent = tally.sent + EXCLUDED.sent
 )
 SELECT COUNT(*) FROM d;

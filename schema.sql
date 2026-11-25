@@ -602,6 +602,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sender_token ON sender_addresses(token_has
 -- A fresh install starts without send records. Dropping subscribers and campaigns above
 -- would otherwise leave this table behind with its rows and without its foreign keys.
 DROP TABLE IF EXISTS axm_campaign_sends CASCADE;
+DROP TABLE IF EXISTS axm_campaign_expired_sends;
 -- The same for the list draw tables: they reference lists, users and campaigns.
 DROP TABLE IF EXISTS axm_list_draw_campaigns CASCADE;
 DROP TABLE IF EXISTS axm_list_draws CASCADE;
@@ -1656,3 +1657,10 @@ RETURNS TABLE(subscriber_id INT) LANGUAGE SQL STABLE PARALLEL SAFE AS $$
     WHERE l.id = p_list_id AND l.axm_filter IS NOT NULL AND p_limit IS NOT NULL;
 $$;
 -- End of AXM unbounded dynamic list membership.
+
+-- AXM expired send totals (LST-67). Keep this block identical to V6_2_1_axm_19.
+CREATE TABLE IF NOT EXISTS axm_campaign_expired_sends (
+    campaign_id INT PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    sent BIGINT NOT NULL CHECK (sent > 0)
+);
+-- End of AXM expired send totals.

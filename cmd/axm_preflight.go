@@ -360,7 +360,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		// A stored count can lead the retained ledger, for example after records expire.
+		// A stored count can be higher, for example after a send record failed to write.
 		sent = max(sent, recorded)
 	}
 	rescheduled := mode == models.PreflightModeScheduled && (aud.Remaining != aud.Total || sent > 0 || camp.LastSubscriberID > 0)
