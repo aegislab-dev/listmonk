@@ -49,6 +49,7 @@ type Queries struct {
 	AxmDrawAddMembers              *sqlx.Stmt `query:"axm-draw-add-members"`
 	AxmDrawRecord                  *sqlx.Stmt `query:"axm-draw-record"`
 	AxmGetListDraws                *sqlx.Stmt `query:"axm-get-list-draws"`
+	AxmGetListCampaigns            *sqlx.Stmt `query:"axm-get-list-campaigns"`
 	AxmReactionTracking            *sqlx.Stmt `query:"axm-reaction-tracking"`
 	AxmReactionCampaignLists       *sqlx.Stmt `query:"axm-reaction-campaign-lists"`
 	AxmReactionCounts              *sqlx.Stmt `query:"axm-reaction-counts"`

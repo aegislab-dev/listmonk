@@ -166,6 +166,28 @@
         </div>
       </b-table-column>
 
+      <!-- Where each list was used: the newest campaign that sent to it, or is sending or scheduled (LST-63). -->
+      <b-table-column v-slot="props" field="campaigns" :label="$t('lists.campaigns.column')" header-class="cy-campaigns">
+        <div class="camp-use" data-cy="list-campaigns">
+          <template v-if="useOf(props.row)">
+            <router-link v-if="useOf(props.row).name && canReadCampaigns" :to="{ name: 'campaign', params: { id: useOf(props.row).campaignId } }"
+              data-cy="list-campaign-link">
+              #{{ useOf(props.row).campaignId }} {{ useOf(props.row).name }}
+            </router-link>
+            <span v-else-if="useOf(props.row).name">#{{ useOf(props.row).campaignId }} {{ useOf(props.row).name }}</span>
+            <span v-else>#{{ useOf(props.row).campaignId }}</span>
+            <b-tag v-if="useTag(useOf(props.row))" size="is-small" type="is-info is-light" class="camp-use-tag" data-cy="list-campaign-status">
+              {{ useTag(useOf(props.row)) }}
+            </b-tag>
+            <div class="is-size-7 has-text-grey">{{ useLine(useOf(props.row)) }}</div>
+            <b-tooltip v-if="useMore(props.row) > 0" :label="useRest(props.row)" multilined type="is-dark" class="is-size-7">
+              <span class="has-text-grey">{{ $t('lists.campaigns.more', { count: useMore(props.row) }) }}</span>
+            </b-tooltip>
+          </template>
+          <span v-else class="has-text-grey-light">—</span>
+        </div>
+      </b-table-column>
+
       <b-table-column v-slot="props" field="created_at" :label="$t('globals.fields.createdAt')"
         header-class="cy-created_at" sortable>
         {{ $utils.niceDate(props.row.createdAt) }}
@@ -298,6 +320,9 @@ export default Vue.extend({
 
       // Draw records of the lists on this page, by drawn list ID.
       draws: {},
+      // The campaigns that used the lists on the page: { [listId]: { total, items: [...] } }.
+      campaignUse: {},
+      useRequest: 0,
       isDrawVisible: false,
       drawSource: null,
 
@@ -435,6 +460,58 @@ export default Vue.extend({
       }).catch(() => { this.draws = {}; });
     },
 
+    // The campaigns that used the lists on the page (sent, sending or scheduled; never drafts).
+    loadCampaignUse(results) {
+      const ids = (results || []).map((l) => l.id);
+      this.useRequest += 1;
+      const request = this.useRequest;
+      if (!ids.length) { this.campaignUse = {}; return; }
+      this.$api.getListCampaigns({ list_id: ids }).then((rows) => {
+        if (request !== this.useRequest) return;
+        const out = {};
+        (rows || []).forEach((r) => {
+          if (!out[r.listId]) out[r.listId] = { total: r.total, items: [] };
+          out[r.listId].items.push(r);
+        });
+        this.campaignUse = out;
+      }).catch(() => { if (request === this.useRequest) this.campaignUse = {}; });
+    },
+
+    // The newest campaign of a list, or null.
+    useOf(list) {
+      const use = this.campaignUse[list.id];
+      return use && use.items.length ? use.items[0] : null;
+    },
+
+    // How many more campaigns the list has than the one shown.
+    useMore(list) {
+      const use = this.campaignUse[list.id];
+      return use ? use.total - 1 : 0;
+    },
+
+    // The campaigns after the first, for the tooltip (the first few of them).
+    useRest(list) {
+      const use = this.campaignUse[list.id];
+      if (!use) return '';
+      return use.items.slice(1).map((u) => `#${u.campaignId}${u.name ? ` ${u.name}` : ''}`).join(', ');
+    },
+
+    // A campaign that has not finished or went only part of the way says so.
+    useTag(u) {
+      return ['scheduled', 'running', 'paused', 'cancelled'].includes(u.status) ? this.$t(`lists.campaigns.status.${u.status}`) : '';
+    },
+
+    useLine(u) {
+      const many = u.listsN > 1 ? ` · ${this.$t('lists.campaigns.manyLists', { n: u.listsN })}` : '';
+      if (u.status === 'scheduled') {
+        return (u.sendAt ? this.$utils.getDate(u.sendAt).format('MM/DD HH:mm') : '') + many;
+      }
+      return this.$t('lists.campaigns.sentLine', {
+        date: this.$utils.getDate(u.startedAt || u.sendAt || u.updatedAt).format('MM/DD'),
+        count: this.$utils.formatNumber(u.sent),
+      }) + many;
+    },
+
     onFormClose() {
       if (this.$route.params.id) {
         this.$router.push({ name: 'lists' });
@@ -462,6 +539,7 @@ export default Vue.extend({
       }).then((resp) => {
         this.lists = resp;
         this.loadDraws(resp.results);
+        this.loadCampaignUse(resp.results);
       });
 
       // Also fetch the minimal lists for the global store that appears
@@ -569,6 +647,9 @@ export default Vue.extend({
   },
 
   computed: {
+    // A campaign's name shows (and links) only to a user who may read campaigns.
+    canReadCampaigns() { return this.$can('campaigns:get_all', 'campaigns:get'); },
+
     ...mapState(['loading', 'settings']),
 
     myTeam() { return this.$teamTag(); },
@@ -609,5 +690,6 @@ export default Vue.extend({
 .team-badges { margin: 4px 0 0; }
 .team-badge { margin-bottom: 2px; }
 .my-team { vertical-align: middle; margin-left: 8px; }
+.camp-use-tag { margin-left: 4px; }
 .tag.drawn-from { height: auto; max-width: 100%; white-space: normal; padding: 2px 8px; line-height: 1.4; margin-top: 4px; }
 </style>

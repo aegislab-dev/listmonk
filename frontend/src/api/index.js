@@ -136,6 +136,9 @@ export const drawList = (id, data) => http.post(`/api/lists/${id}/draw`, data, {
 // The draw records of a source list ({ source_id }) or of drawn lists ({ list_id: [ids] }).
 export const getListDraws = (params) => http.get('/api/lists/draws', { params, disableToast: true });
 
+// The campaigns that used lists ({ list_id: [ids] }): sent, sending or scheduled, never drafts (LST-63).
+export const getListCampaigns = (params) => http.get('/api/lists/campaigns', { params, disableToast: true });
+
 export const getLists = (params) => http.get(
   '/api/lists',
   {
@@ -357,12 +360,13 @@ export const importSubscribers = (data) => http.post('/api/import/subscribers', 
 
 export const getImportStatus = () => http.get('/api/import/subscribers');
 
-export const getImportLogs = async () => http.get(
+export const getImportLogs = (importId) => http.get(
   '/api/import/subscribers/logs',
-  { camelCase: false },
+  { camelCase: false, params: { axm_import_id: importId } },
 );
 
-export const stopImport = () => http.delete('/api/import/subscribers');
+// With an import id only that import is cleared (the server leaves a newer one alone).
+export const stopImport = (importId) => http.delete('/api/import/subscribers', importId ? { params: { axm_import_id: importId } } : undefined);
 
 // Bounces.
 export const getBounces = async (params) => http.get(

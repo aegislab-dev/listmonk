@@ -104,7 +104,7 @@ describe('CSV column mapping with the real Worker and import API', () => {
       expect(JSON.parse(stored).columns['회원 번호']).to.deep.eq({ role: 'attribute', key: 'member_code' });
       ['example.invalid', '가상 하나', '가상 회사', '00123'].forEach((cell) => expect(stored).not.to.include(cell));
     });
-    cy.get('.status button.is-primary').click();
+    cy.get('[data-cy=import-done]').click();
     cy.get('form.box').should('be.visible');
     chooseFile('import-map-cp949.csv');
     cy.get('[data-cy=map-key-4]').should('have.value', 'member_code');
@@ -365,7 +365,7 @@ describe('CSV column mapping with the real Worker and import API', () => {
       expect(sub.attribs).to.deep.eq({ keep: 'original', legacy: 'value' });
       expect(sub.lists.find((list) => list.id === listId).subscription_status).to.eq('confirmed');
     });
-    cy.get('.status button.is-primary').click();
+    cy.get('[data-cy=import-done]').click();
     cy.get('[data-cy=overwrite-user-info]').click();
     upload();
     subscriber(email).then((sub) => {
@@ -373,11 +373,11 @@ describe('CSV column mapping with the real Worker and import API', () => {
       expect(sub.attribs).to.deep.eq({ new_key: '00123' });
       expect(sub.lists.find((list) => list.id === listId).subscription_status).to.eq('confirmed');
     });
-    cy.get('.status button.is-primary').click();
+    cy.get('[data-cy=import-done]').click();
     cy.get('[data-cy=overwrite-sub-status]').click();
     upload(true);
     subscriber(email).then((sub) => expect(sub.lists.find((list) => list.id === listId).subscription_status).to.eq('unconfirmed'));
-    cy.get('.status button.is-primary').click();
+    cy.get('[data-cy=import-done]').click();
     cy.get('[data-cy=check-blocklist] .check').click();
     inlineFile(`email\n${email}`);
     cy.get('[data-cy=map-mode-raw] input').should('be.checked');
@@ -396,7 +396,19 @@ describe('CSV column mapping with the real Worker and import API', () => {
     submit().should('be.disabled');
   });
 
-  it('warns when finished has fewer imported rows and checks status after a failed upload', () => {
+  it('warns when its own completed upload has fewer imported rows', () => {
+    inlineFile('이메일,이름\nmismatch-a@example.invalid,가상 하나\nmismatch-b@example.invalid,가상 둘');
+    ready(2);
+    cy.intercept('POST', '/api/import/subscribers', { body: { data: { status: 'importing', axm_import_id: 123 } } }).as('upload');
+    cy.intercept('GET', '/api/import/subscribers', { body: { data: { status: 'finished', axm_import_id: 123, imported: 1, total: 2 } } }).as('finished');
+    submit().click();
+    cy.wait('@upload');
+    cy.wait('@finished');
+    cy.get('[data-cy=map-mismatch]').should('be.visible');
+    cy.get('.status .has-text-success').should('not.exist');
+  });
+
+  it('checks status after a failed upload without applying its row count to another import', () => {
     inlineFile('이메일,이름\nmismatch-a@example.invalid,가상 하나\nmismatch-b@example.invalid,가상 둘');
     ready(2);
     cy.intercept('POST', '/api/import/subscribers', { statusCode: 500, body: { message: 'synthetic upload failure' } }).as('failedUpload');
@@ -404,8 +416,8 @@ describe('CSV column mapping with the real Worker and import API', () => {
     submit().click();
     cy.wait('@failedUpload');
     cy.wait('@statusAfterFailure');
-    cy.get('[data-cy=map-mismatch]').should('be.visible');
-    cy.get('.status .has-text-success').should('not.exist');
+    cy.get('.status .has-text-success').should('contain', 'finished');
+    cy.get('[data-cy=map-mismatch]').should('not.exist');
   });
 
   it('keeps the UI and preview bounded for 50,000 rows, then imports them all', () => {
