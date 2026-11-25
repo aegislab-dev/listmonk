@@ -160,7 +160,8 @@ func (a *App) GetRecentRule(c echo.Context) error {
 	if err := a.checkCampaignPerm(auth.PermTypeGet, id, c); err != nil {
 		return err
 	}
-	if _, err := a.core.GetRecentCampaign(id); err != nil {
+	cm, err := a.core.GetRecentCampaign(id)
+	if err != nil {
 		return err
 	}
 	out, err := a.core.GetRecentRule(id)
@@ -169,6 +170,10 @@ func (a *App) GetRecentRule(c echo.Context) error {
 	}
 	if out.Held, err = a.core.RecentHeldCount(id); err != nil {
 		return err
+	}
+	if cm.Status == models.CampaignStatusFinished && out.Enabled && c.QueryParam("include_coverage") == "true" {
+		// Coverage is advisory. Keep the saved rule and counts available if the ledger read fails.
+		out.RecordsFrom, _ = a.core.RecentSendsCoverage(c.Request().Context())
 	}
 	return c.JSON(http.StatusOK, okResp{out})
 }

@@ -237,8 +237,9 @@ dynCounts AS (
 ),
 u AS (
     -- For each campaign, update the to_send count and set the max_subscriber_id.
+    -- Previously excluded subscribers who were deleted still count toward the historical audience.
     UPDATE campaigns AS ca
-    SET to_send = co.to_send,
+    SET to_send = co.to_send + COALESCE(r.removed_held_count, 0),
         status = (CASE WHEN status != 'running' THEN 'running' ELSE status END),
         max_subscriber_id = co.max_subscriber_id,
         started_at=(CASE WHEN ca.started_at IS NULL THEN NOW() ELSE ca.started_at END)
@@ -247,7 +248,7 @@ u AS (
             SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
         )
         UNION ALL SELECT * FROM dynCounts
-    ) co
+    ) co LEFT JOIN axm_campaign_recent_rules r USING (campaign_id)
     WHERE ca.id = co.campaign_id
 )
 SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);

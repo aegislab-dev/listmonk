@@ -724,7 +724,7 @@ export default Vue.extend({
 
         if (data.type === 'regular') {
           try {
-            const rule = await this.$api.getRecentRule(id);
+            const rule = await this.$api.getRecentRule(id, data.status === 'finished');
             this.recentRule = { ...defaultRecentRule(), ...rule };
             this.savedRecentRule = this.recentRuleKey;
             this.recentRuleLoaded = true;

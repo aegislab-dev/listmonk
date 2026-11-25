@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/models"
 )
 
@@ -64,6 +65,24 @@ func TestRecentAudienceRescheduledListUsesHolds(t *testing.T) {
 }
 
 func TestRecentAudienceCountsSurviveDeletionDuringSend(t *testing.T) {
+	t.Run("uninterrupted", func(t *testing.T) { testRecentAudienceDeletionDuringSend(t, false) })
+	t.Run("pause and resume", func(t *testing.T) { testRecentAudienceDeletionDuringSend(t, true) })
+}
+
+type recentAudiencePauseStore struct {
+	*store
+	lastID int
+	resume <-chan struct{}
+}
+
+func (s *recentAudiencePauseStore) NextSubscribers(campaignID, lastID, limit int) ([]models.Subscriber, error) {
+	if lastID == s.lastID {
+		<-s.resume
+	}
+	return s.store.NextSubscribers(campaignID, lastID, limit)
+}
+
+func testRecentAudienceDeletionDuringSend(t *testing.T, pause bool) {
 	e := newRecentListEnv(t)
 	audience := make([]int, 40)
 	priorSends := make(map[int]time.Duration, 12)
@@ -79,10 +98,19 @@ func TestRecentAudienceCountsSurviveDeletionDuringSend(t *testing.T) {
 	// Wait at the messenger so the sender has recorded all 12 holds and cannot yet finish.
 	allow := make(chan struct{})
 	msgr, logs := &gateMessenger{allow: allow}, &syncBuffer{}
-	m := e.startManager(e.store, msgr, logs)
+	resume := make(chan struct{})
+	var readOnce sync.Once
+	resumeReads := func() { readOnce.Do(func() { close(resume) }) }
+	var st manager.Store = e.store
+	if pause {
+		// With 33 candidates in the first batch, the pause happens after 21 deliveries.
+		st = &recentAudiencePauseStore{store: e.store, lastID: audience[32], resume: resume}
+	}
+	m := e.startManagerWith(st, msgr, logs, func(c *manager.Config) { c.BatchSize = 33 })
 	var once sync.Once
 	release := func() { once.Do(func() { close(allow) }) }
 	t.Cleanup(m.Close)
+	t.Cleanup(resumeReads)
 	t.Cleanup(release)
 	waitFor(t, "12 holds and a message waiting to send", func() bool {
 		return len(e.held()) == 12 && msgr.pushes.Load() > 0
@@ -110,11 +138,59 @@ func TestRecentAudienceCountsSurviveDeletionDuringSend(t *testing.T) {
 		t.Fatalf("status after deletion: %s, want running", status)
 	}
 	release()
+	if pause {
+		waitFor(t, "21 deliveries and ledger entries", func() bool {
+			return len(msgr.sentIDs()) == 21 && len(e.recorded()) == 21
+		})
+		e.setStatus(models.CampaignStatusPaused)
+		m.StopCampaign(e.campID)
+		resumeReads()
+		waitFor(t, "the pause to take effect", func() bool { return !m.HasRunningCampaigns() })
+		e.waitCampaign(models.CampaignStatusPaused, 21)
+		_, aud, err := e.core.GetPreflightAudience(context.Background(), e.campID, e.checkpoint(), true)
+		if err != nil || aud.Remaining != 7 {
+			t.Fatalf("preflight at resume: remaining=%d, want 7, err=%v", aud.Remaining, err)
+		}
+		e.setStatus(models.CampaignStatusRunning)
+	}
 	e.waitCampaign(models.CampaignStatusFinished, 28)
 	waitFor(t, "the send ledger to be written", func() bool { return len(e.recorded()) == 28 })
 	wantSame(t, "delivered", msgr.sentIDs(), audience[12:])
 	wantSame(t, "send ledger", e.recorded(), audience[12:])
 	assertCounts(models.CampaignStatusFinished)
+}
+
+func TestRecentAudienceFinishedCoverage(t *testing.T) {
+	e := newRecentListEnv(t)
+	e.rsRule(models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll})
+	e.setStatus(models.CampaignStatusFinished)
+	first := time.Now().UTC().Truncate(time.Second)
+	e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at=$1`, first)
+	path := fmt.Sprintf("/api/campaigns/%d/recent-exclude", e.campID)
+	call := func(url string) json.RawMessage {
+		t.Helper()
+		code, raw := e.call(e.a.GetRecentRule, e.admin, http.MethodGet, url, strconv.Itoa(e.campID), "")
+		if code != http.StatusOK {
+			t.Fatalf("get recent rule: HTTP %d %s", code, raw)
+		}
+		return raw
+	}
+	var ordinary map[string]json.RawMessage
+	if err := json.Unmarshal(call(path), &ordinary); err != nil || ordinary["records_from"] != nil {
+		t.Fatalf("rule with no coverage request: %s, err=%v", ordinary["records_from"], err)
+	}
+	path += "?include_coverage=true"
+	var coverage struct {
+		RecordsFrom time.Time `json:"records_from"`
+	}
+	if err := json.Unmarshal(call(path), &coverage); err != nil || !coverage.RecordsFrom.Equal(first) {
+		t.Fatalf("records_from=%v, want %v, err=%v", coverage.RecordsFrom, first, err)
+	}
+	e.db.MustExec(`DELETE FROM axm_campaign_sends`)
+	var empty map[string]json.RawMessage
+	if err := json.Unmarshal(call(path), &empty); err != nil || string(empty["records_from"]) != "null" {
+		t.Fatalf("empty ledger records_from=%s, err=%v", empty["records_from"], err)
+	}
 }
 
 func TestRecentAudienceFinishedCountsSurviveSubscriberDeletion(t *testing.T) {

@@ -30,6 +30,9 @@ type RecentRule struct {
 	UpdatedBy   *int          `db:"updated_by" json:"updated_by,omitempty"`
 	// Held (LST-65) is how many people the rule has left out of the campaign's send so far.
 	Held int `db:"-" json:"held,omitempty"`
+	// RecordsFrom is present when the finished campaign editor asks for ledger coverage.
+	// A nil pointer means coverage was not requested. An invalid time means the ledger is empty.
+	RecordsFrom *null.Time `db:"-" json:"records_from,omitempty"`
 }
 
 type RecentCounts struct {

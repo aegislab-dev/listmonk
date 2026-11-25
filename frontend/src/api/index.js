@@ -403,7 +403,9 @@ export const checkListAddresses = (data, signal) => http.post('/api/lists/addres
 export const checkImportAddresses = (data, signal) => http.post('/api/subscribers/address-check', data, {
   disableToast: true, signal, camelCase: false,
 });
-export const getRecentRule = (id) => http.get(`/api/campaigns/${id}/recent-exclude`);
+export const getRecentRule = (id, includeCoverage = false) => http.get(`/api/campaigns/${id}/recent-exclude`, {
+  params: { include_coverage: includeCoverage || undefined },
+});
 export const saveRecentRule = (id, data) => http.put(`/api/campaigns/${id}/recent-exclude`, data);
 export const getRecentCampaignOption = (id) => http.get(`/api/campaigns/${id}`, { disableToast: true });
 export const searchRecentCampaigns = (query, signal) => http.get('/api/campaigns', {

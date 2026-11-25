@@ -211,6 +211,7 @@ export default {
         excluded,
         willSend: Math.max(0, target - excluded),
         asOf,
+        recordsFrom: this.value.recordsFrom,
       };
     },
 

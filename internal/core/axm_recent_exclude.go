@@ -16,6 +16,7 @@ import (
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"gopkg.in/volatiletech/null.v6"
 )
 
 // ValidateRecentRule checks settings shared by preview and save.
@@ -59,6 +60,15 @@ func (c *Core) recentTeamTags(ctx context.Context, tx *sqlx.Tx, lists pq.Int64Ar
 func (c *Core) recentError(err error) error {
 	c.log.Printf("error handling a recent-send exclusion rule: %v", err)
 	return echo.NewHTTPError(http.StatusInternalServerError, c.i18n.T("campaigns.recent.error")).SetInternal(err)
+}
+
+// RecentSendsCoverage reads the first retained record without recalculating a campaign's audience.
+func (c *Core) RecentSendsCoverage(ctx context.Context) (*null.Time, error) {
+	var recordsFrom null.Time
+	if err := c.q.AxmRecentSendsCoverage.GetContext(ctx, &recordsFrom); err != nil {
+		return nil, c.recentError(err)
+	}
+	return &recordsFrom, nil
 }
 
 // RecentExcludeCounts reads the audience, history coverage and team tags at one snapshot.
