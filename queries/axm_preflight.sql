@@ -91,7 +91,7 @@ ORDER BY cl.name, cl.list_id;
 -- Up to $2 of the people campaign $1 would reach, the lowest IDs first, by the same rule as
 -- axm-preflight-audience (keep the two the same). The pre-send check renders the mail for them.
 -- With $4 (resume) true, only those still to be sent: after the checkpoint $3 and without a send
--- record of this campaign, as the remaining count of axm-preflight-audience.
+-- record or a sent follow-up decision, as in the remaining count of axm-preflight-audience.
 WITH c AS (
     SELECT id, type FROM campaigns WHERE id = $1
 ),
@@ -123,5 +123,6 @@ eligible AS (
 )
 SELECT s.* FROM subscribers s WHERE s.id IN (SELECT id FROM eligible)
     AND (NOT $4::BOOLEAN OR (s.id > $3
-        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = s.id)))
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = s.id)
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k WHERE k.campaign_id = $1 AND k.subscriber_id = s.id AND k.sent)))
 ORDER BY s.id LIMIT $2;

@@ -110,6 +110,8 @@ func TestPreflightChecks(t *testing.T) {
 			map[string]string{"recipients.zero": "warn", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"people left on resume", with(func(f *preflightFacts) { f.Mode, f.Total, f.Remaining = "resume", 0, 12 }),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok"}},
+		{"nobody left on a scheduled send blocks", with(func(f *preflightFacts) { f.Mode, f.Total, f.Remaining = "scheduled", 40, 0 }),
+			map[string]string{"recipients.zero": "block", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"no list left blocks", with(func(f *preflightFacts) { f.LiveLists, f.Total = 0, 0 }),
 			map[string]string{"lists.none": "block", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"scheduled in the past", with(func(f *preflightFacts) { f.Mode, f.SendAt = "schedule", null.TimeFrom(now.Add(-time.Minute)) }),

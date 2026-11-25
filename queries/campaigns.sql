@@ -182,7 +182,8 @@ SELECT EXISTS (
 -- a campaign. This is used to fetch and slice subscribers for the campaign in next-campaign-subscribers.
 WITH camps AS (
     -- Get all running campaigns and their template bodies (if the template's deleted, the default template body instead)
-    SELECT campaigns.*, COALESCE(templates.body, (SELECT body FROM templates WHERE is_default = true LIMIT 1), '') AS template_body
+    SELECT campaigns AS campaign, campaigns.id, campaigns.type, campaigns.xmin AS row_version,
+        COALESCE(templates.body, (SELECT body FROM templates WHERE is_default = true LIMIT 1), '') AS template_body
     FROM campaigns
     LEFT JOIN templates ON (templates.id = campaigns.template_id)
     WHERE (status='running' OR (status='scheduled' AND NOW() >= campaigns.send_at))
@@ -235,22 +236,35 @@ dynCounts AS (
     WHERE EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = ca.id AND cl.is_dynamic)
     GROUP BY ca.id
 ),
+tallies AS (
+    SELECT * FROM counts co WHERE NOT EXISTS (
+        SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
+    )
+    UNION ALL SELECT * FROM dynCounts
+),
+picked AS MATERIALIZED (
+    -- Counting can overlap a save. Only pick the row version whose schedule, content
+    -- and lists this scan read. If an edit holds the row, let the next scan discover it.
+    SELECT camps.id, t.to_send, t.max_subscriber_id
+    FROM camps
+    LEFT JOIN tallies t ON t.campaign_id = camps.id
+    JOIN campaigns ca ON ca.id = camps.id AND ca.xmin = camps.row_version
+    FOR NO KEY UPDATE OF ca SKIP LOCKED
+),
 u AS (
-    -- For each campaign, update the to_send count and set the max_subscriber_id.
+    -- As before, static campaigns without recipients keep their state. Return them
+    -- through picked so the store can still finish an empty follow-up.
     UPDATE campaigns AS ca
-    SET to_send = co.to_send,
-        status = (CASE WHEN status != 'running' THEN 'running' ELSE status END),
-        max_subscriber_id = co.max_subscriber_id,
-        started_at=(CASE WHEN ca.started_at IS NULL THEN NOW() ELSE ca.started_at END)
-    FROM (
-        SELECT * FROM counts co WHERE NOT EXISTS (
-            SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
-        )
-        UNION ALL SELECT * FROM dynCounts
-    ) co
-    WHERE ca.id = co.campaign_id
+    SET to_send = picked.to_send,
+        status = 'running',
+        max_subscriber_id = picked.max_subscriber_id,
+        started_at = COALESCE(ca.started_at, NOW())
+    FROM picked
+    WHERE ca.id = picked.id AND picked.to_send IS NOT NULL
 )
-SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);
+SELECT (camps.campaign).*, camps.template_body, campMedia.media_id
+FROM picked JOIN camps ON camps.id = picked.id
+LEFT JOIN campMedia ON campMedia.campaign_id = picked.id;
 
 -- name: get-campaign-analytics-unique-counts
 WITH intval AS (

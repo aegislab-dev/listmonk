@@ -1167,20 +1167,15 @@ func (a *App) campaignSenderMode(c campReq, user auth.User, strict bool) (campRe
 // pre-send window does, so the two cannot disagree on what is blocked. Warnings are not judged
 // here: the page reads them from the preflight and shows them.
 //
-// resumed: the campaign was sent from before (paused, then scheduled again): who it still reaches
-// are the people left after the checkpoint, as in the window.
-func (a *App) scheduledSaveCheck(lists []models.PreflightList, aud models.PreflightAudience, resumed bool) error {
+// The remaining count follows the sender, including deliveries recorded before its progress.
+func (a *App) scheduledSaveCheck(lists []models.PreflightList, aud models.PreflightAudience) error {
 	live := 0
 	for _, l := range lists {
 		if !l.Deleted {
 			live++
 		}
 	}
-	count := aud.Total
-	if resumed {
-		count = aud.Remaining
-	}
-	key, level := audienceBlock(models.CampaignTypeRegular, models.PreflightModeScheduled, live, count)
+	key, level := audienceBlock(models.CampaignTypeRegular, models.PreflightModeScheduled, live, aud.Remaining)
 	if level != models.PreflightBlock {
 		return nil
 	}

@@ -179,32 +179,29 @@ func (c *Core) GetCampaignPausedAt(id int, fallback null.Time) null.Time {
 	return at
 }
 
-// ScheduledCheck judges the recipients of a scheduled campaign that is being saved (LST-67): its
-// lists as the send reads them and the people it reaches. resumed: the campaign was started and
-// paused before (it has a checkpoint or sent mails), so the people it still reaches are
-// aud.Remaining, as when it is resumed. An error refuses the save.
-type ScheduledCheck func(lists []models.PreflightList, aud models.PreflightAudience, resumed bool) error
+// CampaignHasSendProgress reports whether a campaign already started sending. The ledger
+// can contain deliveries even when neither the sent count nor the checkpoint was saved.
+func (c *Core) CampaignHasSendProgress(ctx context.Context, camp models.Campaign) (bool, error) {
+	if camp.LastSubscriberID > 0 || camp.Sent > 0 {
+		return true, nil
+	}
 
-// Progressed reports whether a campaign has been sent from before (a checkpoint or sent mails):
-// then the send goes on after the checkpoint and skips who has a record, and the people it still
-// reaches are the remaining ones, not all that are eligible.
-func Progressed(lastSubscriberID, sent int) bool { return lastSubscriberID > 0 || sent > 0 }
+	var sent bool
+	err := c.db.GetContext(ctx, &sent, `SELECT EXISTS (
+		SELECT 1 FROM axm_campaign_sends WHERE campaign_id = $1
+		UNION ALL
+		SELECT 1 FROM axm_campaign_followup_claims WHERE campaign_id = $1 AND sent
+	)`, camp.ID)
+	return sent, err
+}
 
-// UpdateScheduledCampaign saves campaign id, which is scheduled, and checks who it would reach
-// now (LST-67): when the saved campaign is a regular one that is still scheduled, check judges
-// its lists and recipients, and an error from it undoes the save, so the schedule stays as it
-// was. Before this the edit of a scheduled campaign was saved without a look at the lists, and
-// the send time came with no check at all.
-//
-// The check reads the new lists inside the transaction (nobody else sees them before the commit)
-// but the campaign's row is locked only afterwards, for the one statement that saves it. A lock
-// held while the people are counted (seconds on a big list) would make the sender, which picks a
-// campaign by the committed row, wait with a decision made on the old send time: when the
-// time passed meanwhile it would send the campaign as it was after the save moved the time
-// (review: the old subject went out to 40 people after a save that moved the time a day on).
-// With the lock taken last, a sender that took the campaign up meanwhile is seen then (the
-// campaign is no longer scheduled) and the save is refused, as before. Everything runs on one
-// connection (the sender's lock connection is in a small pool; LST-48 review).
+// ScheduledCheck judges the saved lists and remaining recipients. An error refuses the save.
+type ScheduledCheck func(lists []models.PreflightList, aud models.PreflightAudience) error
+
+// UpdateScheduledCampaign saves and checks a scheduled campaign in one transaction. Lock the
+// campaign before touching its lists so each editor checks its own replacement, and a sender
+// that has already picked up the campaign wins the race. The sender skips locked rows and
+// discards counts from an older row version if a save commits while it is counting.
 func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, check ScheduledCheck) (models.Campaign, error) {
 	tx, err := c.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -212,66 +209,37 @@ func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Cam
 	}
 	defer tx.Rollback()
 
-	var before struct {
-		Status           string `db:"status"`
-		Type             string `db:"type"`
-		Sent             int    `db:"sent"`
-		LastSubscriberID int    `db:"last_subscriber_id"`
-	}
-	if err := tx.Get(&before, `SELECT status, type, sent, last_subscriber_id FROM campaigns WHERE id = $1`, id); err != nil {
+	var before models.Campaign
+	if err := tx.GetContext(ctx, &before, `SELECT status, type, last_subscriber_id FROM campaigns WHERE id = $1 FOR NO KEY UPDATE`, id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest,
 				c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
 		}
 		return models.Campaign{}, err
 	}
-	if before.Status != models.CampaignStatusScheduled && before.Status != models.CampaignStatusDraft && before.Status != models.CampaignStatusPaused {
+	switch before.Status {
+	case models.CampaignStatusScheduled:
+	case models.CampaignStatusDraft, models.CampaignStatusPaused:
+		return models.Campaign{}, echo.NewHTTPError(http.StatusConflict, c.i18n.T("campaigns.sendConfirm.changed"))
+	default:
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
 	}
 
-	// A save that takes the send time off makes a scheduled campaign a draft: not judged; an
-	// opt-in campaign only warns.
-	if before.Status == models.CampaignStatusScheduled && o.SendAt.Valid && before.Type == models.CampaignTypeRegular && check != nil {
-		// The lists as update-campaign leaves them (the same two statements), so the count reads
-		// them; the row of the campaign itself is not touched yet.
-		if _, err := tx.Exec(`DELETE FROM campaign_lists WHERE campaign_id = $1 AND NOT(list_id = ANY($2))`, id, pq.Array(listIDs)); err != nil {
-			return models.Campaign{}, c.updateCampaignErr(err)
-		}
-		if _, err := tx.Exec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name)
-			(SELECT $1, id, name FROM lists WHERE id = ANY($2::INT[]))
-			ON CONFLICT (campaign_id, list_id) DO UPDATE SET list_name = EXCLUDED.list_name`, id, pq.Array(listIDs)); err != nil {
-			return models.Campaign{}, c.updateCampaignErr(err)
-		}
-		resumed := Progressed(before.LastSubscriberID, before.Sent)
-		afterID := 0
-		if resumed {
-			afterID = before.LastSubscriberID
-		}
-		lists, aud, err := c.preflightAudience(ctx, func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }, id, afterID, resumed)
+	if _, err := tx.Stmtx(c.q.UpdateCampaign).ExecContext(ctx, updateCampaignArgs(id, o, listIDs, mediaIDs)...); err != nil {
+		return models.Campaign{}, c.updateCampaignErr(err)
+	}
+
+	// Clearing the send time makes the campaign a draft. Opt-in campaigns only warn.
+	if o.SendAt.Valid && before.Type == models.CampaignTypeRegular && check != nil {
+		lists, aud, err := c.preflightAudience(ctx, func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }, id, before.LastSubscriberID, true)
 		if err != nil {
 			return models.Campaign{}, err
 		}
-		if err := check(lists, aud, resumed); err != nil {
+		if err := check(lists, aud); err != nil {
 			return models.Campaign{}, err
 		}
 	}
 
-	// Now the row, for the one statement. Taken up by the sender (or ended) since it was read:
-	// refused, its body does not change under a send.
-	var status string
-	if err := tx.Get(&status, `SELECT status FROM campaigns WHERE id = $1 FOR UPDATE`, id); err != nil {
-		return models.Campaign{}, err
-	}
-	switch {
-	case status != models.CampaignStatusScheduled && status != models.CampaignStatusDraft && status != models.CampaignStatusPaused:
-		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
-	case status != before.Status:
-		// Unscheduled (or paused) by someone else meanwhile: what was counted was for another state.
-		return models.Campaign{}, echo.NewHTTPError(http.StatusConflict, c.i18n.T("campaigns.sendConfirm.changed"))
-	}
-	if _, err := tx.Stmtx(c.q.UpdateCampaign).Exec(updateCampaignArgs(id, o, listIDs, mediaIDs)...); err != nil {
-		return models.Campaign{}, c.updateCampaignErr(err)
-	}
 	if err := tx.Commit(); err != nil {
 		return models.Campaign{}, err
 	}

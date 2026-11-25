@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
@@ -25,6 +27,7 @@ import (
 func scheduledEnv(t *testing.T) *teamsEnv {
 	t.Helper()
 	e := newPreflightApp(t)
+	t.Cleanup(e.a.manager.Close)
 	for i := 0; i < 3; i++ {
 		e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
 	}
@@ -34,6 +37,11 @@ func scheduledEnv(t *testing.T) *teamsEnv {
 
 // save puts the campaign as the page does and returns the status and the answer's message.
 func (e *teamsEnv) save(subject string, lists []int, sendAt *time.Time, typ string) (int, string) {
+	e.t.Helper()
+	return e.saveAs(e.as(e.superAdmin), subject, lists, sendAt, typ)
+}
+
+func (e *teamsEnv) saveAs(user auth.User, subject string, lists []int, sendAt *time.Time, typ string) (int, string) {
 	e.t.Helper()
 	body := map[string]any{
 		"name": "Renamed", "subject": subject, "lists": lists, "type": typ, "content_type": "richtext",
@@ -46,7 +54,7 @@ func (e *teamsEnv) save(subject string, lists []int, sendAt *time.Time, typ stri
 		body["send_at"] = sendAt.Format(time.RFC3339)
 	}
 	b, _ := json.Marshal(body)
-	code, data := e.call(e.a.UpdateCampaign, e.as(e.superAdmin), http.MethodPut,
+	code, data := e.call(e.a.UpdateCampaign, user, http.MethodPut,
 		fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID), string(b))
 	return code, string(data)
 }
@@ -177,8 +185,9 @@ func TestDraftAndPausedSaveNotChecked(t *testing.T) {
 func TestScheduledSaveRaceWithSender(t *testing.T) {
 	e := scheduledEnv(t)
 	tx := e.db.MustBegin()
-	var st string
-	if err := tx.Get(&st, `SELECT status FROM campaigns WHERE id=$1 FOR UPDATE`, e.campID); err != nil {
+	defer tx.Rollback()
+	var pid int
+	if err := tx.Get(&pid, `SELECT pg_backend_pid() FROM campaigns WHERE id=$1 FOR NO KEY UPDATE`, e.campID); err != nil {
 		t.Fatal(err)
 	}
 	var o models.Campaign
@@ -192,12 +201,7 @@ func TestScheduledSaveRaceWithSender(t *testing.T) {
 		done <- err
 	}()
 	// The save waits for the row; the sender takes the campaign up meanwhile.
-	time.Sleep(300 * time.Millisecond)
-	select {
-	case err := <-done:
-		t.Fatalf("did not wait for the row: %v", err)
-	default:
-	}
+	waitForScheduledBlock(t, e, pid)
 	tx.MustExec(`UPDATE campaigns SET status='running' WHERE id=$1`, e.campID)
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -230,7 +234,7 @@ func TestScheduledSaveOneConnection(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		out, err := e.core.UpdateScheduledCampaign(context.Background(), camp, o, []int{e.listID}, nil,
-			func(lists []models.PreflightList, aud models.PreflightAudience, resumed bool) error { asked++; return nil })
+			func(lists []models.PreflightList, aud models.PreflightAudience) error { asked++; return nil })
 		if err == nil && out.Subject != "One connection" {
 			err = fmt.Errorf("subject %q", out.Subject)
 		}
@@ -312,118 +316,216 @@ func TestScheduledSaveOfFollowupLeavesOutWhoWouldBeHeld(t *testing.T) {
 	if err := save("Both still there"); err != nil {
 		t.Fatalf("somebody is left: %v", err)
 	}
-	// Both of the two on its list opened the original: the check would hold both back.
-	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2), ($1, $3)`, e.campID, e.ids[2], e.ids[3])
+	// One person received the follow-up, and their ledger entry expired. If they also open
+	// the original, the preflight must not subtract them a second time as someone to hold.
+	e.db.MustExec(`INSERT INTO axm_campaign_followup_claims (campaign_id, subscriber_id, sent) VALUES ($1, $2, TRUE)`, camp, e.ids[2])
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[2])
+	if err := save("One left"); err != nil {
+		t.Fatalf("one unsent recipient is left: %v", err)
+	}
+	sample := e.a.core.GetPreflightSample(context.Background(), camp, 10, 0, true)
+	if len(sample) != 1 || sample[0].ID != e.ids[3] {
+		t.Fatalf("expected the unsent recipient in the sample, got %v", sample)
+	}
+	e.db.MustExec(`INSERT INTO campaign_views (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.ids[3])
 	if err := save("Nobody left"); err == nil || !strings.Contains(err.Error(), "400") {
 		t.Fatalf("nobody is left: %v", err)
 	}
 	var subject string
 	e.get(&subject, `SELECT subject FROM campaigns WHERE id=$1`, camp)
-	if subject != "Both still there" {
+	if subject != "One left" {
 		t.Fatalf("the refused save changed the subject: %q", subject)
 	}
 }
 
-// The campaign's row is not locked while the people are counted: the sender picks a campaign by the
-// committed row, and a lock held for a count of seconds would make it wait with a decision made on
-// the old send time (review: a save that moved the time a day on sent the old subject to 40 people).
-func TestScheduledSaveDoesNotHoldTheRowWhileCounting(t *testing.T) {
-	e := scheduledEnv(t)
-	tomorrow := time.Now().Add(24 * time.Hour)
-	var lockErr error
-	check := func(lists []models.PreflightList, aud models.PreflightAudience, resumed bool) error {
-		// What the sender's update takes: the row for a change of a non-key column.
-		tx := e.db.MustBegin()
-		defer tx.Rollback()
-		_, lockErr = tx.Exec(`SELECT id FROM campaigns WHERE id=$1 FOR NO KEY UPDATE NOWAIT`, e.campID)
-		return nil
-	}
-	var o models.Campaign
-	o.Name, o.Subject, o.FromEmail, o.Body, o.ContentType, o.Messenger = "N", "Moved", "Team <team@crevasse.ai>", "<p>x</p>", "richtext", "email"
-	o.SendAt.Valid, o.SendAt.Time = true, tomorrow
-	o.ArchiveMeta = json.RawMessage("{}")
-	o.Headers, o.Attribs = models.Headers{}, models.JSON{}
-	if _, err := e.core.UpdateScheduledCampaign(context.Background(), e.campID, o, []int{e.aList}, nil, check); err != nil {
+// blockScheduledListCount holds only this dynamic list's reads until the test releases them.
+func blockScheduledListCount(t *testing.T, e *teamsEnv, list int) (*sqlx.Tx, int) {
+	t.Helper()
+	e.db.MustExec(`ALTER FUNCTION axm_dynamic_list_members(INT, INT, INT, INT) RENAME TO test_dynamic_list_members`)
+	e.db.MustExec(fmt.Sprintf(`CREATE FUNCTION axm_dynamic_list_members(
+			p_list INT, p_after INT DEFAULT 0, p_upto INT DEFAULT 2147483647, p_limit INT DEFAULT NULL)
+		RETURNS TABLE(subscriber_id INT) LANGUAGE plpgsql STABLE AS $$
+		BEGIN
+			IF p_list = %d THEN
+				PERFORM pg_advisory_xact_lock(6767, p_list);
+			END IF;
+			RETURN QUERY SELECT * FROM test_dynamic_list_members(p_list, p_after, p_upto, p_limit);
+		END;
+		$$`, list))
+	tx := e.db.MustBegin()
+	t.Cleanup(func() { tx.Rollback() })
+	tx.MustExec(`SELECT pg_advisory_xact_lock(6767, $1)`, list)
+	var pid int
+	if err := tx.Get(&pid, `SELECT pg_backend_pid()`); err != nil {
 		t.Fatal(err)
 	}
-	if lockErr != nil {
-		t.Fatalf("the row is locked while the people are counted: %v", lockErr)
+	return tx, pid
+}
+
+func waitForScheduledBlock(t *testing.T, e *teamsEnv, blocker int) int {
+	t.Helper()
+	var pid int
+	waitFor(t, fmt.Sprintf("a connection blocked by PID %d", blocker), func() bool {
+		e.get(&pid, `SELECT COALESCE(MIN(pid), 0) FROM pg_stat_activity
+			WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`, blocker)
+		return pid != 0
+	})
+	return pid
+}
+
+func waitForScheduledSave(t *testing.T, done <-chan int) int {
+	t.Helper()
+	select {
+	case code := <-done:
+		return code
+	case <-time.After(10 * time.Second):
+		t.Fatal("scheduled save did not return")
+		return 0
 	}
 }
 
-// The sender takes the campaign up while the people are counted (its send time passed): the save
-// is refused and the campaign is not changed, instead of moving the time under a campaign that is
-// already going out (review: it answered 200 with the new time and the old subject was sent).
-func TestScheduledSaveRefusedWhenTheSenderTookItDuringTheCount(t *testing.T) {
+// The actual sender is counting the old dynamic list when a PUT commits a new title, list
+// and time. Releasing that scan must not start the campaign with either version.
+func TestScheduledSavePostponesCampaignWhileSenderCounts(t *testing.T) {
 	e := scheduledEnv(t)
-	check := func(lists []models.PreflightList, aud models.PreflightAudience, resumed bool) error {
-		e.db.MustExec(`UPDATE campaigns SET send_at = NOW() - INTERVAL '1 second' WHERE id=$1`, e.campID)
-		if _, err := e.store.NextCampaigns([]int64{}); err != nil {
-			t.Error(err)
-		}
-		return nil
+	e.pfSub("enabled", "pro", map[int]string{e.aList: "confirmed"})
+	dynamic := e.pfList("single", dynFilter(e.aList))
+	gate, blocker := blockScheduledListCount(t, e, dynamic)
+	defer gate.Rollback()
+	e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, dynamic)
+	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() - INTERVAL '1 second' WHERE id=$1`, e.campID)
+	waitForScheduledBlock(t, e, blocker)
+
+	tomorrow := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	done := make(chan int, 1)
+	go func() {
+		code, _ := e.save("Postponed", []int{e.aList}, &tomorrow, "regular")
+		done <- code
+	}()
+	if code := waitForScheduledSave(t, done); code != http.StatusOK {
+		t.Fatalf("postpone: HTTP %d", code)
 	}
-	var o models.Campaign
-	o.Name, o.Subject, o.FromEmail, o.Body, o.ContentType, o.Messenger = "N", "Moved", "Team <team@crevasse.ai>", "<p>x</p>", "richtext", "email"
-	o.SendAt.Valid, o.SendAt.Time = true, time.Now().Add(24*time.Hour)
-	o.ArchiveMeta = json.RawMessage("{}")
-	o.Headers, o.Attribs = models.Headers{}, models.JSON{}
-	_, err := e.core.UpdateScheduledCampaign(context.Background(), e.campID, o, []int{e.aList}, nil, check)
-	if err == nil || !strings.Contains(err.Error(), "400") {
-		t.Fatalf("saved a campaign that was taken up: %v", err)
+
+	// A campaign made runnable after the gate was reached can only finish in a later scan.
+	probe := e.pfCampaign("regular", "running", e.aList)
+	if err := gate.Rollback(); err != nil {
+		t.Fatal(err)
 	}
-	var subject, status string
-	e.get(&subject, `SELECT subject FROM campaigns WHERE id=$1`, e.campID)
-	e.get(&status, `SELECT status::TEXT FROM campaigns WHERE id=$1`, e.campID)
-	if subject != "Subject" || status != "running" {
-		t.Fatalf("%q %s", subject, status)
+	waitFor(t, "the next scan to send the probe", func() bool {
+		var status string
+		e.get(&status, `SELECT status FROM campaigns WHERE id=$1`, probe)
+		return status == "finished"
+	})
+
+	subject, status, lists := e.saved()
+	var sendAt time.Time
+	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
+	if subject != "Postponed" || status != "scheduled" || !sendAt.Equal(tomorrow) || !slices.Equal(lists, []int{e.aList}) {
+		t.Fatalf("postponed campaign: %q %s %s %v", subject, status, sendAt, lists)
+	}
+	var n int
+	e.get(&n, `SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id=$1`, e.campID)
+	if n != 0 {
+		t.Fatalf("the postponed campaign delivered %d messages", n)
 	}
 }
 
-// A campaign that was paused and scheduled again goes on after its checkpoint and skips who was
-// sent to (review: leaving only the people already mailed saved as "20 people" and sent nothing).
+// B starts its list replacement while A is counting its new dynamic list. B must count
+// just its own empty list and fail, even though A's list was not visible when B started.
+func TestScheduledSaveConcurrentListReplacement(t *testing.T) {
+	e := scheduledEnv(t)
+	e.pfSub("enabled", "pro", map[int]string{e.aList: "confirmed"})
+	dynamic := e.pfList("single", dynFilter(e.aList))
+	empty := e.pfList("single", "")
+	gate, blocker := blockScheduledListCount(t, e, dynamic)
+	defer gate.Rollback()
+
+	tomorrow := time.Now().Add(24 * time.Hour)
+	editorA, editorB := e.as(e.superAdmin), e.as(e.admin)
+	a, b := make(chan int, 1), make(chan int, 1)
+	go func() {
+		code, _ := e.saveAs(editorA, "A", []int{dynamic}, &tomorrow, "regular")
+		a <- code
+	}()
+	editor := waitForScheduledBlock(t, e, blocker)
+	go func() {
+		code, _ := e.saveAs(editorB, "B", []int{empty}, &tomorrow, "regular")
+		b <- code
+	}()
+	waitForScheduledBlock(t, e, editor)
+	if err := gate.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if code := waitForScheduledSave(t, a); code != http.StatusOK {
+		t.Fatalf("A: HTTP %d", code)
+	}
+	if code := waitForScheduledSave(t, b); code != http.StatusBadRequest {
+		t.Fatalf("B: HTTP %d", code)
+	}
+	if subject, status, lists := e.saved(); subject != "A" || status != "scheduled" || !slices.Equal(lists, []int{dynamic}) {
+		t.Fatalf("saved from A: %q %s %v", subject, status, lists)
+	}
+}
+
+// The ledger can contain sends even before the sender has saved its count and checkpoint.
 func TestScheduledSaveOfAPausedThenScheduledCampaign(t *testing.T) {
-	e := scheduledEnv(t)
-	member := e.as(e.superAdmin)
-	l1, l2 := e.pfList("single", ""), e.pfList("single", "")
-	var xs []int
-	for i := 0; i < 4; i++ {
-		xs = append(xs, e.pfSub("enabled", "", map[int]string{l1: "confirmed"}))
-	}
-	// l2 has only two of the people who were sent to.
-	e.db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$3,'confirmed'),($2,$3,'confirmed')`, xs[0], xs[1], l2)
-	e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, l1)
-	e.db.MustExec(`UPDATE campaigns SET last_subscriber_id=$2, to_send=4, sent=2 WHERE id=$1`, e.campID, xs[1])
-	for _, id := range xs[:2] {
-		e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, e.campID, id)
-	}
-	tomorrow := time.Now().Add(24 * time.Hour)
+	for _, savedProgress := range []bool{true, false} {
+		t.Run(fmt.Sprintf("saved progress %t", savedProgress), func(t *testing.T) {
+			e := scheduledEnv(t)
+			member := e.as(e.superAdmin)
+			l1, l2 := e.pfList("single", ""), e.pfList("single", "")
+			var xs []int
+			for i := 0; i < 4; i++ {
+				xs = append(xs, e.pfSub("enabled", "", map[int]string{l1: "confirmed"}))
+			}
+			e.db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$3,'confirmed'),($2,$3,'confirmed')`, xs[0], xs[1], l2)
+			e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, l1)
+			e.db.MustExec(`UPDATE campaigns SET status='paused', to_send=4 WHERE id=$1`, e.campID)
+			if savedProgress {
+				e.db.MustExec(`UPDATE campaigns SET last_subscriber_id=$2, sent=2 WHERE id=$1`, e.campID, xs[1])
+			}
+			for _, id := range xs[:2] {
+				e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, e.campID, id)
+			}
 
-	// The window says what is left to send.
-	var out struct {
-		Mode       string `json:"mode"`
-		Resumed    bool   `json:"resumed"`
-		Recipients int    `json:"recipients"`
-		Remaining  int    `json:"remaining"`
-	}
-	data := pfRead(t, e, member, fmt.Sprintf("/api/campaigns/%d/preflight", e.campID), strconv.Itoa(e.campID))
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Mode != "scheduled" || !out.Resumed || out.Recipients != 4 || out.Remaining != 2 {
-		t.Fatalf("answer: %s", data)
-	}
+			path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+			if code, data := e.call(e.a.UpdateCampaignStatus, member, http.MethodPut, path+"/status", id, `{"status":"running"}`); code != http.StatusOK {
+				t.Fatalf("resume: %d %s", code, data)
+			}
+			data := pfRead(t, e, member, path+"/preflight", id)
+			var out preflightResponse
+			if err := json.Unmarshal(data, &out); err != nil {
+				t.Fatal(err)
+			}
+			if out.Mode != "scheduled" || !out.Resumed || out.Recipients != 4 || out.Remaining != 2 {
+				t.Fatalf("answer: %s", data)
+			}
 
-	// Only the people already sent to: nobody is left, refused.
-	if code, _ := e.save("Only sent", []int{l2}, &tomorrow, "regular"); code != http.StatusBadRequest {
-		t.Fatalf("only the sent: %d", code)
-	}
-	if _, _, lists := e.saved(); len(lists) != 1 || lists[0] != l1 {
-		t.Fatalf("the refused save changed the lists: %v", lists)
-	}
-	// Somebody left to send to: saved.
-	if code, data := e.save("Some left", []int{l1}, &tomorrow, "regular"); code != http.StatusOK {
-		t.Fatalf("%d %s", code, data)
+			tomorrow := time.Now().Add(24 * time.Hour)
+			if code, _ := e.save("Only sent", []int{l2}, &tomorrow, "regular"); code != http.StatusBadRequest {
+				t.Fatalf("only the sent: %d", code)
+			}
+			if subject, _, lists := e.saved(); subject != "Subject" || !slices.Equal(lists, []int{l1}) {
+				t.Fatalf("the refused save changed the campaign: %q %v", subject, lists)
+			}
+			if code, data := e.save("Some left", []int{l1}, &tomorrow, "regular"); code != http.StatusOK {
+				t.Fatalf("%d %s", code, data)
+			}
+			e.db.MustExec(`UPDATE campaigns SET send_at=NOW() - INTERVAL '1 second' WHERE id=$1`, e.campID)
+			waitFor(t, "the rescheduled send and its delivery records", func() bool {
+				var done bool
+				e.get(&done, `SELECT status = 'finished' AND
+					(SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id=$1) = $2
+					FROM campaigns WHERE id=$1`, e.campID, len(xs))
+				return done
+			})
+			var sent int
+			e.get(&sent, `SELECT sent FROM campaigns WHERE id=$1`, e.campID)
+			got := e.ids(`SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1 ORDER BY subscriber_id`, e.campID)
+			if sent != len(xs) || !slices.Equal(got, xs) {
+				t.Fatalf("send after reschedule: count %d, ledger %v, want %v", sent, got, xs)
+			}
+		})
 	}
 }
 
