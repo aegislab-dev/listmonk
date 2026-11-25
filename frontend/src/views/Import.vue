@@ -829,7 +829,11 @@ export default Vue.extend({
     },
 
     getLogs() {
+      this.logRequest = (this.logRequest || 0) + 1;
+      const request = this.logRequest;
       this.$api.getImportLogs().then((data) => {
+        // A late answer must not put an older log over a newer one.
+        if (request !== this.logRequest) return;
         this.logs = data.split('\n').map((line) => line.replace(/\s+importer\.go:\d+:\s*/, ' *: '));
         Vue.nextTick(() => {
           // vue.$refs doesn't work as the logs textarea is rendered dynamically.
@@ -906,6 +910,8 @@ export default Vue.extend({
       }
       if (key === this.doneUsedKey) return;
       this.doneUsedKey = key;
+      // The warning of the import shown before must not stay while this one's is read.
+      this.doneUsed = [];
       const all = this.lists.results || [];
       const lists = ids.map((id) => all.find((l) => l.id === id) || { id, name: `#${id}` });
       this.fetchUse(ids).then((rows) => {

@@ -185,9 +185,17 @@ func (a *App) StopImportSubscribers(c echo.Context) error {
 	// ?axm_import_id= clears only that import: a screen that still shows an older one must not
 	// stop or clear the import that came after it (LST-63). The current state comes back as is.
 	if v := c.QueryParam("axm_import_id"); v != "" {
-		if id, err := strconv.Atoi(v); err != nil || id != st.AxmImportID {
+		id, err := strconv.Atoi(v)
+		if err != nil {
 			return c.JSON(http.StatusOK, okResp{st})
 		}
+		now, done := a.importer.StopImport(id)
+		if done && (st.Status == subimporter.StatusImporting || st.Status == subimporter.StatusStopping) {
+			a.audit(c, auditImportStop, auditTarget{Type: auditTargetImport}, auditNoCount, map[string]any{
+				"imported": st.Imported, "total": st.Total,
+			})
+		}
+		return c.JSON(http.StatusOK, okResp{now})
 	}
 	a.importer.Stop()
 	if st.Status == subimporter.StatusImporting || st.Status == subimporter.StatusStopping {

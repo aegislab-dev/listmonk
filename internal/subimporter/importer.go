@@ -1017,6 +1017,26 @@ func clip(s string) string {
 	return s
 }
 
+// StopImport stops or clears the import with the given number only, and says whether it did.
+// The number is compared and the state cleared under one lock, so an import that started
+// meanwhile is never touched. It returns the state after the call.
+func (im *Importer) StopImport(id int) (Status, bool) {
+	im.Lock()
+	if im.status.AxmImportID != id {
+		st := im.status
+		im.Unlock()
+		return st, false
+	}
+	if im.status.Status != StatusImporting {
+		im.status = Status{Status: StatusNone}
+		im.Unlock()
+		return im.GetStats(), true
+	}
+	im.Unlock()
+	im.Stop()
+	return im.GetStats(), true
+}
+
 // Stop sends a signal to stop the existing import.
 func (im *Importer) Stop() {
 	if im.getStatus() != StatusImporting {
