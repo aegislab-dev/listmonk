@@ -700,6 +700,7 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM recent-send exclusion. Keep this block identical to V6_2_1_axm_13.", "-- End of AXM recent-send exclusion.", "v6.2.1-axm.13.go"},
 		{"-- AXM bounced addresses (LST-56). Keep this block identical to V6_2_1_axm_16.", "-- End of AXM bounced addresses.", "v6.2.1-axm.16.go"},
 		{"-- AXM completed recent-send counts (LST-65). Keep this block identical to V6_2_1_axm_19.", "-- End of AXM completed recent-send counts.", "v6.2.1-axm.19.go"},
+		{"-- AXM recent-send counts after subscriber deletion (LST-65). Keep this block identical to V6_2_1_axm_20.", "-- End of AXM recent-send counts after subscriber deletion.", "v6.2.1-axm.20.go"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
 		if err != nil {
@@ -728,16 +729,18 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
-	// 35: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
+	// 36: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
 	// axm_followup_reaction, axm_followup_recipients, axm_followup_to_send and axm_followup_recount
 	// (LST-47, .17; their parity is in TestFollowupSchemaAndMigration), and axm_recent_received and axm_recent_rule_on
-	// (LST-65, .18; its parity is in TestRecentHoldsMigration) and axm_snapshot_recent_holds (.19).
-	if len(before) != 35 {
-		t.Fatalf("expected 35 axm functions, got %d", len(before))
+	// (LST-65, .18; its parity is in TestRecentHoldsMigration), axm_snapshot_recent_holds (.19),
+	// and axm_count_removed_recent_holds (.20).
+	if len(before) != 36 {
+		t.Fatalf("expected 36 axm functions, got %d", len(before))
 	}
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.
-	db.MustExec(`DROP TRIGGER axm_recent_holds_finished ON campaigns; DROP FUNCTION axm_snapshot_recent_holds();
+	db.MustExec(`DROP TRIGGER axm_recent_holds_removed ON axm_campaign_recent_holds; DROP FUNCTION axm_count_removed_recent_holds();
+		DROP TRIGGER axm_recent_holds_finished ON campaigns; DROP FUNCTION axm_snapshot_recent_holds();
 		DROP FUNCTION axm_recent_exclusion(INT[], INT, TEXT, INT[], INT);
 		DROP FUNCTION axm_campaign_audience(INT[]); DROP TABLE axm_campaign_recent_rules`)
 	db.MustExec(`DROP TRIGGER axm_unsubscribe_blocked_email ON subscribers; DROP FUNCTION axm_unsubscribe_blocked_email(); DROP TRIGGER axm_suppress_changed_email ON subscribers; DROP FUNCTION axm_suppress_changed_email();
@@ -782,6 +785,9 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := migrations.V6_2_1_axm_19(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_20(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -613,9 +613,11 @@ func TestRecentHoldsGoWithCampaignAndSubscriber(t *testing.T) {
 
 func TestRecentHoldsFinishedCountMigration(t *testing.T) {
 	e := newSendsEnv(t, 2)
-	e.db.MustExec(`DROP TRIGGER axm_recent_holds_finished ON campaigns;
+	e.db.MustExec(`DROP TRIGGER axm_recent_holds_removed ON axm_campaign_recent_holds;
+		DROP FUNCTION axm_count_removed_recent_holds();
+		DROP TRIGGER axm_recent_holds_finished ON campaigns;
 		DROP FUNCTION axm_snapshot_recent_holds();
-		ALTER TABLE axm_campaign_recent_rules DROP COLUMN finished_held_count;`)
+		ALTER TABLE axm_campaign_recent_rules DROP COLUMN finished_held_count, DROP COLUMN removed_held_count;`)
 	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}
 	e.rsRule(rule)
 	active, _ := e.addCampaign("draft")
@@ -641,9 +643,23 @@ func TestRecentHoldsFinishedCountMigration(t *testing.T) {
 		}
 	}
 	migrate()
-	assertHeld(e.campID, 2)
+	// A delete before .20 is recoverable for the finished campaign from the .19 snapshot.
 	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[0])
 	migrate()
+	if err := migrations.V6_2_1_axm_20(e.db, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertHeld(e.campID, 2)
+	assertHeld(active, 1)
+
+	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[1])
+	assertHeld(active, 1)
+	if err := migrations.V6_2_1_axm_20(e.db, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.q.UpdateCampaignStatus.Exec(active, models.CampaignStatusFinished); err != nil {
+		t.Fatal(err)
+	}
 	assertHeld(e.campID, 2)
 	assertHeld(active, 1)
 }

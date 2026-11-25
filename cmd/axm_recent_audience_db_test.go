@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,6 +61,60 @@ func TestRecentAudienceRescheduledListUsesHolds(t *testing.T) {
 	if got := e.members(saved.List.ID); !sameInts(got, want) || saved.Counts != initial.Counts {
 		t.Fatalf("list after later send: members %v, counts %+v; want %v and %+v", got, saved.Counts, want, initial.Counts)
 	}
+}
+
+func TestRecentAudienceCountsSurviveDeletionDuringSend(t *testing.T) {
+	e := newRecentListEnv(t)
+	audience := make([]int, 40)
+	priorSends := make(map[int]time.Duration, 12)
+	for i := range audience {
+		audience[i] = e.addSub("enabled", "confirmed")
+		if i < 12 {
+			priorSends[audience[i]] = 3 * time.Hour
+		}
+	}
+	e.rsPrior(models.CampaignTypeRegular, e.listID, priorSends)
+	e.rsRule(models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll})
+
+	// Wait at the messenger so the sender has recorded all 12 holds and cannot yet finish.
+	allow := make(chan struct{})
+	msgr, logs := &gateMessenger{allow: allow}, &syncBuffer{}
+	m := e.startManager(e.store, msgr, logs)
+	var once sync.Once
+	release := func() { once.Do(func() { close(allow) }) }
+	t.Cleanup(m.Close)
+	t.Cleanup(release)
+	waitFor(t, "12 holds and a message waiting to send", func() bool {
+		return len(e.held()) == 12 && msgr.pushes.Load() > 0
+	})
+	assertCounts := func(wantStatus string) {
+		t.Helper()
+		status, sent, target := e.campaign()
+		path := fmt.Sprintf("/api/campaigns/%d/recent-exclude", e.campID)
+		code, raw := e.call(e.a.GetRecentRule, e.admin, http.MethodGet, path, strconv.Itoa(e.campID), "")
+		var rule models.RecentRule
+		if code != http.StatusOK || json.Unmarshal(raw, &rule) != nil {
+			t.Fatalf("get recent rule: HTTP %d %s", code, raw)
+		}
+		if status != wantStatus || target != 40 || rule.Held != 12 {
+			t.Fatalf("status=%s sent=%d target=%d held=%d, want %s with 40 target and 12 held", status, sent, target, rule.Held, wantStatus)
+		}
+	}
+	assertCounts(models.CampaignStatusRunning)
+	sub := strconv.Itoa(audience[0])
+	if code, raw := e.call(e.a.DeleteSubscriber, e.admin, http.MethodDelete, "/api/subscribers/"+sub, sub, ""); code != http.StatusOK {
+		t.Fatalf("delete held subscriber: HTTP %d %s", code, raw)
+	}
+	wantSame(t, "remaining holds", e.held(), audience[1:12])
+	if status, _, _ := e.campaign(); status != models.CampaignStatusRunning {
+		t.Fatalf("status after deletion: %s, want running", status)
+	}
+	release()
+	e.waitCampaign(models.CampaignStatusFinished, 28)
+	waitFor(t, "the send ledger to be written", func() bool { return len(e.recorded()) == 28 })
+	wantSame(t, "delivered", msgr.sentIDs(), audience[12:])
+	wantSame(t, "send ledger", e.recorded(), audience[12:])
+	assertCounts(models.CampaignStatusFinished)
 }
 
 func TestRecentAudienceFinishedCountsSurviveSubscriberDeletion(t *testing.T) {

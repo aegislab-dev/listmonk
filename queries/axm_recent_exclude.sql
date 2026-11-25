@@ -111,10 +111,11 @@ WHERE h.campaign_id = $1 AND h.subscriber_id = ANY($2::INT[]) AND EXISTS (SELECT
 SELECT axm_recent_rule_on($1);
 
 -- name: axm-recent-held-count
--- A finished campaign keeps its count even when a subscriber and their holds are deleted.
+-- Count the decisions already made, including those whose subscriber records were deleted.
 SELECT COALESCE(
     (SELECT r.finished_held_count FROM axm_campaign_recent_rules r
      JOIN campaigns c ON c.id = r.campaign_id AND c.status = 'finished'
      WHERE r.campaign_id = $1),
     (SELECT COUNT(*) FROM axm_campaign_recent_holds WHERE campaign_id = $1)
+    + COALESCE((SELECT removed_held_count FROM axm_campaign_recent_rules WHERE campaign_id = $1), 0)
 );
