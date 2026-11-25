@@ -1717,7 +1717,7 @@
     "public.unsubAll": "Unsubscribe from all e-mail",
     "public.unsubbedAllInfo": "You have unsubscribed successfully. This e-mail address will not receive e-mail from any list any more.",
     "teams.title": "Teams",
-    "teams.help": "Lists are split by team, and team members see only their own team's lists. Creating a team sets up its list role and tag automatically.",
+    "teams.help": "Lists are split by team, and team members create and change their own team's lists and campaigns. Whether they can also read other teams' data depends on their user role. Creating a team sets up its list role and tag automatically.",
     "teams.numLists": "{num} lists",
     "teams.members": "Members",
     "teams.numMembers": "{num}",

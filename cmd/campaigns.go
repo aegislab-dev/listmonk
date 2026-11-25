@@ -290,7 +290,11 @@ func (a *App) CreateCampaign(c echo.Context) error {
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
-	o.ListIDs = campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
+	listIDs, err := campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
+	if err != nil {
+		return err
+	}
+	o.ListIDs = listIDs
 
 	// If the campaign's 'opt-in', prepare a default message.
 	switch o.Type {
@@ -404,7 +408,11 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
-	o.ListIDs = campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
+	listIDs, err := campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
+	if err != nil {
+		return err
+	}
+	o.ListIDs = listIDs
 
 	if c, err := a.validateCampaignFields(o, user); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
@@ -1084,7 +1092,13 @@ func (a *App) checkCampaignPerm(types auth.PermType, id int, c echo.Context) err
 		hasAllPerm, permittedListIDs = campaignWriteLists(user)
 	}
 	if !hasAllPerm {
-		if ok, err := a.core.CampaignHasLists(id, permittedListIDs); err != nil {
+		// AXM (LST-68): a change reaches every list of the campaign, so for a write all of them
+		// must be the user's (upstream: one of them is enough).
+		has := a.core.CampaignHasLists
+		if types&auth.PermTypeGet == 0 {
+			has = a.core.CampaignListsWithin
+		}
+		if ok, err := has(id, permittedListIDs); err != nil {
 			return err
 		} else if !ok {
 			return echo.NewHTTPError(http.StatusForbidden,

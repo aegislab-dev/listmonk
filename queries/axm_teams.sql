@@ -204,3 +204,11 @@ INSERT INTO subscriber_lists (subscriber_id, list_id, status)
             ELSE $3::subscription_status
         END
     );
+
+-- name: axm-campaign-lists-within
+-- LST-68: TRUE when the campaign $1 sends to at least one list of $2 and to no list outside $2
+-- (a deleted list, whose row has no list ID, does not count). A user who changes a campaign
+-- for a write right on some lists may change it only then: the change (a send, a delete) reaches
+-- all of its lists.
+SELECT EXISTS (SELECT 1 FROM campaign_lists WHERE campaign_id = $1 AND list_id = ANY($2::INT[]))
+    AND NOT EXISTS (SELECT 1 FROM campaign_lists WHERE campaign_id = $1 AND list_id IS NOT NULL AND NOT (list_id = ANY($2::INT[])));

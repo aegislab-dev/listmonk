@@ -88,7 +88,13 @@ func (a *App) UpdateUserRole(c echo.Context) error {
 	if err := a.validateUserRole(r); err != nil {
 		return err
 	}
-	// AXM (LST-68): a team's user role keeps no team-wide permission.
+	// AXM (LST-68): a team's user role keeps no team-wide permission. The check and the save
+	// are one turn of the team-role lock.
+	unlock, err := a.core.LockTeamRoles()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := a.guardTeamUserRole(id, r); err != nil {
 		return err
 	}

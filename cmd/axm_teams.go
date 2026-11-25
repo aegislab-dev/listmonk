@@ -322,21 +322,36 @@ func (a *App) guardTeamUserRole(id int, r auth.Role) error {
 }
 
 // guardTeamMemberRole refuses a save of a user (users screen) that makes a team member of
-// somebody whose user role has a team-wide permission or is the super admin role (LST-68).
-// id is 0 for a new user. A save that changes neither the user role nor the list role
-// passes, so that a member of a team that is already wide can still change their name or
-// password.
+// somebody whose user role has a team-wide permission or is the super admin role (LST-68). id is
+// 0 for a new user. It reads the roles the way the save does (queries/users.sql update-user): a
+// user role ID of 0 keeps the user's present role, a missing list role clears it and a list role
+// ID of 0 keeps the present one, so a save that sends only one of the two is judged by the
+// pair that will be stored. A save that changes neither role passes, so that a member of a team
+// that is already wide can still change their name or password.
 func (a *App) guardTeamMemberRole(id int, u auth.User) error {
-	if u.ListRoleID == nil || a.core.TeamTagOfRole(*u.ListRoleID) == "" {
-		return nil
-	}
+	userRole, listRole := u.UserRoleID, u.ListRoleID
+	var curUserRole int
+	var curListRole *int
 	if id > 0 {
 		cur, err := a.core.GetUser(id, "", "")
-		if err == nil && cur.UserRole.ID == u.UserRoleID && cur.ListRoleID != nil && *cur.ListRoleID == *u.ListRoleID {
-			return nil
+		if err != nil {
+			return err
+		}
+		curUserRole, curListRole = cur.UserRole.ID, cur.ListRoleID
+		if userRole == 0 {
+			userRole = curUserRole
+		}
+		if listRole != nil && *listRole == 0 {
+			listRole = curListRole
 		}
 	}
-	perms, super, err := a.core.WidePermsOfRole(u.UserRoleID)
+	if listRole == nil || *listRole <= 0 || a.core.TeamTagOfRole(*listRole) == "" {
+		return nil
+	}
+	if id > 0 && userRole == curUserRole && curListRole != nil && *curListRole == *listRole {
+		return nil
+	}
+	perms, super, err := a.core.WidePermsOfRole(userRole)
 	if err != nil {
 		return err
 	}
@@ -375,10 +390,13 @@ func campaignWriteLists(user auth.User) (bool, []int) {
 }
 
 // campaignWriteListIDs is FilterListsByPerm(Get|Manage) for the lists a campaign is saved with.
-func campaignWriteListIDs(user auth.User, ids []int) []int {
+// For a user with lists:get_all (and no lists:manage_all) the lists must all be their own: a
+// list outside them is refused (403) instead of being left out, so that a campaign is never
+// saved or sent to fewer lists than were asked for. Everybody else keeps upstream's filter.
+func campaignWriteListIDs(user auth.User, ids []int) ([]int, error) {
 	all, own := campaignWriteLists(user)
 	if all || !user.HasPerm(auth.PermListGetAll) {
-		return user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, ids)
+		return user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, ids), nil
 	}
 	allowed := map[int]bool{}
 	for _, id := range own {
@@ -386,9 +404,40 @@ func campaignWriteListIDs(user auth.User, ids []int) []int {
 	}
 	out := []int{}
 	for _, id := range ids {
-		if allowed[id] {
-			out = append(out, id)
+		if id <= 0 {
+			continue
 		}
+		if !allowed[id] {
+			return nil, auth.ErrPermDenied
+		}
+		out = append(out, id)
 	}
-	return out
+	return out, nil
+}
+
+// campaignIsOwn tells whether a campaign that sends to the lists is the user's own, by the rule
+// of a campaign write (checkCampaignPerm, manage): lists:manage_all and the super admin own every
+// campaign; anybody else owns a campaign whose lists are all among theirs. Reading is wider
+// (lists:get_all, campaigns:get_all read every campaign), so a screen that must tell a team's own
+// campaigns from the others' (LST-64's dashboard rows) uses this and not the read rule.
+func campaignIsOwn(user auth.User, listIDs []int) bool {
+	all, ids := campaignWriteLists(user)
+	if all {
+		return true
+	}
+	allowed := map[int]bool{}
+	for _, id := range ids {
+		allowed[id] = true
+	}
+	n := 0
+	for _, id := range listIDs {
+		if id <= 0 {
+			continue
+		}
+		if !allowed[id] {
+			return false
+		}
+		n++
+	}
+	return n > 0
 }

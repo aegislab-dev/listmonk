@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,7 +16,7 @@ import (
 // change other teams' lists or campaigns (lists:manage_all edits any list and unlocks the
 // subscribers of other teams, campaigns:manage_all edits any campaign). Reading other teams'
 // data stays allowed: subscribers:get_all and the bounce screen are how members work across teams
-// (decision of 2025-11-25). lists:get_all and campaigns:get_all only widen reading, except that
+// (decision of 2026-11-25). lists:get_all and campaigns:get_all only widen reading, except that
 // lists:get_all also counts as a manage right in the upstream campaign checks (see FORK.md);
 // whether to refuse them too is an open decision (plan v3, section 3.1). The frontend keeps the
 // same list in frontend/src/teams.js.
@@ -78,6 +79,46 @@ func (c *Core) TeamRoleUses(userRoleID int) ([]TeamRoleUse, error) {
 		return nil, c.teamFail(err)
 	}
 	return out, nil
+}
+
+// teamRoleLockKey is the Postgres advisory lock key that serializes every change to who has a
+// team-wide permission (LST-68): the checks on teams, team members, user roles and users each
+// read the state they decide on and write it a moment later, and two of them at the same time
+// (a team gets a role while the role gets the permission) could pass both and leave the
+// forbidden combination.
+const teamRoleLockKey = 741968
+
+// LockTeamRoles takes the lock of teamRoleLockKey (it waits for its turn, across processes) and
+// returns the function that gives it back. It is not re-entrant: do not call it again before
+// the unlock, in the same handler or core call.
+func (c *Core) LockTeamRoles() (func(), error) {
+	conn, err := c.db.Connx(context.Background())
+	if err != nil {
+		return nil, c.teamFail(err)
+	}
+	if _, err := conn.ExecContext(context.Background(), `SELECT pg_advisory_lock($1)`, teamRoleLockKey); err != nil {
+		conn.Close()
+		return nil, c.teamFail(err)
+	}
+	return func() {
+		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, teamRoleLockKey)
+		conn.Close()
+	}, nil
+}
+
+// CampaignListsWithin tells whether the campaign sends to at least one of the lists and to
+// none outside them (LST-68).
+func (c *Core) CampaignListsWithin(id int, listIDs []int) (bool, error) {
+	var ok bool
+	if listIDs == nil {
+		listIDs = []int{}
+	}
+	if err := c.q.AxmCampaignListsWithin.Get(&ok, id, pq.Array(listIDs)); err != nil {
+		c.log.Printf("error checking campaign lists: %v", err)
+		return false, echo.NewHTTPError(http.StatusInternalServerError,
+			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
+	}
+	return ok, nil
 }
 
 // teamNameMax keeps the tag ("팀:" + name) within the 100 characters of roles.axm_team_tag.
@@ -199,7 +240,12 @@ func isUnique(err error) bool {
 // CreateTeam makes a team: a list role with the team tag. Lists that already carry the tag
 // join it at once (the migration's trigger).
 func (c *Core) CreateTeam(name string, userRoleID int) (models.Team, error) {
-	name, err := c.teamName(name)
+	unlock, err := c.LockTeamRoles()
+	if err != nil {
+		return models.Team{}, err
+	}
+	defer unlock()
+	name, err = c.teamName(name)
 	if err != nil {
 		return models.Team{}, err
 	}
@@ -223,7 +269,12 @@ func (c *Core) CreateTeam(name string, userRoleID int) (models.Team, error) {
 // UpdateTeam renames a team (its tag changes with the name, on the lists too) and sets the
 // user role members get by default. applyToMembers gives that role to the current members.
 func (c *Core) UpdateTeam(id int, name string, userRoleID int, applyToMembers bool) (models.Team, error) {
-	name, err := c.teamName(name)
+	unlock, err := c.LockTeamRoles()
+	if err != nil {
+		return models.Team{}, err
+	}
+	defer unlock()
+	name, err = c.teamName(name)
 	if err != nil {
 		return models.Team{}, err
 	}
@@ -312,6 +363,11 @@ func (c *Core) DeleteTeam(id int) error {
 // default user role has such a permission takes nobody new (LST-68); saving the members it
 // already has, or fewer, still works.
 func (c *Core) SetTeamMembers(id int, userIDs []int) (models.Team, error) {
+	unlock, err := c.LockTeamRoles()
+	if err != nil {
+		return models.Team{}, err
+	}
+	defer unlock()
 	t, err := c.GetTeam(id)
 	if err != nil {
 		return t, err

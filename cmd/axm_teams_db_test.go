@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
@@ -930,6 +931,35 @@ func TestListsGetAllDoesNotManageOtherTeamsCampaigns(t *testing.T) {
 	if code := can(plain, campB, auth.PermTypeGet); code != http.StatusForbidden {
 		t.Fatalf("a member without a reading permission: %d", code)
 	}
+	// A campaign that sends to a list of another team as well is not the member's to change: a
+	// send or a delete reaches all of its lists.
+	mixed := camp("A and B", e.aList)
+	e.db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES($1,$2,'B1')`, mixed, e.bList)
+	both2 := camp("Both", e.bothList)
+	gone := camp("A and a deleted list", e.aList)
+	e.db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES($1,NULL,'gone')`, gone)
+	for name, u := range map[string]int{"plain": plain, "lists:get_all": readsLists} {
+		if code := can(u, mixed, auth.PermTypeManage); code != http.StatusForbidden {
+			t.Fatalf("%s manages a campaign that also sends to another team: %d", name, code)
+		}
+		if code := can(u, mixed, auth.PermTypeGet); name == "lists:get_all" && code != 200 {
+			t.Fatalf("%s reads it: %d", name, code)
+		}
+		if code := can(u, both2, auth.PermTypeManage); code != 200 {
+			t.Fatalf("%s: a list that both teams own: %d", name, code)
+		}
+		if code := can(u, gone, auth.PermTypeManage); code != 200 {
+			t.Fatalf("%s: a campaign whose other list was deleted: %d", name, code)
+		}
+	}
+	// The delete by IDs, by query and "all" has the same reach.
+	deleted, err := e.core.DeleteCampaignsGuarded([]int{mixed, campA, campB}, "", true, false, []int{e.aList, e.bothList})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 1 || deleted[0].ID != campA {
+		t.Fatalf("only the campaign of the user's own lists is deleted: %+v", deleted)
+	}
 	// What the *_all permissions that write still do (the decision keeps them off team roles).
 	for name, u := range map[string]int{"lists:manage_all": both, "campaigns:manage_all": writesAll, "super admin": e.superAdmin} {
 		if code := can(u, campB, auth.PermTypeManage); code != 200 {
@@ -952,14 +982,106 @@ func TestListsGetAllDoesNotManageOtherTeamsCampaigns(t *testing.T) {
 			t.Fatalf("%s: %v, want %v", who, got, want)
 		}
 	}
-	same("plain", campaignWriteListIDs(e.as(plain), ids), []int{e.aList, e.bothList})
-	same("lists:get_all", campaignWriteListIDs(e.as(readsLists), ids), []int{e.aList, e.bothList})
-	same("lists:manage_all", campaignWriteListIDs(e.as(both), ids), ids)
-	same("super admin", campaignWriteListIDs(e.as(e.superAdmin), ids), ids)
+	ids = []int{e.aList, e.bothList}
+	got := func(u int, in []int) ([]int, error) { return campaignWriteListIDs(e.as(u), in) }
+	g, err := got(plain, []int{e.aList, e.bList, e.bothList, e.plainList})
+	if err != nil {
+		t.Fatal(err)
+	}
+	same("plain (upstream filter)", g, ids)
+	// A user with lists:get_all is refused a list that is not theirs, not given fewer lists.
+	if g, err = got(readsLists, []int{e.aList, e.bList}); err != auth.ErrPermDenied {
+		t.Fatalf("lists:get_all asking for another team's list: %v %v", g, err)
+	}
+	g, err = got(readsLists, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same("lists:get_all", g, ids)
+	all4 := []int{e.aList, e.bList, e.bothList, e.plainList}
+	g, _ = got(both, all4)
+	same("lists:manage_all", g, all4)
+	g, _ = got(e.superAdmin, all4)
+	same("super admin", g, all4)
 	if all, own := campaignWriteLists(e.as(readsLists)); all || len(own) != 2 {
 		t.Fatalf("lists:get_all writes to %v %v", all, own)
 	}
+	// The dashboard's "own" (LST-64) uses the write rule, not the read one.
+	own := func(u int, lists ...int) bool { return campaignIsOwn(e.as(u), lists) }
+	if !own(readsLists, e.aList) || !own(readsLists, e.aList, e.bothList) || own(readsLists, e.aList, e.bList) || own(readsLists, e.bList) || own(readsLists) {
+		t.Fatal("lists:get_all owns the campaigns of its own lists only")
+	}
+	if !own(both, e.bList) || !own(e.superAdmin, e.bList) {
+		t.Fatal("lists:manage_all owns every campaign")
+	}
 	if all, _ := campaignWriteLists(e.as(both)); !all {
 		t.Fatal("lists:manage_all writes everywhere")
+	}
+}
+
+// The users screen judges the pair of roles the save will store, not only the ones in the request:
+// a user role ID of 0 keeps the present role, a list role ID of 0 keeps the present list role, and
+// no list role clears it (queries/users.sql update-user).
+func TestTeamMemberRoleIsJudgedByTheStoredPair(t *testing.T) {
+	e := newAuditEnv(t)
+	admin := e.as(e.admin)
+	var operator int
+	e.get(&operator, `SELECT user_role_id FROM users WHERE id = $1`, e.admin)
+	update := func(id int, body map[string]any) int {
+		body["username"], body["email"], body["type"], body["status"] = "user-"+itoa(id), "user"+itoa(id)+"@example.invalid", "user", "enabled"
+		b, _ := json.Marshal(body)
+		code, _ := e.call(e.a.UpdateUser, admin, "PUT", "/x", itoa(id), string(b))
+		return code
+	}
+	// The admin has the operator role and no team. Only the list role is sent: the stored pair
+	// would be a team member with the operator role.
+	if code := update(e.admin, map[string]any{"list_role_id": e.team1}); code != http.StatusBadRequest {
+		t.Fatalf("joining a team with the kept operator role: %d", code)
+	}
+	var lr *int
+	e.get(&lr, `SELECT list_role_id FROM users WHERE id = $1`, e.admin)
+	if lr != nil {
+		t.Fatalf("nothing was stored: %v", *lr)
+	}
+	// A member is sent with a new user role and list role 0 (keep): still a member.
+	if code := update(e.ua, map[string]any{"user_role_id": operator, "list_role_id": 0}); code != http.StatusBadRequest {
+		t.Fatalf("a member given the operator role, list role kept: %d", code)
+	}
+	// A member sent with the new role and no list role leaves the team in the same save.
+	if code := update(e.ub, map[string]any{"user_role_id": operator}); code != 200 {
+		t.Fatalf("leaving the team while the role changes: %d", code)
+	}
+	// Neither role in the request, a member of a wide team keeps working.
+	e.db.MustExec(`UPDATE roles SET permissions = '{subscribers:get,lists:manage_all}' WHERE id = $1`, e.memberRole)
+	if code := update(e.plain, map[string]any{"name": "N", "list_role_id": 0}); code != 200 {
+		t.Fatalf("a rename of somebody in an ordinary list role: %d", code)
+	}
+}
+
+// The team-role lock serializes: a second taker waits until the first lets go.
+func TestTeamRoleLockSerializes(t *testing.T) {
+	e := newAuditEnv(t)
+	unlock, err := e.core.LockTeamRoles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan struct{})
+	go func() {
+		u2, err := e.core.LockTeamRoles()
+		if err == nil {
+			u2()
+		}
+		close(got)
+	}()
+	select {
+	case <-got:
+		t.Fatal("the second taker did not wait")
+	case <-time.After(500 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second taker never got the lock")
 	}
 }

@@ -97,6 +97,7 @@ type Queries struct {
 	AxmUserRoleFacts               *sqlx.Stmt `query:"axm-user-role-facts"`
 	AxmTeamCandidateUsers          *sqlx.Stmt `query:"axm-team-candidate-users"`
 	AxmUserRoleTeamUse             *sqlx.Stmt `query:"axm-user-role-team-use"`
+	AxmCampaignListsWithin         *sqlx.Stmt `query:"axm-campaign-lists-within"`
 	AxmReleaseTeamMembers          *sqlx.Stmt `query:"axm-release-team-members"`
 	AxmAssignTeamMembers           *sqlx.Stmt `query:"axm-assign-team-members"`
 	AxmApplyTeamUserRole           *sqlx.Stmt `query:"axm-apply-team-user-role"`
