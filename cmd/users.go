@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
@@ -361,10 +362,16 @@ func (a *App) DisableTOTP(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResp{true})
 }
 
+// Serialize refreshes so a slower read cannot replace a newer API user cache.
+var cacheUsersMu sync.Mutex
+
 // cacheUsers fetches (API) users and caches them in the auth module.
 // It also returns a bool indicating whether there are any actual users in the DB at all,
 // which if there aren't, the first time user setup needs to be run.
 func cacheUsers(co *core.Core, a *auth.Auth) (bool, error) {
+	cacheUsersMu.Lock()
+	defer cacheUsersMu.Unlock()
+
 	users, err := co.GetUsers()
 	if err != nil {
 		return false, err
