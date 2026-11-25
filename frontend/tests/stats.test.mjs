@@ -124,6 +124,15 @@ test('a change inside the neutral width is similar and a falling bounce rate is 
   assert.match(changeText(change(0.1, 'click'), t), /Similar/);
 });
 
+test('an exact half-point change computed from click counts is outside the neutral band', () => {
+  const rate = (clickers) => aggregate(Array.from({ length: 3 }, () => camp({ clickers })), NOW).click;
+  const previous = rate(4); // 12 of 3,000
+  const current = rate(9); // 27 of 3,000
+  assert.equal(change(current - previous, 'click').dir, 'up');
+  assert.equal(change(previous - current, 'click').dir, 'down');
+  assert.equal(change(rate(8) - previous, 'click').dir, 'same');
+});
+
 test('team rows: every team role is a row, one that sent nothing is empty, small teams come last', () => {
   const camps = [
     ...[1, 2, 3].map(() => camp({ teamTags: ['팀:가'], sent: 1000, clickers: 100 })),
@@ -219,6 +228,18 @@ test('recipient groups: rates per group, the merged other group last', () => {
   assert.equal(rows[1].click, null);
   assert.equal(rows[1].open, null);
   assert.equal(rows[1].ok, false);
+});
+
+test('recipient groups require 200 tracked people to show engagement rates', () => {
+  const [row] = recipientRows([{
+    team: '', key: 'KR', sent: 601, recipients: 200, trackedSent: 1, trackedRecipients: 1, opened: 1, clicked: 1, bounced: 3,
+  }], '');
+  assert.equal(row.ok, true);
+  assert.equal(row.click, null);
+  assert.equal(row.open, null);
+  assert.equal(row.trackedSent, 1);
+  assert.equal(row.trackedRecipients, 1);
+  assert.equal(row.bounce, (3 / 601) * 100);
 });
 
 test('KST date text does not depend on the zone of the machine', () => {
