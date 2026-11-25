@@ -133,7 +133,7 @@
 
                 <recent-send-exclude v-if="canShowRecentRule && !isFollowup" v-model="recentRule" :campaign-id="data.id || createdDraftId"
                   :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || recentStarted || !recentRuleLoaded || savingCampaign"
-                  :finished-audience="data.status === 'finished' ? { target: data.toSend, asOf: data.startedAt } : null"
+                  :finished-audience="data.status === 'finished' ? { target: data.toSend, sent: data.sent, asOf: data.startedAt } : null"
                   :started="recentStarted" :lists-editable="canChangeLists" :saved-campaign="!!data.id" :made-list="madeListView"
                   @list-made="onRecentListMade" />
                 <p v-if="recentRuleError" class="help is-danger mb-4" role="alert">{{ recentRuleError }}</p>

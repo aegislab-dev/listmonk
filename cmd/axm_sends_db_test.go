@@ -1509,7 +1509,7 @@ func TestSendRecordMigration(t *testing.T) {
 // Migrations are registered through the latest version and stay in semver order.
 func TestSendRecordMigrationRegistered(t *testing.T) {
 	last := migList[len(migList)-1]
-	if last.version != "v6.2.1-axm.20" {
+	if last.version != "v6.2.1-axm.21" {
 		t.Fatalf("last migration is %s", last.version)
 	}
 	for i := 1; i < len(migList); i++ {

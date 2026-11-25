@@ -229,6 +229,12 @@ audience AS (
     SELECT h.campaign_id, h.subscriber_id, FALSE
     FROM camps JOIN axm_campaign_recent_holds h ON h.campaign_id = camps.id
     WHERE camps.type = 'regular'
+    UNION ALL
+    -- Someone who already received this campaign can also disappear from its current lists.
+    SELECT camps.id, sent.subscriber_id, FALSE
+    FROM camps
+    CROSS JOIN LATERAL axm_recent_campaign_sent_ids(camps.id) sent
+    WHERE camps.started_at IS NOT NULL AND axm_recent_rule_on(camps.id)
 ),
 counts AS (
     SELECT campaign_id, COUNT(DISTINCT subscriber_id) AS to_send,
@@ -237,7 +243,7 @@ counts AS (
     GROUP BY campaign_id
 ),
 u AS (
-    -- Count each eligible or previously excluded person once, plus exclusions whose IDs were deleted.
+    -- Count the eligible, excluded and already sent IDs once, plus exclusions whose IDs were deleted.
     -- The send cursor still uses only currently eligible subscribers.
     UPDATE campaigns AS ca
     SET to_send = COALESCE(co.to_send, 0) + COALESCE(r.removed_held_count, 0),

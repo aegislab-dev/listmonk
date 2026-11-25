@@ -128,6 +128,21 @@ describe('Recent-send exclusion settings', () => {
     cy.get('@laterSendsPreview.all').should('have.length', 0);
   });
 
+  it('shows at least the confirmed deliveries when the stored audience has missing history', () => {
+    cy.intercept('GET', `/api/campaigns/${campaignId}`, (req) => {
+      req.continue((res) => {
+        Object.assign(res.body.data, { status: 'finished', to_send: 39, sent: 28 });
+      });
+    });
+    cy.intercept('GET', { pathname: rulePath(), query: { include_coverage: 'true' } }, (req) => {
+      req.continue((res) => { res.body.data.held = 12; });
+    });
+    openCampaign(campaignId);
+    cy.get('[data-cy=recent-counts] td').should(($cells) => {
+      expect([...$cells].map((cell) => cell.textContent)).to.deep.equal(['40', '−12', '28']);
+    });
+  });
+
   it('loads a saved rule, warns on send and disables editing for a reader', () => {
     openCampaign(campaignId);
     cy.get(switchInput).should('be.checked').and('not.be.disabled');

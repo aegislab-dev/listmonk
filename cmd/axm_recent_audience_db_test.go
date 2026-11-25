@@ -74,28 +74,58 @@ func TestRecentAudienceCountsSurviveDeletionDuringSend(t *testing.T) {
 		}
 		wantSame(e.t, "remaining holds", e.held(), held[1:])
 	}
-	t.Run("uninterrupted", func(t *testing.T) { testRecentAudienceChangeDuringSend(t, false, false, deleteHeld) })
-	t.Run("pause and resume", func(t *testing.T) { testRecentAudienceChangeDuringSend(t, true, false, deleteHeld) })
+	t.Run("uninterrupted", func(t *testing.T) { testRecentAudienceChangeDuringSend(t, recentAudienceChange{}, deleteHeld) })
+	t.Run("pause and resume", func(t *testing.T) {
+		testRecentAudienceChangeDuringSend(t, recentAudienceChange{pauseAfter: 21}, deleteHeld)
+	})
 }
 
 func TestRecentAudienceCountsSurviveUnsubscribeDuringSend(t *testing.T) {
 	unsubscribeHeld := func(e *recentListEnv, held []int) {
-		e.t.Helper()
-		body := fmt.Sprintf(`{"ids":[%d],"action":"unsubscribe","target_list_ids":[%d]}`, held[0], e.listID)
-		if code, raw := e.call(e.a.ManageSubscriberLists, e.admin, http.MethodPut, "/api/subscribers/lists", "", body); code != http.StatusOK {
-			e.t.Fatalf("unsubscribe held subscriber: HTTP %d %s", code, raw)
-		}
-		var status string
-		e.get(&status, `SELECT status FROM subscriber_lists WHERE subscriber_id=$1 AND list_id=$2`, held[0], e.listID)
-		if status != "unsubscribed" {
-			e.t.Fatalf("subscription is %s, want unsubscribed", status)
-		}
+		unsubscribeRecentAudienceSubscriber(e, held)
 		wantSame(e.t, "remaining holds", e.held(), held)
 	}
-	t.Run("static audience", func(t *testing.T) { testRecentAudienceChangeDuringSend(t, true, false, unsubscribeHeld) })
-	t.Run("overlapping static and dynamic audience", func(t *testing.T) {
-		testRecentAudienceChangeDuringSend(t, true, true, unsubscribeHeld)
+	t.Run("static audience", func(t *testing.T) {
+		testRecentAudienceChangeDuringSend(t, recentAudienceChange{pauseAfter: 21}, unsubscribeHeld)
 	})
+	t.Run("overlapping static and dynamic audience", func(t *testing.T) {
+		testRecentAudienceChangeDuringSend(t, recentAudienceChange{pauseAfter: 21, dynamic: true}, unsubscribeHeld)
+	})
+}
+
+func TestRecentAudienceIncludesDeliveredUnsubscribesOnResume(t *testing.T) {
+	t.Run("static audience", func(t *testing.T) {
+		testRecentAudienceChangeDuringSend(t, recentAudienceChange{pauseAfter: 16, changeDelivered: true}, unsubscribeRecentAudienceSubscriber)
+	})
+	t.Run("overlapping static and dynamic audience", func(t *testing.T) {
+		testRecentAudienceChangeDuringSend(t, recentAudienceChange{pauseAfter: 16, dynamic: true, changeDelivered: true}, unsubscribeRecentAudienceSubscriber)
+	})
+}
+
+func unsubscribeRecentAudienceSubscriber(e *recentListEnv, subs []int) {
+	e.t.Helper()
+	body := fmt.Sprintf(`{"ids":[%d],"action":"unsubscribe","target_list_ids":[%d]}`, subs[0], e.listID)
+	if code, raw := e.call(e.a.ManageSubscriberLists, e.admin, http.MethodPut, "/api/subscribers/lists", "", body); code != http.StatusOK {
+		e.t.Fatalf("unsubscribe subscriber: HTTP %d %s", code, raw)
+	}
+	var status string
+	e.get(&status, `SELECT status FROM subscriber_lists WHERE subscriber_id=$1 AND list_id=$2`, subs[0], e.listID)
+	if status != "unsubscribed" {
+		e.t.Fatalf("subscription is %s, want unsubscribed", status)
+	}
+}
+
+func TestRecentAudienceRescansWithoutLedgerTable(t *testing.T) {
+	e := newSendsEnv(t, 2)
+	e.rsRule(models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll})
+	e.db.MustExec(`UPDATE campaigns SET started_at=NOW() WHERE id=$1;`, e.campID)
+	e.db.MustExec(`DROP TABLE axm_campaign_sends`)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, target := e.campaign(); target != 2 {
+		t.Fatalf("target=%d, want 2 eligible subscribers", target)
+	}
 }
 
 type recentAudiencePauseStore struct {
@@ -111,7 +141,13 @@ func (s *recentAudiencePauseStore) NextSubscribers(campaignID, lastID, limit int
 	return s.store.NextSubscribers(campaignID, lastID, limit)
 }
 
-func testRecentAudienceChangeDuringSend(t *testing.T, pause, dynamic bool, change func(*recentListEnv, []int)) {
+type recentAudienceChange struct {
+	pauseAfter      int
+	dynamic         bool
+	changeDelivered bool
+}
+
+func testRecentAudienceChangeDuringSend(t *testing.T, scenario recentAudienceChange, change func(*recentListEnv, []int)) {
 	e := newRecentListEnv(t)
 	audience := make([]int, 40)
 	priorSends := make(map[int]time.Duration, 12)
@@ -121,7 +157,7 @@ func testRecentAudienceChangeDuringSend(t *testing.T, pause, dynamic bool, chang
 			priorSends[audience[i]] = 3 * time.Hour
 		}
 	}
-	if dynamic {
+	if scenario.dynamic {
 		e.db.MustExec(`UPDATE subscribers SET attribs = '{"plan":"pro"}' WHERE id = ANY($1)`, pq.Array(audience))
 		list := e.pfList("single", dynFilter(e.listID))
 		e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name) VALUES ($1, $2, 'Synthetic dynamic')`, e.campID, list)
@@ -136,11 +172,13 @@ func testRecentAudienceChangeDuringSend(t *testing.T, pause, dynamic bool, chang
 	var readOnce sync.Once
 	resumeReads := func() { readOnce.Do(func() { close(resume) }) }
 	var st manager.Store = e.store
-	if pause {
-		// With 33 candidates in the first batch, the pause happens after 21 deliveries.
-		st = &recentAudiencePauseStore{store: e.store, lastID: audience[32], resume: resume}
+	batchSize := 33
+	if scenario.pauseAfter > 0 {
+		// Stop the second read after the first batch's 12 exclusions and initial deliveries.
+		batchSize = 12 + scenario.pauseAfter
+		st = &recentAudiencePauseStore{store: e.store, lastID: audience[batchSize-1], resume: resume}
 	}
-	m := e.startManagerWith(st, msgr, logs, func(c *manager.Config) { c.BatchSize = 33 })
+	m := e.startManagerWith(st, msgr, logs, func(c *manager.Config) { c.BatchSize = batchSize })
 	var once sync.Once
 	release := func() { once.Do(func() { close(allow) }) }
 	t.Cleanup(m.Close)
@@ -163,23 +201,32 @@ func testRecentAudienceChangeDuringSend(t *testing.T, pause, dynamic bool, chang
 		}
 	}
 	assertCounts(models.CampaignStatusRunning)
-	change(e, audience[:12])
-	if status, _, _ := e.campaign(); status != models.CampaignStatusRunning {
-		t.Fatalf("status after changing a held subscriber: %s, want running", status)
+	if !scenario.changeDelivered {
+		change(e, audience[:12])
+		if status, _, _ := e.campaign(); status != models.CampaignStatusRunning {
+			t.Fatalf("status after changing a held subscriber: %s, want running", status)
+		}
 	}
 	release()
-	if pause {
-		waitFor(t, "21 deliveries and ledger entries", func() bool {
-			return len(msgr.sentIDs()) == 21 && len(e.recorded()) == 21
+	if sent := scenario.pauseAfter; sent > 0 {
+		waitFor(t, "first deliveries and ledger entries", func() bool {
+			return len(msgr.sentIDs()) == sent && len(e.recorded()) == sent
 		})
+		if scenario.changeDelivered {
+			wantSame(t, "first deliveries in the ledger", e.recorded(), audience[12:12+sent])
+			change(e, audience[12:12+sent])
+		}
+		if status, _, _ := e.campaign(); status != models.CampaignStatusRunning {
+			t.Fatalf("status before pause: %s, want running", status)
+		}
 		e.setStatus(models.CampaignStatusPaused)
 		m.StopCampaign(e.campID)
 		resumeReads()
 		waitFor(t, "the pause to take effect", func() bool { return !m.HasRunningCampaigns() })
-		e.waitCampaign(models.CampaignStatusPaused, 21)
+		e.waitCampaign(models.CampaignStatusPaused, sent)
 		_, aud, err := e.core.GetPreflightAudience(context.Background(), e.campID, e.checkpoint(), true)
-		if err != nil || aud.Remaining != 7 {
-			t.Fatalf("preflight at resume: remaining=%d, want 7, err=%v", aud.Remaining, err)
+		if want := 28 - sent; err != nil || aud.Remaining != want {
+			t.Fatalf("preflight at resume: remaining=%d, want %d, err=%v", aud.Remaining, want, err)
 		}
 		e.setStatus(models.CampaignStatusRunning)
 	}

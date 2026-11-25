@@ -204,12 +204,14 @@ export default {
   computed: {
     displayCounts() {
       if (!this.finishedAudience) return this.counts;
-      const { target, asOf } = this.finishedAudience;
+      const { target, sent, asOf } = this.finishedAudience;
       const excluded = this.value.held || 0;
+      // The saved audience can lack send records removed by retention or subscriber deletion.
+      const willSend = Math.max(target - excluded, sent || 0);
       return {
-        target,
+        target: willSend + excluded,
         excluded,
-        willSend: Math.max(0, target - excluded),
+        willSend,
         asOf,
         recordsFrom: this.value.recordsFrom,
       };
