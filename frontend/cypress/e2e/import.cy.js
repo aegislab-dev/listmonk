@@ -50,7 +50,7 @@ describe('Import', () => {
       }
 
       cy.get('section.wrap .has-text-success');
-      cy.get('button.is-primary').click();
+      cy.get('[data-cy=import-done]').click();
       cy.wait(100);
 
       // Verify that 100 (+2 default) subs are imported.
