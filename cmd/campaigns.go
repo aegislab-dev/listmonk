@@ -290,7 +290,7 @@ func (a *App) CreateCampaign(c echo.Context) error {
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
-	o.ListIDs = user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, o.ListIDs)
+	o.ListIDs = campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
 
 	// If the campaign's 'opt-in', prepare a default message.
 	switch o.Type {
@@ -404,7 +404,7 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
-	o.ListIDs = user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, o.ListIDs)
+	o.ListIDs = campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
 
 	if c, err := a.validateCampaignFields(o, user); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
@@ -580,7 +580,7 @@ func (a *App) DeleteCampaigns(c echo.Context) error {
 	if !hasAllPerm {
 		// Either the user has campaigns:manage_all permissions and can manage all campaigns,
 		// or the campaigns are filtered by the lists the user has get|manage access to.
-		hasAllPerm, permittedLists = user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage)
+		hasAllPerm, permittedLists = campaignWriteLists(user) // AXM (LST-68)
 	}
 
 	var (
@@ -1078,7 +1078,12 @@ func (a *App) checkCampaignPerm(types auth.PermType, id int, c echo.Context) err
 	// blanket get_all/manage_all list permissions. If yes, then the user can access
 	// all campaigns. If there are no *_all permissions, then ensure that the
 	// campaign belongs to the lists that the user has access to.
-	if hasAllPerm, permittedListIDs := user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage); !hasAllPerm {
+	hasAllPerm, permittedListIDs := user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage)
+	if types&auth.PermTypeGet == 0 {
+		// AXM (LST-68): lists:get_all is read access, not a right to change campaigns.
+		hasAllPerm, permittedListIDs = campaignWriteLists(user)
+	}
+	if !hasAllPerm {
 		if ok, err := a.core.CampaignHasLists(id, permittedListIDs); err != nil {
 			return err
 		} else if !ok {

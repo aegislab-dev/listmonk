@@ -348,3 +348,47 @@ func (a *App) guardTeamMemberRole(id int, u auth.User) error {
 	}
 	return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("teams.memberWideRole", "perms", strings.Join(perms, ", ")))
 }
+
+// The campaign write rule (LST-68). Upstream reads "get or manage" access to a list as one:
+// GetPermittedLists(Get|Manage) answers "all" for a user with lists:get_all, and so a member who
+// may only read every list (lists:get_all, no lists:manage_all) could edit, delete, send and
+// aim campaigns at the lists of other teams. Writing to campaigns follows the lists the user
+// may really use: everything for lists:manage_all and the super admin, otherwise the lists of
+// their own list role (a team's lists), whatever lists:get_all lets them read.
+
+// campaignWriteLists is GetPermittedLists(Get|Manage) for a campaign write.
+func campaignWriteLists(user auth.User) (bool, []int) {
+	all, ids := user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage)
+	if !all || user.UserRole.ID == auth.SuperAdminRoleID || user.HasPerm(auth.PermListManageAll) {
+		return all, ids
+	}
+	// lists:get_all only: the lists of the list role.
+	seen := map[int]bool{}
+	own := []int{}
+	for _, id := range append(append([]int{}, user.GetListIDs...), user.ManageListIDs...) {
+		if !seen[id] {
+			seen[id] = true
+			own = append(own, id)
+		}
+	}
+	return false, own
+}
+
+// campaignWriteListIDs is FilterListsByPerm(Get|Manage) for the lists a campaign is saved with.
+func campaignWriteListIDs(user auth.User, ids []int) []int {
+	all, own := campaignWriteLists(user)
+	if all || !user.HasPerm(auth.PermListGetAll) {
+		return user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, ids)
+	}
+	allowed := map[int]bool{}
+	for _, id := range own {
+		allowed[id] = true
+	}
+	out := []int{}
+	for _, id := range ids {
+		if allowed[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}

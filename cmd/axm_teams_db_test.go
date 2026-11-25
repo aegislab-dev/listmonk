@@ -881,19 +881,24 @@ func TestTeamAlreadyWide(t *testing.T) {
 	}
 }
 
-// Evidence for the open decision of LST-68 (plan v3, 3.1): lists:get_all is not only a read right.
-// The upstream campaign checks read "get or manage" list access as one, so a member who has
-// lists:get_all and campaigns:manage may manage a campaign of another team. campaigns:get_all
-// does not give that.
-func TestListsGetAllReachesOtherTeamsCampaigns(t *testing.T) {
+// LST-68, decision B: lists:get_all is read access. Upstream reads "get or manage" list access as
+// one in its campaign checks, so a member with lists:get_all and campaigns:manage could change,
+// send and aim campaigns at the lists of other teams. They may read everything, and write to
+// the campaigns of their own lists only. lists:manage_all and the super admin keep every
+// campaign; campaigns:get_all reads every campaign and writes none.
+func TestListsGetAllDoesNotManageOtherTeamsCampaigns(t *testing.T) {
 	e := newAuditEnv(t)
-	var camp int
-	e.get(&camp, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'B camp','S','test@example.invalid','b','email') RETURNING id`)
-	e.db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES($1,$2,'B1')`, camp, e.bList)
+	camp := func(name string, list int) int {
+		var id int
+		e.get(&id, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),$1,'S','test@example.invalid','b','email') RETURNING id`, name)
+		e.db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) SELECT $1, id, name FROM lists WHERE id = $2`, id, list)
+		return id
+	}
+	campA, campB := camp("A camp", e.aList), camp("B camp", e.bList)
 
-	canManage := func(user int, typ auth.PermType) int {
-		h := func(c echo.Context) error { return e.a.checkCampaignPerm(typ, getID(c), c) }
-		code, _ := e.call(h, e.as(user), "PUT", "/x", itoa(camp), "")
+	can := func(user, c int, typ auth.PermType) int {
+		h := func(ctx echo.Context) error { return e.a.checkCampaignPerm(typ, getID(ctx), ctx) }
+		code, _ := e.call(h, e.as(user), "PUT", "/x", itoa(c), "")
 		return code
 	}
 	member := func(name string, perms ...string) int {
@@ -903,19 +908,58 @@ func TestListsGetAllReachesOtherTeamsCampaigns(t *testing.T) {
 		return id
 	}
 	plain := member("plain", "campaigns:get", "campaigns:manage")
-	listsGetAll := member("lga", "campaigns:get", "campaigns:manage", "lists:get_all")
-	campGetAll := member("cga", "campaigns:get", "campaigns:manage", "campaigns:get_all")
+	readsLists := member("lga", "campaigns:get", "campaigns:manage", "lists:get_all")
+	readsCamps := member("cga", "campaigns:get", "campaigns:manage", "campaigns:get_all")
+	both := member("both", "campaigns:get", "campaigns:manage", "lists:get_all", "lists:manage_all")
+	writesAll := member("cma", "campaigns:get", "campaigns:manage", "campaigns:manage_all")
 
-	if code := canManage(plain, auth.PermTypeManage); code != http.StatusForbidden {
-		t.Fatalf("a member of team 가 managing team 나's campaign: %d", code)
+	for name, u := range map[string]int{"plain": plain, "lists:get_all": readsLists, "campaigns:get_all": readsCamps} {
+		if code := can(u, campA, auth.PermTypeManage); code != 200 {
+			t.Fatalf("%s manages their own team's campaign: %d", name, code)
+		}
+		if code := can(u, campB, auth.PermTypeManage); code != http.StatusForbidden {
+			t.Fatalf("%s manages another team's campaign: %d", name, code)
+		}
 	}
-	if code := canManage(listsGetAll, auth.PermTypeManage); code != 200 {
-		t.Fatalf("lists:get_all counts as manage access in the campaign check: %d", code)
+	// Reading stays as it was.
+	for name, u := range map[string]int{"lists:get_all": readsLists, "campaigns:get_all": readsCamps} {
+		if code := can(u, campB, auth.PermTypeGet); code != 200 {
+			t.Fatalf("%s reads another team's campaign: %d", name, code)
+		}
 	}
-	if code := canManage(campGetAll, auth.PermTypeManage); code != http.StatusForbidden {
-		t.Fatalf("campaigns:get_all does not let a member manage: %d", code)
+	if code := can(plain, campB, auth.PermTypeGet); code != http.StatusForbidden {
+		t.Fatalf("a member without a reading permission: %d", code)
 	}
-	if code := canManage(campGetAll, auth.PermTypeGet); code != 200 {
-		t.Fatalf("campaigns:get_all reads every campaign: %d", code)
+	// What the *_all permissions that write still do (the decision keeps them off team roles).
+	for name, u := range map[string]int{"lists:manage_all": both, "campaigns:manage_all": writesAll, "super admin": e.superAdmin} {
+		if code := can(u, campB, auth.PermTypeManage); code != 200 {
+			t.Fatalf("%s: %d", name, code)
+		}
+	}
+
+	// The lists a campaign is saved with.
+	ids := []int{e.aList, e.bList, e.bothList, e.plainList}
+	same := func(who string, got, want []int) {
+		t.Helper()
+		g, w := []string{}, []string{}
+		for _, id := range got {
+			g = append(g, itoa(id))
+		}
+		for _, id := range want {
+			w = append(w, itoa(id))
+		}
+		if !sameSet(g, w) {
+			t.Fatalf("%s: %v, want %v", who, got, want)
+		}
+	}
+	same("plain", campaignWriteListIDs(e.as(plain), ids), []int{e.aList, e.bothList})
+	same("lists:get_all", campaignWriteListIDs(e.as(readsLists), ids), []int{e.aList, e.bothList})
+	same("lists:manage_all", campaignWriteListIDs(e.as(both), ids), ids)
+	same("super admin", campaignWriteListIDs(e.as(e.superAdmin), ids), ids)
+	if all, own := campaignWriteLists(e.as(readsLists)); all || len(own) != 2 {
+		t.Fatalf("lists:get_all writes to %v %v", all, own)
+	}
+	if all, _ := campaignWriteLists(e.as(both)); !all {
+		t.Fatal("lists:manage_all writes everywhere")
 	}
 }
