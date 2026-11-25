@@ -62,8 +62,9 @@
       :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
       @close="onSendClosed">
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
-        :campaign-name="sendAsk.name"
-        @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" @failed="onSendFailed" />
+        :campaign-name="sendAsk.name" :review="!!sendAsk.review" :initial="sendAsk.initial || null"
+        @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" @failed="onSendFailed"
+        @unscheduled="onUnscheduled" />
     </b-modal>
 
     <b-tabs type="is-boxed" :animated="false" v-model="activeTab" @input="onTab">
@@ -394,9 +395,10 @@ import SenderAddressInput from '../components/SenderAddressInput.vue';
 import TrackingCheck from '../components/TrackingCheck.vue';
 import CampaignSendConfirm from '../components/CampaignSendConfirm.vue';
 import { isSenderDomain } from '../senders';
+import { sendConfirmModel } from '../send-confirm';
 import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
 import {
-  browserDiffers, browserZoneName, instantToWall, KST, mergeAttribs, otherZoneLines, splitAttribs, wallToInstant,
+  browserDiffers, browserZoneName, instantToWall, KST, mergeAttribs, otherZoneLines, splitAttribs, TZ_ATTRIB, wallToInstant,
 } from '../schedule-time';
 import {
   newSample, rejectedOf, sampleLabel, samplePayload,
@@ -925,7 +927,11 @@ export default Vue.extend({
         // The target is saved now, whatever happens to the rule below.
         if (this.madeList && this.sentMadeList(data.lists)) this.madeList = { ...this.madeList, error: '' };
         await this.saveRecentRule(d.id);
-        if (!quiet) this.$utils.toast(this.$t(typMsg, { name: d.name }));
+        // A scheduled campaign goes out at its time with nothing between: what the save left is
+        // checked again and shown (LST-67). The start and schedule buttons save a draft or a
+        // paused campaign, so they never come here.
+        const shown = d.status === 'scheduled' ? await this.recheckScheduled(d, quiet) : false;
+        if (!quiet && !shown) this.$utils.toast(this.$t(typMsg, { name: d.name }));
         // Saving can change what the check reads beyond the page (the sender of the
         // person who saves, merged headers): check again (LST-44).
         if (this.$refs.tracking) this.$refs.tracking.run();
@@ -981,6 +987,43 @@ export default Vue.extend({
         id: saved.id, name: saved.name, status, handled: false, busy: false,
       };
       this.isSendVisible = true;
+    },
+
+    // After a scheduled campaign was saved (LST-67): reads the pre-send checks again. Without
+    // warnings it says so in one line; otherwise (or when they cannot be read) it opens the
+    // window, which keeps the schedule or takes it off. Returns whether it said anything in place
+    // of the plain "saved" line. quiet: a save whose result is shown elsewhere says nothing when
+    // all is well.
+    async recheckScheduled(d, quiet) {
+      let pf = null;
+      try {
+        pf = await this.$api.getCampaignPreflight(d.id);
+      } catch (e) {
+        pf = null;
+      }
+      if (pf) {
+        const m = sendConfirmModel(pf, {
+          tz: splitAttribs({ [TZ_ATTRIB]: pf.sendTz }).tz, lang: this.serverConfig.lang || 'ko',
+        });
+        if (!m.warnings && !m.blocked) {
+          if (quiet || !m.when) return false;
+          this.$utils.toast(this.$t('campaigns.recheck.passed', {
+            name: d.name, n: m.count, month: m.when.month, day: m.when.day, time: m.when.time,
+          }));
+          return true;
+        }
+      }
+      // The window reads the checks itself when this reading failed.
+      this.sendAsk = {
+        id: d.id, name: d.name, status: 'scheduled', review: true, initial: pf, handled: true, busy: false,
+      };
+      this.isSendVisible = true;
+      return true;
+    },
+
+    onUnscheduled(d) {
+      if (this.sendAsk) this.sendAsk.handled = true;
+      this.data = d;
     },
 
     onSendDone() {

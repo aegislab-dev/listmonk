@@ -134,6 +134,9 @@ export const checkLines = (pf) => {
 export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {}) => {
   const resume = pf.mode === 'resume';
   const schedule = pf.mode === 'schedule';
+  // LST-67: a campaign that is already scheduled, read again after it was saved. Nothing is asked
+  // for: the window says what the send will be and the person keeps or undoes the schedule.
+  const scheduled = pf.mode === 'scheduled';
   const n = resume ? pf.remaining : pf.recipients;
   const all = checkLines(pf);
   const blocked = all.some((c) => c.level === 'block');
@@ -143,7 +146,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   const checks = nobody ? all.filter((c) => c.level === 'block') : all;
   const warnings = all.filter((c) => c.level === 'warn').length;
   // A paused campaign with a send time is scheduled by the status change, not sent at once.
-  const timed = (schedule || resume) && pf.sendAt;
+  const timed = (schedule || scheduled || resume) && pf.sendAt;
   const when = timed ? scheduleDisplay(pf.sendAt, { tz, lang }) : null;
   const until = timed ? timeUntil(pf.sendAt, now) : null;
 
@@ -162,9 +165,9 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
     };
   } else if (resume) {
     title = { key: `${K}.title.resume`, params: { n } };
-  } else if (schedule && when) {
+  } else if ((schedule || scheduled) && when) {
     title = {
-      key: `${K}.title.schedule`,
+      key: `${K}.title.${scheduled ? 'scheduled' : 'schedule'}`,
       params: {
         n, month: when.month, day: when.day, time: when.time,
       },
@@ -178,8 +181,13 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   else if (warnings) sub = { key: `${K}.sub.warn`, params: { n: warnings } };
   else if (resume && when && until) sub = { key: `${K}.sub.resumeAt`, params: {} };
   else sub = { key: `${K}.sub.${pf.mode}`, params: {} };
+  if (scheduled && warnings && !blocked) sub = { key: `${K}.sub.scheduledWarn`, params: { n: warnings } };
 
-  const confirmKey = `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
+  // The window of a scheduled campaign has one way on: it stays scheduled (the other button
+  // takes the schedule off). No "anyway": nothing is being started here.
+  const confirmKey = scheduled
+    ? `${K}.review.keep`
+    : `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
   const asOf = pf.asOf ? new Date(pf.asOf) : null;
 
   return {
@@ -188,7 +196,8 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
     title,
     sub,
     confirm: { key: confirmKey, params: { n } },
-    disabled: blocked,
+    // A scheduled campaign is already saved: the window has nothing to disable.
+    disabled: blocked && !scheduled,
     blocked,
     warnings,
     checks,

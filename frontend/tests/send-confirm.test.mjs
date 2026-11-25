@@ -252,3 +252,49 @@ test('a refused From blocks but keeps every other line: the rest is to be fixed 
     assert.ok(m.checks.some((c) => c.name === name), `${name} is kept`);
   }
 });
+
+// LST-67: a campaign that is already scheduled, read again after it was saved.
+test('scheduled: the title says it is scheduled, with the time in its zone', () => {
+  const m = model({ mode: 'scheduled', sendAt: '2026-11-20T00:00:00Z' });
+  assert.equal(m.title.key, 'campaigns.sendConfirm.title.scheduled');
+  assert.deepEqual(m.title.params, { n: 300, month: '11', day: '20', time: '09:00' });
+  assert.equal(m.when.text, '2026-11-20 (금) 09:00');
+  assert.equal(m.sub.key, 'campaigns.sendConfirm.sub.scheduled');
+});
+
+test('scheduled: warnings count in the subtitle and the one way on is keeping the schedule', () => {
+  const m = model({
+    mode: 'scheduled',
+    sendAt: '2026-11-20T00:00:00Z',
+    checks: [{ key: 'unsubscribe.missing', level: 'warn' }, { key: 'from.placeholder', level: 'ok' }],
+    tracking: { ...trackingOk, view: 'missing' },
+  });
+  assert.equal(m.warnings, 2);
+  assert.deepEqual(m.sub, { key: 'campaigns.sendConfirm.sub.scheduledWarn', params: { n: 2 } });
+  assert.equal(m.confirm.key, 'campaigns.sendConfirm.review.keep');
+  assert.equal(m.disabled, false);
+});
+
+test('scheduled: all passed is no warning and no block, so the page says it in one line', () => {
+  const m = model({ mode: 'scheduled', sendAt: '2026-11-20T00:00:00Z' });
+  assert.equal(m.warnings, 0);
+  assert.equal(m.blocked, false);
+});
+
+test('scheduled: a campaign that would reach nobody is still named, and nothing is disabled', () => {
+  const m = model({
+    mode: 'scheduled', sendAt: '2026-11-20T00:00:00Z', recipients: 0, checks: [{ key: 'recipients.zero', level: 'block' }],
+  });
+  assert.equal(m.title.key, 'campaigns.sendConfirm.title.zero');
+  assert.equal(m.blocked, true);
+  assert.equal(m.disabled, false);
+});
+
+test('scheduled: the new texts exist in the Korean and English files', () => {
+  for (const lang of ['ko', 'en']) {
+    const t = JSON.parse(fs.readFileSync(new URL(`../../i18n/${lang}.json`, import.meta.url)));
+    ['title.scheduled', 'sub.scheduled', 'sub.scheduledWarn', 'review.keep', 'review.unschedule', 'review.loadFailed']
+      .forEach((k) => assert.ok(t[`campaigns.sendConfirm.${k}`], `${lang} ${k}`));
+    ['recheck.noLists', 'recheck.zero', 'recheck.passed'].forEach((k) => assert.ok(t[`campaigns.${k}`], `${lang} ${k}`));
+  }
+});

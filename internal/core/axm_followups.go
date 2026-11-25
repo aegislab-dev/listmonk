@@ -353,8 +353,14 @@ func (c *Core) FinishEmptyFollowup(id int) (bool, error) {
 // with its list (nil otherwise), and the id of that list. The pre-send confirmation leaves them
 // out of its count.
 func (c *Core) FollowupHeldNow(ctx context.Context, id int) (*models.FollowupPending, int, error) {
+	return c.followupHeldNow(ctx, onPool, id)
+}
+
+// followupHeldNow is FollowupHeldNow on the connection that run says (LST-67: the check made when
+// a scheduled campaign is saved reads on the transaction that holds the campaign's row).
+func (c *Core) followupHeldNow(ctx context.Context, run stmtOn, id int) (*models.FollowupPending, int, error) {
 	var rows []followupDue
-	if err := c.q.AxmFollowupByIDs.SelectContext(ctx, &rows, pq.Array([]int{id})); err != nil {
+	if err := run(c.q.AxmFollowupByIDs).SelectContext(ctx, &rows, pq.Array([]int{id})); err != nil {
 		return nil, 0, err
 	}
 	if len(rows) == 0 || len(rows[0].ListIDs) == 0 {
@@ -366,7 +372,7 @@ func (c *Core) FollowupHeldNow(ctx context.Context, id int) (*models.FollowupPen
 		return nil, 0, errors.New("follow-up campaign " + strconv.Itoa(id) + " has no valid condition")
 	}
 	var p models.FollowupPending
-	if err := c.q.AxmFollowupPending.GetContext(ctx, &p, f.CampaignID, c.tracking()); err != nil {
+	if err := run(c.q.AxmFollowupPending).GetContext(ctx, &p, f.CampaignID, c.tracking()); err != nil {
 		return nil, 0, err
 	}
 	return &p, int(f.ListIDs[0]), nil

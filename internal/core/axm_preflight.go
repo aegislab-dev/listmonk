@@ -19,8 +19,21 @@ import (
 // afterID is the campaign's sending checkpoint, used when resume is true. Everything comes
 // from one statement, so it is one snapshot.
 func (c *Core) GetPreflightAudience(ctx context.Context, id, afterID int, resume bool) ([]models.PreflightList, models.PreflightAudience, error) {
+	return c.preflightAudience(ctx, onPool, id, afterID, resume)
+}
+
+// stmtOn is where a prepared statement runs: on the pool (onPool) or on a transaction's own
+// connection (tx.Stmtx). A caller that holds a row lock must not read on another connection:
+// with a small pool and the sender's lock connection in it, the second one would wait for a
+// free connection while this one is held (LST-48 review).
+type stmtOn func(*sqlx.Stmt) *sqlx.Stmt
+
+func onPool(s *sqlx.Stmt) *sqlx.Stmt { return s }
+
+// preflightAudience is GetPreflightAudience on the connection that run says.
+func (c *Core) preflightAudience(ctx context.Context, run stmtOn, id, afterID int, resume bool) ([]models.PreflightList, models.PreflightAudience, error) {
 	var rows []models.PreflightRow
-	if err := c.q.AxmPreflightAudience.SelectContext(ctx, &rows, id, afterID, resume); err != nil {
+	if err := run(c.q.AxmPreflightAudience).SelectContext(ctx, &rows, id, afterID, resume); err != nil {
 		c.log.Printf("error counting the recipients of campaign %d: %v", id, err)
 		return nil, models.PreflightAudience{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
@@ -39,7 +52,7 @@ func (c *Core) GetPreflightAudience(ctx context.Context, id, afterID int, resume
 	// follow-up that would reach nobody is stopped as any empty campaign is. They are only on
 	// the follow-up list among the campaign's lists (else they are not held).
 	if len(rows) > 0 {
-		held, listID, err := c.FollowupHeldNow(ctx, id)
+		held, listID, err := c.followupHeldNow(ctx, run, id)
 		if err != nil {
 			c.log.Printf("error counting who the check would hold back from campaign %d: %v", id, err)
 			return nil, models.PreflightAudience{}, echo.NewHTTPError(http.StatusInternalServerError,
@@ -164,4 +177,65 @@ func (c *Core) GetCampaignPausedAt(id int, fallback null.Time) null.Time {
 		return fallback
 	}
 	return at
+}
+
+// ScheduledCheck judges the recipients of a scheduled campaign that was just saved (LST-67):
+// its lists as the send reads them and the people it reaches. An error refuses the save.
+type ScheduledCheck func(lists []models.PreflightList, aud models.PreflightAudience) error
+
+// UpdateScheduledCampaign saves campaign id, which is scheduled, and checks who it would reach
+// now (LST-67): when the saved campaign is a regular one that is still scheduled, check judges
+// its lists and recipients, and an error from it undoes the save, so the schedule stays as it
+// was. Before this the edit of a scheduled campaign was saved without a look at the lists, and
+// the send time came with no check at all.
+//
+// Everything runs on one transaction that holds the campaign's row: the sender cannot pick the
+// campaign up between the save and the check (a campaign that began meanwhile is refused, its
+// body does not change under a running send), and nothing here waits for a second connection
+// (the sender's lock connection is in a small pool; LST-48 review).
+func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, check ScheduledCheck) (models.Campaign, error) {
+	tx, err := c.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return models.Campaign{}, err
+	}
+	defer tx.Rollback()
+
+	var status string
+	if err := tx.Get(&status, `SELECT status FROM campaigns WHERE id = $1 FOR UPDATE`, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest,
+				c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
+		}
+		return models.Campaign{}, err
+	}
+	// Taken up by the sender (or ended) since the request read it as scheduled.
+	if status != models.CampaignStatusScheduled && status != models.CampaignStatusDraft && status != models.CampaignStatusPaused {
+		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
+	}
+
+	if _, err := tx.Stmtx(c.q.UpdateCampaign).Exec(updateCampaignArgs(id, o, listIDs, mediaIDs)...); err != nil {
+		return models.Campaign{}, c.updateCampaignErr(err)
+	}
+
+	var saved struct {
+		Status string `db:"status"`
+		Type   string `db:"type"`
+	}
+	if err := tx.Get(&saved, `SELECT status, type FROM campaigns WHERE id = $1`, id); err != nil {
+		return models.Campaign{}, err
+	}
+	// A save that took the send time off made it a draft; an opt-in campaign only warns.
+	if saved.Status == models.CampaignStatusScheduled && saved.Type == models.CampaignTypeRegular && check != nil {
+		lists, aud, err := c.preflightAudience(ctx, func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }, id, 0, false)
+		if err != nil {
+			return models.Campaign{}, err
+		}
+		if err := check(lists, aud); err != nil {
+			return models.Campaign{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return models.Campaign{}, err
+	}
+	return c.GetCampaign(id, "", "")
 }

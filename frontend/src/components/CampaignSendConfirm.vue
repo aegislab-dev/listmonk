@@ -47,7 +47,7 @@
             </b-button>
           </div>
         </div>
-        <p class="help">{{ $t('campaigns.sendConfirm.blindHelp') }}</p>
+        <p v-if="!review" class="help">{{ $t('campaigns.sendConfirm.blindHelp') }}</p>
       </div>
 
       <template v-else-if="model">
@@ -156,14 +156,27 @@
     </section>
 
     <footer class="modal-card-foot has-text-right">
-      <b-button data-cy="send-cancel" :disabled="busy" @click="$parent.close()">{{ $t('globals.buttons.cancel') }}</b-button>
-      <b-button v-if="state === 'error'" type="is-warning" data-cy="send-ok" :loading="busy" @click="confirm(true)">
-        {{ $t('campaigns.sendConfirm.confirmBlind') }}
-      </b-button>
-      <b-button v-else type="is-primary" data-cy="send-ok" :class="{ 'send-ok-warn': model && model.warnings }"
-        :disabled="state !== 'ready' || !model || model.disabled" :loading="busy" @click="confirm(false)">
-        {{ okText }}
-      </b-button>
+      <!-- The window of a scheduled campaign that was just saved (LST-67): the schedule stays, or
+           is taken off to edit. Nothing is sent or started from here. -->
+      <template v-if="review">
+        <b-button data-cy="send-unschedule" :loading="busy" @click="unschedule">
+          {{ $t('campaigns.sendConfirm.review.unschedule') }}
+        </b-button>
+        <b-button type="is-primary" data-cy="send-ok" :class="{ 'send-ok-warn': model && model.warnings }" :disabled="busy"
+          @click="$parent.close()">
+          {{ model ? okText : $t('campaigns.sendConfirm.review.keep') }}
+        </b-button>
+      </template>
+      <template v-else>
+        <b-button data-cy="send-cancel" :disabled="busy" @click="$parent.close()">{{ $t('globals.buttons.cancel') }}</b-button>
+        <b-button v-if="state === 'error'" type="is-warning" data-cy="send-ok" :loading="busy" @click="confirm(true)">
+          {{ $t('campaigns.sendConfirm.confirmBlind') }}
+        </b-button>
+        <b-button v-else type="is-primary" data-cy="send-ok" :class="{ 'send-ok-warn': model && model.warnings }"
+          :disabled="state !== 'ready' || !model || model.disabled" :loading="busy" @click="confirm(false)">
+          {{ okText }}
+        </b-button>
+      </template>
     </footer>
   </div>
 </template>
@@ -218,6 +231,10 @@ export default Vue.extend({
     status: { type: String, required: true },
     // What the window says while it has not read the campaign, or cannot: which campaign it is.
     campaignName: { type: String, default: '' },
+    // LST-67: the campaign is scheduled and was just saved; the window shows what the send will be
+    // (the answer the page already read, in initial) and does not start anything.
+    review: { type: Boolean, default: false },
+    initial: { type: Object, default: null },
   },
 
   data() {
@@ -351,7 +368,7 @@ export default Vue.extend({
 
     headSub() {
       if (this.state === 'loading') return this.$t('campaigns.sendConfirm.sub.loading');
-      if (this.state === 'error') return this.$t('campaigns.sendConfirm.sub.error');
+      if (this.state === 'error') return this.$t(this.review ? 'campaigns.sendConfirm.review.loadFailed' : 'campaigns.sendConfirm.sub.error');
       if (this.stale) return this.$t(this.staleWhy === 'checks' ? 'campaigns.sendConfirm.sub.staleChecks' : 'campaigns.sendConfirm.sub.stale');
       return this.$t(this.model.sub.key, this.model.sub.params);
     },
@@ -432,6 +449,22 @@ export default Vue.extend({
         this.pf = null;
         this.state = 'error';
         this.error = (err.response && err.response.data && err.response.data.message) || '';
+      }
+    },
+
+    // Takes the schedule off (the campaign becomes a draft again) so that it can be edited
+    // (LST-67). The page shows the campaign as a draft.
+    async unschedule() {
+      if (this.busy) return;
+      this.busy = true;
+      try {
+        const out = await this.$api.changeCampaignStatus(this.campaignId, 'draft');
+        this.$emit('unscheduled', out);
+        this.$parent.close();
+      } catch (err) {
+        this.$utils.toast((err.response && err.response.data && err.response.data.message) || err.message, 'is-danger');
+      } finally {
+        this.busy = false;
       }
     },
 
@@ -533,7 +566,17 @@ export default Vue.extend({
   },
 
   mounted() {
-    this.load();
+    if (this.initial) {
+      // The page read it a moment ago, to decide whether to show the window at all.
+      this.skew = this.initial.now ? new Date(this.initial.now).getTime() - Date.now() : 0;
+      if (!Number.isFinite(this.skew)) this.skew = 0;
+      this.pf = this.initial;
+      this.lastSubject = this.initial.subject || '';
+      this.now = this.serverNow();
+      this.state = 'ready';
+    } else {
+      this.load();
+    }
     // The time left and the passing of the send time are kept up to date while it is open.
     this.ticker = setInterval(this.tick, 1000);
   },

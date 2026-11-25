@@ -152,6 +152,30 @@ func stockFrom(from string) bool {
 	return rePlaceholderLocal.MatchString(addr) || placeholderHosts[addr[i+1:]]
 }
 
+// audienceBlock is the line of "checks before sending" about who the campaign reaches, and
+// its level: lists.none when no list is left to send to, recipients.zero when the lists hold
+// nobody the send would mail, else no line ("" ). count is the people to send to (the people
+// left, for a resumed campaign). Only a regular campaign that reaches nobody is blocked
+// (approved design v1, decision 1 and A5): a resumed campaign with nothing left only warns,
+// like one with nobody left, and so does an opt-in campaign, whose number is an estimate or
+// follows other rules.
+//
+// The window and the save of a scheduled campaign (LST-67) both judge by this function, so a
+// rule added here applies to both.
+func audienceBlock(campType, mode string, liveLists, count int) (key, level string) {
+	level = models.PreflightBlock
+	if mode == models.PreflightModeResume || campType == models.CampaignTypeOptin {
+		level = models.PreflightWarn
+	}
+	switch {
+	case liveLists == 0:
+		return "lists.none", level
+	case count == 0:
+		return "recipients.zero", level
+	}
+	return "", ""
+}
+
 // preflightChecks decides the lines of "checks before sending", in the order the screen
 // shows them. The tracking lines come from the tracking check and are not here. Only
 // "block" stops the confirmation, and only for a regular campaign that would reach nobody.
@@ -161,30 +185,12 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		out = append(out, models.PreflightCheck{Key: key, Level: level, Params: params})
 	}
 
-	switch {
-	case f.LiveLists == 0:
-		// A resumed campaign with nothing left only warns, like one with nobody left, and so
-		// does an opt-in campaign (approved design v1, decision 1 and A5: only a regular
-		// campaign that reaches nobody is stopped).
-		level := models.PreflightBlock
-		if f.Mode == models.PreflightModeResume || f.CampType == models.CampaignTypeOptin {
-			level = models.PreflightWarn
-		}
-		add("lists.none", level, nil)
-	default:
-		count := f.Total
-		if f.Mode == models.PreflightModeResume {
-			count = f.Remaining
-		}
-		if count == 0 {
-			// Opt-in campaigns and resumed ones: the number is an estimate or follows other
-			// rules, so it only warns.
-			level := models.PreflightBlock
-			if f.CampType == models.CampaignTypeOptin || f.Mode == models.PreflightModeResume {
-				level = models.PreflightWarn
-			}
-			add("recipients.zero", level, nil)
-		}
+	count := f.Total
+	if f.Mode == models.PreflightModeResume {
+		count = f.Remaining
+	}
+	if key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists, count); key != "" {
+		add(key, level, nil)
 	}
 
 	// A campaign with a send time is scheduled by the status change, whether it is a draft or
@@ -308,6 +314,8 @@ func preflightMode(status string, sendAt null.Time) string {
 	switch {
 	case status == models.CampaignStatusPaused:
 		return models.PreflightModeResume
+	case status == models.CampaignStatusScheduled:
+		return models.PreflightModeScheduled
 	case sendAt.Valid:
 		return models.PreflightModeSchedule
 	default:
@@ -333,7 +341,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	if camp.Status != models.CampaignStatusDraft && camp.Status != models.CampaignStatusPaused {
+	if camp.Status != models.CampaignStatusDraft && camp.Status != models.CampaignStatusPaused && camp.Status != models.CampaignStatusScheduled {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.onlyPausedDraft"))
 	}
 	mode := preflightMode(camp.Status, camp.SendAt)

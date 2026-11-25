@@ -232,7 +232,21 @@ func (c *Core) CreateCampaign(o models.Campaign, listIDs []int, mediaIDs []int) 
 
 // UpdateCampaign updates a campaign.
 func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs []int) (models.Campaign, error) {
-	_, err := c.q.UpdateCampaign.Exec(id,
+	if _, err := c.q.UpdateCampaign.Exec(updateCampaignArgs(id, o, listIDs, mediaIDs)...); err != nil {
+		return models.Campaign{}, c.updateCampaignErr(err)
+	}
+
+	out, err := c.GetCampaign(id, "", "")
+	if err != nil {
+		return models.Campaign{}, err
+	}
+
+	return out, nil
+}
+
+// updateCampaignArgs are the arguments of the update-campaign query.
+func updateCampaignArgs(id int, o models.Campaign, listIDs []int, mediaIDs []int) []any {
+	return []any{id,
 		o.Name,
 		o.Subject,
 		o.FromEmail,
@@ -251,19 +265,13 @@ func (c *Core) UpdateCampaign(id int, o models.Campaign, listIDs []int, mediaIDs
 		o.ArchiveTemplateID,
 		o.ArchiveMeta,
 		pq.Array(mediaIDs),
-		o.BodySource, o.ReplyTo)
-	if err != nil {
-		c.log.Printf("error updating campaign: %v", err)
-		return models.Campaign{}, echo.NewHTTPError(http.StatusInternalServerError,
-			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
-	}
+		o.BodySource, o.ReplyTo}
+}
 
-	out, err := c.GetCampaign(id, "", "")
-	if err != nil {
-		return models.Campaign{}, err
-	}
-
-	return out, nil
+func (c *Core) updateCampaignErr(err error) error {
+	c.log.Printf("error updating campaign: %v", err)
+	return echo.NewHTTPError(http.StatusInternalServerError,
+		c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
 }
 
 // UpdateCampaignStatus updates a campaign's status, eg: draft to running.

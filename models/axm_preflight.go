@@ -11,6 +11,9 @@ const (
 	PreflightModeStart    = "start"
 	PreflightModeSchedule = "schedule"
 	PreflightModeResume   = "resume"
+	// PreflightModeScheduled (LST-67): a campaign that is already scheduled, read again after it
+	// was edited. Nothing is asked for; it goes out at its send time as it is.
+	PreflightModeScheduled = "scheduled"
 )
 
 // Levels of a pre-send check. Only "block" disables the confirmation.
