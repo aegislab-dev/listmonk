@@ -102,7 +102,7 @@ describe('Clone window: the copy picks its own lists', () => {
     });
   });
 
-  it('fills the original\'s lists on one click; a campaign that never sent shows no count', () => {
+  it('fills the original\'s lists on one click; a campaign that never sent says nobody received it, and what the count covers', () => {
     const name = `Clone same ${stamp}`;
     cy.intercept('POST', preview).as('count');
     openWindow();
@@ -115,7 +115,11 @@ describe('Clone window: the copy picks its own lists', () => {
       expect(request.body.scope).to.equal('campaigns');
       expect(request.body.campaign_ids).to.deep.equal([origId]);
     });
-    cy.get('[data-cy=clone-received]').should('not.exist');
+    cy.get('[data-cy=clone-received][data-state=none]')
+      .should('contain', 'Nobody received the original in the last 30 days')
+      .find('[data-cy=clone-received-scope]')
+      .should('contain', `Only the send records of the original "${origName}" from the last 30 days are counted`);
+    cy.get('[data-cy=clone-received][data-state=warn]').should('not.exist');
     cy.get('[data-cy=btn-clone-confirm]').should('contain', 'Clone').and('not.contain', 'as it is').click();
     cy.location('pathname').should('match', /\/admin\/campaigns\/\d+$/);
     cloneLists(name).then((lists) => {
@@ -139,6 +143,10 @@ describe('Clone window: the copy picks its own lists', () => {
     cy.get('[data-cy=clone-received][data-state=warn]')
       .should('contain', '7 of 9 people already received the original')
       .and('contain', origName).and('contain', '30 days');
+    // The count says what it covers: this one campaign, the last 30 days.
+    cy.get('[data-cy=clone-received-scope]')
+      .should('contain', `Only the send records of the original "${origName}" from the last 30 days are counted`)
+      .and('contain', 'another campaign');
     // The way out is the list made from the exclusion result, not the rule alone.
     cy.get('[data-cy=clone-received-way]').should('contain', 'Make a new list')
       .and('contain', 'Turning the rule on alone does not remove them');

@@ -183,7 +183,7 @@
 
       <address-check v-if="showImportCheck" :list-ids="status.axmLists" :lists="lists.results || []"
         :hidden-lists="status.axmListsHidden || 0"
-        :scope-note="$t('addressCheck.listScope', { lists: importListNames })" />
+        :scope-note="importScopeNote" />
 
       <div class="import-logs">
         <log-view :lines="logs" :loading="false" />
@@ -929,6 +929,14 @@ export default Vue.extend({
     // sends them with the status, after its own permission filter; none for a blocklist import).
     showImportCheck() {
       return this.isSuccessful() && (this.status.axmLists || []).length > 0;
+    },
+    // The range line of the finished box's address check. A person just put on a double opt-in
+    // list has not confirmed yet, so is not in the audience that check counts.
+    importScopeNote() {
+      const all = this.lists.results || [];
+      const doubleOptin = (this.status.axmLists || []).some((id) => (all.find((l) => l.id === id) || {}).optin === 'double');
+      const note = this.$t('addressCheck.listScope', { lists: this.importListNames });
+      return doubleOptin ? `${note} ${this.$t('addressCheck.listScopeOptin')}` : note;
     },
     importListNames() {
       const all = this.lists.results || [];

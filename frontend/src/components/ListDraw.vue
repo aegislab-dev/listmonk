@@ -62,6 +62,7 @@
             </b-field>
           </div>
           <p class="help">{{ $t('lists.draw.scopeHelp') }}</p>
+          <p class="draw-info" data-cy="draw-ledger-note">{{ $t('lists.draw.ledgerNote') }}</p>
           <p class="draw-info" data-cy="draw-always">{{ $t('lists.draw.alwaysExcluded') }}</p>
         </div>
 
@@ -86,6 +87,9 @@
             </tbody>
           </table>
         </div>
+        <p v-if="counts && counts.target > 0 && counts.alreadyReceived === 0" class="draw-note is-warning" data-cy="draw-received-zero">
+          {{ $t('lists.draw.receivedZero') }}
+        </p>
         <p v-if="counts && will === 0" class="draw-note is-danger" role="alert" data-cy="draw-none">{{ $t('lists.draw.none') }}</p>
         <p v-else-if="counts && counts.requested > counts.candidates" class="draw-note is-warning" role="alert" data-cy="draw-short">
           {{ $t('lists.draw.short', { candidates: $utils.formatNumber(counts.candidates), requested: $utils.formatNumber(counts.requested), will: $utils.formatNumber(will) }) }}

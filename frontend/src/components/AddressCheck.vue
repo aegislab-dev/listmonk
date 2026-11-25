@@ -23,6 +23,7 @@
       <span v-if="canOpen" class="ac-toggle">{{ $t(open ? 'addressCheck.collapse' : 'addressCheck.expand') }} {{ open ? '▴' : '▾' }}</span>
     </button>
     <p v-if="scopeNote" class="ac-scope" data-cy="address-scope">{{ scopeNote }}</p>
+    <p v-if="result && result.checkedLists && !result.tooLarge" class="ac-scope" data-cy="address-limits">{{ $t('addressCheck.limits') }}</p>
     <p v-if="showSkipped" class="ac-scope is-partial" data-cy="address-partial">
       {{ $t('addressCheck.partial', { count: n(skipped) }) }}
     </p>
@@ -73,7 +74,6 @@
         <template v-else-if="!result.detail"> {{ $t('addressCheck.noDetail') }}</template>
       </p>
       <p class="ac-foot">
-        <span>{{ $t('addressCheck.dnsOnly') }}</span>
         <button type="button" class="ac-link" :disabled="loading" data-cy="address-recheck" @click="recheck">
           {{ $t('addressCheck.recheck') }}
         </button>

@@ -233,6 +233,49 @@ describe('teams', () => {
     cy.contains('tr', `shared-${stamp}-unsub@example.invalid`).find('[data-cy=blocklisted]').should('not.exist');
   });
 
+  // "Select all" with no list chosen reaches nobody for a member with two lists (LST-69): the page
+  // says so before it asks, and after a bulk change it says how many people were changed, 0 too.
+  it('asks a member for a list before a select-all action, and reports how many were changed', () => {
+    // The page offers "Select all" only when there is more than one page of people.
+    cy.intercept('GET', '/api/subscribers?*', (req) => req.continue((res) => {
+      res.body.data.total = 60;
+      res.body.data.per_page = 20;
+    }));
+    cy.intercept('POST', '/api/subscribers/query/delete', { data: { done: 0, skipped: 2 } }).as('deleteAll');
+    cy.intercept('PUT', '/api/subscribers/query/blocklist', { data: { done: 3, skipped: 1 } }).as('blocklistAll');
+
+    cy.visit('/admin/subscribers');
+    cy.contains('tr', `shared-${stamp}-own@example.invalid`).find('td.checkbox-cell .checkbox').click();
+    cy.contains('a', 'Select all 60').click();
+    cy.get('[data-cy=btn-delete-subscribers]').click();
+    cy.get('.dialog .modal-card-title').should('contain', 'Choose a list first');
+    cy.get('[data-cy=warn-box]').should('contain', 'processes nobody');
+    cy.get('.dialog .modal-card-foot button').click();
+    cy.get('[data-cy=btn-manage-blocklist]').click();
+    cy.get('.dialog .modal-card-title').should('contain', 'Choose a list first');
+    cy.get('.dialog .modal-card-foot button').click();
+    // Nothing was asked of the server.
+    cy.get('@deleteAll.all').should('have.length', 0);
+    cy.get('@blocklistAll.all').should('have.length', 0);
+
+    // With a list chosen the request goes, and the answer says how many.
+    cy.visit(`/admin/subscribers/lists/${listAId}`);
+    cy.contains('tr', `shared-${stamp}-own@example.invalid`).find('td.checkbox-cell .checkbox').click();
+    cy.contains('a', 'Select all 60').click();
+    cy.get('[data-cy=btn-manage-blocklist]').click();
+    cy.get('.dialog .modal-card-foot button.is-danger').click();
+    cy.wait('@blocklistAll');
+    cy.contains('3 people processed').should('be.visible').and('contain', '1 people who are also on other teams');
+    cy.visit(`/admin/subscribers/lists/${listAId}`);
+    cy.contains('tr', `shared-${stamp}-own@example.invalid`).find('td.checkbox-cell .checkbox').click();
+    cy.contains('a', 'Select all 60').click();
+    cy.get('[data-cy=btn-delete-subscribers]').click();
+    cy.get('.dialog .modal-card-foot button.is-danger').click();
+    cy.wait('@deleteAll');
+    cy.get('.dialog .modal-card-title').should('contain', 'Nobody was processed (0)');
+    cy.get('[data-cy=warn-box]').should('contain', 'also on other teams');
+  });
+
   it('lets an operator who may make every list but not manage roles choose the team', () => {
     cy.loginAndVisit('/admin/lists');
     cy.request('POST', '/api/roles/users', {

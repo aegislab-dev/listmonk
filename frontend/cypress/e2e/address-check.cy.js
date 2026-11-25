@@ -160,7 +160,9 @@ describe('Address check before sending and on import', () => {
     cy.visit(`/admin/campaigns/${campaignId}`);
     cy.wait('@check');
     cy.get('[data-cy=address-check]').should('have.class', 'is-ok');
-    cy.get('[data-cy=address-summary]').should('contain', '2');
+    cy.get('[data-cy=address-summary]').should('contain', '2').and('contain', 'caught by the format and domain checks');
+    // What the check does not look at is said while the panel is closed, too.
+    cy.get('[data-cy=address-limits]').should('be.visible').and('contain', 'gmail.con').and('contain', 'bounce history');
     // Pending lookups are asked about again after three seconds.
     cy.wait('@check', { timeout: 10000 });
     cy.get('[data-cy=address-toggle]').should('be.disabled');
