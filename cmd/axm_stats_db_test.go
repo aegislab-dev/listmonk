@@ -2,37 +2,48 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/models"
+	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	null "gopkg.in/volatiletech/null.v6"
 )
 
 // LST-64: the statistics dashboard. Results are public across teams; lists, members and
 // addresses keep the permissions they had.
 
 type statsOut struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
 	MyTeam    string `json:"my_team"`
 	Teams     []models.StatsTeam
 	Campaigns []struct {
-		ID          int      `json:"id"`
-		Name        string   `json:"name"`
-		Subject     string   `json:"subject"`
-		Sent        int      `json:"sent"`
-		TeamTags    []string `json:"team_tags"`
-		Viewers     int      `json:"viewers"`
-		Clickers    int      `json:"clickers"`
-		Hard        int      `json:"hard"`
-		Soft        int      `json:"soft"`
-		Complaint   int      `json:"complaint"`
-		Own         bool     `json:"own"`
-		ListsN      int      `json:"lists_n"`
-		Lists       []struct{ ID int }
-		TrackingOff bool `json:"tracking_off"`
+		ID                 int      `json:"id"`
+		Name               string   `json:"name"`
+		Subject            string   `json:"subject"`
+		Sent               int      `json:"sent"`
+		TeamTags           []string `json:"team_tags"`
+		Viewers            int      `json:"viewers"`
+		Clickers           int      `json:"clickers"`
+		Hard               int      `json:"hard"`
+		Soft               int      `json:"soft"`
+		Complaint          int      `json:"complaint"`
+		Own                bool     `json:"own"`
+		ListsN             int      `json:"lists_n"`
+		Lists              []models.StatsList
+		TrackingOff        bool              `json:"tracking_off"`
+		FollowupOf         int               `json:"followup_of"`
+		FollowupCondition  map[string]string `json:"followup_condition"`
+		FollowupParentSent int               `json:"followup_parent_sent"`
+		CombinedClickers   int               `json:"combined_clickers"`
+		CombinedViewers    int               `json:"combined_viewers"`
 	} `json:"campaigns"`
 }
 
@@ -80,10 +91,39 @@ func TestStatsNumbersTeamsAndVisibility(t *testing.T) {
 	e.get(&gone, `INSERT INTO lists(uuid,name,type,tags) VALUES(gen_random_uuid(),'Gone','private','{팀:가}') RETURNING id`)
 	deleted := e.statsCampaign("Deleted list", 1, gone)
 	e.db.MustExec(`DELETE FROM lists WHERE id = $1`, gone)
-	old := e.statsCampaign("Old", 400, e.aList)
+	old := e.statsCampaign("Old", 900, e.aList)
+	e.db.MustExec(`UPDATE lists SET tags = array_append(tags, '출처:Webinar') WHERE id = $1`, e.aList)
+	e.db.MustExec(`UPDATE lists SET tags = array_append(tags, '출처:Hidden source') WHERE id = $1`, e.bList)
 
 	// Numbers: sent, unique viewers/clickers (a row without a subscriber is one person), bounce kinds.
-	code, out, _ := e.statsFor(e.member)
+	router := echo.New()
+	initHTTPHandlers(router, e.a)
+	const token = "synthetic-token"
+	member := e.member
+	member.Password = null.StringFrom(auth.HashAPIToken(token))
+	e.db.MustExec(`UPDATE roles SET permissions = array_remove(permissions, 'campaigns:get_analytics') WHERE id = $1`, e.memberRole)
+	restricted := e.as(e.ub)
+	restricted.Password = member.Password
+	e.db.MustExec(`UPDATE roles SET permissions = '{campaigns:get_analytics}' WHERE id = $1`, e.memberRole)
+	analyticsOnly := e.as(e.plain)
+	analyticsOnly.Password = member.Password
+	e.a.auth.CacheAPIUsers([]auth.User{member, restricted, analyticsOnly})
+	request := func(user auth.User, method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(`{"open":"any","click":"any"}`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		req.SetBasicAuth(user.Username, token)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+	core.ResetStatsCache()
+	rec := request(member, http.MethodGet, "/api/stats/campaigns")
+	code := rec.Code
+	var response struct{ Data statsOut }
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	out := response.Data
 	if code != http.StatusOK {
 		t.Fatalf("status %d", code)
 	}
@@ -131,23 +171,36 @@ func TestStatsNumbersTeamsAndVisibility(t *testing.T) {
 	}
 
 	// Visibility: a member of team 가 sees the team 나 campaign's results, but not its lists.
-	if !c.Own || len(c.Lists) != 1 {
+	if !c.Own || len(c.Lists) != 1 || c.Lists[0].Source != "Webinar" || c.Lists[0].CreatedAt == "" {
 		t.Errorf("own campaign: %+v", c)
 	}
 	o := out.Campaigns[by[other]]
 	if o.Own || len(o.Lists) != 0 || o.Name != "Other team" || o.Subject == "" || o.Viewers != 3 {
 		t.Errorf("other team's campaign: %+v", o)
 	}
-	code, _, raw := e.statsFor(e.member)
-	if strings.Contains(raw, "@") || strings.Contains(raw, "B1") || strings.Contains(raw, "list_names") {
-		t.Errorf("the answer leaks addresses or the other team's list: %s", raw)
+	raw := rec.Body.String()
+	if strings.Contains(raw, "@") || strings.Contains(raw, "B1") || strings.Contains(raw, "Hidden source") {
+		t.Errorf("the answer leaks addresses or another team's list data: %s", raw)
 	}
-	// ... and the paths that open the campaign stay closed.
-	if err := e.a.checkCampaignPerm(auth.PermTypeGet, other, e.ctx(e.member)); err == nil {
-		t.Error("a team member can open another team's campaign")
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, fmt.Sprintf("/api/campaigns/%d", other)},
+		{http.MethodGet, fmt.Sprintf("/api/campaigns/analytics/views?id=%d&from=2026-01-01&to=2027-01-01", other)},
+		{http.MethodPost, fmt.Sprintf("/api/campaigns/%d/reaction-list/preview", other)},
+		{http.MethodPost, fmt.Sprintf("/api/campaigns/%d/reaction-list", other)},
+	} {
+		if rec := request(member, tc.method, tc.path); rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s: %d %s", tc.method, tc.path, rec.Code, rec.Body)
+		}
 	}
-	if err := e.a.checkCampaignPerm(auth.PermTypeGet, own, e.ctx(e.member)); err != nil {
-		t.Errorf("a team member cannot open their own campaign: %v", err)
+	for _, path := range []string{"/api/stats/campaigns", "/api/stats/recipients?by=age"} {
+		if rec := request(restricted, http.MethodGet, path); rec.Code != http.StatusForbidden {
+			t.Errorf("missing analytics permission on %s: %d %s", path, rec.Code, rec.Body)
+		}
+	}
+	analytics := request(analyticsOnly, http.MethodGet, "/api/stats/campaigns")
+	if analytics.Code != http.StatusOK || !strings.Contains(analytics.Body.String(), "Own team") ||
+		strings.Contains(analytics.Body.String(), "Webinar") || strings.Contains(analytics.Body.String(), `"own":true`) {
+		t.Errorf("analytics without campaign read permission: %d %s", analytics.Code, analytics.Body)
 	}
 	// An operator with campaigns:get_all reads every list.
 	_, adm, _ := e.statsFor(e.admin)
@@ -155,23 +208,36 @@ func TestStatsNumbersTeamsAndVisibility(t *testing.T) {
 		t.Error("an operator with campaigns:get_all sees no lists")
 	}
 
-	// A range reaches back: the old campaign appears with from=1 year ago.
-	core.ResetStatsCache()
-	code, data := e.call(e.a.GetStatsCampaigns, e.member, http.MethodGet, "/api/stats/campaigns?from="+e.dayStamp(-500)+"&to="+e.dayStamp(1), "", "")
-	var wide statsOut
-	json.Unmarshal(data, &wide)
-	if code != http.StatusOK || len(wide.Campaigns) != len(out.Campaigns)+1 {
-		t.Errorf("wide range: %d, %d campaigns", code, len(wide.Campaigns))
+	// All time includes the campaign older than 800 days.
+	rec = request(member, http.MethodGet, "/api/stats/campaigns?from=all")
+	response.Data = statsOut{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
 	}
-	if code, _ := e.call(e.a.GetStatsCampaigns, e.member, http.MethodGet, "/api/stats/campaigns?from=2020-01-01&to=2026-12-01", "", ""); code != http.StatusBadRequest {
-		t.Errorf("a range of years: %d", code)
+	if rec.Code != http.StatusOK || len(response.Data.Campaigns) != len(out.Campaigns)+1 {
+		t.Errorf("all time: %d %s", rec.Code, rec.Body)
 	}
-}
 
-func (e *reactionEnv) dayStamp(offset int) string {
-	var s string
-	e.get(&s, `SELECT TO_CHAR(NOW() + ($1||' days')::INTERVAL, 'YYYY-MM-DD')`, offset)
-	return s
+	// Adjacent periods own opposite sides of exactly the same boundary.
+	e.db.MustExec(`UPDATE campaigns SET started_at = '2026-03-02T05:30:00Z' WHERE id = $1`, own)
+	core.ResetStatsCache()
+	for _, tc := range []struct {
+		from, to string
+		count    int
+	}{
+		{"2026-03-01T05:30:00Z", "2026-03-02T05:30:00Z", 0},
+		{"2026-03-02T05:30:00Z", "2026-03-03T05:30:00Z", 1},
+	} {
+		rec = request(member, http.MethodGet, "/api/stats/campaigns?from="+tc.from+"&to="+tc.to)
+		response.Data = statsOut{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		got := response.Data
+		if rec.Code != http.StatusOK || got.From != tc.from || got.To != tc.to || len(got.Campaigns) != tc.count {
+			t.Errorf("period: %d %s", rec.Code, rec.Body)
+		}
+	}
 }
 
 func TestStatsTrackingOffAndFollowup(t *testing.T) {
@@ -179,6 +245,8 @@ func TestStatsTrackingOffAndFollowup(t *testing.T) {
 	e.db.MustExec(`DELETE FROM campaigns WHERE id = $1`, e.campID)
 	a := e.statsCampaign("Tracked", 20, e.aList)
 	b := e.statsCampaign("Untracked", 10, e.aList)
+	e.db.MustExec(`DELETE FROM campaign_views WHERE campaign_id = $1`, b)
+	e.db.MustExec(`DELETE FROM link_clicks WHERE campaign_id = $1`, b)
 	e.db.MustExec(`INSERT INTO axm_tracking_off(started_at, ended_at) VALUES (NOW() - INTERVAL '12 days', NOW() - INTERVAL '8 days')`)
 	_, out, _ := e.statsFor(e.member)
 	off := map[int]bool{}
@@ -188,16 +256,47 @@ func TestStatsTrackingOffAndFollowup(t *testing.T) {
 	if off[a] || !off[b] {
 		t.Errorf("tracking off: %v", off)
 	}
+	child := e.statsCampaign("Follow-up", 5, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_followups(campaign_id,parent_campaign_id,list_uuid,condition)
+		VALUES ($1,$2,gen_random_uuid(),'{"open":"any","click":"no"}')`, child, a)
+	e.db.MustExec(`UPDATE link_clicks SET subscriber_id = (SELECT MIN(subscriber_id) FROM link_clicks WHERE campaign_id = $1)
+		WHERE campaign_id = $2 AND subscriber_id IS NOT NULL`, a, child)
+	_, out, _ = e.statsFor(e.member)
+	for _, c := range out.Campaigns {
+		if c.ID == child {
+			if c.FollowupOf != a || c.FollowupParentSent != 100 || c.FollowupCondition["click"] != "no" ||
+				c.CombinedClickers != 2 || c.CombinedViewers != 5 {
+				t.Errorf("follow-up result: %+v", c)
+			}
+			return
+		}
+	}
+	t.Fatal("follow-up not returned")
 }
 
 // The recipient groups come from the send records, by team, and a group under 30 people is merged.
 func TestStatsRecipientsByCountryAndAge(t *testing.T) {
 	e := newReactionEnv(t)
 	e.db.MustExec(`DELETE FROM campaigns WHERE id = $1`, e.campID)
-	id := e.statsCampaign("Recipients", 10, e.aList)
-	e.db.MustExec(`UPDATE subscribers SET attribs = '{"country":"kr"}' WHERE id IN (SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1)`, id)
+	id := e.statsCampaign("Recipients", 10, e.plainList)
+	e.db.MustExec(`UPDATE subscribers SET attribs = '{"country":"jp"}' WHERE id IN
+		(SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1)`, id)
+	// Each of the same three recipients receives twelve campaigns, totaling 36 sends.
+	for i := 0; i < 11; i++ {
+		again := e.statsCampaign(fmt.Sprintf("Repeat %d", i), 10, e.plainList)
+		e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, again)
+		e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id, opened_at)
+			SELECT $1, subscriber_id, NOW() FROM axm_campaign_sends WHERE campaign_id = $2`, again, id)
+	}
+	large := e.statsCampaign("Thirty recipients", 10, e.aList)
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, large)
+	for i := 0; i < 30; i++ {
+		sub := e.addSub("enabled", "confirmed")
+		e.db.MustExec(`UPDATE subscribers SET attribs = '{"country":"kr"}', created_at = NOW() - INTERVAL '60 days' WHERE id = $1`, sub)
+		e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES ($1,$2)`, large, sub)
+	}
 	core.ResetStatsCache()
-	for _, by := range []string{"country", "age"} {
+	for by, public := range map[string]string{"country": "KR", "age": "older"} {
 		code, data := e.call(e.a.GetStatsRecipients, e.member, http.MethodGet, "/api/stats/recipients?by="+by, "", "")
 		if code != http.StatusOK {
 			t.Fatalf("%s: status %d", by, code)
@@ -206,56 +305,28 @@ func TestStatsRecipientsByCountryAndAge(t *testing.T) {
 		if err := json.Unmarshal(data, &groups); err != nil {
 			t.Fatal(err)
 		}
-		if len(groups) == 0 {
-			t.Fatalf("%s: no groups", by)
-		}
-		if by == "country" {
-			// 3 people are below 30: merged into "other", for everyone and for the team.
-			for _, g := range groups {
-				if g.Key != models.StatsOtherKey || g.Sent != 3 {
-					t.Errorf("country group %+v", g)
+		foundOther, foundPublic := 0, 0
+		for _, g := range groups {
+			switch g.Key {
+			case models.StatsOtherKey:
+				foundOther++
+				if (g.Team != "" && g.Team != models.StatsNoTeamKey) || g.Sent != 36 || g.Recipients != 3 || g.Opened != 33 {
+					t.Errorf("%s suppressed group: %+v", by, g)
 				}
+			case public:
+				foundPublic++
+				if (g.Team != "" && g.Team != "팀:가") || g.Sent != 30 || g.Recipients != 30 {
+					t.Errorf("%s public group: %+v", by, g)
+				}
+			default:
+				t.Errorf("%s exposed a small group: %+v", by, g)
 			}
+		}
+		if foundOther != 2 || foundPublic != 2 {
+			t.Errorf("%s groups: %+v", by, groups)
 		}
 	}
 	if code, _ := e.call(e.a.GetStatsRecipients, e.member, http.MethodGet, "/api/stats/recipients?by=x", "", ""); code != http.StatusBadRequest {
 		t.Errorf("unknown grouping: %d", code)
-	}
-}
-
-func TestMergeRecipientGroups(t *testing.T) {
-	rows := []models.StatsRecipientRow{
-		{CampaignID: 1, Key: "KR", Sent: 100, Opened: 40, Clicked: 10, Bounced: 1},
-		{CampaignID: 1, Key: "JP", Sent: 12, Opened: 5, Clicked: 1},
-		{CampaignID: 2, Key: "JP", Sent: 10, Opened: 2},
-		{CampaignID: 2, Key: "US", Sent: 5, Clicked: 1},
-	}
-	got := core.MergeRecipientGroups(rows, map[int][]string{1: {"팀:가"}, 2: {"팀:나"}}, true)
-	at := func(team, key string) (models.StatsRecipientGroup, bool) {
-		for _, g := range got {
-			if g.Team == team && g.Key == key {
-				return g, true
-			}
-		}
-		return models.StatsRecipientGroup{}, false
-	}
-	// Everyone: KR 100, JP 22 + US 5 are below 30 each -> other 27.
-	if g, ok := at("", "KR"); !ok || g.Sent != 100 {
-		t.Errorf("everyone KR: %+v", g)
-	}
-	if g, ok := at("", models.StatsOtherKey); !ok || g.Sent != 27 || g.Clicked != 2 {
-		t.Errorf("everyone other: %+v", g)
-	}
-	if _, ok := at("", "JP"); ok {
-		t.Error("a group below 30 stays on its own")
-	}
-	// Team 나 has 15 recipients, all below 30: only "other".
-	if g, ok := at("팀:나", models.StatsOtherKey); !ok || g.Sent != 15 {
-		t.Errorf("team other: %+v", g)
-	}
-	// Age groups are not merged.
-	age := core.MergeRecipientGroups([]models.StatsRecipientRow{{CampaignID: 1, Key: "new7", Sent: 3}}, nil, false)
-	if len(age) != 1 || age[0].Key != "new7" {
-		t.Errorf("age: %+v", age)
 	}
 }

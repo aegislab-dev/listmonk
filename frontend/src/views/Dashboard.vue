@@ -20,11 +20,11 @@
       <b-loading v-if="loading" active :is-full-page="false" />
       <div v-if="error" class="notification is-danger is-light">{{ error }}</div>
 
-      <template v-if="loaded">
+      <template v-if="loaded && !loading">
         <div v-if="summary" class="st-sum" data-cy="stats-summary">{{ summary }}</div>
         <stats-team-table :rows="rows" :all="all" :prev-by-team="prevByTeam" :prev-all="prevAll" :my-tag="myTeam"
-          :selected="team" :now="now" @select="setTeam" />
-        <stats-campaign-table :camps="teamCamps" :all="camps" :team="team" :limit="limit" :now="now" @clear="setTeam('')" @more="limit += 20" />
+          :previous-error="prevError" :selected="team" :now="now" @select="setTeam" />
+        <stats-campaign-table :camps="teamCamps" :all="camps" :team="team" :my-team="myTeam" :limit="limit" :now="now" @clear="setTeam('')" @more="limit += 20" />
         <stats-insights :camps="teamCamps" :age="age" :country="country" :team-key="team" :scope="scopeText" :now="now" />
       </template>
     </template>
@@ -169,9 +169,11 @@ import StatsTeamTable from '../components/StatsTeamTable.vue';
 import StatsCampaignTable from '../components/StatsCampaignTable.vue';
 import StatsInsights from '../components/StatsInsights.vue';
 import StatsDefinitions from '../components/StatsDefinitions.vue';
-import { PERIODS, PERIOD_DEFAULT, PERIOD_ALL_DAYS } from '../stats-definitions';
 import {
-  aggregate, teamRows, teamSummary, campaignTeams, formatKST,
+  BASELINE, MIN, PERIODS, PERIOD_DEFAULT,
+} from '../stats-definitions';
+import {
+  aggregate, teamRows, campaignTeams, formatKST, statsNow, teamLabel, pctText, signedPoints, bounceOver, previousStatus,
 } from '../stats';
 
 const DAY = 86400000;
@@ -184,9 +186,11 @@ export default Vue.extend({
     StatsTeamTable, StatsCampaignTable, StatsInsights, StatsDefinitions,
   },
   data() {
+    const queryPeriod = this.$route.query.period;
+    const selected = queryPeriod === 'all' ? null : Number(queryPeriod);
     return {
       periods: PERIODS,
-      period: PERIOD_DEFAULT,
+      period: PERIODS.includes(selected) ? selected : PERIOD_DEFAULT,
       team: this.$route.query.team || '',
       limit: 6,
       loading: false,
@@ -195,7 +199,9 @@ export default Vue.extend({
       now: new Date(),
       generatedAt: null,
       camps: [],
-      prevCamps: [],
+      prevCamps: null,
+      prevError: false,
+      requestID: 0,
       teams: [],
       myTeam: '',
       age: [],
@@ -211,34 +217,61 @@ export default Vue.extend({
   computed: {
     ...mapState(['settings']),
     canStats() { return this.$can('campaigns:get_analytics'); },
-    days() { return this.period === null ? PERIOD_ALL_DAYS : this.period; },
     range() {
-      const to = new Date(this.now.getTime() + 60000);
-      const from = new Date(this.now.getTime() - this.days * DAY);
-      const prevFrom = new Date(from.getTime() - this.days * DAY);
+      const to = statsNow(this.now);
+      const from = this.period === null ? null : new Date(to.getTime() - this.period * DAY);
+      const prevFrom = from ? new Date(from.getTime() - this.period * DAY) : null;
       return { from, to, prevFrom };
     },
     rangeText() {
+      if (!this.range.from) return '';
       const f = (d) => formatKST(d.toISOString()).slice(0, 5);
       return `${f(this.range.from)} ~ ${f(this.now)}`;
     },
-    asOf() { return this.generatedAt ? formatKST(this.generatedAt) : ''; },
+    asOf() { return this.generatedAt ? formatKST(this.generatedAt, this.$i18n.locale) : ''; },
     rows() { return teamRows(this.camps, this.teams, this.now); },
     all() { return aggregate(this.camps, this.now); },
-    prevRows() { return teamRows(this.prevCamps, this.teams, this.now); },
-    prevByTeam() { return Object.fromEntries(this.prevRows.map((r) => [r.tag, r.a])); },
-    prevAll() { return aggregate(this.prevCamps, this.now); },
+    prevByTeam() {
+      return this.prevCamps ? Object.fromEntries(teamRows(this.prevCamps, [], this.now).map((r) => [r.tag, r.a])) : {};
+    },
+    prevAll() { return this.prevCamps ? aggregate(this.prevCamps, this.now) : null; },
     teamCamps() { return this.team ? this.camps.filter((c) => campaignTeams(c).includes(this.team)) : this.camps; },
-    summary() { return teamSummary(this.rows, this.all, this.prevAll, this.myTeam); },
+    summary() {
+      const a = this.rows.find((r) => r.tag === this.myTeam)?.a;
+      if (!a?.enough) return '';
+      const messages = [this.$t('stats.summaryCompany', {
+        team: teamLabel(this.myTeam, this.$t.bind(this)),
+        rate: pctText(a.click),
+        all: pctText(this.all.click),
+        delta: signedPoints(a.click - this.all.click),
+      })];
+      const prev = this.prevByTeam[this.myTeam];
+      if (prev?.enough) {
+        messages.push(this.$t('stats.summaryPrevious', { rate: pctText(prev.click), delta: signedPoints(a.click - prev.click) }));
+      } else if (this.prevError || this.prevCamps) {
+        const reason = previousStatus(prev, this.prevError);
+        messages.push(this.$t(`stats.${reason}`));
+      }
+      if (a.sBounce >= MIN.groupSent) {
+        const over = bounceOver(a.bounces, a.sBounce, MIN.groupSent);
+        messages.push(this.$t(over ? 'stats.summaryBounceOver' : 'stats.summaryBounceWithin', { rate: pctText(a.bounce), line: BASELINE.bounce }));
+      }
+      return messages.join(' ');
+    },
     scopeText() {
-      const r = this.rows.find((x) => x.tag === this.team);
-      return this.team ? this.$t('stats.scopeTeam', { team: r ? r.name : this.team }) : this.$t('stats.scopeAll');
+      return this.team ? this.$t('stats.scopeTeam', { team: teamLabel(this.team, this.$t.bind(this)) }) : this.$t('stats.scopeAll');
     },
   },
   methods: {
     setPeriod(p) {
-      this.period = p;
-      this.fetchStats();
+      if (this.period === p) return;
+      const query = { ...this.$route.query };
+      if (p === PERIOD_DEFAULT) {
+        delete query.period;
+      } else {
+        query.period = p === null ? 'all' : String(p);
+      }
+      this.$router.replace({ query }).catch(() => {});
     },
     setTeam(tag) {
       this.team = tag;
@@ -262,25 +295,32 @@ export default Vue.extend({
       this.now = new Date();
       this.loading = true;
       this.error = '';
+      this.requestID += 1;
+      const { requestID } = this;
       const { from, to, prevFrom } = this.range;
-      const q = (f, t) => ({ from: f.toISOString(), to: t.toISOString() });
+      const q = (f, t) => ({ from: f ? f.toISOString() : 'all', to: t.toISOString() });
       Promise.all([
         this.$api.getStatsCampaigns(q(from, to)),
-        this.$api.getStatsCampaigns(q(prevFrom, from)).catch(() => ({ campaigns: [] })),
+        prevFrom ? this.$api.getStatsCampaigns(q(prevFrom, from)).catch(() => null) : null,
         this.$api.getStatsRecipients({ ...q(from, to), by: 'age' }).catch(() => []),
         this.$api.getStatsRecipients({ ...q(from, to), by: 'country' }).catch(() => []),
       ]).then(([cur, prev, age, country]) => {
+        if (requestID !== this.requestID) return;
         this.camps = cur.campaigns;
         this.teams = cur.teams;
         this.myTeam = cur.myTeam;
         this.generatedAt = cur.generatedAt;
-        this.prevCamps = prev.campaigns;
+        this.prevCamps = prev ? prev.campaigns : null;
+        this.prevError = !!prevFrom && !prev;
         this.age = age;
         this.country = country;
         this.loaded = true;
       }).catch((e) => {
-        this.error = (e && e.message) || String(e);
-      }).finally(() => { this.loading = false; });
+        if (requestID === this.requestID) {
+          this.loaded = false;
+          this.error = (e && e.message) || String(e);
+        }
+      }).finally(() => { if (requestID === this.requestID) this.loading = false; });
     },
     fetchCounts() {
       this.isCountsLoading = true;

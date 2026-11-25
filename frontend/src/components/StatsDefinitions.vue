@@ -11,14 +11,14 @@
         <tbody>
           <template v-for="d in defs">
             <tr :key="d.key" style="cursor:pointer" :data-cy="`def-${d.key}`" @click="toggle(d.key)">
-              <td style="white-space:nowrap"><b><i class="st-tri" :class="open[d.key] ? 'down' : 'right'" /> {{ d.name }}</b></td>
+              <td style="white-space:nowrap"><b><i class="st-tri" :class="open[d.key] ? 'down' : 'right'" /> {{ $t(d.name) }}</b></td>
               <td style="text-align:left">
-{{ d.meaning }}
+{{ $t(d.meaning) }}
                 <div v-if="open[d.key]" class="st-note" style="margin:4px 0 2px 18px;padding:7px 10px;background:#f7f8fa;border-radius:5px">
-                  {{ $t('stats.formula') }} · {{ d.formula }}<br />{{ $t('stats.minSample') }} · {{ d.sample }}
+                  {{ $t('stats.formula') }} · {{ $t(d.formula) }}<br />{{ $t('stats.minSample') }} · {{ $t(d.sample) }}
                 </div>
               </td>
-              <td style="text-align:left">{{ d.compare }}</td>
+              <td style="text-align:left">{{ $t(d.compare) }}</td>
             </tr>
           </template>
         </tbody>

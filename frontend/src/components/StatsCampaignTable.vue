@@ -17,11 +17,14 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="c in shown" :key="c.id" :class="{ coll: k(c).collecting }" :data-cy="`camp-row-${c.id}`" :data-own="String(c.own)">
+        <tr v-for="c in shown" :key="c.id" :class="{ coll: k(c).collecting || sum(c).small }" :data-cy="`camp-row-${c.id}`" :data-own="String(c.own)">
           <td>
             <b>#{{ c.id }}</b> {{ c.name }}
-            <span v-if="c.own" class="st-pill">{{ $t('stats.myTeam') }}</span>
+            <span v-if="c.subject" class="s" data-cy="campaign-subject">{{ c.subject }}</span>
+            <span v-if="isMyTeam(c)" class="st-pill">{{ $t('stats.myTeam') }}</span>
             <span v-else class="st-tag">{{ teamsText(c) }}</span>
+            <span v-if="c.teamTags && c.teamTags.length > 1" class="st-tag">{{ $t('stats.sharedTeams', { n: c.teamTags.length }) }}</span>
+            <span v-if="!c.own" class="s">{{ $t('stats.campaignLists', { n: c.listsN }) }}</span>
             <span v-if="k(c).state === 'running'" class="st-tag">{{ $t('stats.running') }}</span>
             <span v-else-if="k(c).state === 'paused' || k(c).state === 'cancelled'" class="st-tag">{{ $t(`campaigns.status.${k(c).state}`) }}</span>
             <span v-else-if="k(c).collecting" class="st-tag">{{ $t('stats.collecting', { h: k(c).hours }) }}</span>
@@ -34,29 +37,26 @@
           <template v-else>
             <td>
 <template v-if="k(c).untracked">{{ $t('stats.untracked') }}<span class="s">{{ $t('stats.notZero') }}</span></template>
-              <template v-else><b>{{ pt(rate(c).click) }}</b><span class="s">{{ n(c.clickers) }}{{ $t('stats.people') }}</span></template>
+              <template v-else><b>{{ pt(sum(c).click) }}</b><span class="s">{{ n(c.clickers) }}{{ $t('stats.people') }}</span></template>
 </td>
             <td>
 <template v-if="k(c).untracked">{{ $t('stats.untracked') }}</template>
-              <template v-else>{{ pt(rate(c).open) }}<span class="s">{{ n(c.viewers) }}{{ $t('stats.people') }}</span></template>
+              <template v-else>{{ pt(sum(c).open) }}<span class="s">{{ n(c.viewers) }}{{ $t('stats.people') }}</span></template>
 </td>
-            <td><span :class="{ 'st-over': over(rate(c).bounce) }">{{ pt(rate(c).bounce) }}<template v-if="over(rate(c).bounce)"> ⚠</template></span><span class="s">{{ c.hard + c.soft }}{{ $t('stats.cases') }}</span></td>
-            <td><span :class="{ 'st-over': complaintOver(rate(c).complaint) }">{{ pt(rate(c).complaint, 2) }}<template v-if="complaintOver(rate(c).complaint)"> ⚠</template></span><span class="s">{{ c.complaint }}{{ $t('stats.cases') }}</span></td>
-            <td style="white-space:nowrap">
+            <td><span :class="{ 'st-over': sum(c).bounceWarning }">{{ pt(sum(c).bounce) }}<template v-if="sum(c).bounceWarning"> ⚠</template></span><span class="s">{{ c.hard + c.soft }}{{ $t('stats.cases') }}</span></td>
+            <td><span :class="{ 'st-over': sum(c).complaintWarning }">{{ pt(sum(c).complaint, 2) }}<template v-if="sum(c).complaintWarning"> ⚠</template></span><span class="s">{{ c.complaint }}{{ $t('stats.cases') }}</span></td>
+            <td>
               <span v-if="k(c).collecting || c.sent < MIN.campaignSent" class="st-note">{{ $t('stats.noCompare') }}</span>
               <span v-else-if="k(c).untracked" />
               <template v-else-if="sum(c).median">
                 <span :class="['st-chg', sum(c).cmp.good ? 'good' : '']">{{ changeText(sum(c).cmp) }}</span>
-                <span class="s">{{ sum(c).teamName }} {{ $t('stats.median') }} {{ pt(sum(c).median.value) }} ({{ sum(c).median.n }}{{ $t('stats.cases2') }})</span>
+                <span class="s">{{ comparisonName(sum(c)) }} {{ $t('stats.median') }} {{ pt(sum(c).median.value) }} ({{ sum(c).median.n }}{{ $t('stats.cases2') }})</span>
               </template>
-              <span v-else class="st-note">{{ sum(c).teamName }} {{ $t('stats.small') }}</span>
+              <span v-else class="st-note">{{ $t('stats.noCompare') }}</span>
             </td>
           </template>
-          <td style="white-space:nowrap">
-            <template v-if="c.own">
-              <router-link :to="{ name: 'campaignAnalytics', query: { id: c.id } }">{{ $t('stats.analyze') }}</router-link>
-              <router-link :to="{ name: 'campaign', params: { id: c.id } }" style="margin-left:8px">{{ $t('stats.openCamp') }}</router-link>
-            </template>
+          <td>
+            <stats-campaign-actions v-if="c.own" :campaign="c" show-open />
             <span v-else class="st-note">{{ $t('stats.noOpen') }}</span>
           </td>
         </tr>
@@ -72,19 +72,20 @@
 <script>
 /* eslint-disable max-len, vue/max-len */
 import StatsHelp from './StatsHelp.vue';
+import StatsCampaignActions from './StatsCampaignActions.vue';
 import {
-  campaignSummary, changeText, classify, complaintOver, bounceOver, formatKST, fmt, pctText, pct, teamLabel,
+  campaignSummary, campaignTeams, changeText, formatKST, fmt, pctText, teamLabel,
 } from '../stats';
 import { MIN } from '../stats-definitions';
-import { teamName } from '../teams';
 
 export default {
   name: 'StatsCampaignTable',
-  components: { StatsHelp },
+  components: { StatsHelp, StatsCampaignActions },
   props: {
     camps: { type: Array, required: true },
     all: { type: Array, required: true },
     team: { type: String, default: '' },
+    myTeam: { type: String, default: '' },
     limit: { type: Number, default: 6 },
     now: { type: Date, default: () => new Date() },
   },
@@ -94,23 +95,20 @@ export default {
     shown() { return this.sorted.slice(0, this.limit); },
     total() { return this.sorted.length; },
     hidden() { return this.sorted.length - this.shown.length; },
-    teamName() { return teamName(this.team); },
+    teamName() { return this.label(this.team); },
+    summaries() { return new Map(this.shown.map((c) => [c.id, campaignSummary(c, this.all, this.now)])); },
   },
   methods: {
     n: fmt,
     pt: pctText,
-    over: bounceOver,
-    complaintOver,
-    changeText,
-    kst: formatKST,
-    k(c) { return classify(c, this.now); },
-    sum(c) { return campaignSummary(c, this.all, this.now); },
-    rate(c) {
-      return {
-        click: pct(c.clickers, c.sent), open: pct(c.viewers, c.sent), bounce: pct(c.hard + c.soft, c.sent), complaint: pct(c.complaint, c.sent, 2),
-      };
-    },
-    teamsText(c) { return (c.teamTags && c.teamTags.length ? c.teamTags : ['__none__']).map(teamLabel).join(', '); },
+    kst(at) { return formatKST(at, this.$i18n.locale); },
+    changeText(c) { return changeText(c, this.$t.bind(this)); },
+    k(c) { return this.sum(c).k; },
+    sum(c) { return this.summaries.get(c.id); },
+    label(tag) { return teamLabel(tag, this.$t.bind(this)); },
+    comparisonName(summary) { return summary.team ? this.label(summary.team) : this.$t('stats.all'); },
+    isMyTeam(c) { return !!this.myTeam && campaignTeams(c).includes(this.myTeam); },
+    teamsText(c) { return campaignTeams(c).map(this.label).join(', '); },
   },
 };
 </script>

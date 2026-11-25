@@ -4,16 +4,17 @@
 import {
   MIN, SETTLE_DAYS, BASELINE, NEUTRAL,
 } from './stats-definitions.js'; // eslint-disable-line import/extensions
+import { trackingStateFor } from './proof-summary.js'; // eslint-disable-line import/extensions
 import { teamName } from './teams.js'; // eslint-disable-line import/extensions
 
 export const NO_TEAM_KEY = '__none__';
-export const NO_TEAM_LABEL = '팀 없음';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// A percentage with one decimal place, the complaint rate with two.
-export const pct = (n, d, digits = 1) => (d > 0 ? Math.round((n / d) * 100 * (10 ** digits)) / (10 ** digits) : 0);
+// Keep full precision for comparisons and round only when displaying a rate.
+export const pct = (n, d) => (d > 0 ? (n / d) * 100 : null);
 export const fmt = (n) => Number(n).toLocaleString('en-US');
-export const pctText = (v, digits = 1) => `${Number(v).toFixed(digits)}%`;
+export const pctText = (v, digits = 1) => (v === null ? '—' : `${v.toFixed(digits)}%`);
+export const statsNow = (now = new Date()) => new Date(Math.floor(now.getTime() / 300000) * 300000 + 300000);
 
 // What a campaign is in the statistics. State: done (finished), running, paused, cancelled.
 // settled: three days have passed. rateOk: opens and clicks count (done, tracked, settled);
@@ -25,13 +26,19 @@ export function classify(c, now = new Date()) {
   const age = now.getTime() - started;
   const settled = started > 0 && age >= SETTLE_DAYS * DAY_MS;
   const done = state === 'done';
+  const tracked = trackingStateFor({
+    privacy: { disable_tracking: !!c.trackingOff, individual_tracking: true },
+    sent: c.sent,
+    viewsTotal: c.viewers,
+    clicksTotal: c.clickers,
+  });
   return {
     state,
     settled,
     hours: Math.max(0, Math.floor(age / 3600000)),
     collecting: done && !settled,
-    untracked: done && !!c.trackingOff,
-    rateOk: done && !c.trackingOff && settled && c.sent > 0,
+    untracked: c.sent > 0 && !tracked,
+    rateOk: done && tracked && settled && c.sent > 0,
     bounceOk: done && settled && c.sent > 0,
   };
 }
@@ -70,7 +77,7 @@ export function aggregate(camps, now = new Date()) {
   a.click = pct(a.clickers, a.sRate);
   a.open = pct(a.viewers, a.sRate);
   a.bounce = pct(a.bounces, a.sBounce);
-  a.complaint = pct(a.complaints, a.sBounce, 2);
+  a.complaint = pct(a.complaints, a.sBounce);
   a.enough = a.nRate >= MIN.groupCampaigns && a.sRate >= MIN.groupSent;
   return a;
 }
@@ -84,10 +91,10 @@ export function medianOf(values) {
   }
   const v = [...values].sort((x, y) => x - y);
   const m = Math.floor(v.length / 2);
-  return v.length % 2 ? v[m] : Math.round(((v[m - 1] + v[m]) / 2) * 10) / 10;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
 export function teamMedian(camps, now = new Date()) {
-  const rates = camps.filter((c) => classify(c, now).rateOk).map(clickRate);
+  const rates = camps.filter((c) => c.sent >= MIN.campaignSent && classify(c, now).rateOk).map(clickRate);
   return rates.length >= MIN.groupCampaigns ? { value: medianOf(rates), n: rates.length } : null;
 }
 
@@ -104,22 +111,33 @@ export function change(delta, kind) {
   const higherIsBetter = kind === 'click' || kind === 'open';
   return { dir: up ? 'up' : 'down', good: up === higherIsBetter, delta: d };
 }
-export const changeText = (ch) => {
-  const sign = ch.delta > 0 ? '+' : '';
-  const v = `${sign}${ch.delta.toFixed(1)}%p`;
+export function previousStatus(previous, failed) {
+  if (failed) return 'previousError';
+  if (!previous?.n) return 'noPrev';
+  return previous.nRate ? 'previousSmall' : 'previousUnavailable';
+}
+
+export const signedPoints = (delta) => `${delta > 0 ? '+' : ''}${delta.toFixed(1)}%p`;
+
+export const changeText = (ch, t) => {
+  const v = signedPoints(ch.delta);
   if (ch.dir === 'same') {
-    return `≈ 비슷함 (${v})`;
+    return t('stats.similar', { delta: v });
   }
   return `${ch.dir === 'up' ? '▲' : '▼'} ${v}`;
 };
 
-// Over the line that the rate is read against.
-export const bounceOver = (rate) => rate > BASELINE.bounce;
-export const complaintOver = (rate) => rate > BASELINE.complaint;
+// Compare counts with policy thresholds before applying display rounding.
+export const bounceOver = (count, sent, min = MIN.campaignSent) => (
+  sent >= min && count * 100 > BASELINE.bounce * sent
+);
+export const complaintOver = (count, sent, min = MIN.complaintSent) => (
+  sent >= min && count * 1000 > (BASELINE.complaint * 10) * sent
+);
 
 // The teams of a campaign as tags; a campaign without a team is NO_TEAM_KEY.
 export const campaignTeams = (c) => (c.teamTags && c.teamTags.length > 0 ? c.teamTags : [NO_TEAM_KEY]);
-export const teamLabel = (tag) => (tag === NO_TEAM_KEY ? NO_TEAM_LABEL : teamName(tag));
+export const teamLabel = (tag, t) => (tag === NO_TEAM_KEY ? t('stats.noTeam') : teamName(tag));
 
 // The team rows: every team role (even one that sent nothing), then a team that only the
 // campaigns know, then "no team" when a campaign has none. Sorted by click rate, teams whose
@@ -136,7 +154,7 @@ export function teamRows(camps, teams, now = new Date()) {
   const rows = [...byTeam.values()].map((r) => {
     const a = aggregate(r.camps, now);
     return {
-      tag: r.tag, name: teamLabel(r.tag), lists: r.lists, camps: r.camps, a, empty: a.n === 0 && !r.camps.some((c) => c.status !== 'finished'),
+      tag: r.tag, lists: r.lists, camps: r.camps, a, empty: a.n === 0 && !r.camps.some((c) => c.status !== 'finished'),
     };
   });
   const rank = (r) => {
@@ -145,7 +163,7 @@ export function teamRows(camps, teams, now = new Date()) {
     }
     return r.a.enough ? 0 : 1;
   };
-  return rows.sort((x, y) => rank(x) - rank(y) || (rank(x) === 0 ? y.a.click - x.a.click : y.a.sent - x.a.sent) || x.name.localeCompare(y.name, 'ko'));
+  return rows.sort((x, y) => rank(x) - rank(y) || (rank(x) === 0 ? y.a.click - x.a.click : y.a.sent - x.a.sent) || x.tag.localeCompare(y.tag));
 }
 
 // KST pieces of a time (the weekday 0=Mon..6=Sun, the hour), whatever the browser's zone.
@@ -155,9 +173,6 @@ const kstParts = (iso) => {
   }).formatToParts(new Date(iso)).reduce((o, x) => ({ ...o, [x.type]: x.value }), {});
   return { wd: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(p.weekday), hour: Number(p.hour) };
 };
-export const WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일'];
-export const HOUR_BANDS = ['00–06시', '06–12시', '12–18시', '18–24시'];
-export const LENGTH_BANDS = ['20자 이하', '21~40자', '41자 이상'];
 export const weekdayOf = (c) => kstParts(c.startedAt).wd;
 export const hourBandOf = (c) => Math.floor(kstParts(c.startedAt).hour / 6);
 export const lengthBandOf = (c) => {
@@ -169,12 +184,13 @@ export const lengthBandOf = (c) => {
 };
 
 // "11-24(화) 01:05" in KST.
-export function formatKST(iso) {
+export function formatKST(iso, locale = 'en') {
   const d = new Date(iso);
   const p = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Seoul', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).formatToParts(d).reduce((o, x) => ({ ...o, [x.type]: x.value }), {});
-  return `${p.month}-${p.day}(${WEEKDAYS[weekdayOf({ startedAt: iso })]}) ${p.hour}:${p.minute}`;
+  const weekday = new Intl.DateTimeFormat(locale, { timeZone: 'Asia/Seoul', weekday: 'short' }).format(d);
+  return `${p.month}-${p.day}(${weekday}) ${p.hour}:${p.minute}`;
 }
 
 // Groups of campaigns by a function of the campaign: the label, the campaigns, the totals,
@@ -182,7 +198,7 @@ export function formatKST(iso) {
 // when two or more groups may be compared).
 export function groupBy(camps, labels, indexOf, now = new Date()) {
   const rows = labels.map((label, i) => {
-    const cs = camps.filter((c) => classify(c, now).rateOk && indexOf(c) === i);
+    const cs = camps.filter((c) => classify(c, now).bounceOk && indexOf(c) === i);
     const a = aggregate(cs, now);
     return {
       label, n: cs.length, a, ok: a.enough,
@@ -193,29 +209,29 @@ export function groupBy(camps, labels, indexOf, now = new Date()) {
   return { rows, ok, best };
 }
 
-// The lists card: a campaign with exactly one list that the caller may read goes to that list
-// by name, every other campaign is merged into "other teams' lists" (a campaign that is not
-// the caller's carries no list). Campaigns of several lists make a group of their own.
+// Named sources may cover multiple lists. Untagged lists keep their ID as their identity.
 export function listGroups(camps, now = new Date()) {
-  const named = new Map();
-  const others = [];
-  camps.filter((c) => classify(c, now).rateOk).forEach((c) => {
-    if (c.own && c.lists && c.lists.length === 1) {
-      const k = c.lists[0].name;
-      named.set(k, [...(named.get(k) || []), c]);
-    } else {
-      others.push(c);
+  const groups = new Map();
+  camps.filter((c) => classify(c, now).bounceOk).forEach((c) => {
+    const list = c.own && c.listsN === 1 ? c.lists?.[0] : null;
+    const hidden = !c.own || (c.listsN === 1 && !list);
+    let key = hidden ? 'hidden' : 'multiple';
+    if (list) key = list.source ? `source:${list.source}` : `list:${list.id}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key, label: list?.source || list?.name, list, hidden, camps: [],
+      });
     }
+    groups.get(key).camps.push(c);
   });
-  const rows = [...named.entries()].map(([label, cs]) => ({ label, hidden: false, a: aggregate(cs, now) }));
-  if (others.length > 0) {
-    rows.push({ label: `다른 팀·여러 리스트 캠페인 ${others.length}건`, hidden: true, a: aggregate(others, now) });
-  }
-  const out = rows.map((r) => ({ ...r, ok: r.a.sRate >= MIN.campaignSent }));
-  out.sort((x, y) => y.a.click - x.a.click);
-  const ok = out.filter((r) => r.ok && !r.hidden);
+  const rows = [...groups.values()].map(({ camps: cs, ...g }) => {
+    const a = aggregate(cs, now);
+    return { ...g, a, ok: a.sRate >= MIN.campaignSent };
+  });
+  rows.sort((x, y) => (y.a.click ?? -1) - (x.a.click ?? -1));
+  const ok = rows.filter((r) => r.ok && !r.hidden);
   const best = ok.length >= 2 ? ok.reduce((b, r) => (r.a.click > b.a.click ? r : b)) : null;
-  return { rows: out, best };
+  return { rows, best };
 }
 
 // Overlap with other mails of the last 30 days: the campaigns that have send records for
@@ -239,7 +255,13 @@ export function overlapRows(camps, now = new Date()) {
 // in the order of `order` (keys), the rest by size; the merged "other" group last.
 export function recipientRows(groups, team, order = null) {
   const g = (groups || []).filter((x) => x.team === team).map((x) => ({
-    key: x.key, sent: x.sent, click: pct(x.clicked, x.sent), open: pct(x.opened, x.sent), bounce: pct(x.bounced, x.sent), ok: x.sent >= MIN.groupSent,
+    key: x.key,
+    sent: x.sent,
+    recipients: x.recipients,
+    click: pct(x.clicked, x.sent),
+    open: pct(x.opened, x.sent),
+    bounce: pct(x.bounced, x.sent),
+    ok: x.recipients >= MIN.recipientSample && x.key !== '__other__',
   }));
   const rank = (r) => {
     if (r.key === '__other__') {
@@ -251,52 +273,41 @@ export function recipientRows(groups, team, order = null) {
   return g;
 }
 
-// Follow-up pairs: the campaigns that are follow-ups of another one, with the original.
+// Include the pair even when the original started before the selected period.
 export function followupPairs(camps, now = new Date()) {
-  const byID = new Map(camps.map((c) => [c.id, c]));
-  return camps.filter((c) => c.followupOf && classify(c, now).state === 'done' && classify(c, now).settled)
-    .map((c) => ({ followup: c, original: byID.get(c.followupOf) || null }));
+  return camps.filter((c) => {
+    const k = classify(c, now);
+    return c.followupOf && k.state === 'done' && k.settled;
+  }).map((followup) => {
+    const tracked = !followup.trackingOff && (followup.combinedClickers > 0 || followup.combinedViewers > 0);
+    return {
+      followup,
+      click: tracked ? pct(followup.combinedClickers, followup.followupParentSent) : null,
+      open: tracked ? pct(followup.combinedViewers, followup.followupParentSent) : null,
+    };
+  });
 }
 
-// One sentence on the top team table for the caller's team (null when the team sent nothing
-// that counts).
-export function teamSummary(rows, all, prev, myTag) {
-  const mine = rows.find((r) => r.tag === myTag);
-  if (!mine || mine.a.nRate === 0) {
-    return null;
-  }
-  const { a } = mine;
-  const parts = [];
-  parts.push(`${mine.name}의 클릭률 ${pctText(a.click)}는 전사 ${pctText(all.click)}보다 ${(a.click - all.click) >= 0 ? '+' : ''}${(a.click - all.click).toFixed(1)}%p`);
-  if (prev && prev.nRate > 0) {
-    parts[0] += `, 직전 기간보다 ${(a.click - prev.click) >= 0 ? '+' : ''}${(a.click - prev.click).toFixed(1)}%p입니다.`;
-  } else {
-    parts[0] += '입니다. 직전 기간에는 발송이 없어 시간 비교는 아직 없습니다.';
-  }
-  parts.push(bounceOver(a.bounce)
-    ? `반송률 ${pctText(a.bounce)}는 기준 ${BASELINE.bounce}%를 넘었습니다.`
-    : `반송률 ${pctText(a.bounce)}는 기준 ${BASELINE.bounce}% 아래입니다.`);
-  return parts.join(' ');
-}
-
-// The summary of one campaign for its own screen: what counts, the four rates and the click
-// rate against the middle value of the team that sent it (the campaigns the screen read).
 export function campaignSummary(c, camps, now = new Date()) {
   const k = classify(c, now);
   const team = campaignTeams(c)[0];
-  const peers = camps.filter((x) => campaignTeams(x).includes(team));
-  const median = k.rateOk ? teamMedian(peers, now) : null;
+  const peers = camps.filter((x) => x.id !== c.id);
+  const small = c.sent < MIN.campaignSent;
+  const teamValue = k.rateOk && !small ? teamMedian(peers.filter((x) => campaignTeams(x).includes(team)), now) : null;
+  const allValue = k.rateOk && !small && !teamValue ? teamMedian(peers, now) : null;
+  const median = teamValue || allValue;
   const click = clickRate(c);
   return {
     k,
-    team,
-    teamName: teamLabel(team),
+    team: allValue ? '' : team,
     click,
     open: pct(c.viewers, c.sent),
     bounce: pct(c.hard + c.soft, c.sent),
-    complaint: pct(c.complaint, c.sent, 2),
+    complaint: pct(c.complaint, c.sent),
+    bounceWarning: k.bounceOk && bounceOver(c.hard + c.soft, c.sent),
+    complaintWarning: k.bounceOk && complaintOver(c.complaint, c.sent),
     median,
     cmp: median ? change(click - median.value, 'click') : null,
-    small: c.sent < MIN.campaignSent,
+    small,
   };
 }

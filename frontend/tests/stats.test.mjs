@@ -2,9 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   aggregate, change, changeText, classify, formatKST, groupBy, hourBandOf, lengthBandOf, listGroups, medianOf,
-  overlapRows, recipientRows, teamMedian, teamRows, weekdayOf, clickRate, bounceOver, complaintOver, NO_TEAM_KEY,
+  overlapRows, recipientRows, teamMedian, teamRows, weekdayOf, clickRate, bounceOver, complaintOver, campaignSummary, followupPairs, NO_TEAM_KEY,
 } from '../src/stats.js';
+import { readFileSync } from 'node:fs';
 import { DEFINITIONS, MIN, helpText } from '../src/stats-definitions.js';
+
+const en = JSON.parse(readFileSync(new URL('../../i18n/en.json', import.meta.url)));
+const t = (key, params = {}) => (en[key] || key).replace(/\{(\w+)\}/g, (_, k) => params[k]);
 
 const NOW = new Date('2026-11-25T00:05:00Z'); // 09:05 KST on a Wednesday
 const day = (n) => new Date(NOW.getTime() - n * 86400000).toISOString();
@@ -45,11 +49,15 @@ test('a campaign counts in the rates only when finished, tracked and three days 
   assert.equal(untracked.bounceOk, true, 'bounces do not depend on tracking');
 });
 
-test('a tracked campaign with no clicks reads as 0%, not as untracked', () => {
+test('zero opens and clicks is not tracked, but zero clicks with recorded opens is a real zero', () => {
   const c = camp({ clickers: 0, viewers: 0 });
-  assert.equal(classify(c, NOW).untracked, false);
-  assert.equal(aggregate([c], NOW).click, 0);
-  assert.equal(aggregate([c], NOW).nRate, 1);
+  assert.equal(classify(c, NOW).untracked, true);
+  assert.equal(aggregate([c], NOW).click, null);
+  assert.equal(aggregate([c], NOW).open, null);
+  assert.equal(aggregate([c], NOW).nRate, 0);
+  const tracked = camp({ clickers: 0 });
+  assert.equal(classify(tracked, NOW).untracked, false);
+  assert.equal(aggregate([tracked], NOW).click, 0);
 });
 
 test('aggregate: rates use the campaigns that count, sent counts every finished campaign', () => {
@@ -69,7 +77,7 @@ test('aggregate: rates use the campaigns that count, sent counts every finished 
   assert.equal(a.sBounce, 1300);
   assert.equal(a.bounces, 2 + 18 + 3);
   assert.equal(a.complaints, 1);
-  assert.equal(a.complaint, 0.08);
+  assert.equal(a.complaint.toFixed(2), '0.08');
   assert.equal(a.collecting, 1);
   assert.equal(a.untracked, 1);
 });
@@ -80,31 +88,39 @@ test('the hard and soft bounce and the complaint are shown apart (proof summary 
   assert.equal(a.complaints, 1);
 });
 
-test('the lines: bounce above 2% and complaint above 0.1% only', () => {
-  assert.equal(bounceOver(2), false);
-  assert.equal(bounceOver(2.01), true);
-  assert.equal(complaintOver(0.1), false);
-  assert.equal(complaintOver(0.11), true);
+test('warnings compare raw counts and only apply at the metric’s minimum sample', () => {
+  assert.equal(bounceOver(200, 10000), false);
+  assert.equal(complaintOver(10, 10000), false);
+  const above = campaignSummary(camp({ sent: 10000, hard: 204, soft: 0 }), [], NOW);
+  assert.equal(above.bounce.toFixed(1), '2.0');
+  assert.equal(above.bounceWarning, true);
+  const complaint = campaignSummary(camp({ sent: 9900, complaint: 10 }), [], NOW);
+  assert.equal(complaint.complaint.toFixed(2), '0.10');
+  assert.equal(complaint.complaintWarning, true);
+  const small = campaignSummary(camp({ sent: 71, hard: 3, soft: 0, complaint: 1 }), [], NOW);
+  assert.equal(small.bounceWarning, false);
+  assert.equal(small.complaintWarning, false);
+  assert.equal(campaignSummary(camp({ sent: 200, complaint: 1 }), [], NOW).complaintWarning, false);
 });
 
 test('median needs three campaigns that count; small and collecting ones are left out', () => {
   assert.equal(medianOf([3, 1, 2]), 2);
   assert.equal(medianOf([1, 2, 3, 4]), 2.5);
   const two = [camp({ clickers: 10 }), camp({ clickers: 20 })];
-  assert.equal(teamMedian(two, NOW), null);
+  assert.equal(teamMedian([...two, camp({ sent: 199, clickers: 199 })], NOW), null);
   const three = [...two, camp({ clickers: 30 }), camp({ clickers: 999, startedAt: day(1) })];
   assert.deepEqual(teamMedian(three, NOW), { value: 2, n: 3 });
 });
 
-test('a change inside the neutral width is "비슷함"; a falling bounce rate is the good direction', () => {
+test('a change inside the neutral width is similar and a falling bounce rate is good', () => {
   assert.equal(change(0.4, 'click').dir, 'same');
   assert.equal(change(0.5, 'click').dir, 'up');
   assert.equal(change(-1.2, 'click').good, false);
   assert.equal(change(1.2, 'click').good, true);
   assert.equal(change(-0.5, 'bounce').good, true);
   assert.equal(change(0.2, 'bounce').dir, 'same');
-  assert.match(changeText(change(0.9, 'click')), /▲ \+0\.9%p/);
-  assert.match(changeText(change(0.1, 'click')), /비슷함/);
+  assert.match(changeText(change(0.9, 'click'), t), /▲ \+0\.9%p/);
+  assert.match(changeText(change(0.1, 'click'), t), /Similar/);
 });
 
 test('team rows: every team role is a row, one that sent nothing is empty, small teams come last', () => {
@@ -159,12 +175,13 @@ test('list groups name only lists of the caller; the others are merged', () => {
     camp({ lists: [{ id: 1, name: '뉴스레터' }], clickers: 90 }),
     camp({ lists: [{ id: 2, name: '설문' }], clickers: 50 }),
     camp({ own: false, lists: undefined, clickers: 300 }),
-    camp({ lists: [{ id: 3, name: 'A' }, { id: 4, name: 'B' }], clickers: 10 }),
+    camp({ listsN: 2, lists: [{ id: 3, name: 'A' }, { id: 4, name: 'B' }], clickers: 10 }),
   ];
   const g = listGroups(camps, NOW);
-  assert.deepEqual(g.rows.filter((r) => !r.hidden).map((r) => r.label).sort(), ['뉴스레터', '설문']);
+  assert.deepEqual(g.rows.filter((r) => !r.hidden).filter((r) => r.list).map((r) => r.label).sort(), ['뉴스레터', '설문']);
   const hidden = g.rows.find((r) => r.hidden);
-  assert.match(hidden.label, /2건/);
+  assert.equal(hidden.a.n, 1);
+  assert.ok(g.rows.find((r) => r.key === 'multiple'));
   assert.equal(g.best.label, '뉴스레터', 'the hidden group is never named best');
   assert.ok(!JSON.stringify(g).includes('"name":"B"'));
 });
@@ -183,10 +200,10 @@ test('overlap needs send records for 95% of the messages', () => {
 
 test('recipient groups: rates per group, the merged other group last', () => {
   const groups = [
-    { team: '', key: 'KR', sent: 2000, opened: 800, clicked: 160, bounced: 20 },
-    { team: '', key: '__other__', sent: 25, opened: 5, clicked: 1, bounced: 0 },
-    { team: '', key: 'JP', sent: 100, opened: 40, clicked: 5, bounced: 1 },
-    { team: '팀:가', key: 'KR', sent: 10, opened: 1, clicked: 0, bounced: 0 },
+    { team: '', key: 'KR', sent: 2000, recipients: 200, opened: 800, clicked: 160, bounced: 20 },
+    { team: '', key: '__other__', sent: 25, recipients: 20, opened: 5, clicked: 1, bounced: 0 },
+    { team: '', key: 'JP', sent: 100, recipients: 90, opened: 40, clicked: 5, bounced: 1 },
+    { team: '팀:가', key: 'KR', sent: 10, recipients: 5, opened: 1, clicked: 0, bounced: 0 },
   ];
   const rows = recipientRows(groups, '');
   assert.deepEqual(rows.map((r) => r.key), ['KR', 'JP', '__other__']);
@@ -195,7 +212,7 @@ test('recipient groups: rates per group, the merged other group last', () => {
 });
 
 test('KST date text does not depend on the zone of the machine', () => {
-  assert.equal(formatKST('2026-11-23T16:05:00Z'), '11-24(화) 01:05');
+  assert.equal(formatKST('2026-11-23T16:05:00Z', 'ko'), '11-24(화) 01:05');
 });
 
 test('every figure the screen explains has a definition with a meaning, a formula and a sample', () => {
@@ -203,7 +220,39 @@ test('every figure the screen explains has a definition with a meaning, a formul
     const d = DEFINITIONS.find((x) => x.key === k);
     assert.ok(d, k);
     assert.ok(d.name && d.meaning && d.formula && d.compare && d.sample, k);
-    assert.ok(helpText(k).includes(d.formula));
+    assert.ok(helpText(k, t).includes(t(d.formula)));
   });
   assert.equal(clickRate({ clickers: 1, sent: 8 }), 12.5);
+});
+
+test('source tags group different lists together and same-name untagged lists stay separate', () => {
+  const lists = [
+    { id: 1, name: 'Same' }, { id: 2, name: 'Same' },
+    { id: 3, name: 'First', source: 'Webinar' }, { id: 4, name: 'Second', source: 'Webinar' },
+  ];
+  const { rows } = listGroups(lists.map((list) => camp({ lists: [list] })), NOW);
+  assert.deepEqual(rows.map((r) => [r.key, r.a.sent, r.a.bounce]), [
+    ['list:1', 1000, 2], ['list:2', 1000, 2], ['source:Webinar', 2000, 2],
+  ]);
+});
+
+test('peer comparison excludes the current campaign and falls back to company peers', () => {
+  const current = camp({ clickers: 100 });
+  const peers = [camp({ clickers: 20 }), camp({ clickers: 40 })];
+  assert.equal(campaignSummary(current, [current, ...peers], NOW).median, null);
+  const company = camp({ teamTags: ['팀:나'], clickers: 60 });
+  const summary = campaignSummary(current, [current, ...peers, company], NOW);
+  assert.equal(summary.team, '');
+  assert.deepEqual(summary.median, { value: 4, n: 3 });
+});
+
+test('a follow-up shows combined unique people over original sent even outside the current range', () => {
+  const child = camp({
+    followupOf: 900, followupParentSent: 2000, combinedClickers: 120, combinedViewers: 550,
+    followupCondition: { open: 'any', click: 'any' },
+  });
+  const [pair] = followupPairs([child], NOW);
+  assert.equal(pair.click, 6);
+  assert.equal(pair.open.toFixed(1), '27.5');
+  assert.equal(pair.followup.followupCondition.click, 'any');
 });

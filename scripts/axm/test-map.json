@@ -166,11 +166,13 @@
    "specs": [
     "campaign-clone-lists.cy.js",
     "from-addresses.cy.js",
-    "campaign-recent-exclude.cy.js"
+    "campaign-recent-exclude.cy.js",
+    "stats-dashboard.cy.js"
    ]
   },
   {
    "paths": [
+    "frontend/src/campaign-clone.js",
     "frontend/src/views/Campaigns.vue"
    ],
    "specs": [
@@ -264,7 +266,8 @@
    ],
    "specs": [
     "reaction-lists.cy.js",
-    "followup.cy.js"
+    "followup.cy.js",
+    "stats-dashboard.cy.js"
    ]
   },
   {

@@ -8,6 +8,7 @@ import (
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	null "gopkg.in/volatiletech/null.v6"
 )
 
 // Statistics dashboard (LST-64). Results are public to everyone who may see analytics, in
@@ -15,23 +16,21 @@ import (
 // is on them, addresses and bodies stay behind the permissions they already had: a campaign
 // that the caller could not open carries no list ids or names here.
 
-const (
-	statsDefaultDays = 90
-	statsMaxDays     = 800
-)
+const statsDefaultDays = 90
 
 // statsRange reads ?from=&to= (RFC 3339 or YYYY-MM-DD); the default is the last 90 days.
 func statsRange(c echo.Context) (time.Time, time.Time, error) {
-	now := time.Now()
-	to := now.Add(time.Minute)
-	from := now.AddDate(0, 0, -statsDefaultDays)
+	to := time.Now().UTC().Truncate(5 * time.Minute).Add(5 * time.Minute)
+	from := to.AddDate(0, 0, -statsDefaultDays)
 	parse := func(s string) (time.Time, error) {
 		if t, err := time.Parse(time.RFC3339, s); err == nil {
 			return t, nil
 		}
 		return time.Parse("2006-01-02", s)
 	}
-	if s := c.QueryParam("from"); s != "" {
+	if s := c.QueryParam("from"); s == "all" {
+		from = time.Time{}
+	} else if s != "" {
 		t, err := parse(s)
 		if err != nil {
 			return from, to, echo.NewHTTPError(http.StatusBadRequest, "invalid from")
@@ -45,11 +44,10 @@ func statsRange(c echo.Context) (time.Time, time.Time, error) {
 		}
 		to = t
 	}
-	if !to.After(from) || to.Sub(from) > statsMaxDays*24*time.Hour {
+	if !to.After(from) {
 		return from, to, echo.NewHTTPError(http.StatusBadRequest, "invalid range")
 	}
-	// A cache key that does not change with every second.
-	return from.Truncate(time.Hour), to.Truncate(time.Hour).Add(time.Hour), nil
+	return from, to, nil
 }
 
 // statsOwn tells whether the caller may read the campaign, by the rule checkCampaignPerm uses
@@ -57,6 +55,9 @@ func statsRange(c echo.Context) (time.Time, time.Time, error) {
 func statsOwn(user auth.User, c models.StatsCampaign) bool {
 	if user.HasPerm(auth.PermCampaignsGetAll) {
 		return true
+	}
+	if !user.HasPerm(auth.PermCampaignsGet) {
+		return false
 	}
 	all, permitted := user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage)
 	if all {
@@ -90,12 +91,16 @@ func (a *App) GetStatsCampaigns(c echo.Context) error {
 		ca.Own = statsOwn(user, *ca)
 		if ca.Own {
 			for j, id := range ca.ListIDs {
-				ca.Lists = append(ca.Lists, models.StatsList{ID: int(id), Name: ca.ListNames[j]})
+				ca.Lists = append(ca.Lists, models.StatsList{
+					ID: int(id), Name: ca.ListNames[j], Source: ca.ListSources[j], CreatedAt: ca.ListCreatedAt[j],
+				})
 			}
 		}
-		ca.ListIDs, ca.ListNames = nil, nil
+		// Proof v1 uses the current tracking configuration and whole-campaign event counts.
+		historicalOff := ca.TrackingOff && ca.Viewers == 0 && ca.Clickers == 0
+		ca.TrackingOff = historicalOff || !a.cfg.Privacy.IndividualTracking || a.cfg.Privacy.DisableTracking
 		if !a.cfg.Privacy.IndividualTracking || a.cfg.Privacy.DisableTracking {
-			ca.TrackingOff = true
+			ca.CombinedViewers, ca.CombinedClickers = null.Int{}, null.Int{}
 		}
 	}
 	return c.JSON(http.StatusOK, okResp{struct {
