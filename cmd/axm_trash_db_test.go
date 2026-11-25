@@ -14,6 +14,7 @@ import (
 	"github.com/jmoiron/sqlx/types"
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/models"
+	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 )
 
@@ -333,6 +334,13 @@ func TestTrashBulkDeletes(t *testing.T) {
 	}
 	if !e.listExists(e.plainList) || !e.listExists(other) {
 		t.Fatal("a refused delete removed a list")
+	}
+	// The refusal is not the DB's English message (the test instance has no language file, so the
+	// text is the key of the Korean or English sentence that has the name of the dynamic list).
+	if err := e.core.DeleteLists([]int{e.plainList}, "", true, nil); err == nil {
+		t.Fatal("an exclude list was deleted")
+	} else if he, ok := err.(*echo.HTTPError); !ok || he.Code != http.StatusBadRequest || strings.Contains(fmt.Sprint(he.Message), "exclude list of the dynamic list") {
+		t.Fatalf("the refusal shows the DB message: %v", err)
 	}
 	e.get(&n, `SELECT COUNT(*) FROM axm_deleted_lists`)
 	if n != 2 {

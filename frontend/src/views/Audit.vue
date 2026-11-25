@@ -9,6 +9,9 @@
         <p class="is-size-7 has-text-grey" data-cy="audit-help">
           {{ $t('audit.help', { months: 12 }) }}
         </p>
+        <p class="is-size-7 has-text-grey mt-1" data-cy="audit-not-logged">
+          {{ $t('audit.notLogged') }}
+        </p>
       </div>
     </header>
 

@@ -52,10 +52,15 @@
           days: DAYS,
         }) }}</b>
         <span class="clone-sub">{{ $t('campaigns.clone.receivedRisk') }}</span>
+        <span class="clone-sub" data-cy="clone-received-scope">{{ scopeText }}</span>
       </div>
       <div v-else-if="eff !== 'none' && ruleNote" class="clone-received is-note" data-cy="clone-received" data-state="rule" role="status">
         <b>{{ ruleNote }}</b>
         <span v-if="restNote" class="clone-sub" data-cy="clone-rule-rest">{{ restNote }}</span>
+      </div>
+      <div v-else-if="received.state === 'ok' && received.excluded === 0" class="clone-received is-note" data-cy="clone-received" data-state="none">
+        {{ $t('campaigns.clone.receivedNone', { days: DAYS }) }}
+        <span class="clone-sub" data-cy="clone-received-scope">{{ scopeText }}</span>
       </div>
 
       <!-- LST-65: the rule that leaves out the people who got a campaign lately now works when the
@@ -176,6 +181,11 @@ export default {
 
     // What the copy does: the choice, while it is offered; otherwise nothing.
     eff() { return this.showRule ? this.choice : 'none'; },
+
+    // What the count covers: this one campaign's send records of the last DAYS days.
+    scopeText() {
+      return this.$t('campaigns.clone.receivedScope', { name: this.campaign.name, days: DAYS });
+    },
 
     isWarn() {
       return this.eff === 'none' && this.received.state === 'ok' && this.received.excluded > 0;
