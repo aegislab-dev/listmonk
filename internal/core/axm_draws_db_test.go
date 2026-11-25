@@ -903,7 +903,9 @@ func TestExcludeListCannotBeDeleted(t *testing.T) {
 	e.subs(base, 3, "confirmed", `{}`)
 	dyn := testList(e.db, v2Filter("lists", []int{base}, []int{cust}), "single")
 	err := e.c.DeleteLists([]int{cust}, "", true, nil)
-	if err == nil || !strings.Contains(err.Error(), "exclude list") {
+	// The refusal is the sentence of the instance's language (the test instance has no language
+	// file, so it reads as the key), never the DB's English message.
+	if err == nil || !strings.Contains(err.Error(), "lists.dynamic.excludeInUse") || strings.Contains(err.Error(), "dynamic list \"") {
 		t.Fatalf("%v", err)
 	}
 	if he, ok := err.(*echo.HTTPError); !ok || he.Code != 400 {

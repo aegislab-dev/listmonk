@@ -224,7 +224,8 @@ describe('list draws and exclude lists', () => {
     });
     cy.request({ method: 'DELETE', url: `/api/lists/${exId}`, failOnStatusCode: false }).then(({ status, body }) => {
       expect(status).to.eq(400);
-      expect(body.message).to.contain(`"${dynName}"`).and.contain('exclude list');
+      // The name is whichever dynamic list the DB found first (an earlier test has one too).
+      expect(body.message).to.match(/^The dynamic list ".+" uses this list as an exclude list, so it cannot be deleted/);
       expect(body.message).not.to.contain('exclude list of the dynamic list');
     });
     cy.request('/api/lists?per_page=all&query=' + encodeURIComponent(dynName)).then(({ body }) => {
