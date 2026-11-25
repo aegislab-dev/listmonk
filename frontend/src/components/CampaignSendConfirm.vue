@@ -184,7 +184,9 @@
 <script>
 import Vue from 'vue';
 import dayjs from 'dayjs';
-import { richParts, sendConfirmModel, sendProgress, untilKey } from '../send-confirm';
+import {
+  richParts, sendConfirmModel, sendProgress, untilKey,
+} from '../send-confirm';
 import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 
 // What a reading of the checks shows, to tell whether a new reading differs from the one on
@@ -197,7 +199,7 @@ import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 const fingerprint = (pf) => {
   const v = new Set(pf.varies || []);
   const keep = (part, value) => (v.has(part) ? null : value);
-  const progress = pf.mode === 'resume' || pf.resumed ? [pf.sent, pf.sentMax, pf.toSend] : null;
+  const progress = pf.mode === 'resume' || pf.resumed ? [pf.sent, pf.sentIsMinimum, pf.toSend] : null;
   return JSON.stringify([
     pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, [...v].sort(), pf.senderPerSubscriber,
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),

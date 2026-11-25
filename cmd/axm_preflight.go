@@ -71,11 +71,11 @@ type preflightResponse struct {
 	Overlap  int `json:"overlap"`
 	Excluded int `json:"excluded"`
 	// Resume: the people still to be sent, the number sent so far and the total counted at the start.
-	Remaining int       `json:"remaining"`
-	Sent      int       `json:"sent"`
-	SentMax   int       `json:"sent_max,omitempty"` // Upper bound when deleted history makes the count uncertain.
-	ToSend    int       `json:"to_send"`
-	AsOf      time.Time `json:"as_of"`
+	Remaining     int       `json:"remaining"`
+	Sent          int       `json:"sent"`
+	SentIsMinimum bool      `json:"sent_is_minimum,omitempty"`
+	ToSend        int       `json:"to_send"`
+	AsOf          time.Time `json:"as_of"`
 	// Now is the server's clock when the answer leaves: the window keeps time by it, not by a
 	// browser clock that may be behind (LST-48 review).
 	Now time.Time `json:"now"`
@@ -355,14 +355,15 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	sent, sentMax := camp.Sent, 0
+	sent := camp.Sent
 	if countRemaining {
-		sent, sentMax, err = a.core.CampaignSendProgress(ctx, camp)
+		sent, err = a.core.CampaignSendProgress(ctx, camp)
 		if err != nil {
 			return err
 		}
 	}
-	rescheduled := mode == models.PreflightModeScheduled && (aud.Remaining != aud.Total || sent > 0 || camp.LastSubscriberID > 0)
+	sentIsMinimum := countRemaining && camp.LegacySendHistory
+	rescheduled := mode == models.PreflightModeScheduled && (aud.Remaining != aud.Total || sent > 0 || camp.LastSubscriberID > 0 || sentIsMinimum)
 
 	// A draft started under the sender policy is sent from the starting user's address.
 	from := camp.FromEmail
@@ -506,7 +507,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode, Resumed: rescheduled,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
-		Sent: sent, SentMax: sentMax, ToSend: camp.ToSend, AsOf: aud.AsOf,
+		Sent: sent, SentIsMinimum: sentIsMinimum, ToSend: camp.ToSend, AsOf: aud.AsOf,
 		Checks: preflightChecks(facts),
 	}
 	if tz, ok := camp.Attribs["axm_send_tz"].(string); ok {

@@ -1666,6 +1666,16 @@ CREATE TABLE IF NOT EXISTS axm_campaign_expired_sends (
 -- End of AXM expired send totals.
 
 -- AXM preserve removed send totals (LST-67). Keep this block identical to V6_2_1_axm_20.
+-- Only backfill once. Campaigns first sent after this migration have a complete tally.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'campaigns'::regclass
+        AND attname = 'axm_legacy_send_history' AND NOT attisdropped) THEN
+        ALTER TABLE campaigns ADD COLUMN axm_legacy_send_history BOOLEAN NOT NULL DEFAULT FALSE;
+        UPDATE campaigns SET axm_legacy_send_history = TRUE
+        WHERE started_at IS NOT NULL OR sent > 0 OR last_subscriber_id > 0;
+    END IF;
+END $$;
+
 -- Lock parent campaigns before subscriber deletion cascades to their ledger rows.
 -- Campaign deletion takes the parent lock first as well.
 CREATE OR REPLACE FUNCTION axm_lock_send_campaigns_on_subscriber_delete()

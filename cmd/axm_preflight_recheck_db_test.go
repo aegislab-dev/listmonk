@@ -554,19 +554,19 @@ func TestScheduledSaveOfAPausedThenScheduledCampaign(t *testing.T) {
 func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
 	const total, checkpoint, delivered = 40, 10, 30
 	for _, tc := range []struct {
-		name          string
-		saved         int
-		decided       int
-		deleteUsers   bool
-		legacy        bool
-		partialPrefix bool
+		name        string
+		saved       int
+		decided     int
+		deleteUsers bool
+		legacyPurge int
 	}{
 		{name: "stored count covers the expired deliveries", saved: checkpoint},
 		{name: "stored count already includes out-of-order deliveries", saved: delivered},
 		{name: "sent follow-up decisions survive retention", saved: checkpoint, decided: 4},
 		{name: "subscriber API deletes the oldest recipients", saved: checkpoint, deleteUsers: true},
-		{name: "legacy purge lost ten deliveries", saved: checkpoint, legacy: true},
-		{name: "legacy counter overlapped nine surviving deliveries", saved: checkpoint, legacy: true, partialPrefix: true},
+		{name: "legacy purge leaves the checkpoint record", saved: checkpoint, legacyPurge: 9},
+		{name: "legacy purge removes through the checkpoint", saved: checkpoint, legacyPurge: 10},
+		{name: "legacy purge removes a record beyond the checkpoint", saved: checkpoint, legacyPurge: 11},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := scheduledEnv(t)
@@ -576,16 +576,16 @@ func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
 				ids = append(ids, e.pfSub("enabled", "", map[int]string{list: "confirmed"}))
 			}
 			e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, list)
-			e.db.MustExec(`UPDATE campaigns SET status='paused', to_send=$2, sent=$3, last_subscriber_id=$4 WHERE id=$1`,
+			e.db.MustExec(`UPDATE campaigns SET status='paused', started_at=NOW()-INTERVAL '13 months',
+				to_send=$2, sent=$3, last_subscriber_id=$4 WHERE id=$1`,
 				e.campID, total, tc.saved, ids[checkpoint-1])
+			purge := checkpoint
+			if tc.legacyPurge > 0 {
+				purge = tc.legacyPurge
+			}
 			for i, id := range ids[:delivered] {
-				if tc.partialPrefix && i < checkpoint-1 {
-					// The same saved count and surviving ledger can also come from a
-					// history where only the checkpoint delivery expired.
-					continue
-				}
 				age := "1 day"
-				if i < checkpoint {
+				if i < purge {
 					age = "13 months"
 				}
 				e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id,sent_at) VALUES($1,$2,NOW()-$3::INTERVAL)`,
@@ -597,34 +597,35 @@ func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
 			member := e.as(e.superAdmin)
 			path := fmt.Sprintf("/api/campaigns/%d", e.campID)
 			id := strconv.Itoa(e.campID)
-			check := func(mode string, sent, sentMax int) {
+			check := func(mode string, sent, remaining int, minimum bool) {
 				t.Helper()
 				data := pfRead(t, e, member, path+"/preflight", id)
 				var out preflightResponse
 				if err := json.Unmarshal(data, &out); err != nil {
 					t.Fatal(err)
 				}
-				if out.Mode != mode || out.Sent != sent || out.SentMax != sentMax || out.ToSend != total || out.Remaining != total-delivered ||
+				if out.Mode != mode || out.Sent != sent || out.SentIsMinimum != minimum || out.ToSend != total || out.Remaining != remaining ||
 					(mode == "scheduled" && !out.Resumed) {
-					t.Fatalf("%s: sent=%d, sent_max=%d, total=%d, remaining=%d, resumed=%t", out.Mode, out.Sent, out.SentMax, out.ToSend, out.Remaining, out.Resumed)
+					t.Fatalf("%s: sent=%d, sent_is_minimum=%t, total=%d, remaining=%d, resumed=%t", out.Mode, out.Sent, out.SentIsMinimum, out.ToSend, out.Remaining, out.Resumed)
 				}
 			}
-			before := delivered
-			if tc.partialPrefix {
-				before = delivered - checkpoint + 1
-			}
-			check("resume", before, 0)
-			wantExpired, sent, sentMax := checkpoint-tc.decided, delivered, 0
+			check("resume", delivered, total-delivered, false)
+			wantExpired, sent, remaining := purge-tc.decided, delivered, total-delivered
+			minimum := tc.legacyPurge > 0
 			switch {
-			case tc.legacy:
+			case minimum:
 				e.db.MustExec(`DROP TRIGGER axm_count_removed_campaign_sends ON axm_campaign_sends;
 					DROP TRIGGER axm_lock_send_campaigns_on_subscriber_delete ON subscribers;
-					DROP TABLE axm_campaign_expired_sends`)
+					DROP TABLE axm_campaign_expired_sends;
+					ALTER TABLE campaigns DROP COLUMN axm_legacy_send_history`)
 				e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE sent_at < NOW()-INTERVAL '12 months'`)
 				e.db.MustExec(`INSERT INTO settings (key, value) VALUES ('migrations', '["v6.2.1-axm.17"]')
 					ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`)
 				upgrade(e.db, nil, false, true)
-				wantExpired, sent, sentMax = 0, delivered-checkpoint+1, delivered
+				wantExpired, sent = 0, delivered-purge
+				// Once a record after the checkpoint is gone, the sender can queue that
+				// recipient again. The pending count follows the sender's available evidence.
+				remaining += max(0, purge-checkpoint)
 			case tc.deleteUsers:
 				for _, subID := range ids[:checkpoint] {
 					if code, _ := e.call(e.a.DeleteSubscriber, member, http.MethodDelete,
@@ -643,10 +644,10 @@ func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
 			var expired, retained int
 			e.get(&expired, `SELECT COALESCE((SELECT sent FROM axm_campaign_expired_sends WHERE campaign_id=$1), 0)`, e.campID)
 			e.get(&retained, `SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id=$1`, e.campID)
-			if expired != wantExpired || retained != delivered-checkpoint {
+			if expired != wantExpired || retained != delivered-purge {
 				t.Fatalf("expired tally %d, retained ledger %d", expired, retained)
 			}
-			check("resume", sent, sentMax)
+			check("resume", sent, remaining, minimum)
 			if code, data := e.call(e.a.UpdateCampaignStatus, member, http.MethodPut, path+"/status", id, `{"status":"running"}`); code != http.StatusOK {
 				t.Fatalf("reschedule: %d %s", code, data)
 			}
@@ -654,7 +655,17 @@ func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
 			if code, data := e.save("Edited", []int{list}, &tomorrow, "regular"); code != http.StatusOK {
 				t.Fatalf("save: %d %s", code, data)
 			}
-			check("scheduled", sent, sentMax)
+			check("scheduled", sent, remaining, minimum)
+			if minimum {
+				// Once tracked removals begin, a surviving delivery moving into the
+				// tally cannot make the earlier history complete or lower this count.
+				subID := ids[delivered-1]
+				if code, data := e.call(e.a.DeleteSubscriber, member, http.MethodDelete,
+					fmt.Sprintf("/api/subscribers/%d", subID), strconv.Itoa(subID), ""); code != http.StatusOK {
+					t.Fatalf("delete subscriber %d: %d %s", subID, code, data)
+				}
+				check("scheduled", sent, remaining, true)
+			}
 			var stored int
 			e.get(&stored, `SELECT sent FROM campaigns WHERE id=$1`, e.campID)
 			if stored != tc.saved {

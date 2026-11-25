@@ -190,19 +190,14 @@ func (c *Core) GetCampaignPausedAt(id int, fallback null.Time) null.Time {
 	return at
 }
 
-// CampaignSendProgress reconciles the saved counter with known deliveries. If the
-// checkpoint's delivery was lost without a tally, the saved counter may already
-// include some deliveries beyond it. Report the bounds when that overlap is unknown.
-func (c *Core) CampaignSendProgress(ctx context.Context, camp models.Campaign) (sent, upper int, err error) {
+// CampaignSendProgress reconciles the saved counter with known deliveries. For campaigns
+// that began before the deletion tally, the result may be only a minimum.
+func (c *Core) CampaignSendProgress(ctx context.Context, camp models.Campaign) (int, error) {
 	var history struct {
-		Recorded      int  `db:"recorded"`
-		Removed       int  `db:"removed"`
-		HasCheckpoint bool `db:"has_checkpoint"`
-		HasLater      bool `db:"has_later"`
+		Recorded int `db:"recorded"`
+		Removed  int `db:"removed"`
 	}
-	err = c.db.GetContext(ctx, &history, `SELECT COUNT(*) AS recorded,
-		COALESCE(BOOL_OR(subscriber_id = $2), false) AS has_checkpoint,
-		COALESCE(BOOL_OR(subscriber_id > $2), false) AS has_later,
+	err := c.db.GetContext(ctx, &history, `SELECT COUNT(*) AS recorded,
 		COALESCE((SELECT sent FROM axm_campaign_expired_sends WHERE campaign_id = $1), 0) AS removed
 		FROM (
 			SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1
@@ -210,20 +205,11 @@ func (c *Core) CampaignSendProgress(ctx context.Context, camp models.Campaign) (
 			SELECT k.subscriber_id FROM axm_campaign_followup_claims k WHERE k.campaign_id = $1 AND k.sent
 				AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends s
 					WHERE s.campaign_id = k.campaign_id AND s.subscriber_id = k.subscriber_id)
-		) deliveries`, camp.ID, camp.LastSubscriberID)
+		) deliveries`, camp.ID)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
-	sent = max(camp.Sent, history.Recorded+history.Removed)
-	if history.Removed == 0 && !history.HasCheckpoint && history.HasLater && camp.LastSubscriberID > 0 && camp.Sent > 0 {
-		// The checkpoint itself is a delivery outside the retained records. With
-		// no identities for the other saved deliveries, they may overlap the ledger.
-		sent = max(sent, history.Recorded+1)
-		if possible := camp.Sent + history.Recorded; possible > sent {
-			upper = possible
-		}
-	}
-	return sent, upper, nil
+	return max(camp.Sent, history.Recorded+history.Removed), nil
 }
 
 // ScheduledCheck judges the saved lists and remaining recipients. An error refuses the save.

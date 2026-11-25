@@ -29,8 +29,8 @@ const pf = (over = {}) => ({
 });
 const model = (over, opts) => sendConfirmModel(pf(over), { now: NOW, tz: 'Asia/Seoul', ...opts });
 
-test('delivery progress shows the range when the overlap with removed history is unknown', () => {
-  assert.deepEqual(sendProgress({ sent: 21, sentMax: 30, toSend: 40 }), { sent: '21–30', total: 40 });
+test('delivery progress shows a minimum when earlier records may have been removed', () => {
+  assert.deepEqual(sendProgress({ sent: 20, sentIsMinimum: true, toSend: 40 }), { sent: '≥20', total: 40 });
   assert.deepEqual(sendProgress({ sent: 30, toSend: 40 }), { sent: 30, total: 40 });
 });
 
