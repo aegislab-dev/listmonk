@@ -103,7 +103,13 @@
         <div v-for="c in recent" :key="c.id" class="p-3" style="border-bottom:1px solid #e5e7eb">
           <b>#{{ c.id }} {{ c.name }}</b>
           <span class="st-note ml-2">{{ $t('stats.sentCount', { n: n(c.sent) }) }} ·
-            {{ classify(c).untracked ? $t('stats.untracked') : $t('stats.clickValue', { rate: pctText(clickRate(c)) }) }}</span>
+            <template v-if="classify(c).untracked">{{ $t('stats.untracked') }}</template>
+            <template v-else>
+              {{ $t('stats.clickValue', { rate: pctText(clickRate(c)) }) }} ·
+              {{ $t('stats.openValue', { rate: pctText(pct(c.viewers, c.sent)) }) }}
+            </template>
+            · {{ $t('stats.bounceValue', { rate: pctText(pct(c.hard + c.soft, c.sent)) }) }}
+          </span>
           <a class="is-pulled-right" :data-cy="`pick-${c.id}`" href="#" @click.prevent="pickRecent(c)" @keyup.enter="pickRecent(c)">{{ $t('stats.pick') }}</a>
         </div>
       </div>
@@ -138,7 +144,7 @@ import CampaignReactionList from '../components/CampaignReactionList.vue';
 import Chart from '../components/Chart.vue';
 import CampaignResultSummary from '../components/CampaignResultSummary.vue';
 import {
-  classify, clickRate, fmt, pctText,
+  classify, clickRate, fmt, pct, pctText,
 } from '../stats';
 import { buildProofSummaryV1, teamsOfCampaign, trackingStateFor } from '../proof-summary';
 
@@ -238,6 +244,7 @@ export default Vue.extend({
     n: fmt,
     classify,
     clickRate,
+    pct,
     pctText,
     onFromDateChange(value) {
       this.form.from = value;

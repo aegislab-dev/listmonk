@@ -266,7 +266,17 @@ describe('follow-up campaign draft', () => {
       .should('have.attr', 'aria-label', reactionTitle).click();
     checkPlainDialog();
 
+    cy.visit(`/admin/campaigns/${followupId}`);
+    cy.get('[data-cy=result-summary]').should('be.visible').within(() => {
+      cy.get('[data-cy=result-clone]').should('exist');
+      cy.get('[data-cy=result-followup]').should('not.exist');
+    });
+
     cy.visit(`/admin/campaigns/analytics?id=${followupId}`);
+    cy.get('[data-cy=result-summary]').should('be.visible').within(() => {
+      cy.get('[data-cy=result-clone]').should('exist');
+      cy.get('[data-cy=result-followup]').should('not.exist');
+    });
     cy.get('[data-cy=btn-analytics-reaction]').should('contain', reactionTitle).click();
     checkPlainDialog();
   });

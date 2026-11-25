@@ -127,7 +127,11 @@ describe('Statistics dashboard (fixed answers)', () => {
     // Other teams: name and numbers only, no button to open; own campaigns have the buttons.
     cy.get('[data-cy=camp-row-20]').should('contain', 'Other A').and('contain', 'Other team subject').and('contain', 'Cannot open or clone').and('have.attr', 'data-own', 'false');
     cy.get('[data-cy=camp-row-20] a').should('not.exist');
-    cy.get('[data-cy=camp-row-12] a').should('exist');
+    cy.get('[data-cy=camp-row-12] a').should('have.length', 3).then(($links) => {
+      expect([...$links].map((link) => link.dataset.cy)).to.deep.eq([
+        'result-analytics', 'result-clone', 'result-followup',
+      ]);
+    });
     // The fresh one says it is collecting and is not compared; the running one is left out.
     cy.get('[data-cy=camp-row-13]').should('contain', 'Collecting').and('contain', 'Not compared');
     cy.get('[data-cy=camp-row-24]').should('contain', 'Running');
@@ -371,10 +375,16 @@ describe('Result summary on the campaign and analytics screens (fixed answers)',
   });
 
   it('hides empty charts and queries from the actual start for a recent campaign', () => {
-    stub();
+    const tracked = camp({ id: 91, name: 'Tracked', viewers: 431, clickers: 89, hard: 10, soft: 5 });
+    const untracked = camp({ id: 92, name: 'Untracked', viewers: 0, clickers: 0 });
+    stub({ cur: [tracked, untracked] });
     cy.loginAndVisit('/admin/campaigns/analytics');
     cy.get('[data-cy=analytics-empty]').should('be.visible');
     cy.get('.charts').should('not.exist');
+    cy.contains('[data-cy=analytics-empty] .st-card > div', 'Tracked')
+      .should('contain', 'Click 8.9%').and('contain', 'Open 43.1%').and('contain', 'Bounce 1.5%');
+    cy.contains('[data-cy=analytics-empty] .st-card > div', 'Untracked')
+      .should('contain', 'Not tracked').and('contain', 'Bounce 2.0%').and('not.contain', 'Open 0.0%');
     cy.request('/api/campaigns?per_page=1').then(({ body }) => {
       const { id } = body.data.results[0];
       const started = new Date(NOW - 5 * 86400000 + 61000).toISOString();
