@@ -131,12 +131,11 @@ describe('proof summary (fixed answers)', () => {
     });
   });
 
-  it('turns the button off for no campaign and for two campaigns', () => {
+  it('hides the row without a campaign and disables the button for two campaigns', () => {
     cy.loginAndVisit('/admin/campaigns/analytics');
     fixed();
     cy.visit('/admin/campaigns/analytics');
-    cy.get('[data-cy=proof-summary-help]').should('have.attr', 'data-reason', 'one');
-    cy.get('[data-cy=btn-proof-summary]').should('be.disabled');
+    cy.get('[data-cy=proof-summary]').should('not.exist');
 
     cy.intercept('GET', '/api/campaigns/53', { data: campaign({ id: 53, uuid: '00000000-0000-4000-8000-000000000053' }) }).as('camp53');
     cy.visit('/admin/campaigns/analytics?id=52&id=53');
@@ -254,7 +253,7 @@ describe('proof summary (a team member, a real server)', () => {
       .its('status').should('eq', 403);
     loginAs(user, pass, encodeURIComponent(`/admin/campaigns/analytics?id=${campB.id}`));
     cy.location('search').should('contain', `id=${campB.id}`);
-    cy.get('[data-cy=btn-proof-summary]').should('be.disabled');
+    cy.get('[data-cy=proof-summary]').should('not.exist');
     cy.get('[data-cy=proof-summary-text]').should('not.exist');
   });
 });

@@ -306,12 +306,12 @@
 </template>
 
 <script>
-import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
+import cloneCampaign from '../campaign-clone';
 import reactionStatuses, { isFollowupSourceCandidate, loadReactionPreset } from '../campaign-reaction-list';
 import {
-  splitAttribs, TZ_ATTRIB, zoneAbbr, zoneParts,
+  splitAttribs, zoneAbbr, zoneParts,
 } from '../schedule-time';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import CampaignCloneForm from '../components/CampaignCloneForm.vue';
@@ -514,86 +514,15 @@ export default Vue.extend({
       });
     },
 
-    onClone({ name, listIds, rule }) {
+    async onClone(selection) {
       const c = this.cloneAsk;
       this.cloneAsk = null;
-      if (c) this.cloneCampaign(name, c, listIds, rule);
-    },
+      if (!c) return;
 
-    // The lists are the ones the person chose in the copy window, never the original's.
-    async cloneCampaign(name, c, listIds, rule) {
-      // The From list may have changed in another session: refresh it first,
-      // then read the campaign, whose from_match the server computes from it.
-      await this.$api.getServerConfig();
-
-      // Fetch the template body from the server.
-      let body = '';
-      let bodySource = null;
-      let { fromEmail } = c;
-      const list = this.serverConfig.from_addresses || [];
-      const accountSenders = (this.serverConfig.sender_domains || []).length > 0;
-      await this.$api.getCampaign(c.id).then((data) => {
-        body = data.body;
-        bodySource = data.bodySource;
-        // The original From goes as it is: the server matches it to the
-        // current list itself (an index from here could point at another entry
-        // if the list changed meanwhile).
-        fromEmail = data.fromEmail;
-      });
-
-      const now = this.$utils.getDate();
-      const sendLater = !!c.sendAt;
-      let sendAt = null;
-      if (sendLater) {
-        sendAt = dayjs(c.sendAt).isAfter(now) ? c.sendAt : now.add(7, 'day');
-      }
-
-      // With a From list a custom From header is refused, so a copy goes without one.
-      const fromHeaderFree = !accountSenders && list.length > 0;
-      const dropFromHeader = (set) => Object.fromEntries(Object.entries(set).filter(([k]) => k.trim().toLowerCase() !== 'from'));
-
-      const zone = splitAttribs(c.attribs);
-      const data = {
-        name,
-        subject: c.subject,
-        lists: listIds,
-        type: c.type,
-        from_email: fromEmail,
-        reply_to: c.replyTo,
-        content_type: c.contentType,
-        messenger: c.messenger,
-        tags: c.tags,
-        template_id: c.templateId,
-        body,
-        body_source: bodySource,
-        altbody: c.altbody,
-        headers: fromHeaderFree ? (c.headers || []).map(dropFromHeader).filter((h) => Object.keys(h).length) : c.headers,
-        send_later: sendLater,
-        send_at: sendAt,
-        // The copy keeps the time zone the scheduled time was chosen in.
-        attribs: sendLater && zone.stored ? { [TZ_ATTRIB]: zone.tz } : undefined,
-        archive: c.archive,
-        archive_template_id: c.archiveTemplateId,
-        archive_meta: c.archiveMeta,
-        media: c.media.map((m) => m.id),
-      };
-
-      if (c.archive) {
-        data.archive_slug = `${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString().slice(-4)}`;
-      }
-
-      this.$api.createCampaign(data).then(async (d) => {
-        // The recent-send rule the person chose in the window (LST-65). A rule that cannot be
-        // saved leaves the copy as it is, and the person is told (the edit page shows the rule).
-        if (rule) {
-          try {
-            await this.$api.saveRecentRule(d.id, rule);
-          } catch (err) {
-            this.$utils.toast(this.$t('campaigns.recent.saveError'), 'is-danger');
-          }
-        }
-        this.$router.push({ name: 'campaign', params: { id: d.id } });
-      });
+      const result = await cloneCampaign(this.$api, this.$utils.getDate(), c.id, selection).catch(() => null);
+      if (!result) return;
+      if (result.ruleSaveFailed) this.$utils.toast(this.$t('campaigns.recent.saveError'), 'is-danger');
+      this.$router.push({ name: 'campaign', params: { id: result.campaign.id } });
     },
 
     // Running and paused campaigns cannot be deleted (the server refuses too, LST-55).
@@ -666,7 +595,7 @@ export default Vue.extend({
   },
 
   computed: {
-    ...mapState(['campaigns', 'loading', 'serverConfig']),
+    ...mapState(['campaigns', 'loading']),
 
     followupCandidates() {
       return (this.campaigns.results || []).filter((c) => isFollowupSourceCandidate(c) && this.canReact(c));
