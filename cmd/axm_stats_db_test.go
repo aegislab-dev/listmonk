@@ -202,10 +202,10 @@ func TestStatsNumbersTeamsAndVisibility(t *testing.T) {
 		strings.Contains(analytics.Body.String(), "Webinar") || strings.Contains(analytics.Body.String(), `"own":true`) {
 		t.Errorf("analytics without campaign read permission: %d %s", analytics.Code, analytics.Body)
 	}
-	// An operator with campaigns:get_all reads every list.
+	// The operator with lists:manage_all can open all dashboard campaign details.
 	_, adm, _ := e.statsFor(e.admin)
 	if !adm.Campaigns[0].Own {
-		t.Error("an operator with campaigns:get_all sees no lists")
+		t.Error("the operator cannot see campaign details")
 	}
 
 	// All time includes the campaign older than 800 days.
@@ -237,6 +237,40 @@ func TestStatsNumbersTeamsAndVisibility(t *testing.T) {
 		if rec.Code != http.StatusOK || got.From != tc.from || got.To != tc.to || len(got.Campaigns) != tc.count {
 			t.Errorf("period: %d %s", rec.Code, rec.Body)
 		}
+	}
+}
+
+func TestStatsTeamOwnershipWithCompanyRead(t *testing.T) {
+	e := newReactionEnv(t)
+	e.db.MustExec(`DELETE FROM campaigns WHERE id = $1`, e.campID)
+	own := e.statsCampaign("Own", 1, e.aList)
+	shared := e.statsCampaign("Shared list", 2, e.bothList)
+	foreign := e.statsCampaign("Foreign", 3, e.bList)
+	mixed := e.statsCampaign("Mixed lists", 4, e.aList, e.bList)
+	unassigned := e.statsCampaign("Unassigned", 5, e.plainList)
+
+	for _, perms := range [][]string{
+		{"campaigns:get", "lists:get_all"},
+		{"campaigns:get_all"},
+		{"campaigns:get_all", "lists:get_all"},
+	} {
+		t.Run(strings.Join(perms, "+"), func(t *testing.T) {
+			e.db.MustExec(`UPDATE roles SET permissions = $1 WHERE id = $2`, pq.Array(append([]string{"campaigns:get_analytics"}, perms...)), e.memberRole)
+			code, data, raw := e.statsFor(e.as(e.ua))
+			want := map[int]bool{own: true, shared: true, foreign: false, mixed: false, unassigned: false}
+			if code != http.StatusOK || len(data.Campaigns) != len(want) {
+				t.Fatalf("status %d, campaigns %s", code, raw)
+			}
+			for _, row := range data.Campaigns {
+				isOwn, ok := want[row.ID]
+				if !ok || row.Own != isOwn || (len(row.Lists) > 0) != isOwn || row.Sent != 100 || row.Viewers != 3 {
+					t.Errorf("unexpected dashboard row: %+v", row)
+				}
+			}
+			if strings.Contains(raw, `"lists":[{"id":`+fmt.Sprint(e.bList)+`,`) || strings.Contains(raw, `"name":"B1"`) {
+				t.Errorf("foreign list was included: %s", raw)
+			}
+		})
 	}
 }
 

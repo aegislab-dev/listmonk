@@ -2,7 +2,6 @@ package main
 
 import (
 	"net/http"
-	"slices"
 	"strconv"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 // Statistics dashboard (LST-64). Results are public to everyone who may see analytics, in
 // every team: counts, rates, the name and the subject of a campaign. Who the lists are, who
 // is on them, addresses and bodies stay behind the permissions they already had: a campaign
-// that the caller could not open carries no list ids or names here.
+// outside the caller's list scope carries no list IDs or names here.
 
 const statsDefaultDays = 90
 
@@ -51,25 +50,17 @@ func statsRange(c echo.Context) (time.Time, time.Time, error) {
 	return from, to, nil
 }
 
-// statsOwn tells whether the caller may read the campaign, by the rule checkCampaignPerm uses
-// for reading: campaigns:get_all, a permission over every list, or one of its lists.
-func statsOwn(user auth.User, c models.StatsCampaign) bool {
-	if user.HasPerm(auth.PermCampaignsGetAll) {
-		return true
-	}
-	if !user.HasPerm(auth.PermCampaignsGet) {
+// statsOwn limits dashboard details to campaigns the caller can read whose live
+// recipient lists are all in their list scope.
+func statsOwn(user auth.User, campaign models.StatsCampaign) bool {
+	if !user.HasPerm(auth.PermCampaignsGet) && !user.HasPerm(auth.PermCampaignsGetAll) {
 		return false
 	}
-	all, permitted := user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage)
-	if all {
-		return true
+	ids := make([]int, len(campaign.ListIDs))
+	for i, id := range campaign.ListIDs {
+		ids[i] = int(id)
 	}
-	for _, id := range c.ListIDs {
-		if slices.Contains(permitted, int(id)) {
-			return true
-		}
-	}
-	return false
+	return campaignIsOwn(user, ids)
 }
 
 // GetStatsCampaigns returns the campaigns of the range with their counts and the teams.

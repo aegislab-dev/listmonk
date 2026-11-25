@@ -251,7 +251,9 @@
     "internal/core/axm_sub_boundary*.go",
     "internal/core/axm_teams*.go",
     "cmd/roles.go",
-    "cmd/users.go"
+    "cmd/users.go",
+    "internal/core/roles.go",
+    "internal/core/users.go"
    ],
    "specs": [
     "list-teams.cy.js"
