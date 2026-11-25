@@ -323,6 +323,26 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-cancel]').click();
   });
 
+  it('blocks the start when the recent rule excludes every eligible recipient', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('GET', preflight, (req) => {
+      req.continue((res) => {
+        const d = res.body.data;
+        d.will_send = 0;
+        d.recent.excluded = d.recipients;
+        d.checks = d.checks.filter((check) => check.key !== 'recent.applied');
+        d.checks.unshift({ key: 'recent.all', level: 'block', params: { days: d.recent.days } });
+      });
+    }).as('pf');
+    row('rule').find('[data-cy=btn-start]').click();
+    cy.wait('@pf');
+    ready();
+    cy.get('[data-cy="send-check-recent.all"]').should('have.attr', 'data-level', 'block');
+    cy.get('[data-cy="send-check-recent.applied"]').should('not.exist');
+    cy.get('[data-cy=send-ok]').should('be.disabled');
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
   it('shows remaining recipients and the exclusion history when resuming with the rule', () => {
     cy.visit('/admin/campaigns');
     cy.intercept('GET', preflight, (req) => {

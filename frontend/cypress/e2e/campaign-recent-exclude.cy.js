@@ -83,6 +83,22 @@ describe('Recent-send exclusion settings', () => {
     cy.location('hash').should('eq', '#content');
   });
 
+  it('keeps the rule locked and shows its holds when a started campaign is scheduled again', () => {
+    cy.intercept('GET', `/api/campaigns/${campaignId}`, (req) => {
+      req.continue((res) => {
+        Object.assign(res.body.data, { status: 'scheduled', started_at: new Date().toISOString() });
+      });
+    });
+    cy.intercept('GET', rulePath(), (req) => {
+      req.continue((res) => {
+        res.body.data.held = 1;
+      });
+    });
+    openCampaign(campaignId);
+    cy.get(switchInput).should('be.checked').and('be.disabled');
+    cy.get('[data-cy=recent-held]').should('contain', '1');
+  });
+
   it('loads a saved rule, warns on send and disables editing for a reader', () => {
     openCampaign(campaignId);
     cy.get(switchInput).should('be.checked').and('not.be.disabled');
