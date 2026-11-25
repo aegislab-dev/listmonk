@@ -341,7 +341,7 @@ v6.2.0 importer의 UTF-8 오류·실패 복구 결함은 프론트 변경으로 
 ### 동적 리스트 규칙 버전 2
 - `axm_filter`에 `"version": 2`와 `"exclude": {"lists": [ID…]}`(일반 리스트 0~20개)를 쓸 수 있다. 제외 리스트에 구독 행이 있으면(상태 무관, 수신거부 포함) 구성원에서 빠진다. 버전 2는 조건이 0개여도 되지만 조건이나 제외 리스트 중 하나는 있어야 한다. 제외 리스트는 일반 리스트만 고를 수 있고 기준 리스트와 같은 조회 권한을 요구한다.
 - 버전 1 규칙은 그대로이고 결과도 같다(함수는 버전이 `2`일 때만 새 경로를 탄다). `axm_filter_members()`를 교체했다(`PARALLEL SAFE` 유지). `axm_filter_match()`는 고치지 않았고, 버전 2 규칙은 `jsonb_set`으로 버전 1로 바꿔 넘긴다.
-- 제외 리스트로 쓰이는 리스트는 지울 수 없다(DB 트리거 `axm_guard_exclude_list_delete`, SQLSTATE `AX001`, API 400). 지우면 제외된 사람이 조용히 대상에 돌아와 발송되기 때문이다. 규칙에서 빼거나 동적 리스트를 먼저 지운다. **막는 것은 삭제뿐이다**: 제외 리스트에서 사람을 빼거나 구독자를 지우면 그 사람은 다시 발송 대상이 된다(화면의 제외 리스트 도움말 `lists.dynamic.excludeHelp`가 이를 말한다). 트리거의 메시지는 영어라 `internal/core/lists.go`·`axm_trash.go`가 `excludeInUseErr`(`axm_dynamic_lists.go`)로 동적 리스트 이름을 뽑아 `lists.dynamic.excludeInUse` 문장으로 400을 낸다(이름을 못 뽑으면 `excludeInUseAny`). 트리거·스키마는 그대로다(LST-69).
+- 제외 리스트로 쓰이는 리스트는 지울 수 없다(DB 트리거 `axm_guard_exclude_list_delete`, SQLSTATE `AX001`, API 400). 지우면 제외된 사람이 조용히 대상에 돌아와 발송되기 때문이다. 규칙에서 빼거나 동적 리스트를 먼저 지운다. **막는 것은 삭제뿐이다**: 제외 리스트에서 사람을 빼면 그 사람은 다시 발송 대상이 된다(화면의 제외 리스트 도움말 `lists.dynamic.excludeHelp`가 이를 말한다. 구독자 자체를 지우면 그 사람은 어느 쪽에도 없으니 대상이 아니다). 트리거의 메시지는 영어라 `internal/core/lists.go`·`axm_trash.go`가 `excludeInUseErr`(`axm_dynamic_lists.go`)로 동적 리스트 이름을 뽑아 `lists.dynamic.excludeInUse` 문장으로 400을 낸다(이름을 못 뽑으면 `excludeInUseAny`). 트리거·스키마는 그대로다(LST-69).
 
 ### 뽑기
 - 리스트 목록의 「뽑아서 새 리스트 만들기」(`POST /api/lists/:id/draw`, 미리보기 `.../draw/preview`, 기록 `GET /api/lists/draws`). 권한은 `lists:manage_all`(기록 조회는 원본 또는 뽑은 리스트를 볼 수 있는 사용자). 원본은 일반·동적 리스트이고, 뽑은 리스트와 보관된 리스트는 원본이 될 수 없다.
@@ -576,7 +576,7 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 
 ### 감사 기록 (`axm_audit_log`, `.10`)
 
-한 줄에 누가(사용자 ID·사용자명·이름·종류)·언제·무엇을(`action`)·대상(종류·ID·이름)·건수·`detail`(JSONB)이 들어간다. 사용자 ID에는 외래 키가 없고 이름을 복사해 두어 계정이 지워져도 남는다. API 토큰 계정은 `user_type=api`, 서버가 스스로 한 일(휴지통 만료)은 `system`이다. 핸들러가 **동작이 성공한 뒤** 기록한다(실패한 요청·403은 기록이 없다). 기록 쓰기가 실패하면 서버 로그에만 남기고 이미 일어난 동작의 응답은 바꾸지 않는다(동작은 성공했는데 실패로 답하지 않기 위해). 기록은 화면·API에서 고치거나 지울 수 없다(조회 API만 있다). 감사 화면의 도움말(`audit.help`)은 남기는 행동을, 둘째 줄(`audit.notLogged`)은 남기지 않는 것(구독자 추가·수정, 차단 해제, 캠페인 만들기·내용 수정, 반송 삭제, 템플릿·미디어, 보내는 주소)을 적는다(LST-69). 기록하는 행동을 더하거나 빼면 두 문구도 고친다.
+한 줄에 누가(사용자 ID·사용자명·이름·종류)·언제·무엇을(`action`)·대상(종류·ID·이름)·건수·`detail`(JSONB)이 들어간다. 사용자 ID에는 외래 키가 없고 이름을 복사해 두어 계정이 지워져도 남는다. API 토큰 계정은 `user_type=api`, 서버가 스스로 한 일(휴지통 만료)은 `system`이다. 핸들러가 **동작이 성공한 뒤** 기록한다(실패한 요청·403은 기록이 없다). 기록 쓰기가 실패하면 서버 로그에만 남기고 이미 일어난 동작의 응답은 바꾸지 않는다(동작은 성공했는데 실패로 답하지 않기 위해). 기록은 화면·API에서 고치거나 지울 수 없다(조회 API만 있다). 감사 화면의 도움말(`audit.help`)은 남기는 행동을, 둘째 줄(`audit.notLogged`)은 남기지 않는 것(구독자 추가·수정, 차단 해제, 캠페인 만들기·내용 수정(보내는 주소 포함), 반송 삭제, 템플릿·미디어)을 적는다. 설정 변경(`settings.update`)은 바뀐 항목 이름(`axm.from_addresses` 등)만 남기고 값은 남기지 않는다(LST-69). 행동 목록의 기준은 `frontend/src/audit.js`의 `AUDIT_ACTIONS`다. 기록하는 행동을 더하거나 빼면 두 문구도 고친다.
 
 | 영역 | action |
 |---|---|

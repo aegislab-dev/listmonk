@@ -533,6 +533,8 @@ export default Vue.extend({
     },
 
     showBulkListForm() {
+      // The form would only say after the lists were picked that "select all" needs a list.
+      if (this.needListForAll()) return;
       this.isBulkListFormVisible = true;
     },
 
@@ -637,12 +639,12 @@ export default Vue.extend({
 
     // "Select all" with no list chosen reaches only the people who are on every list of the
     // user at once (the statement for a bulk change matches all the lists it is given), which is
-    // nobody once the user has two lists or more. Say so before asking, as nothing would happen.
+    // nobody once the user has two lists or more (archived ones count: the server reads them too). Say so before asking, as nothing would happen.
     // Whoever may read all subscribers is not affected.
     needListForAll() {
       const byQuery = this.bulk.all || this.bulk.checked.length === 0;
       if (!byQuery || this.queryParams.listID || this.$can('subscribers:get_all')) return false;
-      if (((this.lists.results || []).length) < 2) return false;
+      if (this.$userListCount() < 2) return false;
       this.$utils.notice(this.$t('teams.needListTitle'), this.$t('teams.needListBody'));
       return true;
     },
@@ -654,10 +656,9 @@ export default Vue.extend({
         if (resp.done === 0) {
           this.$utils.notice(this.$t('teams.bulkAllZero'), this.$t('teams.bulkAllZeroBody'));
         } else {
-          const num = this.$utils.formatNumber(resp.done);
-          this.$utils.toast(resp.skipped
-            ? this.$t('teams.bulkAllCount', { num, skipped: this.$utils.formatNumber(resp.skipped) })
-            : this.$t('teams.bulkAllCountOnly', { num }));
+          this.$utils.toast(this.$t('teams.bulkAllCount', {
+            num: this.$utils.formatNumber(resp.done), skipped: this.$utils.formatNumber(resp.skipped || 0),
+          }));
         }
         return;
       }
