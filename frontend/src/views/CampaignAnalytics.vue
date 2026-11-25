@@ -87,13 +87,13 @@
       </div>
     </b-modal>
 
-    <b-button v-if="canReact" type="is-light" icon-left="format-list-bulleted-square"
+    <b-button v-if="canReact && reactionPreset !== undefined" type="is-light" icon-left="format-list-bulleted-square"
       class="reaction-analytics-action" data-cy="btn-analytics-reaction"
-      @click="reactionCampaign = form.campaigns[0]">
-      {{ $t('campaigns.reactionList.title') }}
+      @click="openReaction">
+      {{ reactionPreset === 'followup' ? $t('campaigns.followup.entry') : $t('campaigns.reactionList.title') }}
     </b-button>
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
-      @close="reactionCampaign = null" />
+      :preset="reactionCampaign.preset" @close="reactionCampaign = null" />
 
     <campaign-result-summary v-if="form.campaigns.length === 1 && form.campaigns[0].startedAt" class="st"
       :campaign-id="form.campaigns[0].id" :started-at="form.campaigns[0].startedAt" show-links />
@@ -133,7 +133,7 @@ import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import { colors } from '../constants';
-import reactionStatuses from '../campaign-reaction-list';
+import reactionStatuses, { isFollowupSourceCandidate, loadReactionPreset } from '../campaign-reaction-list';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import Chart from '../components/Chart.vue';
 import CampaignResultSummary from '../components/CampaignResultSummary.vue';
@@ -167,6 +167,7 @@ export default Vue.extend({
       recent: [],
       queriedCampaigns: [],
       reactionCampaign: null,
+      reactionCheck: null,
 
       // Data for each view.
       counts: {
@@ -230,6 +231,10 @@ export default Vue.extend({
   },
 
   methods: {
+    openReaction() {
+      this.reactionCampaign = { id: this.form.campaigns[0].id, preset: this.reactionPreset };
+    },
+
     n: fmt,
     classify,
     clickRate,
@@ -504,11 +509,33 @@ export default Vue.extend({
       return ['draft', 'scheduled'].includes(this.form.campaigns[0].status) ? 'notSent' : '';
     },
 
+    followupCandidateId() {
+      const [campaign] = this.form.campaigns;
+      return this.canReact && isFollowupSourceCandidate(campaign) ? campaign.id : null;
+    },
+
+    reactionPreset() {
+      if (this.followupCandidateId === null) return '';
+      return this.reactionCheck?.id === this.followupCandidateId ? this.reactionCheck.preset : undefined;
+    },
+
     canReact() {
       return this.form.campaigns.length === 1 && this.$canCreateList()
         && this.$can('campaigns:get_analytics')
         && this.$can('campaigns:get', 'campaigns:get_all')
         && reactionStatuses.includes(this.form.campaigns[0].status);
+    },
+  },
+
+  watch: {
+    async followupCandidateId(id) {
+      if (id === null) {
+        this.reactionCheck = null;
+        return;
+      }
+      const check = { id, preset: undefined };
+      this.reactionCheck = check;
+      check.preset = await loadReactionPreset(this.$api, id);
     },
   },
 
