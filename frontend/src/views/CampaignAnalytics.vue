@@ -29,14 +29,14 @@
           <div class="columns">
             <div class="column is-6">
               <b-field data-cy="from" :label="$t('analytics.fromDate')" label-position="on-border">
-                <b-datetimepicker v-model="form.from" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
-                  :datetime-formatter="formatDateTime" @input="onFromDateChange" />
+                <b-datetimepicker :value="form.from" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
+                  :placeholder="$t('stats.analyticsFromDefault')" :datetime-formatter="formatDateTime" @input="onFromDateChange" />
               </b-field>
             </div>
             <div class="column is-6">
               <b-field data-cy="to" :label="$t('analytics.toDate')" label-position="on-border">
-                <b-datetimepicker v-model="form.to" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
-                  :datetime-formatter="formatDateTime" @input="onToDateChange" />
+                <b-datetimepicker :value="form.to" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
+                  :placeholder="$t('stats.analyticsToDefault')" :datetime-formatter="formatDateTime" @input="onToDateChange" />
               </b-field>
             </div>
           </div><!-- columns -->
@@ -50,7 +50,7 @@
     </form>
 
     <!-- LST-36: copy the counts of one campaign as a proof summary (block v1). -->
-    <div class="proof-summary columns is-vcentered is-mobile mt-1 mb-0" data-cy="proof-summary">
+    <div v-if="form.campaigns.length" class="proof-summary columns is-vcentered is-mobile mt-1 mb-0" data-cy="proof-summary">
       <div class="column is-narrow">
         <b-button :disabled="!!proofDisabledReason" :loading="proof.loading"
           data-cy="btn-proof-summary" @click="onProofSummary">
@@ -95,7 +95,26 @@
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
       :preset="reactionCampaign.preset" @close="reactionCampaign = null" />
 
-    <section class="charts mt-5">
+    <campaign-result-summary v-if="form.campaigns.length === 1 && form.campaigns[0].startedAt" class="st"
+      :campaign-id="form.campaigns[0].id" :started-at="form.campaigns[0].startedAt" show-links />
+    <div v-if="form.campaigns.length === 0" class="st" data-cy="analytics-empty">
+      <p class="notification is-light">{{ $t('stats.analyticsEmpty') }}</p>
+      <div v-if="recent.length" class="st-card">
+        <div v-for="c in recent" :key="c.id" class="p-3" style="border-bottom:1px solid #e5e7eb">
+          <b>#{{ c.id }} {{ c.name }}</b>
+          <span class="st-note ml-2">{{ $t('stats.sentCount', { n: n(c.sent) }) }} ·
+            <template v-if="classify(c).untracked">{{ $t('stats.untracked') }}</template>
+            <template v-else>
+              {{ $t('stats.clickValue', { rate: pctText(clickRate(c)) }) }} ·
+              {{ $t('stats.openValue', { rate: pctText(pct(c.viewers, c.sent)) }) }}
+            </template>
+            · {{ $t('stats.bounceValue', { rate: pctText(pct(c.hard + c.soft, c.sent)) }) }}
+          </span>
+          <a class="is-pulled-right" :data-cy="`pick-${c.id}`" href="#" @click.prevent="pickRecent(c)">{{ $t('stats.pick') }}</a>
+        </div>
+      </div>
+    </div>
+    <section v-if="form.campaigns.length" class="charts mt-5">
       <div class="chart" v-for="(v, k) in charts" :key="k">
         <div class="columns">
           <div class="column is-9">
@@ -123,6 +142,10 @@ import { colors } from '../constants';
 import reactionStatuses, { isFollowupSourceCandidate, loadReactionPreset } from '../campaign-reaction-list';
 import CampaignReactionList from '../components/CampaignReactionList.vue';
 import Chart from '../components/Chart.vue';
+import CampaignResultSummary from '../components/CampaignResultSummary.vue';
+import {
+  classify, clickRate, fmt, pct, pctText,
+} from '../stats';
 import { buildProofSummaryV1, teamsOfCampaign, trackingStateFor } from '../proof-summary';
 
 const chartColorRed = '#ee7d5b';
@@ -140,12 +163,14 @@ const chartColors = [
 export default Vue.extend({
   components: {
     Chart,
+    CampaignResultSummary,
     CampaignReactionList,
   },
 
   data() {
     return {
       isSearchLoading: false,
+      recent: [],
       queriedCampaigns: [],
       reactionCampaign: null,
       reactionCheck: null,
@@ -202,6 +227,8 @@ export default Vue.extend({
         campaigns: [],
         from: null,
         to: null,
+        explicitFrom: false,
+        explicitTo: false,
       },
 
       // The proof summary (LST-36): the text of the modal and whether it is being made.
@@ -214,15 +241,26 @@ export default Vue.extend({
       this.reactionCampaign = { id: this.form.campaigns[0].id, preset: this.reactionPreset };
     },
 
-    onFromDateChange() {
-      if (this.form.from > this.form.to) {
-        this.form.to = dayjs(this.form.from).add(7, 'day').toDate();
+    n: fmt,
+    classify,
+    clickRate,
+    pct,
+    pctText,
+    onFromDateChange(value) {
+      this.form.from = value;
+      this.form.explicitFrom = !!value;
+      if (value && this.form.to && value > this.form.to) {
+        this.form.to = dayjs(value).add(7, 'day').toDate();
+        this.form.explicitTo = true;
       }
     },
 
-    onToDateChange() {
-      if (this.form.from > this.form.to) {
-        this.form.from = dayjs(this.form.to).add(-7, 'day').toDate();
+    onToDateChange(value) {
+      this.form.to = value;
+      this.form.explicitTo = !!value;
+      if (value && this.form.from && this.form.from > value) {
+        this.form.from = dayjs(value).subtract(7, 'day').toDate();
+        this.form.explicitFrom = true;
       }
     },
 
@@ -302,8 +340,29 @@ export default Vue.extend({
       return { points: { datasets: lines }, donut };
     },
 
+    analyticsQuery(ids) {
+      const query = ids === undefined ? {} : { id: ids };
+      if (this.form.explicitFrom) query.from = dayjs(this.form.from).unix();
+      if (this.form.explicitTo) query.to = dayjs(this.form.to).unix();
+      return query;
+    },
+
     onSubmit() {
-      this.$router.push({ query: { id: this.form.campaigns.map((c) => c.id), from: dayjs(this.form.from).unix(), to: dayjs(this.form.to).unix() } });
+      this.$router.push({ query: this.analyticsQuery(this.form.campaigns.map((c) => c.id)) });
+    },
+
+    // The campaigns the caller may open, newest first, for the empty screen (LST-64).
+    loadRecent() {
+      if (!this.$can('campaigns:get_analytics')) {
+        return;
+      }
+      this.$api.getStatsCampaigns({}).then((d) => {
+        this.recent = d.campaigns.filter((c) => c.own).slice(0, 3);
+      }).catch(() => {});
+    },
+
+    pickRecent(c) {
+      this.$router.replace({ query: this.analyticsQuery(c.id) });
     },
 
     queryCampaigns(q) {
@@ -480,6 +539,16 @@ export default Vue.extend({
   },
 
   watch: {
+    'form.campaigns.length': function onCampaignCountChange(length) {
+      if (length) return;
+      if (this.$route.query.id) {
+        this.$router.replace({ query: this.analyticsQuery() });
+        return;
+      }
+      if (!this.form.explicitFrom) this.form.from = null;
+      if (!this.form.explicitTo) this.form.to = null;
+      if (!this.recent.length) this.loadRecent();
+    },
     async followupCandidateId(id) {
       if (id === null) {
         this.reactionCheck = null;
@@ -492,30 +561,49 @@ export default Vue.extend({
   },
 
   created() {
-    const now = dayjs().set('hour', 23).set('minute', 59).set('seconds', 0);
-    const weekAgo = now.subtract(7, 'day').set('hour', 0).set('minute', 0);
-    const from = this.$route.query.from ? dayjs.unix(this.$route.query.from) : weekAgo;
-    const to = this.$route.query.to ? dayjs.unix(this.$route.query.to) : now;
-    this.form.from = from.toDate();
-    this.form.to = to.toDate();
+    const { from, to } = this.$route.query;
+    if (from) {
+      this.form.from = dayjs.unix(from).toDate();
+      this.form.explicitFrom = true;
+    }
+    if (to) {
+      this.form.to = dayjs.unix(to).toDate();
+      this.form.explicitTo = true;
+    }
   },
 
   mounted() {
     // Fetch one or more campaigns if there are ?id params, wait for the fetches
     // to finish, add them to the campaign selector and submit the form.
     const ids = this.$utils.parseQueryIDs(this.$route.query.id);
-    if (ids.length > 0) {
+    if (ids.length === 0) {
+      this.loadRecent();
+    } else {
       this.isSearchLoading = true;
       Promise.allSettled(ids.map((id) => this.$api.getCampaign(id))).then((data) => {
+        const starts = [];
         data.forEach((d) => {
-          if (d.status !== 'fulfilled') {
-            return;
-          }
-
+          if (d.status !== 'fulfilled') return;
           const camp = d.value;
-          camp.name = `#${camp.id}: ${camp.name}`;
-          this.form.campaigns.push(camp);
+          this.form.campaigns.push({ ...camp, name: `#${camp.id}: ${camp.name}` });
+          const began = camp.startedAt || camp.createdAt;
+          if (began) starts.push(new Date(began).getTime());
         });
+        if (!this.form.explicitFrom && starts.length) {
+          this.form.from = new Date(Math.min(...starts));
+        }
+        if (!this.form.explicitTo) {
+          this.form.to = new Date();
+        }
+        if (this.form.from && this.form.from > this.form.to) {
+          if (!this.form.explicitFrom) this.form.from = dayjs(this.form.to).subtract(7, 'day').toDate();
+          if (!this.form.explicitTo) this.form.to = dayjs(this.form.from).add(7, 'day').toDate();
+        }
+        if (!this.form.campaigns.length) {
+          this.isSearchLoading = false;
+          this.loadRecent();
+          return;
+        }
 
         this.$nextTick(() => {
           this.isSearchLoading = false;

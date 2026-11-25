@@ -24,7 +24,8 @@
   "campaign-delete-guard.cy.js",
   "campaign-clone-lists.cy.js",
   "campaign-scheduled-edit.cy.js",
-  "import-campaign-flow.cy.js"
+  "import-campaign-flow.cy.js",
+  "stats-dashboard.cy.js"
  ],
  "smoke": [
   "audit.cy.js",
@@ -160,7 +161,8 @@
     "from-addresses.cy.js",
     "campaign-send-confirm.cy.js",
     "campaign-scheduled-edit.cy.js",
-    "import-campaign-flow.cy.js"
+    "import-campaign-flow.cy.js",
+    "stats-dashboard.cy.js"
    ]
   },
   {
@@ -170,11 +172,13 @@
    "specs": [
     "campaign-clone-lists.cy.js",
     "from-addresses.cy.js",
-    "campaign-recent-exclude.cy.js"
+    "campaign-recent-exclude.cy.js",
+    "stats-dashboard.cy.js"
    ]
   },
   {
    "paths": [
+    "frontend/src/campaign-clone.js",
     "frontend/src/views/Campaigns.vue"
    ],
    "specs": [
@@ -189,7 +193,8 @@
     "from-addresses.cy.js",
     "campaign-delete-guard.cy.js",
     "campaign-send-confirm.cy.js",
-    "campaign-clone-lists.cy.js"
+    "campaign-clone-lists.cy.js",
+    "stats-dashboard.cy.js"
    ]
   },
   {
@@ -213,7 +218,8 @@
     "campaign-send-confirm.cy.js",
     "campaign-clone-lists.cy.js",
     "campaign-scheduled-edit.cy.js",
-    "import-campaign-flow.cy.js"
+    "import-campaign-flow.cy.js",
+    "stats-dashboard.cy.js"
    ]
   },
   {
@@ -268,7 +274,8 @@
    ],
    "specs": [
     "reaction-lists.cy.js",
-    "followup.cy.js"
+    "followup.cy.js",
+    "stats-dashboard.cy.js"
    ]
   },
   {
@@ -279,7 +286,8 @@
    "specs": [
     "analytics-proof.cy.js",
     "reaction-lists.cy.js",
-    "followup.cy.js"
+    "followup.cy.js",
+    "stats-dashboard.cy.js"
    ]
   },
   {
@@ -524,6 +532,25 @@
    ],
    "specs": [
     "import-campaign-flow.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/Dashboard.vue",
+    "frontend/src/stats.js",
+    "frontend/src/stats-definitions.js",
+    "frontend/src/components/Stats*.vue",
+    "frontend/src/components/CampaignResultSummary.vue",
+    "cmd/axm_stats*.go",
+    "internal/core/axm_stats*.go",
+    "models/axm_stats.go",
+    "queries/axm_stats.sql"
+   ],
+   "specs": [
+    "stats-dashboard.cy.js",
+    "analytics-proof.cy.js",
+    "list-teams.cy.js",
+    "followup.cy.js"
    ]
   }
  ],
