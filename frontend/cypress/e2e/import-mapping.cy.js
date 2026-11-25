@@ -396,7 +396,19 @@ describe('CSV column mapping with the real Worker and import API', () => {
     submit().should('be.disabled');
   });
 
-  it('warns when finished has fewer imported rows and checks status after a failed upload', () => {
+  it('warns when its own completed upload has fewer imported rows', () => {
+    inlineFile('이메일,이름\nmismatch-a@example.invalid,가상 하나\nmismatch-b@example.invalid,가상 둘');
+    ready(2);
+    cy.intercept('POST', '/api/import/subscribers', { body: { data: { status: 'importing', axm_import_id: 123 } } }).as('upload');
+    cy.intercept('GET', '/api/import/subscribers', { body: { data: { status: 'finished', axm_import_id: 123, imported: 1, total: 2 } } }).as('finished');
+    submit().click();
+    cy.wait('@upload');
+    cy.wait('@finished');
+    cy.get('[data-cy=map-mismatch]').should('be.visible');
+    cy.get('.status .has-text-success').should('not.exist');
+  });
+
+  it('checks status after a failed upload without applying its row count to another import', () => {
     inlineFile('이메일,이름\nmismatch-a@example.invalid,가상 하나\nmismatch-b@example.invalid,가상 둘');
     ready(2);
     cy.intercept('POST', '/api/import/subscribers', { statusCode: 500, body: { message: 'synthetic upload failure' } }).as('failedUpload');
@@ -404,8 +416,8 @@ describe('CSV column mapping with the real Worker and import API', () => {
     submit().click();
     cy.wait('@failedUpload');
     cy.wait('@statusAfterFailure');
-    cy.get('[data-cy=map-mismatch]').should('be.visible');
-    cy.get('.status .has-text-success').should('not.exist');
+    cy.get('.status .has-text-success').should('contain', 'finished');
+    cy.get('[data-cy=map-mismatch]').should('not.exist');
   });
 
   it('keeps the UI and preview bounded for 50,000 rows, then imports them all', () => {

@@ -9,6 +9,8 @@ const usedList = 'Cypress reaction audience';
 const usedCampaign = 'Cypress reaction recipients';
 const fresh = (n) => `Flow list ${n} ${stamp}`;
 const modal = '.axm-list-modal';
+const importPath = '/api/import/subscribers';
+const makeCampaign = () => cy.get('[data-cy=import-make-campaign]');
 const submit = () => cy.get('button[type=submit]');
 const pickList = (name) => {
   cy.get('.list-selector input').type(name);
@@ -18,12 +20,23 @@ const chosen = () => cy.get('.list-selector .list-tags .tag.list');
 const makeList = (name) => cy.request('POST', '/api/lists', {
   name, type: 'private', optin: 'single', no_team: true,
 }).its('body.data');
-const chooseCSV = (rows) => {
-  const csv = `email,name\n${rows.map((r) => `${r}-${stamp}@example.invalid,Flow ${r}`).join('\n')}\n`;
-  cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(csv), fileName: 'flow.csv', mimeType: 'text/csv' }, { force: true });
+const csv = (header, rows) => `${header}\n${rows.map((r) => `${r}-${stamp}@example.invalid,Flow ${r}`).join('\n')}\n`;
+const chooseCSV = (rows, { header = 'email,name', fileName = 'flow.csv' } = {}) => {
+  cy.get('input[type=file]').selectFile({ contents: Cypress.Buffer.from(csv(header, rows)), fileName, mimeType: 'text/csv' }, { force: true });
   cy.get('[data-cy=map-panel]', { timeout: 30000 }).should('exist');
   cy.get('[data-cy=map-busy]', { timeout: 30000 }).should('not.exist');
 };
+
+// Use the same session as the browser, like an upload from a second tab.
+const uploadOtherCSV = (id, fileName, row) => cy.window().then(async (win) => {
+  const form = new win.FormData();
+  form.set('params', JSON.stringify({ mode: 'subscribe', delim: ',', lists: [id] }));
+  form.set('file', new win.File([csv('email,name', [row])], fileName, { type: 'text/csv' }));
+  const response = await win.fetch(importPath, { method: 'POST', body: form });
+  expect(response.ok).to.eq(true);
+  return (await response.json()).data;
+});
+
 let usedId;
 let usedCampaignId;
 
@@ -193,6 +206,66 @@ describe('import to campaign flow', () => {
         cy.request('/api/import/subscribers').its('body.data.status').should('eq', 'finished');
         cy.request('DELETE', `/api/import/subscribers?axm_import_id=${importId}`);
         cy.request('/api/import/subscribers').its('body.data.status').should('eq', 'none');
+      });
+    });
+  });
+
+  it('drops the previous mapped row count and log while the new result log is delayed', () => {
+    const first = fresh('mapped');
+    const next = fresh('next');
+    makeList(first);
+    makeList(next).then(({ id }) => {
+      cy.reload();
+      pickList(first);
+      chooseCSV(['mapped-a', 'mapped-b'], { header: '이메일,이름', fileName: 'first-mapped.csv' });
+      submit().should('not.be.disabled').click();
+      cy.get('[data-cy=import-done-into]', { timeout: 30000 }).should('contain', first);
+      cy.get('.import-logs').should('contain', 'first-mapped.csv');
+
+      uploadOtherCSV(id, 'second.csv', 'other-file').then((started) => {
+        let releaseLog;
+        const holdLog = new Cypress.Promise((resolve) => { releaseLog = resolve; });
+        cy.intercept({ method: 'GET', pathname: `${importPath}/logs`, query: { axm_import_id: String(started.axm_import_id) } },
+          (req) => req.continue(() => holdLog)).as('secondLog');
+        makeCampaign().click();
+        cy.get('[data-cy=import-done-into]', { timeout: 30000 }).should('contain', next);
+        cy.get('[data-cy=map-mismatch]').should('not.exist');
+        cy.get('.import-logs').should('not.contain', 'first-mapped.csv').and('not.contain', 'second.csv');
+        cy.then(() => { releaseLog(); });
+        cy.wait('@secondLog');
+        cy.get('.import-logs').should('contain', 'second.csv');
+        makeCampaign().click();
+        cy.location('pathname').should('eq', '/admin/campaigns/new');
+        cy.get('.list-selector .tag').should('contain', next).and('not.contain', first);
+      });
+    });
+  });
+
+  it('keeps polling if the campaign button discovers a newer import that is still running', () => {
+    const next = fresh('running');
+    makeList(next).then(({ id }) => {
+      cy.reload();
+      chooseCSV(['previous']);
+      pickList(usedList);
+      submit().should('not.be.disabled').click();
+      cy.get('[data-cy=import-done-into]', { timeout: 30000 }).should('contain', usedList);
+      uploadOtherCSV(id, 'running.csv', 'running-file').then((started) => {
+        let releaseStatus;
+        const holdStatus = new Cypress.Promise((resolve) => { releaseStatus = resolve; });
+        cy.intercept('GET', importPath, (req) => req.continue(() => holdStatus)).as('newStatus');
+        // Deliver the new import's initial status first, even if the one-row CSV finishes quickly.
+        cy.intercept({ method: 'GET', pathname: importPath, times: 1 }, {
+          body: { data: { ...started, status: 'importing', axm_lists: [id] } },
+        });
+        makeCampaign().click();
+        cy.get('.status .is-capitalized').should('contain', 'importing');
+        makeCampaign().should('not.exist');
+        cy.then(() => { releaseStatus(); });
+        cy.wait('@newStatus');
+        cy.get('[data-cy=import-done-into]', { timeout: 30000 }).should('contain', next);
+        makeCampaign().click();
+        cy.location('pathname').should('eq', '/admin/campaigns/new');
+        cy.get('.list-selector .tag').should('contain', next);
       });
     });
   });

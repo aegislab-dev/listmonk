@@ -205,7 +205,7 @@
       </p>
       <br />
 
-      <address-check v-if="showImportCheck" :list-ids="status.axmLists" :lists="lists.results || []"
+      <address-check v-if="showImportCheck" :key="status.axmImportId" :list-ids="status.axmLists" :lists="lists.results || []"
         :hidden-lists="status.axmListsHidden || 0"
         :scope-note="$t('addressCheck.listScope', { lists: importListNames })" />
 
@@ -320,11 +320,13 @@ export default Vue.extend({
       // The address check of the rows to import, and the two switches of what it leaves out.
       addr: addressState(),
       addrExclude: addressExcludeDefaults(),
-      sentCount: null,
+      submittedImport: null,
       isProcessing: false,
       status: { status: '' },
       logs: [],
+      logRequest: 0,
       pollID: null,
+      pollRequest: 0,
 
       // The campaigns that used the chosen lists (a warning, never a block), and those that
       // used the lists a finished import filled (LST-63).
@@ -350,7 +352,6 @@ export default Vue.extend({
       // must not leave rows out of (or let them into) this one without being seen.
       this.addrExclude = addressExcludeDefaults();
       if (file && /\.csv$/i.test(file.name)) {
-        this.sentCount = null;
         this.parseCSV(true);
         this.loadAttributeKeys();
       }
@@ -803,35 +804,44 @@ export default Vue.extend({
     },
 
     pollStatus() {
-      // Clear any running status polls.
-      clearInterval(this.pollID);
-
-      // Poll for the status as long as the import is running.
-      this.pollID = setInterval(() => {
+      clearTimeout(this.pollID);
+      this.pollRequest += 1;
+      const request = this.pollRequest;
+      // Wait for this response before scheduling the next poll so status cannot go backwards.
+      const schedule = () => setTimeout(() => {
         this.$api.getImportStatus().then((data) => {
+          if (request !== this.pollRequest) return;
           this.isProcessing = false;
           this.isLoading = false;
-          this.status = data;
-          this.getLogs();
-          this.loadDoneUsed();
-
-          if (!this.isRunning()) {
-            clearInterval(this.pollID);
-          }
+          this.applyImportStatus(data);
+          if (this.isRunning()) this.pollID = schedule();
         }, () => {
+          if (request !== this.pollRequest) return;
           this.isProcessing = false;
           this.isLoading = false;
-          this.status = { status: 'none' };
-          clearInterval(this.pollID);
+          this.applyImportStatus({ status: 'none' });
         });
-        return true;
       }, 250);
+      this.pollID = schedule();
+    },
+
+    applyImportStatus(data) {
+      if (data.status === 'none' || data.axmImportId !== this.status.axmImportId) {
+        this.logs = [];
+      }
+      if (data.status === 'none' || (this.submittedImport && this.submittedImport.id !== data.axmImportId)) {
+        this.submittedImport = null;
+      }
+      this.status = data;
+      this.getLogs();
+      this.loadDoneUsed();
     },
 
     getLogs() {
-      this.logRequest = (this.logRequest || 0) + 1;
+      this.logRequest += 1;
       const request = this.logRequest;
-      this.$api.getImportLogs().then((data) => {
+      if (this.isFree()) return;
+      this.$api.getImportLogs(this.status.axmImportId).then((data) => {
         // A late answer must not put an older log over a newer one.
         if (request !== this.logRequest) return;
         this.logs = data.split('\n').map((line) => line.replace(/\s+importer\.go:\d+:\s*/, ' *: '));
@@ -842,17 +852,17 @@ export default Vue.extend({
             ref.scrollTop = ref.scrollHeight;
           }
         });
-      });
+      }).catch(() => {});
     },
 
     // Cancel a running import or clears a finished import.
     stopImport() {
       this.isProcessing = true;
-      this.$api.stopImport().then(() => {
-        this.pollStatus();
+      this.$api.stopImport(this.status.axmImportId).then(() => {
         this.form.file = null;
-        this.sentCount = null;
-      });
+        this.submittedImport = null;
+        this.pollStatus();
+      }).catch(() => { this.isProcessing = false; });
     },
 
     // Groups the campaigns of the lists into one entry per list, in the order of the lists.
@@ -949,18 +959,19 @@ export default Vue.extend({
       });
     },
 
-    // Clears the finished import (as "Done" does) and opens a new campaign for its lists.
+    // Opens a campaign for the displayed import and then clears that result.
     makeCampaign() {
       const lists = this.status.axmLists || [];
       const importId = this.status.axmImportId;
+      const request = this.pollRequest;
       this.isProcessing = true;
       // The screen may show an older import than the server holds (another tab ran a newer one):
       // that one is not cleared, the screen shows it instead.
       this.$api.getImportStatus().then((cur) => {
+        if (request !== this.pollRequest) return null;
         if (cur.status !== 'finished' || cur.axmImportId !== importId) {
-          this.status = cur;
-          this.getLogs();
-          this.loadDoneUsed();
+          this.applyImportStatus(cur);
+          if (this.isRunning()) this.pollStatus();
           this.isProcessing = false;
           return null;
         }
@@ -1000,7 +1011,7 @@ export default Vue.extend({
       if (!this.canUpload) return;
       const mapped = this.isCSV && this.csv.mode === 'mapping';
       const file = mapped ? new File([this.csvBytes], `${this.form.file.name.replace(/\.csv$/i, '')}.csv`, { type: 'text/csv' }) : this.form.file;
-      this.sentCount = mapped ? this.csv.summary.imported : null;
+      const sentCount = mapped ? this.csv.summary.imported : null;
       if (mapped && !this.csv.headerHint) {
         try {
           rememberMapping(window.localStorage, this.csv.columns, this.csv.mapping);
@@ -1027,13 +1038,15 @@ export default Vue.extend({
       params.set('file', file);
 
       // Post.
-      this.$api.importSubscribers(params).then(() => {
+      this.$api.importSubscribers(params).then((data) => {
+        this.submittedImport = sentCount === null ? null : { id: data.axmImportId, count: sentCount };
         // On file upload, show a confirmation.
         this.$utils.toast(this.$t('import.importStarted'));
 
         // Start polling status.
         this.pollStatus();
       }, () => {
+        this.submittedImport = null;
         this.isProcessing = false;
         this.form.file = null;
         this.pollStatus();
@@ -1197,6 +1210,9 @@ export default Vue.extend({
       const counts = (this.status && this.status.axmWarned) || {};
       return ['unknown', 'role'].filter((r) => counts[r]).map((r) => ({ reason: r, count: counts[r] }));
     },
+    sentCount() {
+      return this.submittedImport ? this.submittedImport.count : null;
+    },
     countMismatch() {
       return this.sentCount !== null && this.isDone() && this.status.imported + this.serverRejected !== this.sentCount;
     },
@@ -1211,7 +1227,9 @@ export default Vue.extend({
   },
 
   beforeDestroy() {
-    clearInterval(this.pollID);
+    clearTimeout(this.pollID);
+    this.pollRequest += 1;
+    this.logRequest += 1;
     clearTimeout(this.addrTimer);
     this.stopCSV();
     this.keyRequest += 1;

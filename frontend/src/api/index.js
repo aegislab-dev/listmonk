@@ -356,9 +356,9 @@ export const importSubscribers = (data) => http.post('/api/import/subscribers', 
 
 export const getImportStatus = () => http.get('/api/import/subscribers');
 
-export const getImportLogs = async () => http.get(
+export const getImportLogs = (importId) => http.get(
   '/api/import/subscribers/logs',
-  { camelCase: false },
+  { camelCase: false, params: { axm_import_id: importId } },
 );
 
 // With an import id only that import is cleared (the server leaves a newer one alone).

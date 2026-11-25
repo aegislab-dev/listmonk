@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -112,6 +113,7 @@ type Session struct {
 	// has been replaced by a newer import writes nothing to the newer import's rejected rows.
 	id       int
 	im       *Importer
+	stop     <-chan bool
 	subQueue chan SubReq
 	log      *log.Logger
 
@@ -172,7 +174,24 @@ type Status struct {
 	AxmExcluded int `json:"axm_excluded"`
 	// AxmImportID is the number of this import; the rejected rows are asked for by it.
 	AxmImportID int `json:"axm_import_id"`
-	logBuf      *bytes.Buffer
+	logBuf      *importLog
+}
+
+type importLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *importLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *importLog) snapshot() []byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return bytes.Clone(l.buf.Bytes())
 }
 
 // The reasons a row is refused. format, provider and typo are the codes of addrcheck.
@@ -253,8 +272,7 @@ func New(opt Options, db *sql.DB, i *i18n.I18n) *Importer {
 		i18n:            i,
 		domainBlocklist: make(map[string]struct{}, len(opt.DomainBlocklist)),
 		domainAllowlist: make(map[string]struct{}, len(opt.DomainAllowlist)),
-		status:          Status{Status: StatusNone, logBuf: bytes.NewBuffer(nil)},
-		stop:            make(chan bool, 1),
+		status:          Status{Status: StatusNone},
 		// A number no earlier run of the app has used (milliseconds: a run numbers its imports
 		// one by one, far slower than that), so that a link kept from before a restart cannot
 		// name another import.
@@ -279,7 +297,9 @@ func New(opt Options, db *sql.DB, i *i18n.I18n) *Importer {
 // NewSession returns an new instance of Session. It takes the name
 // of the uploaded file, but doesn't do anything with it but retains it for stats.
 func (im *Importer) NewSession(opt SessionOpt) (*Session, error) {
-	if !im.isDone() {
+	im.Lock()
+	if isActive(im.status.Status) {
+		im.Unlock()
 		return nil, errors.New("an import is already running")
 	}
 
@@ -290,16 +310,13 @@ func (im *Importer) NewSession(opt SessionOpt) (*Session, error) {
 		opt.OverwriteSubStatus = true
 	}
 
-	// A stop request that arrived after the last import had read its file is of that import.
-	select {
-	case <-im.stop:
-	default:
-	}
-	im.Lock()
+	// Each CSV reader can consume stop signals for its own session only.
+	stop, logBuf := make(chan bool, 1), &importLog{}
+	im.stop = stop
 	im.status = Status{Status: StatusImporting,
 		Name:        opt.Filename,
 		AxmRejected: map[string]int{},
-		logBuf:      bytes.NewBuffer(nil)}
+		logBuf:      logBuf}
 	im.rejected = nil
 	im.importSeq++
 	im.status.AxmImportID = im.importSeq
@@ -312,7 +329,8 @@ func (im *Importer) NewSession(opt SessionOpt) (*Session, error) {
 
 	s := &Session{
 		im:       im,
-		log:      log.New(im.status.logBuf, "", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
+		stop:     stop,
+		log:      log.New(logBuf, "", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
 		subQueue: make(chan SubReq, commitBatchSize),
 		opt:      opt,
 		id:       seq,
@@ -326,33 +344,26 @@ func (im *Importer) NewSession(opt SessionOpt) (*Session, error) {
 func (im *Importer) GetStats() Status {
 	im.RLock()
 	defer im.RUnlock()
+	return im.statusSnapshotLocked()
+}
 
-	var rejected map[string]int
-	if im.status.AxmRejectedTotal > 0 {
-		rejected = make(map[string]int, len(im.status.AxmRejected))
-		for k, v := range im.status.AxmRejected {
-			rejected[k] = v
-		}
+// The caller holds the importer lock. Neither map may be shared with the running import.
+func (im *Importer) statusSnapshotLocked() Status {
+	st := im.status
+	st.logBuf = nil
+	if st.AxmRejectedTotal > 0 {
+		st.AxmRejected = maps.Clone(st.AxmRejected)
+	} else {
+		st.AxmRejected = nil
 	}
-	var warned map[string]int
-	if im.status.AxmWarnedTotal > 0 {
-		warned = make(map[string]int, len(im.status.AxmWarned))
-		for k, v := range im.status.AxmWarned {
-			warned[k] = v
-		}
+	if st.AxmWarnedTotal > 0 {
+		st.AxmWarned = maps.Clone(st.AxmWarned)
+	} else {
+		st.AxmWarned = nil
 	}
-	return Status{
-		Name:             im.status.Name,
-		Status:           im.status.Status,
-		Total:            im.status.Total,
-		Imported:         im.status.Imported,
-		AxmRejected:      rejected,
-		AxmRejectedTotal: im.status.AxmRejectedTotal,
-		AxmWarned:        warned,
-		AxmWarnedTotal:   im.status.AxmWarnedTotal,
-		AxmExcluded:      im.status.AxmExcluded,
-		AxmImportID:      im.importSeq,
-	}
+	// Keep the last number in idle snapshots, as returned by the status API.
+	st.AxmImportID = im.importSeq
+	return st
 }
 
 // Why GetRejected gives no rows.
@@ -430,14 +441,21 @@ func (im *Importer) addWarned(session int, counts map[string]int) {
 
 // GetLogs returns the log entries of the last import session.
 func (im *Importer) GetLogs() []byte {
+	return im.GetLogsForImport(0)
+}
+
+// GetLogsForImport returns logs for id, or the current logs when id is zero.
+func (im *Importer) GetLogsForImport(id int) []byte {
 	im.RLock()
-	defer im.RUnlock()
-
-	if im.status.logBuf == nil {
-		return []byte{}
+	var buf *importLog
+	if id == 0 || id == im.status.AxmImportID {
+		buf = im.status.logBuf
 	}
-
-	return im.status.logBuf.Bytes()
+	im.RUnlock()
+	if buf == nil {
+		return nil
+	}
+	return buf.snapshot()
 }
 
 // setStatus sets the Importer's status.
@@ -455,16 +473,8 @@ func (im *Importer) getStatus() string {
 	return status
 }
 
-// isDone returns true if the importer is working (importing|stopping).
-func (im *Importer) isDone() bool {
-	s := true
-	im.RLock()
-	if im.getStatus() == StatusImporting || im.getStatus() == StatusStopping {
-		s = false
-	}
-	im.RUnlock()
-
-	return s
+func isActive(status string) bool {
+	return status == StatusImporting || status == StatusStopping
 }
 
 // incrementImportCount sets the Importer's "imported" counter.
@@ -617,7 +627,7 @@ func (s *Session) Stop() {
 // a temporary directory, and returns the name of the temp directory and the
 // list of extracted .csv files.
 func (s *Session) ExtractZIP(srcPath string, maxCSVs int) (string, []string, error) {
-	if s.im.isDone() {
+	if !isActive(s.im.getStatus()) {
 		return "", nil, ErrIsImporting
 	}
 
@@ -699,7 +709,7 @@ func (s *Session) ExtractZIP(srcPath string, maxCSVs int) (string, []string, err
 
 // LoadCSV loads a CSV file and validates and imports the subscriber entries in it.
 func (s *Session) LoadCSV(srcPath string, delim rune) error {
-	if s.im.isDone() {
+	if !isActive(s.im.getStatus()) {
 		return ErrIsImporting
 	}
 
@@ -786,7 +796,7 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 
 		// Check for the stop signal.
 		select {
-		case <-s.im.stop:
+		case <-s.stop:
 			failed = false
 			flush() // the rows already read are decided and queued, as they were row by row
 			close(s.subQueue)
@@ -905,10 +915,9 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 	flush()
 	close(s.subQueue)
 	failed = false
-	// A stop request that came while the last batch waited for DNS has nothing left to stop. Left
-	// in the channel it would cancel the next import.
+	// A stop request that came while the last batch waited for DNS has nothing left to stop.
 	select {
-	case <-s.im.stop:
+	case <-s.stop:
 	default:
 	}
 
@@ -1017,41 +1026,30 @@ func clip(s string) string {
 	return s
 }
 
-// StopImport stops or clears the import with the given number only, and says whether it did.
-// The number is compared and the state cleared under one lock, so an import that started
-// meanwhile is never touched. It returns the state after the call.
+// StopImport stops or clears the import with the given number only (zero means the current
+// import). It reports whether it changed the state and returns a snapshot taken under the same
+// lock as the identity check and stop or clear.
 func (im *Importer) StopImport(id int) (Status, bool) {
 	im.Lock()
-	if im.status.AxmImportID != id {
-		st := im.status
-		im.Unlock()
-		return st, false
+	defer im.Unlock()
+	if (id != 0 && id != im.status.AxmImportID) || im.status.Status == StatusStopping || im.status.Status == StatusNone {
+		return im.statusSnapshotLocked(), false
 	}
-	if im.status.Status != StatusImporting {
+	if im.status.Status == StatusImporting {
+		select {
+		case im.stop <- true:
+		default:
+		}
+		im.status.Status = StatusStopping
+	} else {
 		im.status = Status{Status: StatusNone}
-		im.Unlock()
-		return im.GetStats(), true
 	}
-	im.Unlock()
-	im.Stop()
-	return im.GetStats(), true
+	return im.statusSnapshotLocked(), true
 }
 
 // Stop sends a signal to stop the existing import.
 func (im *Importer) Stop() {
-	if im.getStatus() != StatusImporting {
-		im.Lock()
-		im.status = Status{Status: StatusNone}
-		im.Unlock()
-
-		return
-	}
-
-	select {
-	case im.stop <- true:
-		im.setStatus(StatusStopping)
-	default:
-	}
+	im.StopImport(0)
 }
 
 // SanitizeEmail validates and sanitizes an e-mail string and returns the
