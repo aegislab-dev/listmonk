@@ -56,6 +56,8 @@ describe('Saving a scheduled campaign', () => {
       });
       create('refuse', {});
       create('nolist', {});
+      create('history', {});
+      create('paused', {});
       create('tail', {});
     });
   });
@@ -100,6 +102,20 @@ describe('Saving a scheduled campaign', () => {
     status('pass').its('status').should('equal', 'scheduled');
   });
 
+  it('marks incomplete send history as a minimum in the review window', () => {
+    cy.intercept('GET', `/api/campaigns/${camp.history}/preflight`, (req) => {
+      req.continue((res) => {
+        Object.assign(res.body.data, {
+          resumed: true, remaining: 1, sent: 21, to_send: 30, sent_is_minimum: true,
+        });
+      });
+    });
+    cy.visit(`/admin/campaigns/${camp.history}`);
+    cy.get('[data-cy=btn-save]').click();
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+    cy.get('[data-cy=send-progress-text]').should('contain', '≥21 sent of 30');
+  });
+
   it('refuses a save that leaves nobody to send to, and keeps what was saved', () => {
     cy.visit(`/admin/campaigns/${camp.refuse}`);
     cy.get('.list-selector .tag[data-id=' + listOk + '] .delete').click();
@@ -135,5 +151,22 @@ describe('Saving a scheduled campaign', () => {
     cy.get('[data-cy=btn-save]').click();
     cy.get('.toast').should('contain', 'updated');
     cy.get(win).should('not.exist');
+  });
+
+  it('does not recheck a paused save', () => {
+    const path = `/api/campaigns/${camp.paused}`;
+    cy.request('PUT', `${path}/status`, { status: 'draft' });
+    // The Go test saves a real paused campaign. Return that status here without starting the sender.
+    ['GET', 'PUT'].forEach((method) => {
+      cy.intercept(method, path, (req) => {
+        req.continue((res) => { res.body.data.status = 'paused'; });
+      });
+    });
+    cy.intercept('GET', `${path}/preflight`).as('recheck');
+    cy.visit(`/admin/campaigns/${camp.paused}`);
+    cy.get('[data-cy=btn-save]').click();
+    cy.get('.toast').should('contain', 'updated');
+    cy.get(win).should('not.exist');
+    cy.get('@recheck.all').should('have.length', 0);
   });
 });
