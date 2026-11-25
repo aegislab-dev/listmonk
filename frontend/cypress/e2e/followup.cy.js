@@ -86,6 +86,27 @@ describe('follow-up campaign draft', () => {
     cy.get(input('open', 'no')).should('be.checked');
   });
 
+  it('keeps both filters open where neither opens nor clicks can be told apart', () => {
+    cy.intercept('POST', '**/reaction-list/preview', (request) => {
+      request.continue((response) => { response.body.data.tracking.clickers = 0; response.body.data.tracking.viewers = 0; });
+    });
+    openDialog();
+    cy.get(input('click', 'any')).should('be.checked');
+    cy.get(input('open', 'any')).should('be.checked');
+  });
+
+  it('says so, and opens plain, where no follow-up can be made from the campaign', () => {
+    cy.intercept('POST', '**/reaction-list/preview', (request) => {
+      request.continue((response) => {
+        response.body.data.followup = { available: false, reason: 'is_followup', warn_days: 3, default_name: '' };
+      });
+    });
+    openDialog();
+    cy.get('[data-cy=followup-unavailable]').should('contain', 'cannot have a follow-up of its own');
+    cy.get('#reaction-title').should('not.contain', "Send again");
+    cy.get(input('click', 'any')).should('be.checked');
+  });
+
   it('does not warn after the first days', () => {
     cy.intercept('POST', '**/reaction-list/preview', (request) => {
       request.continue((response) => { response.body.data.followup.days_since = 5; });

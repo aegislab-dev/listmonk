@@ -181,7 +181,7 @@
         </div>
       </b-table-column>
 
-      <b-table-column v-slot="props" cell-class="actions" width="215" align="right">
+      <b-table-column v-slot="props" cell-class="actions" width="195" align="right">
         <div>
           <!-- start / pause / resume / scheduled -->
           <template v-if="$can('campaigns:send')">
@@ -360,7 +360,7 @@ export default Vue.extend({
 
   methods: {
     isFinished(campaign) {
-      return campaign.status === 'finished';
+      return campaign.status === 'finished' && campaign.type !== 'optin';
     },
     // The follow-up entry opens the window with its conditions preset (LST-62).
     openReaction(campaign) {

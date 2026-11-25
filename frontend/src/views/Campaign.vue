@@ -60,11 +60,12 @@
         </div>
       </div>
     </header>
-    <campaign-reaction-list v-if="followupOpen" :campaign-id="data.id" preset="followup" @close="followupOpen = false" />
+    <campaign-reaction-list v-if="followupOpen" :campaign-id="data.id" preset="followup"
+      @close="followupOpen = false; followupKey += 1" />
 
     <b-loading :active="loading.campaigns || savingCampaign" />
 
-    <campaign-followup-banner v-if="isEditing && data.id" :campaign-id="data.id" :status="data.status"
+    <campaign-followup-banner v-if="isEditing && data.id" :key="followupKey" :campaign-id="data.id" :status="data.status"
       :updated-at="data.updatedAt" @loaded="onFollowupLoaded" />
     <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
       :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
@@ -443,6 +444,8 @@ export default Vue.extend({
       isNew: false,
       isFollowup: false,
       followupOpen: false,
+      // Bumped when the window closes: a follow-up may have been made, so the banner reads again.
+      followupKey: 0,
       isEditing: false,
       isHeadersVisible: false,
       isAttachFieldVisible: false,
@@ -1183,7 +1186,8 @@ export default Vue.extend({
 
     // Same conditions as the campaign list's entry.
     canFollowup() {
-      return this.isEditing && this.data.status === 'finished' && this.$canCreateList()
+      return this.isEditing && this.data.status === 'finished' && this.data.type !== 'optin' && !this.isFollowup
+        && this.$canCreateList()
         && this.$can('campaigns:get_analytics') && this.$can('campaigns:get', 'campaigns:get_all');
     },
 

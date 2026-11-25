@@ -93,7 +93,7 @@
       {{ reactionFinished ? $t('campaigns.followup.entry') : $t('campaigns.reactionList.title') }}
     </b-button>
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
-      :preset="reactionCampaign.status === 'finished' ? 'followup' : ''" @close="reactionCampaign = null" />
+      :preset="reactionFinished ? 'followup' : ''" @close="reactionCampaign = null" />
 
     <section class="charts mt-5">
       <div class="chart" v-for="(v, k) in charts" :key="k">
@@ -458,7 +458,8 @@ export default Vue.extend({
 
     // The follow-up wording is for a finished campaign only (LST-62).
     reactionFinished() {
-      return this.form.campaigns.length === 1 && this.form.campaigns[0].status === 'finished';
+      return this.form.campaigns.length === 1 && this.form.campaigns[0].status === 'finished'
+        && this.form.campaigns[0].type !== 'optin';
     },
 
     canReact() {

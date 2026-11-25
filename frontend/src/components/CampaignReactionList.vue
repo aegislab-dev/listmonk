@@ -39,6 +39,9 @@
             <p v-if="noSends" class="reaction-note is-warning">{{ t('noSends') }}</p>
             <p v-if="!tracking.individualTracking" class="reaction-note is-warning">{{ t('individualOff') }}</p>
             <p v-if="sending" class="reaction-note is-warning">{{ t('sending') }}</p>
+            <p v-if="preset === 'followup' && noFollowupReason" class="reaction-note is-warning" data-cy="followup-unavailable">
+              {{ f(noFollowupReason === 'is_followup' ? 'isFollowup' : 'notRegular') }}
+            </p>
 
             <div v-for="axis in axes" :key="axis.key">
               <div class="reaction-condition" role="group" :aria-label="t(axis.key)">
@@ -226,6 +229,8 @@ export default Vue.extend({
       checking: false,
       creating: false,
       followup: this.preset === 'followup',
+      // False once the server says this campaign can have no follow-up (opt-in, or itself a follow-up).
+      presetOn: this.preset === 'followup',
       followupName: '',
       followupNameTouched: false,
     };
@@ -234,7 +239,7 @@ export default Vue.extend({
     isAdmin() { return this.$can('lists:manage_all'); },
     heading() {
       if (this.result) return this.result.followup ? this.f('doneBoth') : this.t('done');
-      return this.preset === 'followup' ? this.f('entry') : this.t('title');
+      return this.presetOn ? this.f('entry') : this.t('title');
     },
     tracking() { return this.metadata.tracking; },
     noSends() { return this.tracking.sends === 0; },
@@ -276,6 +281,11 @@ export default Vue.extend({
     // The condition the existing follow-up was made with, in words.
     existingCondition() {
       return conditionWords(this.offer?.existing?.condition, (key) => this.$t(key));
+    },
+    // Why no follow-up can be made from this campaign, when the entry was "send again".
+    noFollowupReason() {
+      const reason = this.offer && !this.offer.available ? this.offer.reason : '';
+      return ['not_regular', 'is_followup'].includes(reason) ? reason : '';
     },
     wantsFollowup() { return this.followup && !!this.offer?.available; },
     followupSoon() {
@@ -320,7 +330,13 @@ export default Vue.extend({
     // "Didn't click" first; where clicks cannot be told apart, "didn't open"; else leave both open.
     // The lock notice of the axis says why.
     applyPreset() {
-      if (this.preset !== 'followup' || this.noSends) return;
+      if (this.preset !== 'followup') return;
+      if (this.noFollowupReason) {
+        this.presetOn = false;
+        this.followup = false;
+        return;
+      }
+      if (this.noSends) return;
       if (!this.noClick) this.settings.click = 'no';
       else if (!this.noOpen) this.settings.open = 'no';
     },
