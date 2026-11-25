@@ -192,6 +192,7 @@
     "campaign-delete-guard.cy.js",
     "campaign-send-confirm.cy.js",
     "campaign-clone-lists.cy.js",
+    "list-teams.cy.js",
     "stats-dashboard.cy.js"
    ]
   },
@@ -216,6 +217,7 @@
     "campaign-send-confirm.cy.js",
     "campaign-clone-lists.cy.js",
     "import-campaign-flow.cy.js",
+    "list-teams.cy.js",
     "stats-dashboard.cy.js"
    ]
   },
@@ -252,7 +254,11 @@
     "cmd/axm_teams*.go",
     "cmd/axm_sub_boundary*.go",
     "internal/core/axm_sub_boundary*.go",
-    "internal/core/axm_teams*.go"
+    "internal/core/axm_teams*.go",
+    "cmd/roles.go",
+    "cmd/users.go",
+    "internal/core/roles.go",
+    "internal/core/users.go"
    ],
    "specs": [
     "list-teams.cy.js"

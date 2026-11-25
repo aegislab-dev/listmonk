@@ -232,6 +232,10 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.loginAndVisit('/');
     cy.get('[data-cy=team-row-__none__]').click();
     cy.get('[data-cy=team-filter]').should('contain', 'No team');
+    cy.get('[data-cy=camp-row-80]').within(() => {
+      cy.get('[data-cy=result-clone]').should('exist');
+      cy.get('[data-cy=result-followup]').should('not.exist');
+    });
     cy.get('[data-cy=card-age]').should('contain', 'Unique recipients 1,500');
     cy.get('[data-cy=card-country]').should('contain', 'Unique recipients 4,000');
     cy.get('[data-cy=card-followup]')
