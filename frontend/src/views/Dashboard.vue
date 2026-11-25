@@ -2,21 +2,23 @@
   <section class="dashboard content st">
     <header>
       <h1 class="title is-5 mb-1">{{ $t('stats.title') }}</h1>
-      <div class="st-note">{{ $t('stats.asOf', { at: asOf }) }}</div>
+      <div v-if="asOf" class="st-note">{{ $t('stats.asOf', { at: asOf }) }}</div>
     </header>
 
-    <template v-if="canStats">
-      <div class="is-flex is-align-items-center my-3 py-2" style="gap:14px;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb">
-        <span class="st-note">{{ $t('stats.period') }}</span>
-        <span class="st-seg" data-cy="period">
-          <button v-for="p in periods" :key="String(p)" type="button" :class="{ on: period === p }" :data-cy="`period-${p === null ? 'all' : p}`" @click="setPeriod(p)">
-            {{ p === null ? $t('stats.periodAll') : p === 365 ? $t('stats.periodYear') : $t('stats.periodDays', { n: p }) }}
-          </button>
-        </span>
-        <span class="st-note">{{ rangeText }}</span>
-        <a class="is-size-7" style="margin-left:auto" href="#" data-cy="defs-link" @click.prevent="openDefs" @keyup.enter="openDefs">{{ $t('stats.defsLink') }}</a>
-      </div>
+    <div class="is-flex is-align-items-center my-3 py-2" style="gap:14px;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb">
+      <span class="st-note">{{ $t('stats.period') }}</span>
+      <span class="st-seg" :style="{ opacity: canStats ? 1 : 0.35 }" data-cy="period">
+        <button v-for="p in periods" :key="String(p)" type="button" :class="{ on: period === p }"
+          :disabled="!canStats" :data-cy="`period-${p === null ? 'all' : p}`" @click="setPeriod(p)">
+          {{ p === null ? $t('stats.periodAll') : p === 365 ? $t('stats.periodYear') : $t('stats.periodDays', { n: p }) }}
+        </button>
+      </span>
+      <span class="st-note">{{ rangeText }}</span>
+      <a v-if="canStats" class="is-size-7" style="margin-left:auto" href="#" data-cy="defs-link"
+        @click.prevent="openDefs">{{ $t('stats.defsLink') }}</a>
+    </div>
 
+    <template v-if="canStats">
       <b-loading v-if="loading" active :is-full-page="false" />
       <div v-if="error" class="notification is-danger is-light">{{ error }}</div>
 
@@ -29,16 +31,26 @@
           :team-key="team" :scope="scopeText" :now="now" />
       </template>
     </template>
-    <div v-else class="notification is-light" data-cy="stats-noperm">{{ $t('stats.noPerm') }}</div>
+    <template v-else>
+      <div class="notification is-light" data-cy="stats-noperm">{{ $t('stats.noPerm') }}</div>
+      <div class="st-card" data-cy="counts-summary">
+        <h2>{{ $t('stats.status') }} <small>{{ $t('stats.statusAllTime') }}</small></h2>
+        <div v-if="!isCountsLoading" class="is-flex is-flex-wrap-wrap px-4 py-3" style="gap:30px">
+          <div v-for="item in countSummary" :key="item.label">
+            <strong class="is-size-5">{{ formatCount(item.total) }}</strong><br />{{ item.label }}
+          </div>
+        </div>
+      </div>
+    </template>
 
-    <div class="st-fold" data-cy="counts-toggle" tabindex="0" role="button"
+    <div v-if="canStats" class="st-fold" data-cy="counts-toggle" tabindex="0" role="button"
       @click="showCounts = !showCounts" @keyup.enter="showCounts = !showCounts">
       ④ {{ $t('stats.status') }} <i class="st-tri" :class="showCounts ? 'down' : 'right'" />
       <span class="st-note">{{ $t('stats.statusNote', {
  lists: counts.lists.total || 0, subs: counts.subscribers.total || 0, camps: counts.campaigns.total || 0, msgs: counts.messages || 0,
 }) }}</span>
     </div>
-    <section v-show="showCounts || !canStats" class="counts wrap">
+    <section v-if="canStats" v-show="showCounts" class="counts wrap">
       <div class="tile is-ancestor">
         <div class="tile is-vertical is-12">
           <div class="tile">
@@ -174,7 +186,7 @@ import {
   BASELINE, MIN, PERIODS, PERIOD_DEFAULT,
 } from '../stats-definitions';
 import {
-  aggregate, teamRows, campaignTeams, formatKST, statsNow, teamLabel, pctText, signedPoints, bounceOver, previousStatus,
+  aggregate, teamRows, campaignTeams, formatKST, fmt, statsNow, teamLabel, pctText, signedPoints, bounceOver, previousStatus,
 } from '../stats';
 
 const DAY = 86400000;
@@ -220,6 +232,14 @@ export default Vue.extend({
   computed: {
     ...mapState(['settings']),
     canStats() { return this.$can('campaigns:get_analytics'); },
+    countSummary() {
+      return [
+        { total: this.counts.lists.total || 0, label: this.$tc('globals.terms.list', 2) },
+        { total: this.counts.subscribers.total || 0, label: this.$tc('globals.terms.subscriber', 2) },
+        { total: this.counts.campaigns.total || 0, label: this.$tc('globals.terms.campaign', 2) },
+        { total: this.counts.messages || 0, label: this.$t('dashboard.messagesSent') },
+      ];
+    },
     range() {
       const to = statsNow(this.now);
       const from = this.period === null ? null : new Date(to.getTime() - this.period * DAY);
@@ -266,6 +286,7 @@ export default Vue.extend({
     },
   },
   methods: {
+    formatCount: fmt,
     setPeriod(p) {
       if (this.period === p) return;
       const query = { ...this.$route.query };

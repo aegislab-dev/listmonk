@@ -250,6 +250,10 @@ describe('follow-up campaign draft', () => {
     });
     finished();
 
+    cy.visit('/admin');
+    cy.get('[data-cy=card-followup]').should('contain', `#${followupId} ← #${campaignId}`)
+      .and('contain', 'Collecting');
+
     const reactionTitle = "Create a list from people who did or didn't react";
     const checkPlainDialog = () => {
       cy.get('#reaction-title').should('have.text', reactionTitle);

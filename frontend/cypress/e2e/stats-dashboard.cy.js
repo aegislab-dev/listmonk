@@ -140,7 +140,7 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=camp-row-12]').should('contain', '가 median 9.0%').and('not.contain', 'All teams median');
     cy.get('[data-cy=camp-row-23] .st-over').should('not.exist');
 
-    cy.get('[data-cy="team-row-팀:나"]').click();
+    cy.get('[data-cy="team-row-팀:나"]').find('button[aria-pressed=false]').focus().should('be.focused').click();
     cy.get('[data-cy=team-filter]').should('contain', '나');
     cy.get('[data-cy=camp-row-20]').should('exist');
     cy.get('[data-cy=camp-row-12]').should('not.exist');
@@ -148,6 +148,23 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=stats-insights]').should('contain', 'recalculated from 나 only');
     cy.get('[data-cy=team-filter] a').click();
     cy.get('[data-cy=camp-row-12]').should('exist');
+  });
+
+  it('shows disabled periods and one cumulative card for a user without analytics access', () => {
+    cy.intercept('GET', '/api/profile', (request) => {
+      request.continue(({ body }) => {
+        body.data.user_role = { id: 9, permissions: [] };
+      });
+    });
+    cy.intercept('GET', '/api/dashboard/counts', {
+      data: { lists: { total: 14 }, subscribers: { total: 3437 }, campaigns: { total: 13 }, messages: 48320 },
+    });
+    cy.loginAndVisit('/');
+    cy.get('[data-cy=stats-noperm]').should('be.visible');
+    cy.get('[data-cy=period] button').should('have.length', 4).and('be.disabled');
+    cy.get('[data-cy=counts-summary]').should('have.length', 1).and('contain', 'All-time totals')
+      .and('contain', '14').and('contain', '3,437').and('contain', '13').and('contain', '48,320');
+    cy.get('.dashboard').find('[data-cy=counts-toggle], [data-cy=lists], [data-cy=stats-teams]').should('not.exist');
   });
 
   it('next-send cards say why a group is too small and hide other teams\' lists', () => {
@@ -160,6 +177,9 @@ describe('Statistics dashboard (fixed answers)', () => {
     // A country group under 30 recipients is merged into "other".
     cy.get('[data-cy=card-country]').should('contain', 'Other (groups below 30 people)');
     cy.get('[data-cy=card-followup]').should('contain', 'No campaigns have a completed follow-up yet');
+    cy.get('[data-cy=insight-followup-start]').should('have.attr', 'href', '/admin/campaigns/10');
+    cy.get('[data-cy=concl-age]').should('contain', '30 days or older')
+      .and('contain', 'click rate -6.0%p').and('contain', 'bounce rate +3.0%p');
     cy.get('[data-cy=card-overlap]').should('contain', 'previous 30 days').and('contain', 'Previous 7 days');
     cy.get('[data-cy=card-overlap]').should('contain', 'campaigns, combined').and('contain', 'send records');
     cy.get('[data-cy=card-country]').should('contain', 'Bounce 1.3%');
@@ -171,6 +191,31 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=card-list]').should('not.exist');
     cy.get('[data-cy=insight-all]').click();
     cy.get('[data-cy=card-list]').should('exist');
+  });
+
+  it('compares eligible weekday, hour and subject-length groups by click-rate difference', () => {
+    const camps = [
+      ...[7, 14, 21].map((d) => camp({
+        id: d, started_at: day(d), clickers: 100, subject: 'Short',
+      })),
+      ...[6, 13, 20].map((d) => camp({
+        id: d, started_at: day(d).replace('T00:', 'T11:'), clickers: 50, subject: 'A medium length subject line',
+      })),
+      camp({
+        id: 10, started_at: day(10).replace('T00:', 'T05:'), clickers: 900,
+        subject: 'An exceptionally long subject to exercise the small-sample state',
+      }),
+    ];
+    stub({ cur: camps });
+    cy.loginAndVisit('/');
+    [
+      ['weekday', ['Wed', 'Thu']],
+      ['hour', ['06', '18']],
+      ['length', ['20', '21']],
+    ].forEach(([key, labels]) => {
+      cy.get(`[data-cy=concl-${key}]`).should('contain', labels[0]).and('contain', labels[1])
+        .and('contain', '+5.0%p');
+    });
   });
 
   it('uses no-team groups and the actual follow-up audience and combined denominator', () => {
@@ -257,7 +302,8 @@ describe('Statistics dashboard (fixed answers)', () => {
     stub();
     cy.intercept('GET', '/api/stats/recipients*', (req) => req.reply({
       data: req.query.by === 'country'
-        ? [{ ...sparse, key: 'KR' }, { ...enough, key: 'JP' }, { ...enough, key: 'US', clicked: 8 }]
+        ? [{ ...sparse, key: 'KR' }, { ...enough, key: 'JP' }, { ...enough, key: 'US', clicked: 8 },
+          { ...enough, key: '(none)', clicked: 30 }]
         : [{ ...sparse, key: 'older' }],
     }));
     cy.loginAndVisit('/');
@@ -273,6 +319,7 @@ describe('Statistics dashboard (fixed answers)', () => {
         .and('not.contain', '100.0%');
     });
     cy.get('[data-cy=concl-country]').should('contain', 'JP has the highest click rate at 5.0%');
+    cy.contains('[data-cy=card-country] .st-br', 'Unknown').should('contain', 'Click 15.0%').and('not.contain', 'Small sample');
     cy.contains('[data-cy=card-country] .st-br', 'JP').should('contain', 'Tracked sample · Unique recipients 200 · Sends 200');
     cy.get('[data-cy=concl-age]').should('contain', '200 tracked recipients');
   });
@@ -426,6 +473,35 @@ describe('Result summary on the campaign and analytics screens (fixed answers)',
       cy.location('search').should('not.include', 'from=');
       cy.get('[data-cy=result-summary]').find('[data-cy=result-analytics], [data-cy=result-clone], [data-cy=result-followup]').should('have.length', 3);
     });
+  });
+
+  it('preserves explicit dates when picking a recent campaign and restores the picker when cleared', () => {
+    const recent = camp({ id: 91, started_at: day(2) });
+    const from = day(5);
+    const to = day(4);
+    const query = `from=${Date.parse(from) / 1000}&to=${Date.parse(to) / 1000}`;
+    stub({ cur: [recent] });
+    cy.intercept('GET', '/api/campaigns/91', { data: { ...recent, created_at: day(3) } });
+    cy.intercept('GET', '/api/campaigns/analytics/views?*', { data: [] }).as('explicitViews');
+    cy.loginAndVisit('/admin/campaigns/analytics');
+    cy.get('[data-cy=from] input').should('have.attr', 'placeholder', 'Blank = campaign start');
+    cy.get('[data-cy=to] input').should('have.attr', 'placeholder', 'Blank = now');
+    cy.get('[data-cy=proof-summary]').should('not.exist');
+    cy.visit(`/admin/campaigns/analytics?${query}`);
+    cy.get('[data-cy=pick-91]').click();
+    cy.wait('@explicitViews').then(({ request }) => {
+      expect(request.query.from).to.eq(from);
+      expect(request.query.to).to.eq(to);
+    });
+    cy.location('search').should('include', query);
+    cy.get('[data-cy=proof-summary]').should('be.visible');
+    cy.get('.taginput .tag .delete').click();
+    cy.get('[data-cy=pick-91]').should('be.visible');
+    cy.get('[data-cy=proof-summary]').should('not.exist');
+    cy.get('[data-cy=from] input').invoke('val').should('not.eq', '');
+    cy.location('search').should('eq', `?${query}`);
+    cy.get('[data-cy=pick-91]').click();
+    cy.wait('@explicitViews').its('request.query.from').should('eq', from);
   });
 
 

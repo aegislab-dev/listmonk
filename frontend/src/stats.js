@@ -290,11 +290,8 @@ export function recipientRows(groups, team, order = null) {
 }
 
 // Include the pair even when the original started before the selected period.
-export function followupPairs(camps, now = new Date()) {
-  return camps.filter((c) => {
-    const k = classify(c, now);
-    return c.followupOf && k.state === 'done' && k.settled;
-  }).map((followup) => {
+export function followupPairs(camps) {
+  return camps.filter((c) => c.followupOf && c.status === 'finished' && c.sent > 0).map((followup) => {
     const tracked = !followup.trackingOff && (followup.combinedClickers > 0 || followup.combinedViewers > 0);
     return {
       followup,

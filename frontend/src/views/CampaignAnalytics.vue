@@ -30,13 +30,13 @@
             <div class="column is-6">
               <b-field data-cy="from" :label="$t('analytics.fromDate')" label-position="on-border">
                 <b-datetimepicker :value="form.from" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
-                  :datetime-formatter="formatDateTime" @input="onFromDateChange" />
+                  :placeholder="$t('stats.analyticsFromDefault')" :datetime-formatter="formatDateTime" @input="onFromDateChange" />
               </b-field>
             </div>
             <div class="column is-6">
               <b-field data-cy="to" :label="$t('analytics.toDate')" label-position="on-border">
                 <b-datetimepicker :value="form.to" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
-                  :datetime-formatter="formatDateTime" @input="onToDateChange" />
+                  :placeholder="$t('stats.analyticsToDefault')" :datetime-formatter="formatDateTime" @input="onToDateChange" />
               </b-field>
             </div>
           </div><!-- columns -->
@@ -50,7 +50,7 @@
     </form>
 
     <!-- LST-36: copy the counts of one campaign as a proof summary (block v1). -->
-    <div class="proof-summary columns is-vcentered is-mobile mt-1 mb-0" data-cy="proof-summary">
+    <div v-if="form.campaigns.length" class="proof-summary columns is-vcentered is-mobile mt-1 mb-0" data-cy="proof-summary">
       <div class="column is-narrow">
         <b-button :disabled="!!proofDisabledReason" :loading="proof.loading"
           data-cy="btn-proof-summary" @click="onProofSummary">
@@ -110,7 +110,7 @@
             </template>
             · {{ $t('stats.bounceValue', { rate: pctText(pct(c.hard + c.soft, c.sent)) }) }}
           </span>
-          <a class="is-pulled-right" :data-cy="`pick-${c.id}`" href="#" @click.prevent="pickRecent(c)" @keyup.enter="pickRecent(c)">{{ $t('stats.pick') }}</a>
+          <a class="is-pulled-right" :data-cy="`pick-${c.id}`" href="#" @click.prevent="pickRecent(c)">{{ $t('stats.pick') }}</a>
         </div>
       </div>
     </div>
@@ -340,11 +340,15 @@ export default Vue.extend({
       return { points: { datasets: lines }, donut };
     },
 
-    onSubmit() {
-      const query = { id: this.form.campaigns.map((c) => c.id) };
+    analyticsQuery(ids) {
+      const query = ids === undefined ? {} : { id: ids };
       if (this.form.explicitFrom) query.from = dayjs(this.form.from).unix();
       if (this.form.explicitTo) query.to = dayjs(this.form.to).unix();
-      this.$router.push({ query });
+      return query;
+    },
+
+    onSubmit() {
+      this.$router.push({ query: this.analyticsQuery(this.form.campaigns.map((c) => c.id)) });
     },
 
     // The campaigns the caller may open, newest first, for the empty screen (LST-64).
@@ -358,7 +362,7 @@ export default Vue.extend({
     },
 
     pickRecent(c) {
-      this.$router.replace({ query: { id: c.id } });
+      this.$router.replace({ query: this.analyticsQuery(c.id) });
     },
 
     queryCampaigns(q) {
@@ -535,6 +539,16 @@ export default Vue.extend({
   },
 
   watch: {
+    'form.campaigns.length': function onCampaignCountChange(length) {
+      if (length) return;
+      if (this.$route.query.id) {
+        this.$router.replace({ query: this.analyticsQuery() });
+        return;
+      }
+      if (!this.form.explicitFrom) this.form.from = null;
+      if (!this.form.explicitTo) this.form.to = null;
+      if (!this.recent.length) this.loadRecent();
+    },
     async followupCandidateId(id) {
       if (id === null) {
         this.reactionCheck = null;
