@@ -182,6 +182,11 @@ func TestRecentRuleCapsOnlyItsOwnCandidateBatches(t *testing.T) {
 	read(e.campID, 1000, e.eligible[501:1000])
 	wantSame(t, "held after reading past the first batch", e.held(), e.eligible[:501])
 	read(ordinary, 1000, e.eligible[:1000])
+
+	// The manager is configured for 1,000. It must keep reading after a shorter batch.
+	e.db.MustExec(`UPDATE campaigns SET status='finished' WHERE id=$1`, ordinary)
+	wantSame(t, "delivered across capped batches", e.rsRun(t, 1000), e.eligible[501:])
+	wantSame(t, "recorded across capped batches", e.recorded(), e.eligible[501:])
 }
 
 func (e *sendsEnv) count(query string, args ...any) int {
