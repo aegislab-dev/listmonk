@@ -42,31 +42,54 @@ SELECT c.id, c.name, c.subject, c.status::TEXT AS status, c.started_at, c.sent, 
 FROM campaigns c
 LEFT JOIN axm_campaign_followups f ON f.campaign_id = c.id
 LEFT JOIN campaigns parent ON parent.id = f.parent_campaign_id
-WHERE c.type = 'regular' AND c.messenger = 'email' AND c.status IN ('finished', 'running', 'paused', 'cancelled')
+WHERE c.type = 'regular' AND (c.messenger = 'email' OR STARTS_WITH(c.messenger, 'email-')) AND c.status IN ('finished', 'running', 'paused', 'cancelled')
     AND c.started_at >= $1 AND c.started_at < $2 AND (c.sent > 0 OR c.status = 'running')
 ORDER BY c.started_at DESC, c.id DESC;
 
 -- name: axm-stats-overlap
--- Completed campaigns with nearly complete ledger coverage. $3 is an optional campaign ID.
-SELECT c.id, totals.ledger_rows,
-    COUNT(*) FILTER (WHERE p.sent_at >= s.sent_at - INTERVAL '7 days')::INT AS overlap7,
-    COUNT(*) FILTER (WHERE p.sent_at IS NOT NULL)::INT AS overlap30
-FROM campaigns c
-CROSS JOIN LATERAL (
-    SELECT COUNT(*)::INT AS ledger_rows FROM axm_campaign_sends l WHERE l.campaign_id = c.id
-) totals
-JOIN axm_campaign_sends s ON s.campaign_id = c.id
-LEFT JOIN LATERAL (
-    SELECT prior.sent_at FROM axm_campaign_sends prior
-    WHERE prior.subscriber_id = s.subscriber_id AND prior.campaign_id <> s.campaign_id
-        AND prior.sent_at < s.sent_at AND prior.sent_at >= s.sent_at - INTERVAL '30 days'
-    ORDER BY prior.sent_at DESC LIMIT 1
-) p ON TRUE
-WHERE c.type = 'regular' AND c.messenger = 'email' AND c.status = 'finished'
-    AND c.started_at >= $1 AND c.started_at < $2 AND c.started_at <= NOW() - INTERVAL '3 days'
-    AND c.sent > 0 AND totals.ledger_rows >= 0.95 * c.sent
-    AND ($3::INT = 0 OR c.id = $3)
-GROUP BY c.id, totals.ledger_rows;
+-- $3 selects a single campaign. For a period request, also count distinct people
+-- across campaigns, once for the company and once per campaign team.
+WITH eligible AS MATERIALIZED (
+    SELECT c.id, ARRAY(
+        SELECT DISTINCT t FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+        CROSS JOIN LATERAL UNNEST(l.tags) AS t
+        WHERE cl.campaign_id = c.id AND STARTS_WITH(t, $4)
+    ) AS tags
+    FROM campaigns c
+    WHERE c.type = 'regular' AND (c.messenger = 'email' OR STARTS_WITH(c.messenger, 'email-')) AND c.status = 'finished'
+        AND c.started_at >= $1 AND c.started_at < $2 AND c.started_at <= NOW() - INTERVAL '3 days'
+        AND ($3::INT = 0 OR c.id = $3)
+        AND c.sent > 0 AND 0.95 * c.sent <= (
+            SELECT COUNT(*) FROM axm_campaign_sends l WHERE l.campaign_id = c.id)
+), overlap AS MATERIALIZED (
+    SELECT c.id, s.subscriber_id, p.sent_at >= s.sent_at - INTERVAL '7 days' AS recent,
+        p.sent_at IS NOT NULL AS within_month
+    FROM eligible c
+    JOIN axm_campaign_sends s ON s.campaign_id = c.id
+    LEFT JOIN LATERAL (
+        SELECT prior.sent_at FROM axm_campaign_sends prior
+        WHERE prior.subscriber_id = s.subscriber_id AND prior.campaign_id <> s.campaign_id
+            AND prior.sent_at < s.sent_at AND prior.sent_at >= s.sent_at - INTERVAL '30 days'
+        ORDER BY prior.sent_at DESC LIMIT 1
+    ) p ON TRUE
+), period_people AS (
+    SELECT t.team, o.subscriber_id, BOOL_OR(o.recent) AS recent, BOOL_OR(o.within_month) AS within_month
+    FROM overlap o JOIN eligible c USING (id)
+    CROSS JOIN LATERAL UNNEST(ARRAY[''] || CASE WHEN CARDINALITY(c.tags) = 0 THEN ARRAY[$5::TEXT] ELSE c.tags END) AS t(team)
+    WHERE $3 = 0
+    GROUP BY t.team, o.subscriber_id
+)
+SELECT id, '' AS team, COUNT(*)::INT AS ledger_rows, 0 AS recipients,
+    COUNT(*) FILTER (WHERE recent)::INT AS overlap7,
+    COUNT(*) FILTER (WHERE within_month)::INT AS overlap30
+FROM overlap
+GROUP BY id
+UNION ALL
+SELECT 0 AS id, team, 0 AS ledger_rows, COUNT(*)::INT AS recipients,
+    COUNT(*) FILTER (WHERE recent)::INT AS overlap7,
+    COUNT(*) FILTER (WHERE within_month)::INT AS overlap30
+FROM period_people
+GROUP BY team;
 
 -- name: axm-stats-recipients
 -- Scope each send to the company and each campaign team (including no team).
@@ -76,11 +99,14 @@ WITH campaign_teams AS MATERIALIZED (
         SELECT DISTINCT t FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
         CROSS JOIN LATERAL UNNEST(l.tags) AS t
         WHERE cl.campaign_id = c.id AND STARTS_WITH(t, $4) ORDER BY t
-    ) AS tags
+    ) AS tags,
+    $8::BOOLEAN AND (
+        EXISTS (SELECT 1 FROM campaign_views v WHERE v.campaign_id = c.id)
+        OR EXISTS (SELECT 1 FROM link_clicks k WHERE k.campaign_id = c.id)
+    ) AS tracked
     FROM campaigns c
-    WHERE c.type = 'regular' AND c.messenger = 'email' AND c.status = 'finished'
+    WHERE c.type = 'regular' AND (c.messenger = 'email' OR STARTS_WITH(c.messenger, 'email-')) AND c.status = 'finished'
         AND c.started_at >= $1 AND c.started_at < $2 AND c.started_at <= NOW() - INTERVAL '3 days'
-        AND NOT EXISTS (SELECT 1 FROM axm_tracking_off o WHERE o.started_at <= c.started_at AND (o.ended_at IS NULL OR o.ended_at > c.started_at))
 ), by_audience AS (
     SELECT c.tags, s.subscriber_id,
         CASE
@@ -90,7 +116,9 @@ WITH campaign_teams AS MATERIALIZED (
                 ELSE 'older' END
             ELSE COALESCE(NULLIF(UPPER(TRIM(u.attribs->>'country')), ''), '(none)')
         END AS key,
-        COUNT(*) AS sent, COUNT(s.opened_at) AS opened, COUNT(s.clicked_at) AS clicked,
+        COUNT(*) AS sent, COUNT(*) FILTER (WHERE c.tracked) AS tracked_sent,
+        COUNT(s.opened_at) FILTER (WHERE c.tracked) AS opened,
+        COUNT(s.clicked_at) FILTER (WHERE c.tracked) AS clicked,
         COUNT(*) FILTER (WHERE b.subscriber_id IS NOT NULL) AS bounced
     FROM campaign_teams c
     JOIN axm_campaign_sends s ON s.campaign_id = c.id
@@ -100,7 +128,7 @@ WITH campaign_teams AS MATERIALIZED (
     ) b ON b.campaign_id = s.campaign_id AND b.subscriber_id = s.subscriber_id
     GROUP BY c.tags, s.subscriber_id, key
 ), by_person AS MATERIALIZED (
-    SELECT t.team, g.key, g.subscriber_id, SUM(g.sent) AS sent,
+    SELECT t.team, g.key, g.subscriber_id, SUM(g.sent) AS sent, SUM(g.tracked_sent) AS tracked_sent,
         SUM(g.opened) AS opened, SUM(g.clicked) AS clicked, SUM(g.bounced) AS bounced
     FROM by_audience g
     CROSS JOIN LATERAL UNNEST(ARRAY[''] || CASE WHEN CARDINALITY(g.tags) = 0 THEN ARRAY[$6::TEXT] ELSE g.tags END) AS t(team)
@@ -109,7 +137,9 @@ WITH campaign_teams AS MATERIALIZED (
     SELECT team, key FROM by_person GROUP BY team, key HAVING COUNT(*) >= $5
 )
 SELECT s.team, COALESCE(p.key, $7) AS key, SUM(s.sent)::INT AS sent,
-    COUNT(DISTINCT s.subscriber_id)::INT AS recipients, SUM(s.opened)::INT AS opened,
+    COUNT(DISTINCT s.subscriber_id)::INT AS recipients, SUM(s.tracked_sent)::INT AS tracked_sent,
+    COUNT(DISTINCT s.subscriber_id) FILTER (WHERE s.tracked_sent > 0)::INT AS tracked_recipients,
+    SUM(s.opened)::INT AS opened,
     SUM(s.clicked)::INT AS clicked, SUM(s.bounced)::INT AS bounced
 FROM by_person s LEFT JOIN public_keys p ON p.team = s.team AND p.key = s.key
 GROUP BY s.team, COALESCE(p.key, $7)

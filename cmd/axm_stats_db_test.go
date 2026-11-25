@@ -347,7 +347,7 @@ func TestStatsOverlapByCampaign(t *testing.T) {
 	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id, sent_at)
 		SELECT $2, subscriber_id, sent_at FROM axm_campaign_sends WHERE campaign_id = $1`, current, sameTime)
 	core.ResetStatsCache()
-	code, data := e.call(e.a.GetStatsCampaigns, e.member, http.MethodGet, "/api/stats/campaigns?overlap=true", "", "")
+	code, data := e.call(e.a.GetStatsCampaigns, e.member, http.MethodGet, fmt.Sprintf("/api/stats/campaigns?overlap=true&id=%d", current), "", "")
 	var out []models.StatsOverlap
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("status %d: %v", code, err)
@@ -359,5 +359,85 @@ func TestStatsOverlapByCampaign(t *testing.T) {
 	code, data = e.call(e.a.GetStatsCampaigns, e.member, http.MethodGet, fmt.Sprintf("/api/stats/campaigns?overlap=true&id=%d", prior), "", "")
 	if code != http.StatusOK || string(data) != "[]" {
 		t.Errorf("insufficient ledger coverage: status %d, data %s", code, data)
+	}
+}
+
+// A named SMTP participates even without engagement, and repeated recipients count once per scope.
+func TestStatsNamedSMTPTrackingAndDistinctOverlap(t *testing.T) {
+	e := newReactionEnv(t)
+	e.db.MustExec(`DELETE FROM campaigns WHERE id = $1`, e.campID)
+	named := e.statsCampaign("Named SMTP", 10, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET sent = 200, messenger = 'email-transactional' WHERE id = $1`, named)
+	e.db.MustExec(`DELETE FROM campaign_views WHERE campaign_id = $1`, named)
+	e.db.MustExec(`DELETE FROM link_clicks WHERE campaign_id = $1`, named)
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, named)
+	e.db.MustExec(`WITH people AS (
+		INSERT INTO subscribers(uuid,name,email,attribs,created_at)
+		SELECT gen_random_uuid(),'Synthetic','stats-' || n || '@example.test','{"country":"kr"}',NOW()-INTERVAL '60 days'
+		FROM GENERATE_SERIES(1,200) AS n RETURNING id
+	) INSERT INTO axm_campaign_sends(campaign_id,subscriber_id,sent_at)
+	SELECT c.id, p.id, c.started_at FROM campaigns c CROSS JOIN people p WHERE c.id = $1`, named)
+	e.db.MustExec(`INSERT INTO bounces(campaign_id, subscriber_id, type, source)
+		SELECT campaign_id, subscriber_id, 'hard', 'api' FROM axm_campaign_sends WHERE campaign_id = $1 LIMIT 1`, named)
+	code, campaigns, _ := e.statsFor(e.member)
+	if code != http.StatusOK || len(campaigns.Campaigns) != 1 || campaigns.Campaigns[0].ID != named {
+		t.Fatalf("named SMTP campaign missing: %d %+v", code, campaigns)
+	}
+	checkGroup := func(by string, sent, tracked, trackedPeople, opened int) {
+		t.Helper()
+		code, data := e.call(e.a.GetStatsRecipients, e.member, http.MethodGet, "/api/stats/recipients?by="+by, "", "")
+		var groups []models.StatsRecipientGroup
+		if code != http.StatusOK || json.Unmarshal(data, &groups) != nil {
+			t.Fatalf("%s: %d %s", by, code, data)
+		}
+		for _, g := range groups {
+			if g.Team != "" {
+				continue
+			}
+			if g.Sent != sent || g.Recipients != 200 || g.TrackedSent != tracked || g.TrackedRecipients != trackedPeople ||
+				g.Opened != opened || g.Clicked != 0 || g.Bounced != 1 {
+				t.Errorf("%s: %+v", by, g)
+			}
+			return
+		}
+		t.Fatalf("%s: no company group", by)
+	}
+	checkGroup("country", 200, 0, 0, 0)
+	checkGroup("age", 200, 0, 0, 0)
+	for i, list := range []int{e.aList, e.bList} {
+		id := e.statsCampaign(fmt.Sprintf("Repeat audience %d", i), 7-i*3, list)
+		e.db.MustExec(`UPDATE campaigns SET sent = 200 WHERE id = $1`, id)
+		e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, id)
+		e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id,sent_at,opened_at)
+			SELECT c.id, s.subscriber_id, c.started_at, c.started_at FROM campaigns c
+			CROSS JOIN axm_campaign_sends s WHERE c.id = $1 AND s.campaign_id = $2`, id, named)
+	}
+	core.ResetStatsCache()
+	checkGroup("country", 600, 400, 200, 400)
+	checkGroup("age", 600, 400, 200, 400)
+	e.a.cfg.Privacy.DisableTracking = true
+	checkGroup("country", 600, 0, 0, 0)
+
+	code, data := e.call(e.a.GetStatsCampaigns, e.member, http.MethodGet, "/api/stats/campaigns?overlap=true", "", "")
+	var overlaps []models.StatsOverlap
+	if code != http.StatusOK || json.Unmarshal(data, &overlaps) != nil {
+		t.Fatalf("overlap: %d %s", code, data)
+	}
+	campaignRows, periodRows := 0, 0
+	for _, row := range overlaps {
+		if row.ID != 0 {
+			campaignRows++
+			if row.LedgerRows != 200 || (row.ID == named && row.Overlap30 != 0) || (row.ID != named && row.Overlap30 != 200) {
+				t.Errorf("campaign overlap: %+v", row)
+			}
+			continue
+		}
+		periodRows++
+		if row.Recipients != 200 || row.Overlap7 != 200 || row.Overlap30 != 200 {
+			t.Errorf("deduplicated overlap: %+v", row)
+		}
+	}
+	if campaignRows != 3 || periodRows != 3 {
+		t.Errorf("expected three campaigns plus the company and two teams: %+v", overlaps)
 	}
 }

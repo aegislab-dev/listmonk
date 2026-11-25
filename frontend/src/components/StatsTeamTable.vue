@@ -66,7 +66,9 @@
             </template>
             <template v-else>
               <td>{{ noRate(r.a, 'click') }}<stats-help v-if="r.a.nRate" field="click" :details="clickDetails(r.a, prevByTeam[r.tag])" /></td>
-              <td>—</td><td>{{ noRate(r.a, 'open') }}</td><td>{{ pt(r.a.bounce) }}</td><td>{{ pt(r.a.complaint, 2) }}</td>
+              <td>—</td><td>{{ noRate(r.a, 'open') }}</td>
+              <td><span :class="{ 'st-over': bounceWarning(r.a) }">{{ pt(r.a.bounce) }}<template v-if="bounceWarning(r.a)"> ⚠</template></span></td>
+              <td><span :class="{ 'st-over': complaintWarning(r.a) }">{{ pt(r.a.complaint, 2) }}<template v-if="complaintWarning(r.a)"> ⚠</template></span></td>
             </template>
           </tr>
         </template>
@@ -92,7 +94,7 @@
 <script>
 /* eslint-disable max-len, vue/max-len */
 import StatsHelp from './StatsHelp.vue';
-import { MIN } from '../stats-definitions';
+import { MIN, NEUTRAL } from '../stats-definitions';
 import {
   change, changeText, bounceOver, complaintOver, fmt, pctText, clickRate, classify, teamLabel, previousStatus, NO_TEAM_KEY,
 } from '../stats';
@@ -122,14 +124,18 @@ export default {
     n: fmt,
     pt: pctText,
     label(tag) { return teamLabel(tag, this.$t.bind(this)); },
-    bounceWarning(a) { return bounceOver(a.bounces, a.sBounce, MIN.groupSent); },
-    complaintWarning(a) { return complaintOver(a.complaints, a.sBounce); },
+    bounceWarning(a) { return a.enoughBounce && bounceOver(a.bounces, a.sBounce, MIN.groupSent); },
+    complaintWarning(a) { return a.enoughBounce && complaintOver(a.complaints, a.sBounce, MIN.groupSent); },
     noRate(a, key) { return a.click === null && a.untracked ? this.$t('stats.untracked') : pctText(a[key]); },
     clickDetails(a, prev) {
       if (!a.nRate) return [];
       const details = [this.$t('stats.helpCounts', { numerator: fmt(a.clickers), denominator: fmt(a.sRate), campaigns: a.nRate })];
       if (this.all.click !== null) details.push(this.$t('stats.helpCompany', { rate: pctText(this.all.click) }));
-      if (prev?.enough) details.push(this.$t('stats.helpPrevious', { rate: pctText(prev.click) }));
+      if (a.enough && prev?.enough) {
+        const delta = changeText(change(a.click - prev.click, 'click'), this.$t.bind(this));
+        details.push(this.$t('stats.helpPrevious', { rate: pctText(prev.click), delta }));
+      }
+      details.push(this.$t('stats.helpClickNeutral', { width: NEUTRAL.click }));
       return details;
     },
     w(v) { return `${Math.min(100, (v / 12) * 100)}%`; },

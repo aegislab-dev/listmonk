@@ -19,7 +19,7 @@
         <template v-else>
           <div class="v">{{ pt(summary.click) }}</div><div class="p">{{ n(camp.clickers) }}{{ $t('stats.people') }}</div>
           <div class="p" data-cy="result-compare">
-            <template v-if="summary.cmp"><span :class="['st-chg', summary.cmp.good ? 'good' : '']">{{ changeText(summary.cmp) }}</span> {{ comparisonName }} {{ $t('stats.median') }} {{ pt(summary.median.value) }} ({{ summary.median.n }}{{ $t('stats.cases2') }})</template>
+            <template v-if="summary.cmp"><span :class="['st-chg', summary.cmp.good ? 'good' : '']">{{ changeText(summary.cmp) }}</span> {{ teamName }} {{ $t('stats.median') }} {{ pt(summary.median.value) }} ({{ summary.median.n }}{{ $t('stats.cases2') }})</template>
             <template v-else-if="dim">{{ $t('stats.noCompare') }}</template>
             <template v-else>{{ $t('stats.noCompare') }}</template>
           </div>
@@ -71,7 +71,6 @@ export default {
     summary() { return this.camp ? campaignSummary(this.camp, this.camps, this.now) : null; },
     dim() { return this.summary.small || this.summary.k.collecting || this.summary.k.state !== 'done'; },
     teamName() { return this.label(campaignTeams(this.camp)[0]); },
-    comparisonName() { return this.summary.team ? this.label(this.summary.team) : this.$t('stats.all'); },
     clickDetails() {
       if (this.summary.k.untracked || !this.camp.sent) return [];
       return [this.$t('stats.helpCounts', { numerator: fmt(this.camp.clickers), denominator: fmt(this.camp.sent), campaigns: 1 })];
