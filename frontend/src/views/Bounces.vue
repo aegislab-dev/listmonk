@@ -187,7 +187,7 @@ export default Vue.extend({
         this.$utils.toast(this.$t(
           'globals.messages.deletedCount',
           { name: this.$tc('globals.terms.bounces'), num },
-        ) + (skipped ? ` ${this.$t('teams.bouncesSkipped', { num: skipped })}` : ''));
+        ) + (skipped ? `. ${this.$t('teams.bouncesSkipped', { num: skipped })}` : ''));
       });
     },
 
@@ -207,7 +207,7 @@ export default Vue.extend({
         this.getBounces();
         const skipped = res && res.skipped ? res.skipped : 0;
         this.$utils.toast(this.$t('globals.messages.done')
-          + (skipped ? ` ${this.$t('teams.bouncesSkipped', { num: skipped })}` : ''));
+          + (skipped ? `. ${this.$t('teams.bouncesSkipped', { num: skipped })}` : ''));
       });
     },
   },
