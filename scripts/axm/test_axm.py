@@ -73,7 +73,7 @@ class SelectSpecTest(unittest.TestCase):
         self.assertEqual(r['specs'], sorted(r['specs'], key=order.index))
 
     def test_unmapped_source_warns_and_adds_smoke(self):
-        r = pick('frontend/src/views/Dashboard.vue')
+        r = pick('frontend/src/views/Settings.vue')
         self.assertEqual(set(r['specs']), set(TMAP['smoke']))
         self.assertTrue(r['unmapped'])
         self.assertTrue(any('매핑 없음' in n for n in r['notes']))

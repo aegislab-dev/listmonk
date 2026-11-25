@@ -148,6 +148,11 @@ type Queries struct {
 	AxmTrashDrop         *sqlx.Stmt `query:"axm-trash-drop"`
 	AxmTrashPurge        *sqlx.Stmt `query:"axm-trash-purge"`
 
+	AxmStatsCampaigns  *sqlx.Stmt `query:"axm-stats-campaigns"`
+	AxmStatsOverlap    *sqlx.Stmt `query:"axm-stats-overlap"`
+	AxmStatsRecipients *sqlx.Stmt `query:"axm-stats-recipients"`
+	AxmStatsTeams      *sqlx.Stmt `query:"axm-stats-teams"`
+
 	GetDashboardCharts *sqlx.Stmt `query:"get-dashboard-charts"`
 	GetDashboardCounts *sqlx.Stmt `query:"get-dashboard-counts"`
 

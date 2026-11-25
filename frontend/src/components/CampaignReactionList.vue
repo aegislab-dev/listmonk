@@ -203,6 +203,7 @@ export default Vue.extend({
   name: 'CampaignReactionList',
   props: {
     campaignId: { type: Number, required: true },
+    preferFollowup: { type: Boolean, default: false },
   },
   data() {
     return {
@@ -221,7 +222,7 @@ export default Vue.extend({
       loadingTeams: false,
       checking: false,
       creating: false,
-      followup: false,
+      followup: this.preferFollowup,
       followupName: '',
       followupNameTouched: false,
     };
