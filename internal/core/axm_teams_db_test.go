@@ -228,7 +228,7 @@ func TestTeamMembers(t *testing.T) {
 // read all lists.
 func TestTeamDeleteAndUserRole(t *testing.T) {
 	e := newTeamEnv(t)
-	admin := e.userRole("operator", "lists:get_all")
+	admin := e.userRole("operator", "lists:manage_all")
 	member := e.userRole("member", "subscribers:get")
 	if _, err := e.c.CreateTeam("가", admin); statusOf(err) != http.StatusBadRequest {
 		t.Fatalf("default role that reads all lists: %v", err)

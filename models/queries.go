@@ -97,12 +97,6 @@ type Queries struct {
 	AxmUserRoleFacts               *sqlx.Stmt `query:"axm-user-role-facts"`
 	AxmTeamCandidateUsers          *sqlx.Stmt `query:"axm-team-candidate-users"`
 	AxmUserRoleTeamUse             *sqlx.Stmt `query:"axm-user-role-team-use"`
-	AxmQueryBounces                *sqlx.Stmt `query:"axm-query-bounces"`
-	AxmBounceScope                 *sqlx.Stmt `query:"axm-bounce-scope"`
-	AxmBouncesInScope              *sqlx.Stmt `query:"axm-bounces-in-scope"`
-	AxmDeleteBouncesScoped         *sqlx.Stmt `query:"axm-delete-bounces-scoped"`
-	AxmBouncedSubscribersInLists   *sqlx.Stmt `query:"axm-bounced-subscribers-in-lists"`
-	AxmReadableCampaigns           *sqlx.Stmt `query:"axm-readable-campaigns"`
 	AxmReleaseTeamMembers          *sqlx.Stmt `query:"axm-release-team-members"`
 	AxmAssignTeamMembers           *sqlx.Stmt `query:"axm-assign-team-members"`
 	AxmApplyTeamUserRole           *sqlx.Stmt `query:"axm-apply-team-user-role"`

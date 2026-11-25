@@ -261,7 +261,7 @@ describe('teams', () => {
     let wideId;
     cy.loginAndVisit('/admin/users/teams');
     cy.request('POST', '/api/roles/users', {
-      name: wideName, permissions: ['subscribers:get', 'subscribers:get_all'],
+      name: wideName, permissions: ['subscribers:get', 'lists:manage_all'],
     }).then(({ body }) => { wideId = body.data.id; });
     cy.reload();
     cy.get('[data-cy=btn-new]').click();
@@ -277,17 +277,17 @@ describe('teams', () => {
       method: 'POST', url: '/api/teams', body: { name: `시험C팀${stamp}`, user_role_id: wideId }, failOnStatusCode: false,
     }).then((res) => {
       expect(res.status).to.eq(400);
-      expect(res.body.message).to.contain('subscribers:get_all').and.to.contain('campaigns:get_all');
+      expect(res.body.message).to.contain('lists:manage_all').and.to.contain('campaigns:manage_all');
     });
     // The roles screen refuses to give a team's role such a permission.
     cy.request({
       method: 'PUT',
       url: `/api/roles/users/${memberRoleId}`,
-      body: { name: `팀원 시험 ${stamp}`, permissions: ['subscribers:get', 'campaigns:get_all'] },
+      body: { name: `팀원 시험 ${stamp}`, permissions: ['subscribers:get', 'campaigns:manage_all'] },
       failOnStatusCode: false,
     }).then((res) => {
       expect(res.status).to.eq(400);
-      expect(res.body.message).to.contain(teamA).and.to.contain('campaigns:get_all');
+      expect(res.body.message).to.contain(teamA).and.to.contain('campaigns:manage_all');
     });
     cy.request('DELETE', `/api/roles/${wideId}`);
   });
@@ -298,7 +298,7 @@ describe('teams', () => {
       req.continue((res) => {
         res.body.data.forEach((t) => {
           if (t.name === teamA) {
-            t.wide = ['lists:get_all', 'lists:manage_all', 'subscribers:get_all'];
+            t.wide = ['lists:manage_all'];
             t.wide_members = 1;
           }
         });
@@ -308,13 +308,5 @@ describe('teams', () => {
     cy.contains('tr', teamA).find('[data-cy=team-wide-tag]').should('be.visible');
     cy.contains('tr', teamA).find('[data-cy=team-wide-fix]').should('have.attr', 'href').and('contain', '/users/roles/users');
     cy.contains('tr', teamB).find('[data-cy=team-wide]').should('not.exist');
-  });
-
-  it('tells a team member that the bounce screen shows only their own lists', () => {
-    loginAs(memberUser, memberPass, '/admin/subscribers/bounces');
-    cy.get('[data-cy=bounces-scoped]').should('be.visible');
-    cy.request('/api/bounces').its('status').should('eq', 200);
-    cy.loginAndVisit('/admin/subscribers/bounces');
-    cy.get('[data-cy=bounces-scoped]').should('not.exist');
   });
 });

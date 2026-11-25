@@ -473,7 +473,7 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - 한 사람은 한 팀에만(`users.list_role_id` 하나). 두 팀 리스트에 다 들어 있는 구독자는 양쪽 팀이 다 보고, 구독자 목록·상세에 `other_teams`(팀 이름·리스트 수, 남의 리스트 이름은 없음)로 「다른 팀 리스트에서도 사용 중」을 알린다. `subscribers:get_all`·`lists:*_all`이 없는 사용자에게만 붙는다.
 
 ### 팀 API와 규칙
-- `GET/POST /api/teams`, `PUT/DELETE /api/teams/:id`, `PUT /api/teams/:id/members`(`roles:get`/`roles:manage`). 팀 만들기 = 팀 역할 만들기. 이름 바꾸기 = 역할 이름·태그와 **그 태그가 붙은 리스트의 태그를 같은 트랜잭션에서** 바꾸기(리스트가 이미 가진 태그로는 못 바꿈). 팀원 넣기는 팀의 「기본 사용자 역할」(`roles.axm_team_user_role_id`, 전사 권한(아래)이 있는 역할·Super Admin 역할은 못 고름)을 함께 주고, 다른 팀·일반 리스트 역할에 있던 사람은 옮긴다. Super Admin은 못 넣고, 전사 권한을 가진 사람은 기본 역할이 있어야 넣는다. 팀에 팀원이나 리스트가 있으면 지울 수 없다.
+- `GET/POST /api/teams`, `PUT/DELETE /api/teams/:id`, `PUT /api/teams/:id/members`(`roles:get`/`roles:manage`). 팀 만들기 = 팀 역할 만들기. 이름 바꾸기 = 역할 이름·태그와 **그 태그가 붙은 리스트의 태그를 같은 트랜잭션에서** 바꾸기(리스트가 이미 가진 태그로는 못 바꿈). 팀원 넣기는 팀의 「기본 사용자 역할」(`roles.axm_team_user_role_id`, 아래 「쓰기 전사 권한」이 있는 역할·Super Admin 역할은 못 고름)을 함께 주고, 다른 팀·일반 리스트 역할에 있던 사람은 옮긴다. Super Admin은 못 넣고, 쓰기 전사 권한을 가진 사람은 기본 역할이 있어야 넣는다. 팀에 팀원이나 리스트가 있으면 지울 수 없다.
 - 팀 역할은 리스트 역할 화면·API로 고치거나 지울 수 없다(400). **리스트 역할을 쓰는 사용자가 있으면 어느 리스트 역할도 지울 수 없다**: `users.list_role_id`가 `ON DELETE CASCADE`라 upstream은 역할을 지우면 그 사용자 계정까지 지운다.
 - `GET /api/lists/teams`: 볼 수 있는 리스트의 팀 태그와 리스트 수. 각 팀에 `has_role`(팀 역할이 있는 팀인지, 누구에게나 — 리스트를 만드는 화면이 고를 수 있는 팀을 아는 데 쓴다), `roles:get` 보유자에게만 역할 ID·이름, `lists:get_all`·`lists:manage_all` 보유자에게 「팀 없는 리스트 수」. `GET /api/lists?team=none`은 팀 없는 리스트만. 특정 팀은 기존 `tag=`.
 - **리스트는 만들 때 팀이 정해진다**(팀이 하나라도 생긴 뒤부터): 팀원(팀 역할 사용자)은 직접·동적·제외·뽑기 어느 경로로 만들어도 서버가 **자기 팀 태그를 붙이고** 보낸 `팀:` 태그는 버린다. 관리자(`lists:manage_all`)는 존재하는 팀을 하나 이상 골라야 하고(400), 팀 없이 만들려면 `no_team: true`를 명시한다. 팀원 권한: `POST /api/lists`, 뽑기·미리보기, 새 동적 리스트 미리보기는 `lists:manage_all` 대신 「`lists:manage_all` 또는 팀원」(`App.listMaker`). 뽑기는 원본을 볼 수 있어야 하고 뽑은 리스트의 팀은 팀원이면 자기 팀, 관리자면 요청한 팀 또는 원본의 팀(원본에 팀이 없으면 `team` 또는 `no_team` 필수).
@@ -481,15 +481,17 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - API 사용자는 권한을 메모리에 캐시하므로(`cacheUsers`) 팀이 하나라도 있으면 리스트 만들기·고치기·지우기·뽑기, 팀 변경 뒤 캐시를 다시 읽는다.
 - `/api/profile`의 `list_role.team_tag`에 팀 태그가 들어간다(화면이 팀원 여부를 안다).
 
-### 팀원이 가질 수 없는 권한 — 전사 권한 (LST-68)
-- **전사 권한** = `lists:get_all`, `lists:manage_all`, `subscribers:get_all`, `campaigns:get_all`, `campaigns:manage_all`(`core.TeamWidePerms`, 프론트 `frontend/src/teams.js`의 `TEAM_WIDE_PERMS`와 같은 목록). 하나라도 있으면 팀원이 다른 팀의 리스트·구독자·캠페인을 읽거나 바꾼다(리스트 전체 권한이 있으면 캠페인 판정도 「전체」다). `campaigns:get_analytics`(대시보드 집계)는 넣지 않았다. SQL에는 목록을 인자(`$2::TEXT[]`)로 넘긴다.
+### 팀원이 가질 수 없는 권한 — 쓰기 전사 권한 (LST-68)
+- 팀원은 **전사로 읽고 일한다**(이강주 결정 2025-11-25): 반송 화면은 전사 보기 그대로(범위 제한 없음), 동적 리스트의 「전체 구독자」 대상 뽑기, 다른 팀 구독자 열람은 지금 운영과 같다. 막는 것은 **다른 팀의 리스트·캠페인을 고치는 것** 하나다.
+- **쓰기 전사 권한** = `lists:manage_all`, `campaigns:manage_all`(`core.TeamWidePerms`, 프론트 `frontend/src/teams.js`의 `TEAM_WIDE_PERMS`와 같은 목록). `lists:manage_all`은 어느 리스트든 고치고 지우고 팀 태그를 바꾸며, LST-42의 「잠긴 구독자」 잠금도 풀어 다른 팀 사람을 고치고 지우고 차단하게 한다. `campaigns:manage_all`은 어느 캠페인이든 고친다. 읽기 권한(`subscribers:get_all`, `bounces:get`, `campaigns:get_analytics`)은 팀 역할에 허용한다. `lists:get_all`·`campaigns:get_all`은 읽기만 넓히지만 `lists:get_all`은 upstream 캠페인 판정에서 「관리 권한」으로도 읽힌다(`GetPermittedLists(Get|Manage)`: `checkCampaignPerm`의 관리 쪽, `DeleteCampaigns`, 캠페인 만들기·수정의 리스트 거르기). 이 둘을 막을지는 열린 결정이다(계획 v3 3.1절, 시안 v2 맨 위). SQL에는 목록을 인자(`$2::TEXT[]`)로 넘긴다.
 - 네 길(전부 400 + 설명 문구):
-  - 팀 만들기·수정의 기본 사용자 역할(`validTeamUserRole`): 전사 권한이 하나라도 있는 역할은 못 고른다(전엔 `lists:*_all`만 걸렀다).
-  - 팀원 넣기(`SetTeamMembers`): 전사 권한이 있는 사람은 팀에 기본 역할이 있어야 넣고, **팀의 기본 역할 자체가 전사 권한을 가졌으면 새 팀원을 넣는 저장을 거절**한다. 이미 있는 팀원만 다시 저장하거나 빼는 것은 된다.
-  - 역할 화면의 사용자 역할 수정(`UpdateUserRole` → `guardTeamUserRole`, `cmd/axm_teams.go`): 그 역할이 어느 팀의 기본 역할이거나 팀원이 쓰고 있으면, 저장하려는 권한에 전사 권한이 있을 때 거절(`teams.roleInUseByTeam`: 팀 이름·권한 이름). 전사 권한이 없는 저장은 통과 — 이미 어긋난 역할은 이 화면에서 권한을 빼서 고친다.
-  - 사용자 만들기·수정(`CreateUser`·`UpdateUser` → `guardTeamMemberRole`): 저장 뒤 팀원(리스트 역할이 팀 역할)이면서 사용자 역할이 전사 권한을 가졌거나 Super Admin이면 거절(`teams.memberWideRole`). 사용자 역할·리스트 역할이 지금 값과 같은 저장(이름·비밀번호만)은 통과.
-- **이미 어긋난 구성은 코드가 고치지 않는다.** 배포해도 누구의 접근도 줄지 않는다. `GET /api/teams`가 팀마다 `wide`(기본 역할이 가진 전사 권한)와 `wide_members`(전사 권한 역할이나 Super Admin 역할을 가진 팀원 수)를 주고, 팀 화면이 경고(「다른 팀 자료가 보임」, 역할 이름·권한·인원, 역할 화면 링크)를 띄운다. 팀 수정 창은 어긋난 기본 역할을 「(다른 팀 자료가 보이는 권한 있음)」 표시로 남기고 저장을 막는다. 사람이 역할 화면에서 권한을 뺀다.
+  - 팀 만들기·수정의 기본 사용자 역할(`validTeamUserRole`): 쓰기 전사 권한이 있는 역할은 못 고른다(전엔 `lists:*_all`만 걸렀다).
+  - 팀원 넣기(`SetTeamMembers`): 쓰기 전사 권한이 있는 사람은 팀에 기본 역할이 있어야 넣고, **팀의 기본 역할 자체가 그 권한을 가졌으면 새 팀원을 넣는 저장을 거절**한다. 이미 있는 팀원만 다시 저장하거나 빼는 것은 된다.
+  - 역할 화면의 사용자 역할 수정(`UpdateUserRole` → `guardTeamUserRole`, `cmd/axm_teams.go`): 그 역할이 어느 팀의 기본 역할이거나 팀원이 쓰고 있으면, 저장하려는 권한에 쓰기 전사 권한이 있을 때 거절(`teams.roleInUseByTeam`: 팀 이름·권한 이름). 그 권한이 없는 저장은 통과 — 이미 어긋난 역할은 이 화면에서 권한을 빼서 고친다.
+  - 사용자 만들기·수정(`CreateUser`·`UpdateUser` → `guardTeamMemberRole`): 저장 뒤 팀원(리스트 역할이 팀 역할)이면서 사용자 역할이 쓰기 전사 권한을 가졌거나 Super Admin이면 거절(`teams.memberWideRole`). 사용자 역할·리스트 역할이 지금 값과 같은 저장(이름·비밀번호만)은 통과.
+- **이미 어긋난 구성은 코드가 고치지 않는다.** 배포해도 누구의 접근도 줄지 않는다. `GET /api/teams`가 팀마다 `wide`(기본 역할이 가진 쓰기 전사 권한)와 `wide_members`(그 권한이나 Super Admin 역할을 가진 팀원 수)를 주고, 팀 화면이 경고(「다른 팀 것을 고칠 수 있음」, 역할 이름·권한·인원, 역할 화면 링크)를 띄운다. 팀 수정 창은 어긋난 기본 역할을 「(다른 팀 것을 고칠 수 있는 권한 있음)」 표시로 남기고 저장을 막는다. 사람이 역할 화면에서 권한을 뺀다.
 - 세션 사용자는 요청마다 DB에서 읽으므로(`auth.validateSession`) 역할을 고친 뒤 다음 요청부터 적용되고, API 사용자는 `UpdateUserRole`이 캐시를 다시 읽는다. 화면의 `$can`은 프로필을 다시 읽거나 새로고침해야 바뀐다.
+- 반송은 건드리지 않았다. 반송 화면·API(`bounces:get`/`bounces:manage`)는 upstream 그대로 전사이고, 삭제·「모두 차단」도 그대로다(아래 「팀 경계」 절 「남긴 것」).
 
 ### 수신거부·차단·삭제는 전사 (`.9`)
 - **메일의 수신거부(링크, 페이지 버튼, 원클릭 `List-Unsubscribe-Post`)는 항상 전체 차단이다**: `SubscriptionPrefs`가 `unsubscribe-by-campaign`을 `blocklist=true`로 부른다(SQL은 그대로). 모든 리스트의 구독이 `unsubscribed`가 되고 상태가 `blocklisted`라 어느 팀도 다시 보낼 수 없다. 「구독 설정 관리」(리스트별 선택) 화면은 그대로 리스트별이다.
@@ -570,26 +572,13 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 
 이름 검색은 upstream과 같은 정규식 전체 훑기라 느리다(이번 변경과 무관). 운영 수치(Q1~Q3)는 코디네이터가 Railway Query 복구 뒤 실행한다.
 
-### 반송 범위 (LST-68)
-반송 행에는 구독자 주소가 들어 있다. 「관리자」(`GetPermittedLists(Get|Manage)`가 `all` = Super Admin·`lists:get_all`·`lists:manage_all`)는 upstream 코드 길 그대로다. 그 밖의 사용자는(`cmd/axm_bounce_scope.go`의 `bounceScopeOf`, `internal/core/axm_bounce_scope.go`, 쿼리는 `queries/axm_teams.sql`의 `axm-query-bounces` 등) 다음처럼 좁아진다. upstream의 `internal/core/bounces.go`·`queries/bounces.sql`은 한 줄도 바꾸지 않았다(`cmd/bounce.go`에 분기 한두 줄).
-| 호출 | 규칙 |
-|---|---|
-| `GET /api/bounces` | 구독자가 **내가 읽을 수 있는 리스트**(get 또는 manage)에 구독 행(상태 무관)이 있는 반송만. 총수·쪽 나눔도 그 범위. 정렬은 허용된 다섯 열을 `CASE` 가지로 쓴 준비된 문장이다(문자열 치환 없음; `campaign_name` 정렬은 upstream이 없는 열을 가리켜 실패하지만 이쪽은 캠페인 이름으로 정렬한다) |
-| `GET /api/bounces/:id` | 범위 밖이면 없는 ID와 같은 400(존재를 알리지 않음) |
-| 응답의 `campaign` | 그 캠페인이 내 리스트로 가거나 `campaigns:get_all`이 있을 때만. 아니면 `null`. `GET /api/subscribers/:id/bounces`(구독자 창의 반송 탭)에도 같은 가림 |
-| `DELETE /api/bounces/:id`, `DELETE /api/bounces?id=…` | ID가 전부 내 범위 안이어야 한다(아니면 403, 아무것도 안 지움). 그 구독자 중 LST-42로 잠긴 사람이 있으면 403 `teams.sharedLocked`, 아무것도 안 지움. 판정과 삭제는 한 트랜잭션(`boundedTx`). 반송이 아닌 ID는 무시 |
-| `DELETE /api/bounces?all=true` | 내 범위 안이고 잠기지 않은 사람의 반송만 지운다. 응답 `{"deleted": n, "skipped": k}`(k = 잠겨서 남긴 행 수) |
-| `PUT /api/bounces/blocklist` (「모두 차단」) | 내가 관리하는 리스트에 있고 잠기지 않은 반송 구독자만 차단. 응답 `{"blocklisted": n, "skipped": k}`, 감사 기록의 수도 n(`detail.skipped_shared`) |
-- 집계(`campaigns.bounces`, `/api/campaigns/analytics/bounces`)는 건드리지 않았다(다른 팀 결과는 집계만 공개하는 LST-64 방침). 내 캠페인이라도 목록의 반송 수와 반송 화면 건수가 다를 수 있다(반송된 사람이 그 뒤 내 리스트에서 빠졌을 때).
-- 리스트 역할이 없는 사용자에게 `bounces:get`만 주면 0건이 보인다(구독 행이 없어 범위가 비어 있다). 반송 화면은 관리자가 아니면 제목 아래에 「내 리스트에 있는 사람의 반송만 보입니다」를 띄우고, 삭제·모두 차단 뒤 `skipped > 0`이면 「다른 팀 리스트에도 있는 N건은 남겼습니다」를 알린다.
-
 ### 남긴 것
-- 선택 차단(반송 화면에서 줄을 골라 차단)은 구독자 ID로 보내므로 잠긴 사람이 섞이면 403이다.
+- 반송 화면의 「모두 차단」(`PUT /api/bounces/blocklist`, `bounces:manage`)은 팀과 무관하게 반송된 사람 전원을 차단한다(전사 차단, upstream 그대로). 선택 차단은 구독자 ID로 보내므로 잠긴 사람이 섞이면 403이다.
 - 팀원이 리스트를 고르지 않고 「전체 선택」 일괄 작업이나 CSV 내보내기를 하면 아무것도 처리되지 않는다(upstream의 `query-subscribers-template`·`query-subscribers-for-export`가 `list_id = ALL(리스트들)`이라 리스트가 2개 이상이면 거짓). 리스트 하나를 고르면 된다.
 - 옵트인 메일 재발송은 읽기 규칙을 따른다(구독자를 바꾸지 않는다).
 
 ### upstream을 따라갈 때
-- (LST-68) `cmd/bounce.go`: 핸들러 6곳 머리의 `bounceScopeOf` 분기(upstream의 `a.core.QueryBounces`·`DeleteBounces` 호출 줄은 그대로 — CodeQL), `GetSubscriberBounces`의 `maskBounceCampaigns`. `cmd/roles.go` `UpdateUserRole`의 `guardTeamUserRole`, `cmd/users.go` `CreateUser`·`UpdateUser`의 `guardTeamMemberRole`(본문은 `cmd/axm_teams.go`). 새 권한이 생기면 전사 권한 목록(`core.TeamWidePerms`, `teams.js`)을 다시 본다.
+- (LST-68) `cmd/roles.go` `UpdateUserRole`의 `guardTeamUserRole`, `cmd/users.go` `CreateUser`·`UpdateUser`의 `guardTeamMemberRole`(본문은 `cmd/axm_teams.go`). 새 권한이 생기면 쓰기 전사 권한 목록(`core.TeamWidePerms`, `teams.js`)을 다시 본다.
 - `cmd/subscribers.go`: `GetSubscriber`·`QuerySubscribers`의 `attachLocked`, `UpdateSubscriber`·`PatchSubscriber`의 `updateSub`, 차단·삭제·반송 삭제 5곳의 `blocklistSubs`·`deleteSubs`·`deleteSubBounces`(upstream의 `hasSubPerm` 줄은 그대로), 조건 일괄 2곳의 `guardBulkQuery`·`bulkByQuery`. upstream이 `update-subscriber-with-lists`의 구독 부분을 바꾸면 `axm-update-subscriber-lists`에도 넣는다. `cmd/import.go`의 `restrictImportOverwrite` 한 줄. `internal/core/subscribers.go`의 `QuerySubscribers`·`getSubscriberCount`에 「리스트 2개 이상이면 multi 문장」 두 블록(upstream의 `stmt` 줄은 그대로 두고 그 아래에 덧붙였다 — CodeQL이 그 줄의 변경을 새 경고로 본다).
 - upstream이 `query-subscribers`의 조인·조건을 바꾸면 `axm-query-subscribers-multi`(-count)에도 같은 변경을 넣는다.
 - 판정 코드는 `cmd/axm_sub_boundary.go`·`internal/core/axm_sub_boundary.go`, 시험은 `cmd/axm_sub_boundary_db_test.go`·`internal/core/axm_sub_boundary_test.go`·`frontend/cypress/e2e/list-teams.cy.js`.

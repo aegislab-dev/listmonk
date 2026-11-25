@@ -676,6 +676,11 @@ func TestTeamDefaultRoleRefusesWidePerms(t *testing.T) {
 	if code, data := e.call(e.a.CreateTeam, admin, "POST", "/x", "", teamBody("깨끗", ok)); code != 200 {
 		t.Fatalf("clean role: %d %s", code, data)
 	}
+	// Reading across teams is how members work: subscribers:get_all stays allowed.
+	reads := e.userRole("reads", "subscribers:get_all", "subscribers:get")
+	if code, data := e.call(e.a.CreateTeam, admin, "POST", "/x", "", teamBody("읽기", reads)); code != 200 {
+		t.Fatalf("a role that only reads all subscribers: %d %s", code, data)
+	}
 	if code, _ := e.call(e.a.CreateTeam, admin, "POST", "/x", "", teamBody("슈퍼", 1)); code != http.StatusBadRequest {
 		t.Fatalf("super admin role: %d", code)
 	}
@@ -684,7 +689,7 @@ func TestTeamDefaultRoleRefusesWidePerms(t *testing.T) {
 func TestTeamMemberWithWidePermsNeedsTheTeamsRole(t *testing.T) {
 	e := newAuditEnv(t)
 	admin := e.as(e.admin)
-	for _, p := range []string{"subscribers:get_all", "campaigns:get_all", "campaigns:manage_all"} {
+	for _, p := range core.TeamWidePerms {
 		r := e.userRole("w-"+p, p)
 		var u int
 		e.get(&u, `INSERT INTO users(username,email,name,user_role_id,status,type) VALUES($1,$1||'@example.invalid','w',$2,'enabled','user') RETURNING id`, "w-"+strings.ReplaceAll(p, ":", "-"), r)
@@ -710,7 +715,7 @@ func TestTeamMemberWithWidePermsNeedsTheTeamsRole(t *testing.T) {
 // The roles screen: a role a team uses keeps no wide permission; any other role is free.
 func TestUserRoleOfATeamKeepsNoWidePerms(t *testing.T) {
 	e := newAuditEnv(t)
-	e.allowPerms(append([]string{"campaigns:get_analytics", "roles:get", "subscribers:manage", "campaigns:manage"}, core.TeamWidePerms...)...)
+	e.allowPerms(append([]string{"campaigns:get_analytics", "roles:get", "subscribers:manage", "campaigns:manage", "subscribers:get_all", "lists:get_all", "campaigns:get_all"}, core.TeamWidePerms...)...)
 	admin := e.as(e.admin)
 	save := func(id int, perms ...string) (int, string) {
 		code, data := e.call(e.a.UpdateUserRole, admin, "PUT", "/x", itoa(id), roleBody("r"+itoa(id), perms...))
@@ -726,13 +731,13 @@ func TestUserRoleOfATeamKeepsNoWidePerms(t *testing.T) {
 			t.Fatalf("adding %s to a team's role: %d", p, code)
 		}
 	}
-	if code, _ := save(r, "subscribers:get", "campaigns:get", "campaigns:get_analytics"); code != 200 {
+	if code, _ := save(r, "subscribers:get", "campaigns:get", "campaigns:get_analytics", "subscribers:get_all"); code != 200 {
 		t.Fatalf("other permissions: %d", code)
 	}
 	// Used by a member only.
 	solo := e.userRole("solo", "subscribers:get")
 	e.db.MustExec(`UPDATE users SET user_role_id = $1 WHERE id = $2`, solo, e.ub)
-	if code, _ := save(solo, "campaigns:get_all"); code != http.StatusBadRequest {
+	if code, _ := save(solo, "campaigns:manage_all"); code != http.StatusBadRequest {
 		t.Fatalf("a member's role: %d", code)
 	}
 	// A role no team uses; the operator role, used by an admin who is no member.
@@ -803,10 +808,11 @@ func TestTeamMemberUserRoleChange(t *testing.T) {
 // save that keeps things as they are works, and the ways to make it worse are shut.
 func TestTeamAlreadyWide(t *testing.T) {
 	e := newAuditEnv(t)
-	e.allowPerms(append([]string{"campaigns:get_analytics", "roles:get", "subscribers:manage", "campaigns:manage"}, core.TeamWidePerms...)...)
+	e.allowPerms(append([]string{"campaigns:get_analytics", "roles:get", "subscribers:manage", "campaigns:manage", "subscribers:get_all", "lists:get_all", "campaigns:get_all"}, core.TeamWidePerms...)...)
 	admin := e.as(e.admin)
-	wide := []string{"lists:get_all", "lists:manage_all", "subscribers:get_all"}
-	e.db.MustExec(`UPDATE roles SET permissions = $2 WHERE id = $1`, e.memberRole, pq.StringArray(append([]string{"subscribers:get", "subscribers:manage", "campaigns:get", "campaigns:manage"}, wide...)))
+	wide := []string{"lists:manage_all"}
+	// Production's role: the two reading permissions beside it are not what the screens warn about.
+	e.db.MustExec(`UPDATE roles SET permissions = $2 WHERE id = $1`, e.memberRole, pq.StringArray([]string{"subscribers:get", "subscribers:manage", "campaigns:get", "campaigns:manage", "lists:get_all", "lists:manage_all", "subscribers:get_all"}))
 
 	teams := func() map[int]models.Team {
 		code, data := e.call(e.a.GetTeams, admin, "GET", "/x", "", "")
@@ -860,7 +866,7 @@ func TestTeamAlreadyWide(t *testing.T) {
 		code, _ := e.call(e.a.UpdateUserRole, admin, "PUT", "/x", itoa(e.memberRole), roleBody("member", perms...))
 		return code
 	}
-	if code := save("subscribers:get", "lists:get_all"); code != http.StatusBadRequest {
+	if code := save("subscribers:get", "lists:manage_all"); code != http.StatusBadRequest {
 		t.Fatalf("keeping a wide permission: %d", code)
 	}
 	if code := save("subscribers:get", "subscribers:manage", "campaigns:get", "campaigns:manage"); code != 200 {
@@ -872,5 +878,44 @@ func TestTeamAlreadyWide(t *testing.T) {
 	}
 	if code, _ := e.call(e.a.UpdateTeam, admin, "PUT", "/x", itoa(e.team1), teamBody("가", e.memberRole)); code != 200 {
 		t.Fatalf("update after the mend: %d", code)
+	}
+}
+
+// Evidence for the open decision of LST-68 (plan v3, 3.1): lists:get_all is not only a read right.
+// The upstream campaign checks read "get or manage" list access as one, so a member who has
+// lists:get_all and campaigns:manage may manage a campaign of another team. campaigns:get_all
+// does not give that.
+func TestListsGetAllReachesOtherTeamsCampaigns(t *testing.T) {
+	e := newAuditEnv(t)
+	var camp int
+	e.get(&camp, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),'B camp','S','test@example.invalid','b','email') RETURNING id`)
+	e.db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES($1,$2,'B1')`, camp, e.bList)
+
+	canManage := func(user int, typ auth.PermType) int {
+		h := func(c echo.Context) error { return e.a.checkCampaignPerm(typ, getID(c), c) }
+		code, _ := e.call(h, e.as(user), "PUT", "/x", itoa(camp), "")
+		return code
+	}
+	member := func(name string, perms ...string) int {
+		role := e.userRole("camp-"+name, perms...)
+		var id int
+		e.get(&id, `INSERT INTO users(username,email,name,user_role_id,list_role_id,status,type) VALUES($1,$1||'@example.invalid',$1,$2,$3,'enabled','user') RETURNING id`, "u-"+name, role, e.team1)
+		return id
+	}
+	plain := member("plain", "campaigns:get", "campaigns:manage")
+	listsGetAll := member("lga", "campaigns:get", "campaigns:manage", "lists:get_all")
+	campGetAll := member("cga", "campaigns:get", "campaigns:manage", "campaigns:get_all")
+
+	if code := canManage(plain, auth.PermTypeManage); code != http.StatusForbidden {
+		t.Fatalf("a member of team 가 managing team 나's campaign: %d", code)
+	}
+	if code := canManage(listsGetAll, auth.PermTypeManage); code != 200 {
+		t.Fatalf("lists:get_all counts as manage access in the campaign check: %d", code)
+	}
+	if code := canManage(campGetAll, auth.PermTypeManage); code != http.StatusForbidden {
+		t.Fatalf("campaigns:get_all does not let a member manage: %d", code)
+	}
+	if code := canManage(campGetAll, auth.PermTypeGet); code != 200 {
+		t.Fatalf("campaigns:get_all reads every campaign: %d", code)
 	}
 }

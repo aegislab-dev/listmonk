@@ -11,13 +11,15 @@ import (
 	"github.com/lib/pq"
 )
 
-// TeamWidePerms are the permissions a team member must not have (LST-68): each one shows or
-// changes other teams' lists, subscribers or campaigns. The frontend keeps the same list in
-// frontend/src/teams.js. campaigns:get_analytics is not one of them: it only gives the
-// aggregate numbers the dashboard shows to every team.
-var TeamWidePerms = []string{
-	"lists:get_all", "lists:manage_all", "subscribers:get_all", "campaigns:get_all", "campaigns:manage_all",
-}
+// TeamWidePerms are the permissions a team member must not have (LST-68): each lets its owner
+// change other teams' lists or campaigns (lists:manage_all edits any list and unlocks the
+// subscribers of other teams, campaigns:manage_all edits any campaign). Reading other teams'
+// data stays allowed: subscribers:get_all and the bounce screen are how members work across teams
+// (decision of 2025-11-25). lists:get_all and campaigns:get_all only widen reading, except that
+// lists:get_all also counts as a manage right in the upstream campaign checks (see FORK.md);
+// whether to refuse them too is an open decision (plan v3, section 3.1). The frontend keeps the
+// same list in frontend/src/teams.js.
+var TeamWidePerms = []string{"lists:manage_all", "campaigns:manage_all"}
 
 // WideOf returns the team-wide permissions among perms, in the order of TeamWidePerms.
 func WideOf(perms []string) []string {

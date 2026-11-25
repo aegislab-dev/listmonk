@@ -242,14 +242,8 @@
     "cmd/axm_sub_boundary*.go",
     "internal/core/axm_sub_boundary*.go",
     "internal/core/axm_teams*.go",
-    "cmd/axm_bounce_scope*.go",
-    "internal/core/axm_bounce_scope*.go",
-    "cmd/bounce.go",
     "cmd/roles.go",
-    "cmd/users.go",
-    "internal/core/bounces.go",
-    "queries/bounces.sql",
-    "frontend/src/views/Bounces.vue"
+    "cmd/users.go"
    ],
    "specs": [
     "list-teams.cy.js"

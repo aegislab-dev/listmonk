@@ -6,7 +6,6 @@
           {{ $t('globals.terms.bounces') }}
           <span v-if="bounces.total > 0">({{ bounces.total }})</span>
         </h1>
-        <p v-if="!readsAllLists" class="is-size-7 has-text-grey" data-cy="bounces-scoped">{{ $t('teams.bouncesScoped') }}</p>
       </div>
     </header>
 
@@ -179,15 +178,12 @@ export default Vue.extend({
         params.all = true;
       }
 
-      this.$api.deleteBounces(params).then((res) => {
-        // A user who does not read all lists gets what was deleted and what was kept (LST-68).
-        const skipped = res && res.skipped ? res.skipped : 0;
-        const num = res && typeof res.deleted === 'number' ? res.deleted : this.numSelectedBounces;
+      this.$api.deleteBounces(params).then(() => {
         this.getBounces();
         this.$utils.toast(this.$t(
           'globals.messages.deletedCount',
-          { name: this.$tc('globals.terms.bounces'), num },
-        ) + (skipped ? `. ${this.$t('teams.bouncesSkipped', { num: skipped })}` : ''));
+          { name: this.$tc('globals.terms.bounces'), num: this.numSelectedBounces },
+        ));
       });
     },
 
@@ -203,23 +199,12 @@ export default Vue.extend({
         return;
       }
 
-      this.$api.blocklistBouncedSubscribers({ all: true }).then((res) => {
-        this.getBounces();
-        const skipped = res && res.skipped ? res.skipped : 0;
-        this.$utils.toast(this.$t('globals.messages.done')
-          + (skipped ? `. ${this.$t('teams.bouncesSkipped', { num: skipped })}` : ''));
-      });
+      this.$api.blocklistBouncedSubscribers({ all: true }).then(cb);
     },
   },
 
   computed: {
     ...mapState(['templates', 'loading']),
-
-    // Whoever reads all lists sees every bounce; the others only those of people on their lists (LST-68).
-    readsAllLists() {
-      return this.$can('lists:get_all') || this.$can('lists:manage_all');
-    },
-
     numSelectedBounces() {
       if (this.bulk.all) {
         return this.bounces.total;
