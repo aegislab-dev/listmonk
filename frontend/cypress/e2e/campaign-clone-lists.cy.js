@@ -23,7 +23,8 @@ const person = (n, lists) => cy.request('POST', '/api/subscribers', {
 const openWindow = (source = origName) => {
   cy.loginAndVisit('/admin/campaigns');
   cy.get('input[name=query]').clear().type(`${source}{enter}`);
-  cy.contains('tbody tr a', new RegExp(`^${source}$`)).closest('tr').find('[data-cy=btn-clone]').click();
+  const sourceId = source === ruledName ? ruledId : origId;
+  cy.get(`tbody tr a[href$="/campaigns/${sourceId}"]`).closest('tr').find('[data-cy=btn-clone]').click();
   cy.get(win).should('be.visible');
 };
 
