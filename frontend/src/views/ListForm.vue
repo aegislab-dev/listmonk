@@ -123,7 +123,7 @@
             :placeholder="$t('globals.fields.description')" />
         </b-field>
 
-        <b-field :message="$t('lists.archivedHelp')" :label="$t('lists.archived')">
+        <b-field v-if="!staticOnly" :message="$t('lists.archivedHelp')" :label="$t('lists.archived')">
           <b-switch v-model="isArchived" name="status" />
         </b-field>
 

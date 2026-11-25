@@ -321,6 +321,7 @@ export default Vue.extend({
       draws: {},
       // The campaigns that used the lists on the page: { [listId]: { total, items: [...] } }.
       campaignUse: {},
+      useRequest: 0,
       isDrawVisible: false,
       drawSource: null,
 
@@ -461,15 +462,18 @@ export default Vue.extend({
     // The campaigns that used the lists on the page (sent, sending or scheduled; never drafts).
     loadCampaignUse(results) {
       const ids = (results || []).map((l) => l.id);
+      this.useRequest += 1;
+      const request = this.useRequest;
       if (!ids.length) { this.campaignUse = {}; return; }
       this.$api.getListCampaigns({ list_id: ids }).then((rows) => {
+        if (request !== this.useRequest) return;
         const out = {};
         (rows || []).forEach((r) => {
           if (!out[r.listId]) out[r.listId] = { total: r.total, items: [] };
           out[r.listId].items.push(r);
         });
         this.campaignUse = out;
-      }).catch(() => { this.campaignUse = {}; });
+      }).catch(() => { if (request === this.useRequest) this.campaignUse = {}; });
     },
 
     // The newest campaign of a list, or null.
@@ -503,7 +507,7 @@ export default Vue.extend({
       }
       return this.$t('lists.campaigns.sentLine', {
         date: this.$utils.getDate(u.startedAt || u.sendAt || u.updatedAt).format('MM/DD'),
-        count: this.$t('lists.draw.numFormat', { num: this.$utils.formatNumber(u.sent) }),
+        count: this.$utils.formatNumber(u.sent),
       }) + many;
     },
 

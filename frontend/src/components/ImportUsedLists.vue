@@ -20,7 +20,8 @@
       </table>
     </div>
     <p class="used-help">
-      <span v-if="merge">{{ $t('import.used.helpMerge') }}</span>
+      <span v-if="merge && total !== null">{{ $t('import.used.helpMergeCount', { count: $utils.formatNumber(total) }) }}</span>
+      <span v-else-if="merge">{{ $t('import.used.helpMerge') }}</span>
       {{ $t('import.used.helpSend') }}
       <strong>{{ $t('import.used.helpStrong') }}</strong>
       {{ $t('import.used.helpEnd') }}
@@ -48,6 +49,11 @@ export default {
   },
 
   computed: {
+    // The people the used lists hold now, when every one of them is known.
+    total() {
+      return this.entries.length && this.entries.every((e) => typeof e.count === 'number')
+        ? this.entries.reduce((a, e) => a + e.count, 0) : null;
+    },
     // The name of a campaign comes only to a user who may read campaigns; the link needs it too.
     canRead() { return this.$can('campaigns:get_all', 'campaigns:get'); },
   },

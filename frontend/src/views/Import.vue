@@ -188,8 +188,8 @@
         <p class="help">{{ $t('import.warned.help') }}</p>
       </b-message>
 
+      <import-used-lists v-if="showImportCheck" :entries="doneUsed" />
       <template v-if="showMakeCampaign">
-        <import-used-lists :entries="doneUsed" />
         <p data-cy="import-done-into">{{ $t('import.doneInto', { lists: importListNames, num: $utils.formatNumber(status.imported) }) }}</p>
         <br />
       </template>
@@ -859,6 +859,24 @@ export default Vue.extend({
       }).filter((e) => e.items.length);
     },
 
+    // The server answers for at most 200 lists at a time.
+    fetchUse(ids) {
+      const parts = [];
+      for (let i = 0; i < ids.length; i += 200) parts.push(ids.slice(i, i + 200));
+      return Promise.all(parts.map((p) => this.$api.getListCampaigns({ list_id: p }))).then((all) => [].concat(...all.map((r) => r || [])));
+    },
+
+    // Adds the people a used list holds now (an import joins them); without it the box says so in words.
+    withCounts(entries) {
+      return Promise.all(entries.map((e) => this.$api.getList(e.list.id).then((l) => {
+        const st = l.subscriberStatuses;
+        // GET /api/lists/:id adds the status counts to the total again: the statuses are the real number.
+        const byStatus = st && !l.axmFilter ? Object.values(st).reduce((a, b) => a + b, 0) : 0;
+        const count = byStatus || l.subscriberCount;
+        return { ...e, count };
+      }).catch(() => e)));
+    },
+
     // Asks which of the chosen lists went out in a campaign already. A late answer for lists
     // chosen before is dropped; a failure shows nothing (the import is not held up).
     loadUsedLists() {
@@ -869,8 +887,8 @@ export default Vue.extend({
         this.used = [];
         return;
       }
-      this.$api.getListCampaigns({ list_id: lists.map((l) => l.id) }).then((rows) => {
-        if (request === this.usedRequest) this.used = this.usedEntries(lists, rows);
+      this.fetchUse(lists.map((l) => l.id)).then((rows) => this.withCounts(this.usedEntries(lists, rows))).then((entries) => {
+        if (request === this.usedRequest) this.used = entries;
       }).catch(() => {
         if (request === this.usedRequest) this.used = [];
       });
@@ -890,7 +908,7 @@ export default Vue.extend({
       this.doneUsedKey = key;
       const all = this.lists.results || [];
       const lists = ids.map((id) => all.find((l) => l.id === id) || { id, name: `#${id}` });
-      this.$api.getListCampaigns({ list_id: ids }).then((rows) => {
+      this.fetchUse(ids).then((rows) => {
         if (key === this.doneUsedKey) this.doneUsed = this.usedEntries(lists, rows);
       }).catch(() => {
         if (key === this.doneUsedKey) this.doneUsed = [];
@@ -928,10 +946,19 @@ export default Vue.extend({
     // Clears the finished import (as "Done" does) and opens a new campaign for its lists.
     makeCampaign() {
       const lists = this.status.axmLists || [];
+      const importId = this.status.axmImportId;
       this.isProcessing = true;
-      this.$api.stopImport().then(() => {
-        this.$router.push({ path: '/campaigns/new', query: { list_id: lists } });
-      }, () => { this.isProcessing = false; });
+      // The screen may show an older import than the server holds (another tab ran a newer one):
+      // that one is not cleared, the screen shows it instead.
+      this.$api.getImportStatus().then((cur) => {
+        if (cur.status !== 'finished' || cur.axmImportId !== importId) {
+          this.status = cur;
+          this.isProcessing = false;
+          return null;
+        }
+        // Clear the finished import only once the campaign screen is open.
+        return this.$router.push({ path: '/campaigns/new', query: { list_id: lists } }).then(() => this.$api.stopImport());
+      }).catch(() => { this.isProcessing = false; });
     },
 
     renderExample() {
