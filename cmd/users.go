@@ -84,19 +84,8 @@ func (a *App) CreateUser(c echo.Context) error {
 		u.Name = u.Username
 	}
 
-	// AXM (LST-68): a team member keeps no team-wide permission. The check and the save are one
-	// turn of the team-role lock.
-	unlock, err := a.core.LockTeamRoles()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if err := a.guardTeamMemberRole(0, u); err != nil {
-		return err
-	}
-
 	// Create the user in the DB.
-	user, err := a.core.CreateUser(u)
+	user, err := a.core.CreateUserWithTeamRole(u)
 	if err != nil {
 		return err
 	}
@@ -173,24 +162,12 @@ func (a *App) UpdateUser(c echo.Context) error {
 		u.Name = u.Username
 	}
 
-	// AXM (LST-68): a team member keeps no team-wide permission. The check and the save are one
-	// turn of the team-role lock.
-	unlock, err := a.core.LockTeamRoles()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if err := a.guardTeamMemberRole(id, u); err != nil {
-		return err
-	}
-
 	// Update the user in the DB.
-	before := a.userInfoOf(id)
-	user, err := a.core.UpdateUser(id, u)
+	before, user, err := a.core.UpdateUser(id, u)
 	if err != nil {
 		return err
 	}
-	a.auditUserUpdated(c, id, before, user, u.Password.String != "")
+	a.auditUserUpdated(c, id, userFrom(before), user, u.Password.String != "")
 
 	// Blank out the password hash in the response.
 	user.Password = null.String{}

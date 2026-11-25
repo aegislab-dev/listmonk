@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
@@ -1058,30 +1057,27 @@ func TestTeamMemberRoleIsJudgedByTheStoredPair(t *testing.T) {
 	}
 }
 
-// The team-role lock serializes: a second taker waits until the first lets go.
-func TestTeamRoleLockSerializes(t *testing.T) {
+func TestTeamRoleSavesWithOneDBConnection(t *testing.T) {
 	e := newAuditEnv(t)
-	unlock, err := e.core.LockTeamRoles()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := make(chan struct{})
-	go func() {
-		u2, err := e.core.LockTeamRoles()
-		if err == nil {
-			u2()
-		}
-		close(got)
-	}()
-	select {
-	case <-got:
-		t.Fatal("the second taker did not wait")
-	case <-time.After(500 * time.Millisecond):
-	}
-	unlock()
-	select {
-	case <-got:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the second taker never got the lock")
+	admin := e.as(e.admin)
+	e.db.SetMaxOpenConns(1)
+
+	for _, tc := range []struct {
+		name, method, id, body string
+		handler                echo.HandlerFunc
+	}{
+		{"create team", "POST", "", teamBody("새 팀", e.memberRole), e.a.CreateTeam},
+		{"update team", "PUT", itoa(e.team1), teamBody("가", e.memberRole), e.a.UpdateTeam},
+		{"update members", "PUT", itoa(e.team1), fmt.Sprintf(`{"user_ids":[%d,%d]}`, e.ua, e.plain), e.a.SetTeamMembers},
+		{"update role", "PUT", itoa(e.memberRole), roleBody("member", "subscribers:get"), e.a.UpdateUserRole},
+		{"create user", "POST", "", fmt.Sprintf(`{"username":"new-member","email":"new-member@example.invalid","type":"user","status":"enabled","user_role_id":%d,"list_role_id":%d}`, e.memberRole, e.team1), e.a.CreateUser},
+		{"update user", "PUT", itoa(e.ua), fmt.Sprintf(`{"username":"ua","email":"ua@example.invalid","name":"Updated","type":"user","status":"enabled","list_role_id":%d}`, e.team1), e.a.UpdateUser},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, data := e.call(tc.handler, admin, tc.method, "/x", tc.id, tc.body)
+			if code != http.StatusOK {
+				t.Fatalf("status = %d, data = %s", code, data)
+			}
+		})
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/knadh/listmonk/internal/auth"
-	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 )
@@ -295,73 +294,6 @@ func (a *App) attachOtherTeams(user auth.User, subs []models.Subscriber) {
 	for i := range subs {
 		subs[i].OtherTeams = m[subs[i].ID]
 	}
-}
-
-// guardTeamUserRole refuses a save of the user role id (roles screen) that would give a team
-// member a team-wide permission (core.TeamWidePerms), LST-68: the role is the default user
-// role of a team or a member uses it, and the permissions to save include such a permission.
-// A save without them passes, so a wide role is mended by this very screen.
-func (a *App) guardTeamUserRole(id int, r auth.Role) error {
-	wide := core.WideOf(r.Permissions)
-	if len(wide) == 0 {
-		return nil
-	}
-	uses, err := a.core.TeamRoleUses(id)
-	if err != nil {
-		return err
-	}
-	if len(uses) == 0 {
-		return nil
-	}
-	teams := make([]string, len(uses))
-	for i, u := range uses {
-		teams[i] = u.Team
-	}
-	return echo.NewHTTPError(http.StatusBadRequest,
-		a.i18n.Ts("teams.roleInUseByTeam", "team", strings.Join(teams, ", "), "perms", strings.Join(wide, ", ")))
-}
-
-// guardTeamMemberRole refuses a save of a user (users screen) that makes a team member of
-// somebody whose user role has a team-wide permission or is the super admin role (LST-68). id is
-// 0 for a new user. It reads the roles the way the save does (queries/users.sql update-user): a
-// user role ID of 0 keeps the user's present role, a missing list role clears it and a list role
-// ID of 0 keeps the present one, so a save that sends only one of the two is judged by the
-// pair that will be stored. A save that changes neither role passes, so that a member of a team
-// that is already wide can still change their name or password.
-func (a *App) guardTeamMemberRole(id int, u auth.User) error {
-	userRole, listRole := u.UserRoleID, u.ListRoleID
-	var curUserRole int
-	var curListRole *int
-	if id > 0 {
-		cur, err := a.core.GetUser(id, "", "")
-		if err != nil {
-			return err
-		}
-		curUserRole, curListRole = cur.UserRole.ID, cur.ListRoleID
-		if userRole == 0 {
-			userRole = curUserRole
-		}
-		if listRole != nil && *listRole == 0 {
-			listRole = curListRole
-		}
-	}
-	if listRole == nil || *listRole <= 0 || a.core.TeamTagOfRole(*listRole) == "" {
-		return nil
-	}
-	if id > 0 && userRole == curUserRole && curListRole != nil && *curListRole == *listRole {
-		return nil
-	}
-	perms, super, err := a.core.WidePermsOfRole(userRole)
-	if err != nil {
-		return err
-	}
-	if !super && len(perms) == 0 {
-		return nil
-	}
-	if super {
-		perms = []string{"Super Admin"}
-	}
-	return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("teams.memberWideRole", "perms", strings.Join(perms, ", ")))
 }
 
 // The campaign write rule (LST-68). Upstream reads "get or manage" access to a list as one:

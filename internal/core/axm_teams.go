@@ -2,11 +2,14 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/jmoiron/sqlx"
+	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
@@ -16,10 +19,8 @@ import (
 // change other teams' lists or campaigns (lists:manage_all edits any list and unlocks the
 // subscribers of other teams, campaigns:manage_all edits any campaign). Reading other teams'
 // data stays allowed: subscribers:get_all and the bounce screen are how members work across teams
-// (decision of 2026-11-25). lists:get_all and campaigns:get_all only widen reading, except that
-// lists:get_all also counts as a manage right in the upstream campaign checks (see FORK.md);
-// whether to refuse them too is an open decision (plan v3, section 3.1). The frontend keeps the
-// same list in frontend/src/teams.js.
+// (decision of 2026-11-25). lists:get_all and campaigns:get_all only widen reading (see FORK.md).
+// The frontend keeps the same list in frontend/src/teams.js.
 var TeamWidePerms = []string{"lists:manage_all", "campaigns:manage_all"}
 
 // WideOf returns the team-wide permissions among perms, in the order of TeamWidePerms.
@@ -46,64 +47,98 @@ type teamRoleFact struct {
 }
 
 // teamRoleFacts reads the facts of the user roles with the given IDs.
-func (c *Core) teamRoleFacts(ids []int) ([]teamRoleFact, error) {
+func (c *Core) teamRoleFacts(tx *sqlx.Tx, ids []int) ([]teamRoleFact, error) {
 	var facts []teamRoleFact
-	if err := c.q.AxmUserRoleFacts.Select(&facts, pq.Array(ids), pq.Array(TeamWidePerms)); err != nil {
+	if err := tx.Stmtx(c.q.AxmUserRoleFacts).Select(&facts, pq.Array(ids), pq.Array(TeamWidePerms)); err != nil {
 		return nil, c.teamFail(err)
 	}
 	return facts, nil
 }
 
-// WidePermsOfRole returns the team-wide permissions of a user role and whether it is the
-// super admin role. A role that does not exist has none.
-func (c *Core) WidePermsOfRole(id int) ([]string, bool, error) {
-	facts, err := c.teamRoleFacts([]int{id})
-	if err != nil || len(facts) != 1 {
-		return nil, false, err
-	}
-	return facts[0].WidePerms, facts[0].SuperAdmin, nil
-}
-
-// TeamRoleUse is a team that uses a user role (LST-68): as the default user role of the
+// teamRoleUse is a team that uses a user role (LST-68): as the default user role of the
 // team, or by members.
-type TeamRoleUse struct {
+type teamRoleUse struct {
 	Team      string `db:"team"`
 	IsDefault bool   `db:"is_default"`
 	Members   int    `db:"members"`
 }
 
-// TeamRoleUses returns the teams that use the user role.
-func (c *Core) TeamRoleUses(userRoleID int) ([]TeamRoleUse, error) {
-	out := []TeamRoleUse{}
-	if err := c.q.AxmUserRoleTeamUse.Select(&out, userRoleID); err != nil {
-		return nil, c.teamFail(err)
-	}
-	return out, nil
-}
-
-// teamRoleLockKey is the Postgres advisory lock key that serializes every change to who has a
-// team-wide permission (LST-68): the checks on teams, team members, user roles and users each
-// read the state they decide on and write it a moment later, and two of them at the same time
-// (a team gets a role while the role gets the permission) could pass both and leave the
-// forbidden combination.
+// teamRoleLockKey serializes changes to team defaults, members and user role permissions.
 const teamRoleLockKey = 741968
 
-// LockTeamRoles takes the lock of teamRoleLockKey (it waits for its turn, across processes) and
-// returns the function that gives it back. It is not re-entrant: do not call it again before
-// the unlock, in the same handler or core call.
-func (c *Core) LockTeamRoles() (func(), error) {
-	conn, err := c.db.Connx(context.Background())
+// beginTeamRoleTx keeps the lock, validation and writes on one connection. Read committed
+// lets each validation see the previous lock holder's commit after waiting for the lock.
+func (c *Core) beginTeamRoleTx() (*sqlx.Tx, error) {
+	tx, err := c.db.BeginTxx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, c.teamFail(err)
 	}
-	if _, err := conn.ExecContext(context.Background(), `SELECT pg_advisory_lock($1)`, teamRoleLockKey); err != nil {
-		conn.Close()
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1)`, teamRoleLockKey); err != nil {
+		tx.Rollback()
 		return nil, c.teamFail(err)
 	}
-	return func() {
-		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, teamRoleLockKey)
-		conn.Close()
-	}, nil
+	return tx, nil
+}
+
+// guardTeamUserRole rejects a write-wide role used as a team default or by team members.
+func (c *Core) guardTeamUserRole(tx *sqlx.Tx, id int, role auth.Role) error {
+	wide := WideOf(role.Permissions)
+	if len(wide) == 0 {
+		return nil
+	}
+	var uses []teamRoleUse
+	if err := tx.Stmtx(c.q.AxmUserRoleTeamUse).Select(&uses, id); err != nil {
+		return c.teamFail(err)
+	}
+	if len(uses) == 0 {
+		return nil
+	}
+	teams := make([]string, len(uses))
+	for i, u := range uses {
+		teams[i] = u.Team
+	}
+	return echo.NewHTTPError(http.StatusBadRequest,
+		c.i18n.Ts("teams.roleInUseByTeam", "team", strings.Join(teams, ", "), "perms", strings.Join(wide, ", ")))
+}
+
+// guardTeamMemberRole checks the pair of roles that the write will store. A zero user role
+// or a zero list role keeps the previous role in an update. A nil list role clears it.
+// Keeping both roles allows profile edits by members of existing wide roles.
+func (c *Core) guardTeamMemberRole(tx *sqlx.Tx, u, previous auth.User) error {
+	userRole, listRole := u.UserRoleID, u.ListRoleID
+	if previous.ID != 0 {
+		if userRole == 0 {
+			userRole = previous.UserRole.ID
+		}
+		if listRole != nil && *listRole == 0 {
+			listRole = previous.ListRoleID
+		}
+	}
+	if listRole == nil || *listRole <= 0 {
+		return nil
+	}
+	if userRole == previous.UserRole.ID && previous.ListRoleID != nil && *listRole == *previous.ListRoleID {
+		return nil
+	}
+	team, found, err := c.getTeamRole(tx.Stmtx(c.q.AxmGetTeamRole), *listRole)
+	if err != nil {
+		return err
+	}
+	if !found || team.Tag == nil {
+		return nil
+	}
+	facts, err := c.teamRoleFacts(tx, []int{userRole})
+	if err != nil {
+		return err
+	}
+	if len(facts) == 0 || (!facts[0].SuperAdmin && !facts[0].Wide) {
+		return nil
+	}
+	perms := facts[0].WidePerms
+	if facts[0].SuperAdmin {
+		perms = []string{"Super Admin"}
+	}
+	return echo.NewHTTPError(http.StatusBadRequest, c.i18n.Ts("teams.memberWideRole", "perms", strings.Join(perms, ", ")))
 }
 
 // CampaignListsWithin tells whether the campaign sends to at least one of the lists and to
@@ -150,10 +185,10 @@ type teamRoleRow struct {
 	UserRoleID *int    `db:"user_role_id"`
 }
 
-func (c *Core) getTeamRole(id int) (teamRoleRow, bool, error) {
+func (c *Core) getTeamRole(stmt *sqlx.Stmt, id int) (teamRoleRow, bool, error) {
 	var r teamRoleRow
-	if err := c.q.AxmGetTeamRole.Get(&r, id); err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+	if err := stmt.Get(&r, id); err != nil {
+		if err == sql.ErrNoRows {
 			return r, false, nil
 		}
 		return r, false, c.teamFail(err)
@@ -163,7 +198,7 @@ func (c *Core) getTeamRole(id int) (teamRoleRow, bool, error) {
 
 // TeamTagOfRole returns the team tag of a list role, or "" when it is not a team role.
 func (c *Core) TeamTagOfRole(id int) string {
-	r, ok, err := c.getTeamRole(id)
+	r, ok, err := c.getTeamRole(c.q.AxmGetTeamRole, id)
 	if err != nil || !ok || r.Tag == nil {
 		return ""
 	}
@@ -207,14 +242,12 @@ func (c *Core) GetTeam(id int) (models.Team, error) {
 	return models.Team{}, echo.NewHTTPError(http.StatusNotFound, c.i18n.Ts("globals.messages.notFound", "name", "team"))
 }
 
-// validTeamUserRole checks the default user role of a team: it must exist and must not be
-// the super admin role or carry a team-wide permission (TeamWidePerms), which would show other
-// teams' lists, subscribers or campaigns.
-func (c *Core) validTeamUserRole(id int) error {
+// validTeamUserRole allows no default or an existing role without team-wide write permissions.
+func (c *Core) validTeamUserRole(tx *sqlx.Tx, id int) error {
 	if id == 0 {
 		return nil
 	}
-	facts, err := c.teamRoleFacts([]int{id})
+	facts, err := c.teamRoleFacts(tx, []int{id})
 	if err != nil {
 		return err
 	}
@@ -240,16 +273,16 @@ func isUnique(err error) bool {
 // CreateTeam makes a team: a list role with the team tag. Lists that already carry the tag
 // join it at once (the migration's trigger).
 func (c *Core) CreateTeam(name string, userRoleID int) (models.Team, error) {
-	unlock, err := c.LockTeamRoles()
+	name, err := c.teamName(name)
 	if err != nil {
 		return models.Team{}, err
 	}
-	defer unlock()
-	name, err = c.teamName(name)
+	tx, err := c.beginTeamRoleTx()
 	if err != nil {
 		return models.Team{}, err
 	}
-	if err := c.validTeamUserRole(userRoleID); err != nil {
+	defer tx.Rollback()
+	if err := c.validTeamUserRole(tx, userRoleID); err != nil {
 		return models.Team{}, err
 	}
 	var role any
@@ -257,10 +290,13 @@ func (c *Core) CreateTeam(name string, userRoleID int) (models.Team, error) {
 		role = userRoleID
 	}
 	var id int
-	if err := c.q.AxmCreateTeamRole.Get(&id, name, models.TeamTagFromName(name), role); err != nil {
+	if err := tx.Stmtx(c.q.AxmCreateTeamRole).Get(&id, name, models.TeamTagFromName(name), role); err != nil {
 		if isUnique(err) {
 			return models.Team{}, c.teamBad("teams.exists")
 		}
+		return models.Team{}, c.teamFail(err)
+	}
+	if err := tx.Commit(); err != nil {
 		return models.Team{}, c.teamFail(err)
 	}
 	return c.GetTeam(id)
@@ -269,19 +305,19 @@ func (c *Core) CreateTeam(name string, userRoleID int) (models.Team, error) {
 // UpdateTeam renames a team (its tag changes with the name, on the lists too) and sets the
 // user role members get by default. applyToMembers gives that role to the current members.
 func (c *Core) UpdateTeam(id int, name string, userRoleID int, applyToMembers bool) (models.Team, error) {
-	unlock, err := c.LockTeamRoles()
+	name, err := c.teamName(name)
 	if err != nil {
 		return models.Team{}, err
 	}
-	defer unlock()
-	name, err = c.teamName(name)
+	tx, err := c.beginTeamRoleTx()
 	if err != nil {
 		return models.Team{}, err
 	}
-	if err := c.validTeamUserRole(userRoleID); err != nil {
+	defer tx.Rollback()
+	if err := c.validTeamUserRole(tx, userRoleID); err != nil {
 		return models.Team{}, err
 	}
-	old, ok, err := c.getTeamRole(id)
+	old, ok, err := c.getTeamRole(tx.Stmtx(c.q.AxmGetTeamRole), id)
 	if err != nil {
 		return models.Team{}, err
 	}
@@ -290,12 +326,6 @@ func (c *Core) UpdateTeam(id int, name string, userRoleID int, applyToMembers bo
 	}
 
 	tag := models.TeamTagFromName(name)
-	tx, err := c.db.Beginx()
-	if err != nil {
-		return models.Team{}, c.teamFail(err)
-	}
-	defer tx.Rollback()
-
 	if tag != *old.Tag {
 		// A tag that lists already carry belongs to nobody yet; taking it over would pull
 		// those lists into this team without anyone asking.
@@ -363,14 +393,17 @@ func (c *Core) DeleteTeam(id int) error {
 // default user role has such a permission takes nobody new (LST-68); saving the members it
 // already has, or fewer, still works.
 func (c *Core) SetTeamMembers(id int, userIDs []int) (models.Team, error) {
-	unlock, err := c.LockTeamRoles()
+	tx, err := c.beginTeamRoleTx()
 	if err != nil {
 		return models.Team{}, err
 	}
-	defer unlock()
-	t, err := c.GetTeam(id)
+	defer tx.Rollback()
+	team, found, err := c.getTeamRole(tx.Stmtx(c.q.AxmGetTeamRole), id)
 	if err != nil {
-		return t, err
+		return models.Team{}, err
+	}
+	if !found || team.Tag == nil {
+		return models.Team{}, echo.NewHTTPError(http.StatusNotFound, c.i18n.Ts("globals.messages.notFound", "name", "team"))
 	}
 	seen := map[int]bool{}
 	ids := []int{}
@@ -386,19 +419,20 @@ func (c *Core) SetTeamMembers(id int, userIDs []int) (models.Team, error) {
 		ListRoleID *int `db:"list_role_id"`
 		Wide       bool `db:"wide"`
 	}
-	if err := c.q.AxmTeamCandidateUsers.Select(&cands, pq.Array(ids), pq.Array(TeamWidePerms)); err != nil {
-		return t, c.teamFail(err)
+	if err := tx.Stmtx(c.q.AxmTeamCandidateUsers).Select(&cands, pq.Array(ids), pq.Array(TeamWidePerms)); err != nil {
+		return models.Team{}, c.teamFail(err)
 	}
 	if len(cands) != len(ids) {
-		return t, c.teamBad("teams.invalidUsers")
+		return models.Team{}, c.teamBad("teams.invalidUsers")
 	}
 	role := 0
-	if t.UserRoleID != nil {
-		role = *t.UserRoleID
+	if team.UserRoleID != nil {
+		role = *team.UserRoleID
 	}
+	var joining []int
 	for _, u := range cands {
 		if u.SuperAdmin {
-			return t, c.teamBad("teams.superAdmin")
+			return models.Team{}, c.teamBad("teams.superAdmin")
 		}
 		if u.ListRoleID != nil && *u.ListRoleID == id {
 			// A member who stays is not checked again: a team that is wide already is mended
@@ -406,35 +440,27 @@ func (c *Core) SetTeamMembers(id int, userIDs []int) (models.Team, error) {
 			continue
 		}
 		if u.Wide && role == 0 {
-			return t, c.teamBad("teams.needsUserRole")
+			return models.Team{}, c.teamBad("teams.needsUserRole")
 		}
-		if role != 0 {
-			if err := c.validTeamUserRole(role); err != nil {
-				return t, err
-			}
-		}
+		joining = append(joining, u.ID)
 	}
 
-	tx, err := c.db.Beginx()
-	if err != nil {
-		return t, c.teamFail(err)
+	if len(joining) > 0 {
+		if err := c.validTeamUserRole(tx, role); err != nil {
+			return models.Team{}, err
+		}
 	}
-	defer tx.Rollback()
 	if _, err := tx.Stmtx(c.q.AxmReleaseTeamMembers).Exec(id, pq.Array(ids)); err != nil {
-		return t, c.teamFail(err)
+		return models.Team{}, c.teamFail(err)
 	}
-	// Only people who join get the default user role; members who stay keep theirs.
-	var joining []int
-	if err := tx.Select(&joining, `SELECT id FROM users WHERE id = ANY($1::INT[]) AND list_role_id IS DISTINCT FROM $2`, pq.Array(ids), id); err != nil {
-		return t, c.teamFail(err)
-	}
+	// Current members keep their roles. Only the new members get the default.
 	if len(joining) > 0 {
 		if _, err := tx.Stmtx(c.q.AxmAssignTeamMembers).Exec(id, pq.Array(joining), role); err != nil {
-			return t, c.teamFail(err)
+			return models.Team{}, c.teamFail(err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return t, c.teamFail(err)
+		return models.Team{}, c.teamFail(err)
 	}
 	return c.GetTeam(id)
 }
