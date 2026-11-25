@@ -234,20 +234,26 @@ export function listGroups(camps, now = new Date()) {
   return { rows, best };
 }
 
-// Overlap with other mails of the last 30 days: the campaigns that have send records for
-// (nearly) every message, the people who also got another mail, and the sum.
-export function overlapRows(camps, now = new Date()) {
-  const rows = camps.filter((c) => {
-    const k = classify(c, now);
-    return k.state === 'done' && k.settled && c.sent > 0 && c.ledgerRows >= c.sent * 0.95;
-  }).map((c) => ({
-    id: c.id, name: c.name, own: c.own, overlap: c.overlap30, ledger: c.ledgerRows, rate: pct(c.overlap30, c.ledgerRows),
-  }));
-  rows.sort((x, y) => y.rate - x.rate);
-  const ledger = rows.reduce((s, r) => s + r.ledger, 0);
-  const overlap = rows.reduce((s, r) => s + r.overlap, 0);
+// The server has already checked ledger coverage and counted overlap per campaign.
+export function overlapRows(camps, overlaps) {
+  const byID = new Map(overlaps.map((r) => [r.id, r]));
+  const rows = camps.filter((c) => byID.has(c.id)).map((c) => {
+    const r = byID.get(c.id);
+    return {
+      id: c.id,
+      name: c.name,
+      ledger: r.ledgerRows,
+      overlap7: r.overlap7,
+      overlap30: r.overlap30,
+      rate: pct(r.overlap30, r.ledgerRows),
+    };
+  });
+  rows.sort((x, y) => y.rate - x.rate || y.id - x.id);
+  const ledger = rows.reduce((total, row) => total + row.ledger, 0);
+  const overlap7 = rows.reduce((total, row) => total + row.overlap7, 0);
+  const overlap30 = rows.reduce((total, row) => total + row.overlap30, 0);
   return {
-    rows, ledger, overlap, rate: pct(overlap, ledger),
+    rows, overlap30, rate: pct(overlap30, ledger), recentRate: pct(overlap7, ledger),
   };
 }
 

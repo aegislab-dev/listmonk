@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/knadh/listmonk/internal/auth"
@@ -77,6 +78,20 @@ func (a *App) GetStatsCampaigns(c echo.Context) error {
 	from, to, err := statsRange(c)
 	if err != nil {
 		return err
+	}
+	if c.QueryParam("overlap") == "true" {
+		id := 0
+		if raw := c.QueryParam("id"); raw != "" {
+			id, err = strconv.Atoi(raw)
+			if err != nil || id <= 0 {
+				return echo.NewHTTPError(http.StatusBadRequest, "invalid campaign id")
+			}
+		}
+		overlap, err := a.core.StatsOverlap(from, to, id)
+		if err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, okResp{overlap})
 	}
 	camps, err := a.core.StatsCampaigns(from, to)
 	if err != nil {

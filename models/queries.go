@@ -147,6 +147,7 @@ type Queries struct {
 	AxmTrashPurge        *sqlx.Stmt `query:"axm-trash-purge"`
 
 	AxmStatsCampaigns  *sqlx.Stmt `query:"axm-stats-campaigns"`
+	AxmStatsOverlap    *sqlx.Stmt `query:"axm-stats-overlap"`
 	AxmStatsRecipients *sqlx.Stmt `query:"axm-stats-recipients"`
 	AxmStatsTeams      *sqlx.Stmt `query:"axm-stats-teams"`
 

@@ -186,16 +186,17 @@ test('list groups name only lists of the caller; the others are merged', () => {
   assert.ok(!JSON.stringify(g).includes('"name":"B"'));
 });
 
-test('overlap needs send records for 95% of the messages', () => {
-  const camps = [
-    camp({ sent: 100, ledgerRows: 100, overlap30: 10 }),
-    camp({ sent: 100, ledgerRows: 90, overlap30: 50 }),
-    camp({ sent: 100, ledgerRows: 0 }),
-  ];
-  const o = overlapRows(camps, NOW);
+test('overlap uses separate per-campaign counts for the campaigns in view', () => {
+  const a = camp();
+  const b = camp();
+  const o = overlapRows([a, b], [
+    { id: a.id, ledgerRows: 100, overlap7: 5, overlap30: 10 },
+    { id: 1000, ledgerRows: 200, overlap7: 100, overlap30: 200 },
+  ]);
   assert.equal(o.rows.length, 1);
-  assert.equal(o.overlap, 10);
+  assert.equal(o.overlap30, 10);
   assert.equal(o.rate, 10);
+  assert.equal(o.recentRate, 5);
 });
 
 test('recipient groups: rates per group, the merged other group last', () => {

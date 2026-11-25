@@ -3,6 +3,7 @@ package core
 import (
 	"net/http"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -68,6 +69,23 @@ func (c *Core) StatsCampaigns(from, to time.Time) ([]models.StatsCampaign, error
 		return nil, err
 	}
 	return slices.Clone(d.([]models.StatsCampaign)), nil
+}
+
+// StatsOverlap is loaded separately from the campaign results to keep them responsive.
+func (c *Core) StatsOverlap(from, to time.Time, id int) ([]models.StatsOverlap, error) {
+	key := "o|" + from.UTC().Format(time.RFC3339Nano) + "|" + to.UTC().Format(time.RFC3339Nano) + "|" + strconv.Itoa(id)
+	d, err := statsCached(key, func() (any, error) {
+		out := []models.StatsOverlap{}
+		if err := c.q.AxmStatsOverlap.Select(&out, from, to, id); err != nil {
+			c.log.Printf("error reading send overlap: %v", err)
+			return nil, echo.NewHTTPError(http.StatusInternalServerError, c.i18n.T("stats.errorReading"))
+		}
+		return out, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return d.([]models.StatsOverlap), nil
 }
 
 // StatsTeams returns every team role with its list count.

@@ -25,7 +25,8 @@
         <stats-team-table :rows="rows" :all="all" :prev-by-team="prevByTeam" :prev-all="prevAll" :my-tag="myTeam"
           :previous-error="prevError" :selected="team" :now="now" @select="setTeam" />
         <stats-campaign-table :camps="teamCamps" :all="camps" :team="team" :my-team="myTeam" :limit="limit" :now="now" @clear="setTeam('')" @more="limit += 20" />
-        <stats-insights :camps="teamCamps" :age="age" :country="country" :team-key="team" :scope="scopeText" :now="now" />
+        <stats-insights :camps="teamCamps" :age="age" :country="country" :overlap="overlap" :overlap-error="overlapError"
+          :team-key="team" :scope="scopeText" :now="now" />
       </template>
     </template>
     <div v-else class="notification is-light" data-cy="stats-noperm">{{ $t('stats.noPerm') }}</div>
@@ -206,6 +207,8 @@ export default Vue.extend({
       myTeam: '',
       age: [],
       country: [],
+      overlap: null,
+      overlapError: false,
       showCounts: false,
       defsOpen: false,
       isCountsLoading: true,
@@ -299,28 +302,46 @@ export default Vue.extend({
       const { requestID } = this;
       const { from, to, prevFrom } = this.range;
       const q = (f, t) => ({ from: f ? f.toISOString() : 'all', to: t.toISOString() });
-      Promise.all([
-        this.$api.getStatsCampaigns(q(from, to)),
-        prevFrom ? this.$api.getStatsCampaigns(q(prevFrom, from)).catch(() => null) : null,
-        this.$api.getStatsRecipients({ ...q(from, to), by: 'age' }).catch(() => []),
-        this.$api.getStatsRecipients({ ...q(from, to), by: 'country' }).catch(() => []),
-      ]).then(([cur, prev, age, country]) => {
+      const params = q(from, to);
+      this.prevCamps = null;
+      this.prevError = false;
+      this.age = [];
+      this.country = [];
+      this.overlap = null;
+      this.overlapError = false;
+      if (prevFrom) {
+        this.$api.getStatsCampaigns(q(prevFrom, from)).then((previous) => {
+          if (requestID === this.requestID) this.prevCamps = previous.campaigns;
+        }).catch(() => {
+          if (requestID === this.requestID) this.prevError = true;
+        });
+      }
+      this.$api.getStatsCampaigns(params).then((cur) => {
         if (requestID !== this.requestID) return;
         this.camps = cur.campaigns;
         this.teams = cur.teams;
         this.myTeam = cur.myTeam;
         this.generatedAt = cur.generatedAt;
-        this.prevCamps = prev ? prev.campaigns : null;
-        this.prevError = !!prevFrom && !prev;
-        this.age = age;
-        this.country = country;
         this.loaded = true;
+        this.fetchInsightData(params, requestID);
       }).catch((e) => {
         if (requestID === this.requestID) {
           this.loaded = false;
           this.error = (e && e.message) || String(e);
         }
       }).finally(() => { if (requestID === this.requestID) this.loading = false; });
+    },
+    fetchInsightData(params, requestID) {
+      ['age', 'country'].forEach((by) => {
+        this.$api.getStatsRecipients({ ...params, by }).then((rows) => {
+          if (requestID === this.requestID) this[by] = rows;
+        }).catch(() => {});
+      });
+      this.$api.getStatsCampaigns({ ...params, overlap: true }).then((rows) => {
+        if (requestID === this.requestID) this.overlap = rows;
+      }).catch(() => {
+        if (requestID === this.requestID) this.overlapError = true;
+      });
     },
     fetchCounts() {
       this.isCountsLoading = true;

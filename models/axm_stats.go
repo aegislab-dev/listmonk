@@ -29,7 +29,6 @@ type StatsCampaign struct {
 	Soft          int            `db:"soft" json:"soft"`
 	Complaint     int            `db:"complaint" json:"complaint"`
 	LedgerRows    int            `db:"ledger_rows" json:"ledger_rows"`
-	Overlap30     int            `db:"overlap30" json:"overlap30"`
 	// TrackingOff: opens and clicks were not recorded when the campaign went out.
 	TrackingOff        bool             `db:"tracking_off" json:"tracking_off"`
 	FollowupOf         null.Int         `db:"followup_of" json:"followup_of"`
@@ -49,6 +48,14 @@ type StatsList struct {
 	Name      string `json:"name"`
 	Source    string `json:"source,omitempty"`
 	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// StatsOverlap counts recipients of a campaign who received other campaigns shortly before it.
+type StatsOverlap struct {
+	ID         int `db:"id" json:"id"`
+	LedgerRows int `db:"ledger_rows" json:"ledger_rows"`
+	Overlap7   int `db:"overlap7" json:"overlap7"`
+	Overlap30  int `db:"overlap30" json:"overlap30"`
 }
 
 // StatsRecipientGroup is an aggregate for a team ("" is everyone). Groups below

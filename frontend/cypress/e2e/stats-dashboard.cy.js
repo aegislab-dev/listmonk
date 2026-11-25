@@ -56,6 +56,12 @@ const stub = ({ cur = [...mine, ...other], prev = [] } = {}) => {
   cy.intercept('GET', '/api/stats/campaigns*', (req) => {
     const from = new Date(req.query.from).getTime();
     // The first call is the period, the second the period before it.
+    if (req.query.overlap === 'true') {
+      req.reply({ data: cur.filter((c) => c.sent > 0 && c.status === 'finished').map((c) => ({
+        id: c.id, ledger_rows: c.ledger_rows, overlap30: c.overlap30, overlap7: 10,
+      })) });
+      return;
+    }
     const previous = from < NOW - 100 * 86400000;
     req.reply(previous && prev === null ? { statusCode: 503 } : answer(previous ? prev : cur));
   }).as('stats');
@@ -143,7 +149,8 @@ describe('Statistics dashboard (fixed answers)', () => {
     // A country group under 30 recipients is merged into "other".
     cy.get('[data-cy=card-country]').should('contain', 'Other (groups below 30 people)');
     cy.get('[data-cy=card-followup]').should('contain', 'No campaigns have a completed follow-up yet');
-    cy.get('[data-cy=card-overlap]').should('contain', 'previous 30 days');
+    cy.get('[data-cy=card-overlap]').should('contain', 'previous 30 days').and('contain', 'Previous 7 days');
+    cy.get('[data-cy=card-overlap]').should('contain', 'campaigns, combined').and('not.contain', 'unique recipients');
     cy.get('[data-cy=card-country]').should('contain', 'Bounce 1.3%');
     cy.get('[data-cy=card-weekday]').should('contain', 'Bounce');
     cy.get('[data-cy=card-hour]').should('contain', 'Bounce');
@@ -192,7 +199,7 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.loginAndVisit('/');
     cy.get('[data-cy=stats-summary]').should('contain', 'Previous period results could not be loaded').and('not.contain', 'No sends');
     cy.intercept('GET', '/api/stats/campaigns*', (req) => {
-      if (req.query.from === 'all') {
+      if (req.query.from === 'all' && req.query.overlap !== 'true') {
         req.reply(answer([...mine, camp({ id: 900, name: 'Historic campaign', started_at: day(900) })]));
       }
     }).as('allStats');
@@ -212,6 +219,19 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=team-comparison-start]').should('contain', '3 eligible campaigns and 1,000 sends');
     cy.get('[data-cy="team-row-팀:라"]').should('contain', 'Not tracked').and('not.contain', '0.0%');
     cy.get('[data-cy=camp-row-30]').should('contain', 'Not tracked');
+  });
+
+  it('shows campaign results while the overlap calculation is pending', () => {
+    stub();
+    cy.intercept({ method: 'GET', pathname: '/api/stats/campaigns', query: { overlap: 'true' } }, {
+      delay: 1500,
+      body: { data: [] },
+    }).as('overlap');
+    cy.loginAndVisit('/');
+    cy.get('[data-cy=stats-teams]').should('be.visible');
+    cy.get('[data-cy=card-overlap]').should('contain', 'Calculating send overlap');
+    cy.wait('@overlap');
+    cy.get('[data-cy=card-overlap]').should('contain', 'at least 95%');
   });
 
   it('shows the empty "no sends" rows when no campaign was sent', () => {

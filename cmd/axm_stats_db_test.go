@@ -330,3 +330,34 @@ func TestStatsRecipientsByCountryAndAge(t *testing.T) {
 		t.Errorf("unknown grouping: %d", code)
 	}
 }
+
+// A campaign needs 95% coverage. The newest strictly earlier send controls both windows.
+func TestStatsOverlapByCampaign(t *testing.T) {
+	e := newReactionEnv(t)
+	current := e.statsCampaign("Current overlap", 10, e.aList)
+	prior := e.statsCampaign("Prior overlap", 50, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET sent = 3 WHERE id = $1`, current)
+	e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at = (SELECT started_at FROM campaigns WHERE id = $1) WHERE campaign_id = $1`, current)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id, sent_at)
+		SELECT $2, subscriber_id, sent_at - (CASE ROW_NUMBER() OVER (ORDER BY subscriber_id)
+			WHEN 1 THEN INTERVAL '3 days' WHEN 2 THEN INTERVAL '20 days' ELSE INTERVAL '35 days' END)
+		FROM axm_campaign_sends WHERE campaign_id = $1`, current, prior)
+	// A simultaneous send should not count toward either earlier window.
+	sameTime := e.statsCampaign("Same time", 10, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id, sent_at)
+		SELECT $2, subscriber_id, sent_at FROM axm_campaign_sends WHERE campaign_id = $1`, current, sameTime)
+	core.ResetStatsCache()
+	code, data := e.call(e.a.GetStatsCampaigns, e.member, http.MethodGet, "/api/stats/campaigns?overlap=true", "", "")
+	var out []models.StatsOverlap
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("status %d: %v", code, err)
+	}
+	want := models.StatsOverlap{ID: current, LedgerRows: 3, Overlap7: 1, Overlap30: 2}
+	if code != http.StatusOK || len(out) != 1 || out[0] != want {
+		t.Errorf("overlap: status %d, got %+v, want %+v", code, out, want)
+	}
+	code, data = e.call(e.a.GetStatsCampaigns, e.member, http.MethodGet, fmt.Sprintf("/api/stats/campaigns?overlap=true&id=%d", prior), "", "")
+	if code != http.StatusOK || string(data) != "[]" {
+		t.Errorf("insufficient ledger coverage: status %d, data %s", code, data)
+	}
+}

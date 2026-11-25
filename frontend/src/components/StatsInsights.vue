@@ -48,6 +48,8 @@ export default {
     // Recipient groups of the server for the team ('' = everyone), by age and by country.
     age: { type: Array, default: () => [] },
     country: { type: Array, default: () => [] },
+    overlap: { type: Array, default: null },
+    overlapError: { type: Boolean, default: false },
     teamKey: { type: String, default: '' },
     scope: { type: String, default: '' },
     now: { type: Date, default: () => new Date() },
@@ -161,27 +163,39 @@ export default {
       };
     },
     overlapCard() {
-      const { rows: overlaps, rate, overlap } = overlapRows(this.camps, this.now);
+      const card = { key: 'overlap', title: this.t('overlapTitle'), help: 'sent' };
+      if (!this.overlap) {
+        return { ...card, rows: [], concl: this.t(this.overlapError ? 'overlapError' : 'overlapLoading') };
+      }
+      const {
+        rows: overlaps, rate, overlap30, recentRate,
+      } = overlapRows(this.camps, this.overlap);
       const rows = overlaps.slice(0, 5).map((r) => ({
         label: `#${r.id} ${r.name.slice(0, 8)}`,
         click: r.rate * 1.2,
         main: pctText(r.rate),
-        sub: this.t('overlapCount', { overlap: fmt(r.overlap), ledger: fmt(r.ledger) }),
+        sub: [
+          this.t('overlapCount', { overlap: fmt(r.overlap30), ledger: fmt(r.ledger) }),
+          this.t('overlapRecent', { rate: pctText(pct(r.overlap7, r.ledger)) }),
+        ].join(' · '),
       }));
       const rest = overlaps.slice(5);
       if (rest.length) {
         rows.push({
           label: this.t('overlapRest', { n: rest.length }),
           mute: true,
-          text: this.t('recipientCount', { n: fmt(rest.reduce((s, r) => s + r.overlap, 0)) }),
+          text: this.t('overlapCount', {
+            overlap: fmt(rest.reduce((s, r) => s + r.overlap30, 0)),
+            ledger: fmt(rest.reduce((s, r) => s + r.ledger, 0)),
+          }),
         });
       }
       return {
-        key: 'overlap',
-        title: this.t('overlapTitle'),
-        help: 'sent',
+        ...card,
         rows,
-        concl: rows.length ? this.t('overlapConcl', { rate: pctText(rate), n: fmt(overlap) }) : this.t('overlapEmpty'),
+        concl: rows.length
+          ? `${this.t('overlapConcl', { rate: pctText(rate), n: fmt(overlap30) })} ${this.t('overlapRecent', { rate: pctText(recentRate) })}`
+          : this.t('overlapEmpty'),
         foot: rows.length ? this.t('overlapFoot') : '',
       };
     },
