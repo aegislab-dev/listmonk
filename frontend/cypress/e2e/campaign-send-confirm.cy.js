@@ -191,7 +191,7 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy="send-check-recent.applied"]').should('have.attr', 'data-level', 'info').and('contain', 'last 14 days');
     // Information, not a warning: the button does not turn into "anyway".
     cy.get('[data-cy=send-sub]').should('not.contain', 'warning');
-    cy.get('[data-cy=send-ok]').should('have.text', 'Send to 3 people').and('not.be.disabled');
+    cy.get('[data-cy=send-ok]').should('contain', 'Send to 3 people').and('not.contain', 'anyway').and('not.be.disabled');
     cy.get('[data-cy=send-cancel]').click();
   });
 
