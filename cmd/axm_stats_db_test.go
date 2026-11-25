@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
@@ -20,11 +21,12 @@ import (
 // addresses keep the permissions they had.
 
 type statsOut struct {
-	From      string `json:"from"`
-	To        string `json:"to"`
-	MyTeam    string `json:"my_team"`
-	Teams     []models.StatsTeam
-	Campaigns []struct {
+	GeneratedAt time.Time `json:"generated_at"`
+	From        string    `json:"from"`
+	To          string    `json:"to"`
+	MyTeam      string    `json:"my_team"`
+	Teams       []models.StatsTeam
+	Campaigns   []struct {
 		ID                 int      `json:"id"`
 		Name               string   `json:"name"`
 		Subject            string   `json:"subject"`
@@ -58,6 +60,52 @@ func (e *reactionEnv) statsFor(user auth.User) (int, statsOut, string) {
 		}
 	}
 	return code, out, string(data)
+}
+
+func TestStatsWarmRangeRefreshesWhenFollowupFinishes(t *testing.T) {
+	e := newReactionEnv(t)
+	core.ResetStatsCache()
+	now := time.Now().UTC()
+	path := fmt.Sprintf("/api/stats/campaigns?from=%s&to=%s",
+		now.AddDate(0, 0, -90).Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339))
+	get := func() statsOut {
+		t.Helper()
+		code, data := e.call(e.a.GetStatsCampaigns, e.member, http.MethodGet, path, "", "")
+		var out statsOut
+		if code != http.StatusOK || json.Unmarshal(data, &out) != nil || out.GeneratedAt.IsZero() {
+			t.Fatalf("statistics: %d %s", code, data)
+		}
+		return out
+	}
+	first := get()
+	if cached := get(); !cached.GeneratedAt.Equal(first.GeneratedAt) {
+		t.Fatal("reusing the same statistics snapshot changed its timestamp")
+	}
+
+	var child int
+	e.get(&child, `INSERT INTO campaigns(uuid,name,subject,from_email,body,status,messenger,to_send,sent)
+		VALUES(gen_random_uuid(),'Follow-up','Subject','Synthetic <sender@example.test>','<p>x</p>','draft','email',3,0)
+		RETURNING id`)
+	e.db.MustExec(`INSERT INTO axm_campaign_followups(campaign_id,parent_campaign_id,list_uuid,condition)
+		SELECT $1,$2,uuid,'{"open":"any","click":"no"}'::jsonb FROM lists WHERE id = $3`, child, e.campID, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET status='running', started_at=NOW(), sent=3 WHERE id = $1`, child)
+	if running := get(); !running.GeneratedAt.Equal(first.GeneratedAt) {
+		t.Fatal("a running follow-up should not invalidate the period snapshot")
+	}
+	if _, err := e.q.UpdateCampaignStatus.Exec(child, models.CampaignStatusFinished); err != nil {
+		t.Fatal(err)
+	}
+
+	finished := get()
+	if !finished.GeneratedAt.After(first.GeneratedAt) {
+		t.Fatal("the completed follow-up did not refresh the period snapshot")
+	}
+	for _, c := range finished.Campaigns {
+		if c.ID == child && c.FollowupOf == e.campID && c.Sent == 3 {
+			return
+		}
+	}
+	t.Fatalf("after completion, the same period did not include follow-up %d: %+v", child, finished.Campaigns)
 }
 
 // statsCampaign makes a finished campaign of the given lists with 100 sends, 3 viewers (one is a

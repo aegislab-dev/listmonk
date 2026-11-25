@@ -93,7 +93,7 @@ func (a *App) GetStatsCampaigns(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, okResp{overlap})
 	}
-	camps, err := a.core.StatsCampaigns(from, to)
+	camps, generatedAt, err := a.core.StatsCampaigns(from, to)
 	if err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func (a *App) GetStatsCampaigns(c echo.Context) error {
 		MyTeam      string                 `json:"my_team"`
 		Teams       []models.StatsTeam     `json:"teams"`
 		Campaigns   []models.StatsCampaign `json:"campaigns"`
-	}{time.Now(), from, to, a.teamTagOf(user), teams, camps}})
+	}{generatedAt, from, to, a.teamTagOf(user), teams, camps}})
 }
 
 // GetStatsRecipients returns the recipient groups (by=age|country) for everyone and for each

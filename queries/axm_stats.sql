@@ -46,6 +46,12 @@ WHERE c.type = 'regular' AND (c.messenger = 'email' OR STARTS_WITH(c.messenger, 
     AND c.started_at >= $1 AND c.started_at < $2 AND (c.sent > 0 OR c.status = 'running')
 ORDER BY c.started_at DESC, c.id DESC;
 
+-- name: axm-stats-followup-version
+-- The completed follow-ups in the campaign result. This reads no send or tracking logs.
+SELECT COALESCE(MD5(STRING_AGG(CONCAT_WS(':', c.id, f.parent_campaign_id, c.sent), ',' ORDER BY c.id)), '')
+FROM axm_campaign_followups f JOIN campaigns c ON c.id = f.campaign_id
+WHERE c.status = 'finished' AND c.sent > 0 AND c.started_at >= $1 AND c.started_at < $2;
+
 -- name: axm-stats-overlap
 -- $3 selects a single campaign. For a period request, also count distinct people
 -- across campaigns, once for the company and once per campaign team.

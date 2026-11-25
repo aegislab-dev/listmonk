@@ -16,6 +16,8 @@
       <span class="st-note">{{ rangeText }}</span>
       <a v-if="canStats" class="is-size-7" style="margin-left:auto" href="#" data-cy="defs-link"
         @click.prevent="openDefs">{{ $t('stats.defsLink') }}</a>
+      <span v-else class="is-size-7 has-text-grey-light" style="margin-left:auto" aria-disabled="true"
+        data-cy="defs-link">{{ $t('stats.defsLink') }}</span>
     </div>
 
     <template v-if="canStats">
@@ -251,7 +253,10 @@ export default Vue.extend({
       const f = (d) => formatKST(d.toISOString()).slice(0, 5);
       return `${f(this.range.from)} ~ ${f(this.now)}`;
     },
-    asOf() { return this.generatedAt ? formatKST(this.generatedAt, this.$i18n.locale) : ''; },
+    asOf() {
+      const at = this.canStats ? this.generatedAt : this.counts.updatedAt;
+      return at ? formatKST(at, this.$i18n.locale) : '';
+    },
     rows() { return teamRows(this.camps, this.teams, this.now); },
     all() { return aggregate(this.camps, this.now); },
     prevByTeam() {

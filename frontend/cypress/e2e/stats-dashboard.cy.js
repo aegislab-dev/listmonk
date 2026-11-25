@@ -157,11 +157,16 @@ describe('Statistics dashboard (fixed answers)', () => {
       });
     });
     cy.intercept('GET', '/api/dashboard/counts', {
-      data: { lists: { total: 14 }, subscribers: { total: 3437 }, campaigns: { total: 13 }, messages: 48320 },
+      data: {
+        updated_at: day(0), lists: { total: 14 }, subscribers: { total: 3437 }, campaigns: { total: 13 }, messages: 48320,
+      },
     });
     cy.loginAndVisit('/');
     cy.get('[data-cy=stats-noperm]').should('be.visible');
     cy.get('[data-cy=period] button').should('have.length', 4).and('be.disabled');
+    cy.get('.dashboard header').should('contain', 'From listmonk records').and('contain', '09:05 KST')
+      .and('contain', 'may differ from the Slack alerts');
+    cy.get('[data-cy=defs-link]').should('contain', 'Metric definitions').and('have.attr', 'aria-disabled', 'true');
     cy.get('[data-cy=counts-summary]').should('have.length', 1).and('contain', 'All-time totals')
       .and('contain', '14').and('contain', '3,437').and('contain', '13').and('contain', '48,320');
     cy.get('.dashboard').find('[data-cy=counts-toggle], [data-cy=lists], [data-cy=stats-teams]').should('not.exist');
@@ -514,6 +519,7 @@ describe('Statistics against the server', () => {
     cy.get('[data-cy=stats-teams]', { timeout: 30000 }).should('exist');
     cy.request('/api/stats/campaigns').its('body.data.campaigns').should('be.an', 'array');
     cy.request('/api/stats/recipients?by=country').its('body.data').should('be.an', 'array');
+    cy.request('/api/dashboard/counts').its('body.data.updated_at').should('match', /^\d{4}-\d{2}-\d{2}T/);
     cy.request({ url: '/api/stats/recipients?by=x', failOnStatusCode: false }).its('status').should('eq', 400);
     // The folded counts stay in the page.
     cy.get('[data-cy=lists] .title').should('exist');

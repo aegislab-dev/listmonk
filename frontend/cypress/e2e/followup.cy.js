@@ -238,6 +238,20 @@ describe('follow-up campaign draft', () => {
 
   it('offers only the reaction list on the list and analytics for a sent follow-up', () => {
     const followupPath = `/api/campaigns/${followupId}`;
+    // Keep both visits in the same 90-day cache window even at a five-minute boundary.
+    const now = Date.now() + 60_000;
+    cy.clock(now, ['Date']);
+    cy.intercept('GET', '/api/stats/campaigns*', (request) => {
+      if (request.query.overlap !== 'true' && Date.parse(request.query.to) > now) request.alias = 'currentStats';
+    });
+    let period;
+    cy.visit('/admin');
+    cy.wait('@currentStats').then(({ request, response }) => {
+      period = request.query;
+      expect(response.body.data.campaigns.some((c) => c.id === followupId)).to.eq(false);
+    });
+    cy.get('[data-cy=card-followup]').should('contain', 'No campaigns have a completed follow-up yet');
+
     // The test SMTP inbox accepts the fixture mail so the follow-up really finishes.
     cy.request('PUT', `${followupPath}/status`, { status: 'running' });
     const finished = (tries = 30) => cy.request(followupPath).then(({ body }) => {
@@ -251,6 +265,12 @@ describe('follow-up campaign draft', () => {
     finished();
 
     cy.visit('/admin');
+    cy.wait('@currentStats').then(({ request, response }) => {
+      expect(request.query).to.deep.eq(period);
+      const child = response.body.data.campaigns.find((c) => c.id === followupId);
+      expect(child).to.include({ status: 'finished', followup_of: campaignId });
+      expect(child.sent).to.be.greaterThan(0);
+    });
     cy.get('[data-cy=card-followup]').should('contain', `#${followupId} ← #${campaignId}`)
       .and('contain', 'Collecting');
 

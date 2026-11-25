@@ -2,7 +2,7 @@
 SELECT data FROM mat_dashboard_charts;
 
 -- name: get-dashboard-counts
-SELECT data FROM mat_dashboard_counts;
+SELECT data::JSONB || JSONB_BUILD_OBJECT('updated_at', updated_at) AS data FROM mat_dashboard_counts;
 
 -- name: get-settings
 SELECT JSON_OBJECT_AGG(key, value) AS settings FROM (SELECT * FROM settings ORDER BY key) t;
