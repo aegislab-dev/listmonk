@@ -1159,6 +1159,7 @@ PostgreSQL 17.7 로컬 컨테이너에서 합성 구독자 40만 명을 한 리�
 - 예약 캠페인에서 마지막 리스트를 지우고 저장하면 「잘못된 리스트 ID」 대신 `campaigns.recheck.noLists`가 나온다.
 - **경고는 서버가 거절하지 않고 화면이 다시 보인다**: `GET /api/campaigns/:id/preflight`가 `scheduled`도 받는다(`mode: "scheduled"`, `schedule.past` 줄 없음, 나머지 점검 줄은 예약과 같다). 편집 화면은 저장 응답의 상태가 `scheduled`이면 점검을 읽어 경고·막음이 하나라도 있으면 확인 창을 「저장 뒤 재점검」 모양(`CampaignSendConfirm.vue`의 `review`)으로 연다: 「확인 — 예약 유지」(닫기만) / 「예약 해제하고 고치기」(`PUT status=draft`). 모두 통과면 창 없이 알림 한 줄(`campaigns.recheck.passed`). 점검을 못 읽으면 창의 오류 상태(「저장은 됐습니다…」)다. 거절은 앱의 기존 빨간 알림으로 보인다. 시작·예약 단추는 초안·일시정지를 저장하므로 이 길을 타지 않는다.
 - **남는 한계(저장 시점에 잡히지 않는 것)**: 캠페인을 고치지 않았는데 바뀌는 것 — 공유 템플릿 수정(수신거부 링크·픽셀이 빠질 수 있음), 리스트 구성원 변화, 설정 변경 — 은 예약 뒤 점검되지 않는다. API로 상태를 바꾸는 쪽(`PUT /api/campaigns/:id/status`의 0명·리스트 없음 강제, LST-66 표 3)도 이번 범위 밖이다. API로 예약 캠페인을 고치는 클라이언트는 0명·리스트 없음일 때 400을 새로 받고, 경고는 응답에 싣지 않는다(`GET preflight`로 읽는다).
+- 저장 뒤에 연결 리스트가 모두 삭제된 일반 예약 캠페인은 발송 시각이 지나도 `scheduled`에 남는다. 발송기는 같은 캠페인을 다음 스캔에도 확인하며 실제로 발송하는 메일은 0통이다. 후속 캠페인에는 기존의 빈 대상 완료 처리(`FinishEmptyFollowup`)가 적용된다.
 - **업스트림을 따라갈 때 볼 곳**: `UpdateCampaign`(`cmd/campaigns.go`)의 `cm.Status == scheduled` 분기와 `Core.UpdateCampaign`/`updateCampaignArgs`(`internal/core/campaigns.go`; `update-campaign` 쿼리의 인자가 늘면 `updateCampaignArgs` 한 곳을 고친다), `Campaign.vue`의 `recheckScheduled()`.
 
 ## 캠페인 복제 시 받는 리스트 (LST-59)
