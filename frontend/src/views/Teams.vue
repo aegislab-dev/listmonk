@@ -45,7 +45,7 @@
         <div v-if="isWide(props.row)" class="team-wide" data-cy="team-wide">
           <b-tag type="is-warning" icon="alert-outline" data-cy="team-wide-tag">{{ $t('teams.wideWarn') }}</b-tag>
           <p class="is-size-7">
-            {{ $t('teams.wideWarnHelp', wideInfo(props.row)) }}
+            {{ $t(props.row.wideMembers > 0 ? 'teams.wideWarnHelp' : 'teams.wideWarnNoMembers', wideInfo(props.row)) }}
             <router-link :to="{ path: '/users/roles/users' }" data-cy="team-wide-fix">{{ $t('teams.wideFix') }}</router-link>
           </p>
         </div>
@@ -89,8 +89,8 @@
 
 <script>
 import Vue from 'vue';
-import { widePermsOf } from '../teams';
 import { mapState } from 'vuex';
+import { widePermsOf } from '../teams';
 import EmptyPlaceholder from '../components/EmptyPlaceholder.vue';
 import TeamForm from '../components/TeamForm.vue';
 import TeamMembers from '../components/TeamMembers.vue';

@@ -1713,6 +1713,7 @@
     "teams.memberWideRole": "팀원에게 줄 수 없는 사용자 역할입니다({perms}). 다른 팀의 리스트·구독자·캠페인을 보게 됩니다. 팀에서 먼저 빼거나 다른 역할을 고르세요.",
     "teams.wideWarn": "다른 팀 자료가 보임",
     "teams.wideWarnHelp": "{roles} 역할에 {perms} 권한이 있어 팀원 {num}명이 다른 팀의 리스트·구독자·캠페인을 봅니다. 역할 화면에서 이 권한을 빼세요.",
+    "teams.wideWarnNoMembers": "{roles} 역할에 {perms} 권한이 있습니다. 팀원이 생기면 다른 팀의 리스트·구독자·캠페인을 보게 됩니다. 역할 화면에서 이 권한을 빼세요.",
     "teams.wideFix": "역할 화면에서 고치기",
     "teams.wideRoleOption": "(다른 팀 자료가 보이는 권한 있음)",
     "teams.wideRoleBlocked": "이 역할에 다른 팀 자료를 보는 권한({perms})이 있어 저장할 수 없습니다. 다른 역할을 고르거나 역할 화면에서 권한을 빼세요.",

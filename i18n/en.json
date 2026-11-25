@@ -1707,6 +1707,7 @@
     "teams.memberWideRole": "This user role cannot be given to a team member ({perms}): they would see other teams' lists, subscribers and campaigns. Take them out of the team first, or choose another role.",
     "teams.wideWarn": "Other teams' data visible",
     "teams.wideWarnHelp": "The role {roles} has {perms}, so {num} members see other teams' lists, subscribers and campaigns. Remove the permission on the Roles screen.",
+    "teams.wideWarnNoMembers": "The role {roles} has {perms}. Anyone who joins would see other teams' lists, subscribers and campaigns. Remove the permission on the Roles screen.",
     "teams.wideFix": "Fix on the Roles screen",
     "teams.wideRoleOption": "(has a permission that shows other teams' data)",
     "teams.wideRoleBlocked": "This role has a permission that shows other teams' data ({perms}), so it cannot be saved. Choose another role, or remove the permission on the Roles screen.",
