@@ -46,7 +46,7 @@
           </table>
           <p class="help">{{ $t('lists.draw.drawnHelp') }}</p>
         </div>
-        <b-field :label="$t('lists.dynamic.composition')">
+        <b-field v-if="!staticOnly" :label="$t('lists.dynamic.composition')">
           <b-select v-model="composition" :disabled="isEditing" expanded data-cy="list-composition">
             <option value="static">{{ $t('lists.dynamic.static') }}</option>
             <option value="dynamic">{{ $t('lists.dynamic.dynamic') }}</option>
@@ -203,6 +203,9 @@ export default Vue.extend({
     isEditing: { type: Boolean, default: false },
     // The teams on the lists the user may read (GET /api/lists/teams).
     teams: { type: Array, default: () => [] },
+    // A new list that can only be a static one (the import screen: a dynamic list is no
+    // target of an import). The composition choice is hidden.
+    staticOnly: { type: Boolean, default: false },
   },
 
   data() {
@@ -297,7 +300,8 @@ export default Vue.extend({
 
     createList() {
       this.$api.createList(this.payload()).then((data) => {
-        this.$emit('finished');
+        // The new list goes along, for a caller that wants to use it (the import screen).
+        this.$emit('finished', data);
         this.$parent.close();
         this.$utils.toast(this.$t('globals.messages.created', { name: data.name }));
       });

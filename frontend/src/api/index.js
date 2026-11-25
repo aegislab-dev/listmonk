@@ -132,6 +132,9 @@ export const drawList = (id, data) => http.post(`/api/lists/${id}/draw`, data, {
 // The draw records of a source list ({ source_id }) or of drawn lists ({ list_id: [ids] }).
 export const getListDraws = (params) => http.get('/api/lists/draws', { params, disableToast: true });
 
+// The campaigns that used lists ({ list_id: [ids] }): sent, sending or scheduled, never drafts (LST-63).
+export const getListCampaigns = (params) => http.get('/api/lists/campaigns', { params, disableToast: true });
+
 export const getLists = (params) => http.get(
   '/api/lists',
   {

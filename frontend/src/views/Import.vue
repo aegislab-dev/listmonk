@@ -70,9 +70,20 @@
             </div>
           </div>
 
-          <list-selector v-if="form.mode === 'subscribe'" :label="$t('globals.terms.lists')"
-            :placeholder="$t('import.listSubHelp')" :message="$t('import.listSubHelp')" v-model="form.lists"
-            :selected="form.lists" :all="(lists.results || []).filter(l => !l.axmFilter)" />
+          <div v-if="form.mode === 'subscribe'" class="target-lists" data-cy="import-target">
+            <div class="target-row">
+              <div class="target-field">
+                <list-selector :label="$t('import.targetLists')"
+                  :placeholder="$t('import.listSubHelp')" :message="$t('import.targetListsHelp')" v-model="form.lists"
+                  :selected="form.lists" :all="(lists.results || []).filter(l => !l.axmFilter)" />
+              </div>
+              <b-button v-if="$canCreateList()" class="target-new" icon-left="plus" data-cy="import-new-list"
+                :disabled="isProcessing" @click="openNewList('add')">
+                {{ $t('import.newList') }}
+              </b-button>
+            </div>
+            <import-used-lists :entries="used" merge :new-list="$canCreateList()" @new-list="openNewList('replace')" />
+          </div>
           <hr />
 
           <b-field :label="$t('import.csvFile')" label-position="on-border">
@@ -107,6 +118,9 @@
               {{ $t('import.upload') }}
             </b-button>
           </div>
+          <p v-if="form.mode === 'subscribe' && form.lists.length === 0" class="help" data-cy="import-need-list">
+            {{ $t('import.needList') }}
+          </p>
         </div>
       </form>
       <br /><br />
@@ -174,8 +188,18 @@
         <p class="help">{{ $t('import.warned.help') }}</p>
       </b-message>
 
-      <p>
-        <b-button @click="stopImport" :loading="isProcessing" icon-left="file-upload-outline" type="is-primary">
+      <template v-if="showMakeCampaign">
+        <import-used-lists :entries="doneUsed" />
+        <p data-cy="import-done-into">{{ $t('import.doneInto', { lists: importListNames, num: $utils.formatNumber(status.imported) }) }}</p>
+        <br />
+      </template>
+      <p class="buttons is-centered">
+        <b-button v-if="showMakeCampaign" @click="makeCampaign" :loading="isProcessing" icon-left="rocket-launch-outline"
+          type="is-primary" data-cy="import-make-campaign">
+          {{ $t('import.makeCampaign') }}
+        </b-button>
+        <b-button @click="stopImport" :loading="isProcessing" icon-left="file-upload-outline"
+          :type="showMakeCampaign ? 'is-light' : 'is-primary'" data-cy="import-done">
           {{ isDone() ? $t('import.importDone') : $t('import.stopImport') }}
         </b-button>
       </p>
@@ -189,6 +213,12 @@
         <log-view :lines="logs" :loading="false" />
       </div>
     </section>
+
+    <!-- A new list for the import (LST-63): the list form of the lists page, static lists only. -->
+    <b-modal custom-class="axm-list-modal" has-modal-card scroll="keep" :aria-modal="true" :active.sync="isNewListVisible"
+      :width="860">
+      <list-form :key="newListKey" :data="newListItem" :teams="teams" static-only @finished="onNewList" />
+    </b-modal>
   </section>
 </template>
 
@@ -199,6 +229,8 @@ import ListSelector from '../components/ListSelector.vue';
 import LogView from '../components/LogView.vue';
 import ImportColumnMapper from '../components/ImportColumnMapper.vue';
 import AddressCheck from '../components/AddressCheck.vue';
+import ImportUsedLists from '../components/ImportUsedLists.vue';
+import ListForm from './ListForm.vue';
 import {
   LIMITS, readMemory, rememberMapping, addressClasses, addressExcludedRows, excludedRowsCSV,
 } from '../lib/csv-import';
@@ -255,6 +287,8 @@ export default Vue.extend({
     LogView,
     ImportColumnMapper,
     AddressCheck,
+    ImportUsedLists,
+    ListForm,
   },
 
   props: {
@@ -291,6 +325,20 @@ export default Vue.extend({
       status: { status: '' },
       logs: [],
       pollID: null,
+
+      // The campaigns that used the chosen lists (a warning, never a block), and those that
+      // used the lists a finished import filled (LST-63).
+      used: [],
+      usedRequest: 0,
+      doneUsed: [],
+      doneUsedKey: '',
+      // The list form for a new list: 'add' puts the list next to the chosen ones, 'replace'
+      // (from the warning) swaps the already used lists for it.
+      isNewListVisible: false,
+      newListMode: 'add',
+      newListItem: {},
+      newListKey: 0,
+      teams: [],
     };
   },
 
@@ -322,8 +370,10 @@ export default Vue.extend({
     },
     'form.lists': function listsChanged() {
       if (this.isCSV) this.loadAttributeKeys();
+      this.loadUsedLists();
     },
     'form.mode': function formMode() {
+      this.loadUsedLists();
       // A blocklist import has no address check; coming back to subscribe runs it again.
       this.resetAddressCheck();
       if (this.form.mode === 'subscribe' && this.addrInput) this.checkAddresses(this.addrInput.emails, this.addrInput.rows);
@@ -763,6 +813,7 @@ export default Vue.extend({
           this.isLoading = false;
           this.status = data;
           this.getLogs();
+          this.loadDoneUsed();
 
           if (!this.isRunning()) {
             clearInterval(this.pollID);
@@ -798,6 +849,89 @@ export default Vue.extend({
         this.form.file = null;
         this.sentCount = null;
       });
+    },
+
+    // Groups the campaigns of the lists into one entry per list, in the order of the lists.
+    usedEntries(lists, rows) {
+      return lists.map((list) => {
+        const items = (rows || []).filter((r) => r.listId === list.id);
+        return { list, items, total: items.length ? items[0].total : 0 };
+      }).filter((e) => e.items.length);
+    },
+
+    // Asks which of the chosen lists went out in a campaign already. A late answer for lists
+    // chosen before is dropped; a failure shows nothing (the import is not held up).
+    loadUsedLists() {
+      this.usedRequest += 1;
+      const request = this.usedRequest;
+      const lists = this.form.mode === 'subscribe' ? this.form.lists : [];
+      if (!lists.length) {
+        this.used = [];
+        return;
+      }
+      this.$api.getListCampaigns({ list_id: lists.map((l) => l.id) }).then((rows) => {
+        if (request === this.usedRequest) this.used = this.usedEntries(lists, rows);
+      }).catch(() => {
+        if (request === this.usedRequest) this.used = [];
+      });
+    },
+
+    // The same for the lists a finished import filled: sending to one of them again sends to
+    // the people it already reached. Read once per import.
+    loadDoneUsed() {
+      const ids = this.status.axmLists || [];
+      const key = `${this.status.axmImportId}:${ids.join(',')}`;
+      if (!this.isSuccessful() || !ids.length) {
+        this.doneUsed = [];
+        this.doneUsedKey = '';
+        return;
+      }
+      if (key === this.doneUsedKey) return;
+      this.doneUsedKey = key;
+      const all = this.lists.results || [];
+      const lists = ids.map((id) => all.find((l) => l.id === id) || { id, name: `#${id}` });
+      this.$api.getListCampaigns({ list_id: ids }).then((rows) => {
+        if (key === this.doneUsedKey) this.doneUsed = this.usedEntries(lists, rows);
+      }).catch(() => {
+        if (key === this.doneUsedKey) this.doneUsed = [];
+      });
+    },
+
+    // Opens the list form for a new list. The teams are read when the form is first needed.
+    openNewList(mode) {
+      this.newListMode = mode;
+      if (!this.teams.length) {
+        this.$api.getListTeams().then((out) => { this.teams = out.teams || []; }).catch(() => {});
+      }
+      this.newListItem = {};
+      this.newListKey += 1;
+      this.isNewListVisible = true;
+    },
+
+    // The new list goes next to the chosen lists; from the warning it takes the place of the
+    // lists that were already used.
+    onNewList(created) {
+      this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' }).then(() => {
+        const made = created && (this.lists.results || []).find((l) => l.id === created.id);
+        if (!made) return;
+        let keep = this.form.lists;
+        if (this.newListMode === 'replace') {
+          const usedIds = this.used.map((e) => e.list.id);
+          keep = keep.filter((l) => !usedIds.includes(l.id));
+        }
+        this.form.lists = [...keep.filter((l) => l.id !== made.id), made];
+        // A team member's lists changed: the permission checks need the new ones.
+        this.$refreshProfile();
+      });
+    },
+
+    // Clears the finished import (as "Done" does) and opens a new campaign for its lists.
+    makeCampaign() {
+      const lists = this.status.axmLists || [];
+      this.isProcessing = true;
+      this.$api.stopImport().then(() => {
+        this.$router.push({ path: '/campaigns/new', query: { list_id: lists } });
+      }, () => { this.isProcessing = false; });
     },
 
     renderExample() {
@@ -930,6 +1064,11 @@ export default Vue.extend({
     showImportCheck() {
       return this.isSuccessful() && (this.status.axmLists || []).length > 0;
     },
+    // The finished screen leads on to a campaign for the lists it filled: only for a successful
+    // subscribe import that put someone in, to a user who may make campaigns.
+    showMakeCampaign() {
+      return this.showImportCheck && this.status.imported > 0 && this.$can('campaigns:manage', 'campaigns:manage_all');
+    },
     importListNames() {
       const all = this.lists.results || [];
       return (this.status.axmLists || []).map((id) => (all.find((l) => l.id === id) || { name: `#${id}` }).name).join(', ');
@@ -1058,6 +1197,9 @@ export default Vue.extend({
 </script>
 
 <style scoped>
+.target-row { display: flex; align-items: flex-end; gap: 0.75rem; }
+.target-field { flex: 1; min-width: 0; }
+.target-new { margin-bottom: 1.6rem; }
 .rejected-table { width: 100%; margin: 0.4rem 0; border-collapse: collapse; }
 .rejected-table td { padding: 0.15rem 0.25rem; border-top: 1px solid rgba(97, 70, 0, 0.2); }
 </style>
