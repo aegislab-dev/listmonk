@@ -786,6 +786,30 @@ describe('Pre-send confirmation window', () => {
     cy.then(() => cy.request(`/api/campaigns/${camp.busy}`)).its('body.data.status').should('eq', 'scheduled');
   });
 
+  it('shows the previous list size and the previous actual send count when both change', () => {
+    let reads = 0;
+    cy.intercept('GET', `/api/campaigns/${camp.rule}/preflight`, (req) => {
+      req.continue((res) => {
+        const data = res.body.data;
+        const count = reads++ === 0 ? 40 : 39;
+        data.lists[0].count = count;
+        data.recipients = count;
+        data.recent.excluded = 12;
+        data.will_send = count - 12;
+      });
+    });
+    cy.visit('/admin/campaigns');
+    row('rule').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-title]').should('contain', 'Send to 28 people now');
+    cy.get('[data-cy=send-ok]').click();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy=send-list-was]').should('contain', 'before: 40');
+    cy.get('[data-cy=send-recipients-was]').should('contain', 'before: 28');
+    cy.get('[data-cy=send-ok]').should('contain', 'Send to 27 people');
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
   it('shows only the campaign and its recipients when only the count changed', () => {
     let listC;
     cy.request('POST', '/api/lists', {

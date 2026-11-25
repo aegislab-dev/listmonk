@@ -335,13 +335,12 @@ export default Vue.extend({
       };
     },
 
-    // The count before the change, shown next to the total. With one list that kept its
-    // place, the list's own "before" already says it.
+    // A single list's comparison replaces the total only when both counts match.
     totalWas() {
       const ch = this.countChange;
       if (!ch) return null;
       const lists = this.pf.lists || [];
-      if (!this.isResume && lists.length === 1 && this.wasCount(lists[0]) !== null) return null;
+      if (!this.isResume && lists.length === 1 && lists[0].count === ch.after && this.wasCount(lists[0]) === ch.before) return null;
       return ch.before;
     },
 

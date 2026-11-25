@@ -1,10 +1,12 @@
 -- name: axm-recent-exclude-counts
--- (LST-65) A campaign that has started also counts as excluded the people its sender left out
--- already (axm_campaign_recent_holds), whatever the send records say now.
+-- Count the same set that axm-recent-add-members uses: existing holds and recent recipients
+-- who have not already received this campaign.
 SELECT COUNT(*) AS target,
-    COUNT(*) FILTER (WHERE e.excluded OR h.subscriber_id IS NOT NULL) AS excluded, NOW() AS as_of
+    COUNT(*) FILTER (WHERE h.subscriber_id IS NOT NULL OR (e.excluded AND own.subscriber_id IS NULL)) AS excluded,
+    NOW() AS as_of
 FROM axm_recent_exclusion($1, $2, $3, $4, $5) e
-LEFT JOIN axm_campaign_recent_holds h ON h.campaign_id = $5 AND h.subscriber_id = e.subscriber_id;
+LEFT JOIN axm_campaign_recent_holds h ON h.campaign_id = $5 AND h.subscriber_id = e.subscriber_id
+LEFT JOIN axm_campaign_sends own ON own.campaign_id = $5 AND own.subscriber_id = e.subscriber_id;
 
 -- name: axm-recent-sends-coverage
 SELECT MIN(sent_at) FROM axm_campaign_sends;
@@ -57,10 +59,13 @@ JOIN lists l ON l.id = wanted.id
 ORDER BY wanted.position;
 
 -- name: axm-recent-add-members
+-- Insert the same retained audience that axm-recent-exclude-counts counts.
 INSERT INTO subscriber_lists (subscriber_id, list_id, status)
-SELECT kept.subscriber_id, $6::INT, 'confirmed'
-FROM (SELECT subscriber_id, excluded FROM axm_recent_exclusion($1, $2, $3, $4, $5) OFFSET 0) kept
-WHERE NOT kept.excluded;
+SELECT e.subscriber_id, $6::INT, 'confirmed'
+FROM (SELECT subscriber_id, excluded FROM axm_recent_exclusion($1, $2, $3, $4, $5) OFFSET 0) e
+LEFT JOIN axm_campaign_recent_holds h ON h.campaign_id = $5 AND h.subscriber_id = e.subscriber_id
+LEFT JOIN axm_campaign_sends own ON own.campaign_id = $5 AND own.subscriber_id = e.subscriber_id
+WHERE h.subscriber_id IS NULL AND (NOT e.excluded OR own.subscriber_id IS NOT NULL);
 
 -- name: axm-recent-readable-lists
 -- The lists of $2 that user $1 may read now, by the role tables (the same rule as the session's

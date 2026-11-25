@@ -99,6 +99,28 @@ describe('Recent-send exclusion settings', () => {
     cy.get('[data-cy=recent-held]').should('contain', '1');
   });
 
+  it('keeps completed send counts when later mail reaches the same list', () => {
+    cy.intercept('GET', `/api/campaigns/${campaignId}`, (req) => {
+      req.continue((res) => {
+        Object.assign(res.body.data, { status: 'finished', sent: 28 });
+      });
+    });
+    cy.intercept('GET', rulePath(), (req) => {
+      req.continue((res) => {
+        res.body.data.held = 12;
+      });
+    });
+    cy.intercept('POST', preview, {
+      body: { data: { target: 40, excluded: 40, will_send: 0 } },
+    }).as('laterSendsPreview');
+    openCampaign(campaignId);
+    cy.get('[data-cy=recent-counts] td').should(($cells) => {
+      expect([...$cells].map((cell) => cell.textContent)).to.deep.equal(['40', '−12', '28']);
+    });
+    cy.get('[data-cy=recent-held]').should('contain', '12');
+    cy.get('@laterSendsPreview.all').should('have.length', 0);
+  });
+
   it('loads a saved rule, warns on send and disables editing for a reader', () => {
     openCampaign(campaignId);
     cy.get(switchInput).should('be.checked').and('not.be.disabled');
