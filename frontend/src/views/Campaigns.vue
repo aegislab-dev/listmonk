@@ -181,7 +181,7 @@
         </div>
       </b-table-column>
 
-      <b-table-column v-slot="props" cell-class="actions" width="15%" align="right">
+      <b-table-column v-slot="props" cell-class="actions" width="195" align="right">
         <div>
           <!-- start / pause / resume / scheduled -->
           <template v-if="$can('campaigns:send')">
@@ -252,9 +252,10 @@
               <b-icon icon="chart-bar" size="is-small" />
             </b-tooltip>
           </router-link>
-          <a v-if="canReact(props.row)" href="#" data-cy="btn-campaign-reaction"
+          <!-- Campaigns that cannot be a follow-up source keep the reaction list icon. -->
+          <a v-if="canReact(props.row) && reactionPreset(props.row) === ''" href="#" data-cy="btn-campaign-reaction"
             class="campaign-reaction-action" :aria-label="$t('campaigns.reactionList.title')"
-            @click.prevent="reactionCampaign = props.row">
+            @click.prevent="openReaction(props.row)">
             <b-tooltip :label="$t('campaigns.reactionList.title')" type="is-dark">
               <b-icon icon="format-list-bulleted-square" size="is-small" />
             </b-tooltip>
@@ -274,6 +275,11 @@
             <b-icon icon="trash-can-outline" size="is-small" />
           </a>
         </div>
+        <b-button v-if="canReact(props.row) && reactionPreset(props.row) === 'followup'" size="is-small" type="is-primary is-light"
+          icon-left="format-list-bulleted-square" class="campaign-followup-button" data-cy="btn-campaign-reaction"
+          @click="openReaction(props.row)">
+          {{ $t('campaigns.followup.entry') }}
+        </b-button>
       </b-table-column>
 
       <template #empty v-if="!loading.campaigns">
@@ -284,7 +290,7 @@
     <campaign-preview v-if="previewItem" type="campaign" :id="previewItem.id" :title="previewItem.name"
       @close="closePreview" />
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
-      @close="reactionCampaign = null" />
+      :preset="reactionCampaign.preset" @close="reactionCampaign = null" />
     <!-- The copy asks for its own lists (LST-59): the original's lists are not carried over. -->
     <b-modal has-modal-card scroll="keep" :aria-modal="true" :active="!!cloneAsk" :width="520" trap-focus
       :can-cancel="['escape', 'outside']" @close="cloneAsk = null">
@@ -303,7 +309,7 @@
 import Vue from 'vue';
 import { mapState } from 'vuex';
 import cloneCampaign from '../campaign-clone';
-import reactionStatuses from '../campaign-reaction-list';
+import reactionStatuses, { isFollowupSourceCandidate, loadReactionPreset } from '../campaign-reaction-list';
 import {
   splitAttribs, zoneAbbr, zoneParts,
 } from '../schedule-time';
@@ -331,6 +337,7 @@ export default Vue.extend({
       sendAsk: null,
       previewItem: null,
       reactionCampaign: null,
+      reactionPresets: {},
       // The campaign whose copy window is open (LST-59).
       cloneAsk: null,
       queryParams: {
@@ -351,6 +358,14 @@ export default Vue.extend({
   },
 
   methods: {
+    reactionPreset(campaign) {
+      // The entry waits for a finished regular campaign's follow-up role.
+      return isFollowupSourceCandidate(campaign) ? this.reactionPresets[campaign.id] : '';
+    },
+    // The follow-up entry opens the window with its conditions preset (LST-62).
+    openReaction(campaign) {
+      this.reactionCampaign = { id: campaign.id, preset: this.reactionPreset(campaign) };
+    },
     canReact(campaign) {
       return this.$canCreateList() && this.$can('campaigns:get_analytics')
         && this.$can('campaigns:get', 'campaigns:get_all') && reactionStatuses.includes(campaign.status);
@@ -581,8 +596,22 @@ export default Vue.extend({
   computed: {
     ...mapState(['campaigns', 'loading']),
 
+    followupCandidates() {
+      return (this.campaigns.results || []).filter((c) => isFollowupSourceCandidate(c) && this.canReact(c));
+    },
+
     numSelectedCampaigns() {
       return this.bulk.all ? this.campaigns.total : this.bulk.checked.length;
+    },
+  },
+
+  watch: {
+    followupCandidates(campaigns) {
+      const presets = {};
+      this.reactionPresets = presets;
+      campaigns.forEach(async ({ id }) => {
+        this.$set(presets, id, await loadReactionPreset(this.$api, id));
+      });
     },
   },
 
@@ -604,4 +633,5 @@ export default Vue.extend({
 
 <style scoped>
 .campaign-reaction-action { background: #e8f0fe; border-radius: 4px; }
+.campaign-followup-button { display: flex; width: 100%; height: auto; margin-top: 6px; white-space: normal; }
 </style>

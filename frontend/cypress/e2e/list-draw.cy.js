@@ -41,6 +41,8 @@ describe('list draws and exclude lists', () => {
   it('checks the numbers, makes the list, and leaves the drawn people out of the next draw', () => {
     openList(srcName).find('[data-cy=btn-draw]').click();
     cy.get('[data-cy=list-draw]').should('be.visible');
+    // The window says what the draw is for (LST-62).
+    cy.get('[data-cy=draw-purpose]').should('contain', 'send to a few people first');
     cy.get('[data-cy=draw-create]').should('be.disabled');
 
     // Nothing is counted for a value out of range.
@@ -104,7 +106,10 @@ describe('list draws and exclude lists', () => {
   });
 
   it('marks drawn lists, filters to them, and shows the draw records of the source', () => {
-    openList(srcName).find('[data-cy=btn-draw]').should('exist');
+    openList(srcName).find('[data-cy=btn-draw]').should('have.attr', 'aria-label', 'Draw a small sample for a trial send');
+    // The drawn-lists link comes first in the line under the title; the team link, used once, last.
+    cy.get('.page-header .is-size-7 a').first().should('have.attr', 'data-cy', 'drawn-only')
+      .and('contain', 'trial sends');
     openList(srcName).find('[data-cy=drawn-from]').should('not.exist');
     cy.get('[data-cy=query]').clear().type(srcName);
     cy.get('[data-cy=btn-query]').click();

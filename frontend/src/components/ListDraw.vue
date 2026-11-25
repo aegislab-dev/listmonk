@@ -9,6 +9,7 @@
         <p class="is-size-7 has-text-grey source-line" data-cy="draw-source">
           {{ $t('lists.draw.source', { name: source.name, num: $utils.formatNumber(source.subscriberCount) }) }}
         </p>
+        <p v-if="!done" class="purpose-line" data-cy="draw-purpose">{{ $t('lists.draw.purpose') }}</p>
       </header>
 
       <section v-if="!done" class="modal-card-body">
@@ -278,6 +279,7 @@ export default Vue.extend({
 <style scoped>
 .list-draw { width: 100% !important; max-width: 100%; margin: 0; }
 .source-line { margin: 4px 0 0; }
+.purpose-line { margin: 6px 0 0; font-size: .85rem; color: #3b4148; }
 .draw-team { margin: 14px 0 0; }
 .draw-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
 .draw-row .field { margin-bottom: 0; }
