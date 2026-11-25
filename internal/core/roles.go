@@ -141,14 +141,16 @@ func (c *Core) UpdateUserRole(id int, r auth.Role) (auth.Role, auth.Role, error)
 		return before, out, err
 	}
 
+	// These statements include team-only columns. Keep the app's row mapping
+	// when rebinding them to the transaction.
 	var roles []auth.Role
-	if err := tx.Stmtx(c.q.GetUserRoles).Select(&roles, id); err != nil {
+	if err := tx.Stmtx(c.q.GetUserRoles).Unsafe().Select(&roles, id); err != nil {
 		return before, out, c.teamFail(err)
 	}
 	if len(roles) > 0 {
 		before = roles[0]
 	}
-	if err := tx.Stmtx(c.q.UpdateRole).Get(&out, id, r.Name, pq.Array(r.Permissions)); err != nil {
+	if err := tx.Stmtx(c.q.UpdateRole).Unsafe().Get(&out, id, r.Name, pq.Array(r.Permissions)); err != nil {
 		return before, out, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{users.userRole}", "error", pqErrMsg(err)))
 	}

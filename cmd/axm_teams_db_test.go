@@ -1071,7 +1071,7 @@ func TestTeamRoleSavesWithOneDBConnection(t *testing.T) {
 		{"update members", "PUT", itoa(e.team1), fmt.Sprintf(`{"user_ids":[%d,%d]}`, e.ua, e.plain), e.a.SetTeamMembers},
 		{"update role", "PUT", itoa(e.memberRole), roleBody("member", "subscribers:get"), e.a.UpdateUserRole},
 		{"create user", "POST", "", fmt.Sprintf(`{"username":"new-member","email":"new-member@example.invalid","type":"user","status":"enabled","user_role_id":%d,"list_role_id":%d}`, e.memberRole, e.team1), e.a.CreateUser},
-		{"update user", "PUT", itoa(e.ua), fmt.Sprintf(`{"username":"ua","email":"ua@example.invalid","name":"Updated","type":"user","status":"enabled","list_role_id":%d}`, e.team1), e.a.UpdateUser},
+		{"update user", "PUT", itoa(e.ua), fmt.Sprintf(`{"username":"user-a","email":"ua@example.invalid","name":"Updated","type":"user","status":"enabled","list_role_id":%d}`, e.team1), e.a.UpdateUser},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, data := e.call(tc.handler, admin, tc.method, "/x", tc.id, tc.body)
