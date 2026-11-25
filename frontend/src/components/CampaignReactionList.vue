@@ -206,6 +206,7 @@ export default Vue.extend({
   name: 'CampaignReactionList',
   props: {
     campaignId: { type: Number, required: true },
+    preferFollowup: { type: Boolean, default: false },
     // 'followup': opened from "Send again to people who didn't click" (LST-62). The click axis
     // starts on "did not click" and the follow-up draft box starts checked. Without it the window
     // starts neutral, as it always did.
@@ -228,7 +229,7 @@ export default Vue.extend({
       loadingTeams: false,
       checking: false,
       creating: false,
-      followup: this.preset === 'followup',
+      followup: this.preferFollowup || this.preset === 'followup',
       // False once the server says this campaign can have no follow-up (opt-in, or itself a follow-up).
       presetOn: this.preset === 'followup',
       followupName: '',

@@ -36,6 +36,7 @@ describe('Campaign delete guard', () => {
 
   it('dims the trash icon of a running campaign and gives the reason in a tooltip', () => {
     cy.intercept('GET', '/api/campaigns?*', (req) => {
+      if (req.query.query === keep) req.alias = 'searched';
       req.continue((res) => {
         res.body.data.results.forEach((c) => { if (c.name === keep) { c.status = 'running'; } });
       });
@@ -43,14 +44,17 @@ describe('Campaign delete guard', () => {
     cy.visit('/admin/campaigns');
     cy.wait('@rewritten');
     search(keep);
+    // The row can already be visible before the filtered response replaces the table.
+    cy.wait('@searched');
+    cy.get('tbody tr').should('have.length', 1);
     rowOf(keep).find('[data-cy=btn-delete]').should('not.exist');
     rowOf(keep).find('[data-cy=btn-delete-blocked]').should('have.attr', 'aria-disabled', 'true')
       .and('have.css', 'cursor', 'not-allowed');
     // The reason is in the tooltip only while the icon is hovered or focused (the node is in the
     // DOM all the time, so visibility is what is checked), and a click does nothing.
-    const reason = () => cy.contains('.tooltip-content', 'cannot be deleted');
-    reason().should('not.be.visible');
     const trigger = () => rowOf(keep).find('[data-cy=btn-delete-blocked]').closest('.tooltip-trigger');
+    const reason = () => trigger().siblings('.tooltip-content').should('contain', 'cannot be deleted');
+    reason().should('not.be.visible');
     trigger().trigger('mouseenter', { force: true });
     reason().should('be.visible');
     trigger().trigger('mouseleave', { force: true });

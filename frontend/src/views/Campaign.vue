@@ -63,6 +63,9 @@
     <campaign-reaction-list v-if="followupOpen" :campaign-id="data.id" preset="followup"
       @close="followupOpen = false; followupKey += 1" />
 
+    <campaign-result-summary v-if="isEditing && data.startedAt && ['finished', 'running', 'paused', 'cancelled'].includes(data.status)"
+      :campaign-id="data.id" :started-at="data.startedAt" show-links class="st" />
+
     <b-loading :active="loading.campaigns || savingCampaign" />
 
     <campaign-followup-banner v-if="isEditing && data.id" :key="followupKey" :campaign-id="data.id" :status="data.status"
@@ -412,9 +415,11 @@ import {
   newSample, rejectedOf, sampleLabel, samplePayload,
 } from '../test-send';
 import { trackingToastParts } from '../tracking-check';
+import CampaignResultSummary from '../components/CampaignResultSummary.vue';
 
 export default Vue.extend({
   components: {
+    CampaignResultSummary,
     ListSelector,
     Editor,
     Media,
