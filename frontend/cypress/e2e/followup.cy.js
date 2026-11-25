@@ -235,4 +235,39 @@ describe('follow-up campaign draft', () => {
     checkOpenedNotClicked();
     cy.get('[data-cy=followup-box]').should('not.exist');
   });
+
+  it('offers only the reaction list on the list and analytics for a sent follow-up', () => {
+    const followupPath = `/api/campaigns/${followupId}`;
+    // The test SMTP inbox accepts the fixture mail so the follow-up really finishes.
+    cy.request('PUT', `${followupPath}/status`, { status: 'running' });
+    const finished = (tries = 30) => cy.request(followupPath).then(({ body }) => {
+      if (body.data.status !== 'finished' && tries > 0) {
+        cy.wait(1000);
+        return finished(tries - 1);
+      }
+      expect(body.data.status).to.eq('finished');
+      expect(body.data.sent).to.be.greaterThan(0);
+    });
+    finished();
+
+    const reactionTitle = "Create a list from people who did or didn't react";
+    const checkPlainDialog = () => {
+      cy.get('#reaction-title').should('have.text', reactionTitle);
+      cy.get(input('open', 'any')).should('be.checked');
+      cy.get(input('click', 'any')).should('be.checked');
+      cy.get('[data-cy=reaction-check]').click();
+      cy.get(teamSelect).select('__none__');
+      cy.get('[data-cy=reaction-create]').should('be.enabled').and('not.contain', 'follow-up');
+      cy.get(toggle).should('not.exist');
+    };
+
+    cy.visit('/admin/campaigns');
+    cy.contains('tbody tr', `${campaign} follow-up`).find('[data-cy=btn-campaign-reaction]')
+      .should('have.attr', 'aria-label', reactionTitle).click();
+    checkPlainDialog();
+
+    cy.visit(`/admin/campaigns/analytics?id=${followupId}`);
+    cy.get('[data-cy=btn-analytics-reaction]').should('contain', reactionTitle).click();
+    checkPlainDialog();
+  });
 });

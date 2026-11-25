@@ -252,9 +252,8 @@
               <b-icon icon="chart-bar" size="is-small" />
             </b-tooltip>
           </router-link>
-          <!-- A finished campaign gets its follow-up as a button with words (LST-62); the other
-               statuses cannot make a follow-up and keep the icon for the plain reaction list. -->
-          <a v-if="canReact(props.row) && !isFinished(props.row)" href="#" data-cy="btn-campaign-reaction"
+          <!-- Campaigns that cannot be a follow-up source keep the reaction list icon. -->
+          <a v-if="canReact(props.row) && reactionPreset(props.row) === ''" href="#" data-cy="btn-campaign-reaction"
             class="campaign-reaction-action" :aria-label="$t('campaigns.reactionList.title')"
             @click.prevent="openReaction(props.row)">
             <b-tooltip :label="$t('campaigns.reactionList.title')" type="is-dark">
@@ -276,7 +275,7 @@
             <b-icon icon="trash-can-outline" size="is-small" />
           </a>
         </div>
-        <b-button v-if="canReact(props.row) && isFinished(props.row)" size="is-small" type="is-primary is-light"
+        <b-button v-if="canReact(props.row) && reactionPreset(props.row) === 'followup'" size="is-small" type="is-primary is-light"
           icon-left="format-list-bulleted-square" class="campaign-followup-button" data-cy="btn-campaign-reaction"
           @click="openReaction(props.row)">
           {{ $t('campaigns.followup.entry') }}
@@ -291,7 +290,7 @@
     <campaign-preview v-if="previewItem" type="campaign" :id="previewItem.id" :title="previewItem.name"
       @close="closePreview" />
     <campaign-reaction-list v-if="reactionCampaign" :campaign-id="reactionCampaign.id"
-      :preset="reactionPreset" @close="reactionCampaign = null" />
+      :preset="reactionCampaign.preset" @close="reactionCampaign = null" />
     <!-- The copy asks for its own lists (LST-59): the original's lists are not carried over. -->
     <b-modal has-modal-card scroll="keep" :aria-modal="true" :active="!!cloneAsk" :width="520" trap-focus
       :can-cancel="['escape', 'outside']" @close="cloneAsk = null">
@@ -310,7 +309,7 @@
 import dayjs from 'dayjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
-import reactionStatuses from '../campaign-reaction-list';
+import reactionStatuses, { isFollowupSourceCandidate, loadReactionPreset } from '../campaign-reaction-list';
 import {
   splitAttribs, TZ_ATTRIB, zoneAbbr, zoneParts,
 } from '../schedule-time';
@@ -338,7 +337,7 @@ export default Vue.extend({
       sendAsk: null,
       previewItem: null,
       reactionCampaign: null,
-      reactionPreset: '',
+      reactionPresets: {},
       // The campaign whose copy window is open (LST-59).
       cloneAsk: null,
       queryParams: {
@@ -359,13 +358,13 @@ export default Vue.extend({
   },
 
   methods: {
-    isFinished(campaign) {
-      return campaign.status === 'finished' && campaign.type !== 'optin';
+    reactionPreset(campaign) {
+      // The entry waits for a finished regular campaign's follow-up role.
+      return isFollowupSourceCandidate(campaign) ? this.reactionPresets[campaign.id] : '';
     },
     // The follow-up entry opens the window with its conditions preset (LST-62).
     openReaction(campaign) {
-      this.reactionPreset = this.isFinished(campaign) ? 'followup' : '';
-      this.reactionCampaign = campaign;
+      this.reactionCampaign = { id: campaign.id, preset: this.reactionPreset(campaign) };
     },
     canReact(campaign) {
       return this.$canCreateList() && this.$can('campaigns:get_analytics')
@@ -660,8 +659,22 @@ export default Vue.extend({
   computed: {
     ...mapState(['campaigns', 'loading', 'serverConfig']),
 
+    followupCandidates() {
+      return (this.campaigns.results || []).filter((c) => isFollowupSourceCandidate(c) && this.canReact(c));
+    },
+
     numSelectedCampaigns() {
       return this.bulk.all ? this.campaigns.total : this.bulk.checked.length;
+    },
+  },
+
+  watch: {
+    followupCandidates(campaigns) {
+      const presets = {};
+      this.reactionPresets = presets;
+      campaigns.forEach(async ({ id }) => {
+        this.$set(presets, id, await loadReactionPreset(this.$api, id));
+      });
     },
   },
 
