@@ -51,7 +51,7 @@ describe('Pre-send confirmation window', () => {
       create('list', { lists: [listX, listY] });
       create('empty', { lists: [listEmpty] });
       create('later', { lists: [listX], send_at: new Date(Date.now() + 86400000 * 20).toISOString() });
-      create('rule', { lists: [listX] });
+      create('rule', { lists: [listX], from_email: 'Team <team@crevasse.ai>' });
       create('stale', { lists: [listX] });
       create('unsched', { lists: [listX], send_at: new Date(Date.now() + 86400000 * 25).toISOString() });
       create('resume', { lists: [listX] });
@@ -191,7 +191,7 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy="send-check-recent.applied"]').should('have.attr', 'data-level', 'info').and('contain', 'last 14 days');
     // Information, not a warning: the button does not turn into "anyway".
     cy.get('[data-cy=send-sub]').should('not.contain', 'warning');
-    cy.get('[data-cy=send-ok]').should('not.contain', 'anyway').and('not.be.disabled');
+    cy.get('[data-cy=send-ok]').should('have.text', 'Send to 3 people').and('not.be.disabled');
     cy.get('[data-cy=send-cancel]').click();
   });
 
