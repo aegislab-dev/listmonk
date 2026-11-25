@@ -183,7 +183,7 @@
 
       <address-check v-if="showImportCheck" :list-ids="status.axmLists" :lists="lists.results || []"
         :hidden-lists="status.axmListsHidden || 0"
-        :scope-note="$t('addressCheck.listScope', { lists: importListNames })" />
+        :scope-note="importScopeNote" />
 
       <div class="import-logs">
         <log-view :lines="logs" :loading="false" />
@@ -929,6 +929,15 @@ export default Vue.extend({
     // sends them with the status, after its own permission filter; none for a blocklist import).
     showImportCheck() {
       return this.isSuccessful() && (this.status.axmLists || []).length > 0;
+    },
+    // Describe the audience rule per list. The check counts current subscriptions across
+    // the whole list, including subscriptions that already existed before the import.
+    importScopeNote() {
+      const all = this.lists.results || [];
+      const ids = this.status.axmLists || [];
+      const doubleOptin = all.some((list) => list.optin === 'double' && ids.includes(list.id));
+      const note = this.$t('addressCheck.listScope', { lists: this.importListNames });
+      return doubleOptin ? `${note} ${this.$t('addressCheck.listScopeOptin')}` : note;
     },
     importListNames() {
       const all = this.lists.results || [];

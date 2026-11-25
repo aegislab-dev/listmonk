@@ -106,7 +106,7 @@ func (c *Core) TrashLists(ids []int, actor TrashActor) ([]models.TrashedList, er
 	if _, err := tx.Stmtx(c.q.DeleteLists).Exec(pq.Array(saved), "", true, pq.Array([]int{})); err != nil {
 		// A list that a dynamic list excludes people of cannot go (migration axm.7).
 		if pe, ok := err.(*pq.Error); ok && pe.Code == axmExcludeListInUse {
-			return nil, echo.NewHTTPError(http.StatusBadRequest, pe.Message)
+			return nil, c.excludeInUseErr(pe)
 		}
 		return nil, c.trashErr("deleting lists", err)
 	}
