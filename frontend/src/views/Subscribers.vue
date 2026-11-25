@@ -654,7 +654,10 @@ export default Vue.extend({
         if (resp.done === 0) {
           this.$utils.notice(this.$t('teams.bulkAllZero'), this.$t('teams.bulkAllZeroBody'));
         } else {
-          this.$utils.toast(this.$t('teams.bulkAllCount', { num: this.$utils.formatNumber(resp.done), skipped: this.$utils.formatNumber(resp.skipped || 0) }));
+          const num = this.$utils.formatNumber(resp.done);
+          this.$utils.toast(resp.skipped
+            ? this.$t('teams.bulkAllCount', { num, skipped: this.$utils.formatNumber(resp.skipped) })
+            : this.$t('teams.bulkAllCountOnly', { num }));
         }
         return;
       }

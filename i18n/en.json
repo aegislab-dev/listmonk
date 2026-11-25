@@ -1783,6 +1783,7 @@
     "teams.needListTitle": "Choose a list first",
     "teams.needListBody": "'Select all' without a list processes nobody. Choose one list above and try again.",
     "teams.bulkAllCount": "{num} people processed. {skipped} people who are also on other teams' lists were left out.",
+    "teams.bulkAllCountOnly": "{num} people processed.",
     "teams.bulkAllZero": "Nobody was processed (0)",
     "teams.bulkAllZeroBody": "Everyone who matched is also on other teams' lists, or nobody matched.",
     "teams.importOverwriteLocked": "A team member's import does not change the name and attributes of subscribers who already exist (they may be on other teams' lists). Only new people get what the file says.",

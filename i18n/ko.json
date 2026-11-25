@@ -1789,6 +1789,7 @@
     "teams.needListTitle": "리스트를 먼저 고르세요",
     "teams.needListBody": "리스트를 고르지 않은 ‘전체 선택’은 아무도 처리하지 못합니다. 위에서 리스트 하나를 고른 뒤 다시 하세요.",
     "teams.bulkAllCount": "{num}명을 처리했습니다. 다른 팀 리스트에도 있는 {skipped}명은 제외됐습니다.",
+    "teams.bulkAllCountOnly": "{num}명을 처리했습니다.",
     "teams.bulkAllZero": "처리된 사람이 없습니다(0명)",
     "teams.bulkAllZeroBody": "조건에 맞는 사람이 모두 다른 팀 리스트에도 있거나, 대상이 없었습니다.",
     "teams.importOverwriteLocked": "팀원이 가져올 때는 이미 있는 구독자의 이름·속성을 바꾸지 않습니다(다른 팀 리스트에도 있을 수 있습니다). 새로 들어오는 사람만 파일의 정보가 들어갑니다.",
