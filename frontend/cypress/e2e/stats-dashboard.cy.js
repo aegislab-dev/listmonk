@@ -51,15 +51,16 @@ const answer = (campaigns) => ({
   },
 });
 
-const stub = ({ cur = [...mine, ...other], prev = [] } = {}) => {
+const stub = ({ cur = [...mine, ...other], prev = [], recipientTracked = true, overlapTotals = [{ id: 0, team: '', recipients: 200, overlap30: 200, overlap7: 200 }] } = {}) => {
   cy.clock(NOW, ['Date']);
   cy.intercept('GET', '/api/stats/campaigns*', (req) => {
     const from = new Date(req.query.from).getTime();
     // The first call is the period, the second the period before it.
     if (req.query.overlap === 'true') {
-      req.reply({ data: cur.filter((c) => c.sent > 0 && c.status === 'finished').map((c) => ({
+      const perCampaign = cur.filter((c) => c.sent > 0 && c.status === 'finished').map((c) => ({
         id: c.id, ledger_rows: c.ledger_rows, overlap30: c.overlap30, overlap7: 10,
-      })) });
+      }));
+      req.reply({ data: [...perCampaign, ...overlapTotals] });
       return;
     }
     const previous = from < NOW - 100 * 86400000;
@@ -70,7 +71,13 @@ const stub = ({ cur = [...mine, ...other], prev = [] } = {}) => {
     const groups = by === 'age'
       ? [{ key: 'new7', sent: 1500, recipients: 1500, opened: 300, clicked: 60, bounced: 60 }, { key: 'older', sent: 4000, recipients: 4000, opened: 1800, clicked: 400, bounced: 40 }]
       : [{ key: 'KR', sent: 4000, recipients: 4000, opened: 1800, clicked: 380, bounced: 50 }, { key: '__other__', sent: 20, recipients: 20, opened: 5, clicked: 1, bounced: 0 }];
-    req.reply({ data: ['', '__none__'].flatMap((team) => groups.map((group) => ({ team, ...group }))) });
+    req.reply({ data: ['', '__none__'].flatMap((team) => groups.map((group) => ({
+      team, ...group,
+      tracked_sent: recipientTracked ? group.sent : 0,
+      tracked_recipients: recipientTracked ? group.recipients : 0,
+      opened: recipientTracked ? group.opened : 0,
+      clicked: recipientTracked ? group.clicked : 0,
+    }))) });
   });
 };
 
@@ -126,7 +133,7 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=camp-row-24]').should('contain', 'Running');
     cy.get('[data-cy=camp-row-14]').should('contain', 'Not tracked').and('contain', 'Not 0%');
     // Own campaign compared with the median of its team (3 campaigns).
-    cy.get('[data-cy=camp-row-12]').should('contain', 'All teams median');
+    cy.get('[data-cy=camp-row-12]').should('contain', '가 median 9.0%').and('not.contain', 'All teams median');
     cy.get('[data-cy=camp-row-23] .st-over').should('not.exist');
 
     cy.get('[data-cy="team-row-팀:나"]').click();
@@ -150,7 +157,7 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=card-country]').should('contain', 'Other (groups below 30 people)');
     cy.get('[data-cy=card-followup]').should('contain', 'No campaigns have a completed follow-up yet');
     cy.get('[data-cy=card-overlap]').should('contain', 'previous 30 days').and('contain', 'Previous 7 days');
-    cy.get('[data-cy=card-overlap]').should('contain', 'campaigns, combined').and('not.contain', 'unique recipients');
+    cy.get('[data-cy=card-overlap]').should('contain', 'campaigns, combined').and('contain', 'send records');
     cy.get('[data-cy=card-country]').should('contain', 'Bounce 1.3%');
     cy.get('[data-cy=card-weekday]').should('contain', 'Bounce');
     cy.get('[data-cy=card-hour]').should('contain', 'Bounce');
@@ -191,7 +198,7 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy="team-row-팀:가"]').should('contain', '+8.0%p')
       .find('[data-cy=help-click]').trigger('mouseenter', { force: true });
     cy.get('[data-cy="team-row-팀:가"] [data-cy=help-click]')
-      .should('contain', '270 ÷ 3,000 sent (3 campaigns)').and('contain', 'Vertical line').and('contain', 'Previous period · 1.0%');
+      .should('contain', '270 ÷ 3,000 sent (3 campaigns)').and('contain', 'Vertical line').and('contain', 'Previous period · 1.0% → ▲ +8.0%p').and('contain', '±0.5%p');
   });
 
   it('distinguishes an unreadable previous period from absent sends and requests all time', () => {
@@ -219,6 +226,35 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=team-comparison-start]').should('contain', '3 eligible campaigns and 1,000 sends');
     cy.get('[data-cy="team-row-팀:라"]').should('contain', 'Not tracked').and('not.contain', '0.0%');
     cy.get('[data-cy=camp-row-30]').should('contain', 'Not tracked');
+  });
+
+  it('shows tracking gaps in recipient cards while retaining bounce rates', () => {
+    stub({ recipientTracked: false });
+    cy.loginAndVisit('/');
+    cy.get('[data-cy=card-country]').should('contain', 'Not tracked').and('contain', 'Bounce 1.3%').and('not.contain', 'Click 0.0%');
+    cy.get('[data-cy=card-age]').should('contain', 'Not tracked').and('contain', 'Bounce 4.0%').and('not.contain', 'Open 0.0%');
+  });
+
+  it('uses the scoped unique recipient count for period overlap', () => {
+    const teams = [
+      { id: 0, team: '', recipients: 300, overlap30: 200, overlap7: 200 },
+      { id: 0, team: '팀:가', recipients: 200, overlap30: 200, overlap7: 200 },
+    ];
+    const repeated = mine.slice(0, 3).map((c, index) => ({
+      ...c, sent: 200, ledger_rows: 200, overlap30: index ? 200 : 0,
+    }));
+    stub({ cur: [...repeated, camp({ id: 200, team_tags: ['팀:나'], sent: 100, ledger_rows: 100, overlap30: 0 })], overlapTotals: teams });
+    cy.loginAndVisit('/');
+    cy.get('[data-cy=concl-overlap]').should('contain', '66.7% (200 of 300 unique recipients)');
+    cy.get('[data-cy="team-row-팀:가"]').click();
+    cy.get('[data-cy=concl-overlap]').should('contain', '100.0% (200 of 200 unique recipients)').and('not.contain', '400');
+  });
+
+  it('keeps company warnings muted below three campaigns', () => {
+    stub({ cur: [camp({ hard: 30, soft: 0, complaint: 2 })] });
+    cy.loginAndVisit('/');
+    cy.get('[data-cy=team-row-all]').should('contain', '3.0%').and('contain', '0.20%').find('.st-over').should('not.exist');
+    cy.get('[data-cy="team-row-팀:가"] .st-over').should('not.exist');
   });
 
   it('shows campaign results while the overlap calculation is pending', () => {
@@ -316,6 +352,34 @@ describe('Result summary on the campaign and analytics screens (fixed answers)',
       cy.get('.charts').should('be.visible');
     });
   });
+
+  it('uses the selected start date for recent and older campaigns from autocomplete', () => {
+    const choices = [
+      camp({ id: 91, name: 'Recent synthetic', started_at: '2026-11-20T05:23:00.000Z' }),
+      camp({ id: 92, name: 'Older synthetic', started_at: '2026-08-27T01:00:00.000Z' }),
+    ];
+    stub({ cur: choices });
+    cy.intercept('GET', '/api/stats/campaigns*', answer(choices));
+    cy.intercept({ method: 'GET', pathname: '/api/campaigns' }, { data: { results: choices } });
+    cy.intercept('GET', '/api/campaigns/analytics/views?*', { data: [] }).as('autocompleteViews');
+    cy.loginAndVisit('/admin/campaigns/analytics');
+    choices.forEach((choice, index) => {
+      cy.intercept('GET', `/api/campaigns/${choice.id}`, { data: choice });
+      if (index) cy.visit('/admin/campaigns/analytics');
+      cy.get('[data-cy=from] input').should('have.value', '');
+      cy.get('[data-cy=to] input').should('have.value', '');
+      cy.get('.taginput input').type(choice.name);
+      cy.contains('.dropdown-item', choice.name).click();
+      cy.get('[data-cy=btn-search]').click();
+      cy.wait('@autocompleteViews').then(({ request }) => {
+        expect(request.query.from).to.eq(choice.started_at);
+        expect(request.query.to).to.eq(new Date(NOW).toISOString());
+      });
+      cy.location('search').should('not.include', 'from=');
+      cy.get('[data-cy=result-summary]').find('[data-cy=result-analytics], [data-cy=result-clone], [data-cy=result-followup]').should('have.length', 3);
+    });
+  });
+
 
 });
 

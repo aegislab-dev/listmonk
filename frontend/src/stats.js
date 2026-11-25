@@ -47,7 +47,7 @@ export function classify(c, now = new Date()) {
 // the campaigns that count for them.
 export function aggregate(camps, now = new Date()) {
   const a = {
-    n: 0, sent: 0, nRate: 0, sRate: 0, viewers: 0, clickers: 0, sBounce: 0, bounces: 0, complaints: 0, collecting: 0, untracked: 0,
+    n: 0, sent: 0, nRate: 0, sRate: 0, viewers: 0, clickers: 0, nBounce: 0, sBounce: 0, bounces: 0, complaints: 0, collecting: 0, untracked: 0,
   };
   camps.forEach((c) => {
     const k = classify(c, now);
@@ -69,6 +69,7 @@ export function aggregate(camps, now = new Date()) {
       a.clickers += c.clickers;
     }
     if (k.bounceOk) {
+      a.nBounce += 1;
       a.sBounce += c.sent;
       a.bounces += c.hard + c.soft;
       a.complaints += c.complaint;
@@ -79,6 +80,7 @@ export function aggregate(camps, now = new Date()) {
   a.bounce = pct(a.bounces, a.sBounce);
   a.complaint = pct(a.complaints, a.sBounce);
   a.enough = a.nRate >= MIN.groupCampaigns && a.sRate >= MIN.groupSent;
+  a.enoughBounce = a.nBounce >= MIN.groupCampaigns && a.sBounce >= MIN.groupSent;
   return a;
 }
 
@@ -103,7 +105,7 @@ export function teamMedian(camps, now = new Date()) {
 // colors a good change blue and the rest grey.
 export function change(delta, kind) {
   const width = NEUTRAL[kind];
-  const d = Math.round(delta * 100) / 100;
+  const d = delta;
   if (Math.abs(d) < width) {
     return { dir: 'same', good: false, delta: d };
   }
@@ -235,8 +237,8 @@ export function listGroups(camps, now = new Date()) {
 }
 
 // The server has already checked ledger coverage and counted overlap per campaign.
-export function overlapRows(camps, overlaps) {
-  const byID = new Map(overlaps.map((r) => [r.id, r]));
+export function overlapRows(camps, overlaps, team = '') {
+  const byID = new Map(overlaps.filter((r) => r.id > 0).map((r) => [r.id, r]));
   const rows = camps.filter((c) => byID.has(c.id)).map((c) => {
     const r = byID.get(c.id);
     return {
@@ -249,11 +251,12 @@ export function overlapRows(camps, overlaps) {
     };
   });
   rows.sort((x, y) => y.rate - x.rate || y.id - x.id);
-  const ledger = rows.reduce((total, row) => total + row.ledger, 0);
-  const overlap7 = rows.reduce((total, row) => total + row.overlap7, 0);
-  const overlap30 = rows.reduce((total, row) => total + row.overlap30, 0);
+  const total = overlaps.find((r) => r.id === 0 && r.team === team);
   return {
-    rows, overlap30, rate: pct(overlap30, ledger), recentRate: pct(overlap7, ledger),
+    rows,
+    total,
+    rate: total ? pct(total.overlap30, total.recipients) : null,
+    recentRate: total ? pct(total.overlap7, total.recipients) : null,
   };
 }
 
@@ -264,8 +267,9 @@ export function recipientRows(groups, team, order = null) {
     key: x.key,
     sent: x.sent,
     recipients: x.recipients,
-    click: pct(x.clicked, x.sent),
-    open: pct(x.opened, x.sent),
+    click: pct(x.clicked, x.trackedSent),
+    open: pct(x.opened, x.trackedSent),
+    trackedRecipients: x.trackedRecipients,
     bounce: pct(x.bounced, x.sent),
     ok: x.recipients >= MIN.recipientSample && x.key !== '__other__',
   }));
@@ -297,15 +301,12 @@ export function followupPairs(camps, now = new Date()) {
 export function campaignSummary(c, camps, now = new Date()) {
   const k = classify(c, now);
   const team = campaignTeams(c)[0];
-  const peers = camps.filter((x) => x.id !== c.id);
   const small = c.sent < MIN.campaignSent;
-  const teamValue = k.rateOk && !small ? teamMedian(peers.filter((x) => campaignTeams(x).includes(team)), now) : null;
-  const allValue = k.rateOk && !small && !teamValue ? teamMedian(peers, now) : null;
-  const median = teamValue || allValue;
+  const median = k.rateOk && !small ? teamMedian(camps.filter((x) => campaignTeams(x).includes(team)), now) : null;
   const click = clickRate(c);
   return {
     k,
-    team: allValue ? '' : team,
+    team,
     click,
     open: pct(c.viewers, c.sent),
     bounce: pct(c.hard + c.soft, c.sent),

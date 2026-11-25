@@ -29,13 +29,13 @@
           <div class="columns">
             <div class="column is-6">
               <b-field data-cy="from" :label="$t('analytics.fromDate')" label-position="on-border">
-                <b-datetimepicker v-model="form.from" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
+                <b-datetimepicker :value="form.from" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
                   :datetime-formatter="formatDateTime" @input="onFromDateChange" />
               </b-field>
             </div>
             <div class="column is-6">
               <b-field data-cy="to" :label="$t('analytics.toDate')" label-position="on-border">
-                <b-datetimepicker v-model="form.to" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
+                <b-datetimepicker :value="form.to" icon="calendar-clock" :timepicker="{ hourFormat: '24' }"
                   :datetime-formatter="formatDateTime" @input="onToDateChange" />
               </b-field>
             </div>
@@ -96,7 +96,7 @@
       @close="reactionCampaign = null" />
 
     <campaign-result-summary v-if="form.campaigns.length === 1 && form.campaigns[0].startedAt" class="st"
-      :campaign-id="form.campaigns[0].id" :started-at="form.campaigns[0].startedAt" />
+      :campaign-id="form.campaigns[0].id" :started-at="form.campaigns[0].startedAt" show-links />
     <div v-if="form.campaigns.length === 0" class="st" data-cy="analytics-empty">
       <p class="notification is-light">{{ $t('stats.analyticsEmpty') }}</p>
       <div v-if="recent.length" class="st-card">
@@ -220,6 +220,8 @@ export default Vue.extend({
         campaigns: [],
         from: null,
         to: null,
+        explicitFrom: false,
+        explicitTo: false,
       },
 
       // The proof summary (LST-36): the text of the modal and whether it is being made.
@@ -232,15 +234,21 @@ export default Vue.extend({
     classify,
     clickRate,
     pctText,
-    onFromDateChange() {
-      if (this.form.from > this.form.to) {
-        this.form.to = dayjs(this.form.from).add(7, 'day').toDate();
+    onFromDateChange(value) {
+      this.form.from = value;
+      this.form.explicitFrom = !!value;
+      if (value && this.form.to && value > this.form.to) {
+        this.form.to = dayjs(value).add(7, 'day').toDate();
+        this.form.explicitTo = true;
       }
     },
 
-    onToDateChange() {
-      if (this.form.from > this.form.to) {
-        this.form.from = dayjs(this.form.to).add(-7, 'day').toDate();
+    onToDateChange(value) {
+      this.form.to = value;
+      this.form.explicitTo = !!value;
+      if (value && this.form.from && this.form.from > value) {
+        this.form.from = dayjs(value).subtract(7, 'day').toDate();
+        this.form.explicitFrom = true;
       }
     },
 
@@ -321,7 +329,10 @@ export default Vue.extend({
     },
 
     onSubmit() {
-      this.$router.push({ query: { id: this.form.campaigns.map((c) => c.id), from: dayjs(this.form.from).unix(), to: dayjs(this.form.to).unix() } });
+      const query = { id: this.form.campaigns.map((c) => c.id) };
+      if (this.form.explicitFrom) query.from = dayjs(this.form.from).unix();
+      if (this.form.explicitTo) query.to = dayjs(this.form.to).unix();
+      this.$router.push({ query });
     },
 
     // The campaigns the caller may open, newest first, for the empty screen (LST-64).
@@ -502,12 +513,15 @@ export default Vue.extend({
   },
 
   created() {
-    const now = dayjs().set('hour', 23).set('minute', 59).set('seconds', 0);
-    const weekAgo = now.subtract(7, 'day').set('hour', 0).set('minute', 0);
-    const from = this.$route.query.from ? dayjs.unix(this.$route.query.from) : weekAgo;
-    const to = this.$route.query.to ? dayjs.unix(this.$route.query.to) : now;
-    this.form.from = from.toDate();
-    this.form.to = to.toDate();
+    const { from, to } = this.$route.query;
+    if (from) {
+      this.form.from = dayjs.unix(from).toDate();
+      this.form.explicitFrom = true;
+    }
+    if (to) {
+      this.form.to = dayjs.unix(to).toDate();
+      this.form.explicitTo = true;
+    }
   },
 
   mounted() {
@@ -527,11 +541,15 @@ export default Vue.extend({
           const began = camp.startedAt || camp.createdAt;
           if (began) starts.push(new Date(began).getTime());
         });
-        if (!this.$route.query.from && starts.length) {
+        if (!this.form.explicitFrom && starts.length) {
           this.form.from = new Date(Math.min(...starts));
         }
-        if (!this.$route.query.to) {
+        if (!this.form.explicitTo) {
           this.form.to = new Date();
+        }
+        if (this.form.from && this.form.from > this.form.to) {
+          if (!this.form.explicitFrom) this.form.from = dayjs(this.form.to).subtract(7, 'day').toDate();
+          if (!this.form.explicitTo) this.form.to = dayjs(this.form.from).add(7, 'day').toDate();
         }
         if (!this.form.campaigns.length) {
           this.isSearchLoading = false;

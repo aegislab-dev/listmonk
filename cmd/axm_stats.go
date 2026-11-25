@@ -126,7 +126,7 @@ func (a *App) GetStatsRecipients(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	groups, err := a.core.StatsRecipients(from, to, c.QueryParam("by"))
+	groups, err := a.core.StatsRecipients(from, to, c.QueryParam("by"), a.cfg.Privacy.IndividualTracking && !a.cfg.Privacy.DisableTracking)
 	if err != nil {
 		return err
 	}

@@ -50,7 +50,7 @@
               <span v-else-if="k(c).untracked" />
               <template v-else-if="sum(c).median">
                 <span :class="['st-chg', sum(c).cmp.good ? 'good' : '']">{{ changeText(sum(c).cmp) }}</span>
-                <span class="s">{{ comparisonName(sum(c)) }} {{ $t('stats.median') }} {{ pt(sum(c).median.value) }} ({{ sum(c).median.n }}{{ $t('stats.cases2') }})</span>
+                <span class="s">{{ label(sum(c).team) }} {{ $t('stats.median') }} {{ pt(sum(c).median.value) }} ({{ sum(c).median.n }}{{ $t('stats.cases2') }})</span>
               </template>
               <span v-else class="st-note">{{ $t('stats.noCompare') }}</span>
             </td>
@@ -106,7 +106,6 @@ export default {
     k(c) { return this.sum(c).k; },
     sum(c) { return this.summaries.get(c.id); },
     label(tag) { return teamLabel(tag, this.$t.bind(this)); },
-    comparisonName(summary) { return summary.team ? this.label(summary.team) : this.$t('stats.all'); },
     isMyTeam(c) { return !!this.myTeam && campaignTeams(c).includes(this.myTeam); },
     teamsText(c) { return campaignTeams(c).map(this.label).join(', '); },
   },

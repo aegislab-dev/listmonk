@@ -76,7 +76,7 @@ func (c *Core) StatsOverlap(from, to time.Time, id int) ([]models.StatsOverlap, 
 	key := "o|" + from.UTC().Format(time.RFC3339Nano) + "|" + to.UTC().Format(time.RFC3339Nano) + "|" + strconv.Itoa(id)
 	d, err := statsCached(key, func() (any, error) {
 		out := []models.StatsOverlap{}
-		if err := c.q.AxmStatsOverlap.Select(&out, from, to, id); err != nil {
+		if err := c.q.AxmStatsOverlap.Select(&out, from, to, id, models.TeamTagPrefix, models.StatsNoTeamKey); err != nil {
 			c.log.Printf("error reading send overlap: %v", err)
 			return nil, echo.NewHTTPError(http.StatusInternalServerError, c.i18n.T("stats.errorReading"))
 		}
@@ -101,14 +101,14 @@ func (c *Core) StatsTeams() ([]models.StatsTeam, error) {
 // StatsRecipients sums the send records of the finished campaigns by group (by = "age" or
 // "country") for everyone (team "") and for each team tag of the campaign, and merges the
 // groups of fewer than models.StatsMinGroup recipients into models.StatsOtherKey.
-func (c *Core) StatsRecipients(from, to time.Time, by string) ([]models.StatsRecipientGroup, error) {
+func (c *Core) StatsRecipients(from, to time.Time, by string, tracking bool) ([]models.StatsRecipientGroup, error) {
 	if by != "age" && by != "country" {
 		return nil, echo.NewHTTPError(http.StatusBadRequest, c.i18n.Ts("globals.messages.invalidFields", "name", "by"))
 	}
-	d, err := statsCached("r|"+by+"|"+from.UTC().Format(time.RFC3339Nano)+"|"+to.UTC().Format(time.RFC3339Nano), func() (any, error) {
+	d, err := statsCached("r|"+by+"|"+strconv.FormatBool(tracking)+"|"+from.UTC().Format(time.RFC3339Nano)+"|"+to.UTC().Format(time.RFC3339Nano), func() (any, error) {
 		groups := []models.StatsRecipientGroup{}
 		if err := c.q.AxmStatsRecipients.Select(&groups, from, to, by, models.TeamTagPrefix,
-			models.StatsMinGroup, models.StatsNoTeamKey, models.StatsOtherKey); err != nil {
+			models.StatsMinGroup, models.StatsNoTeamKey, models.StatsOtherKey, tracking); err != nil {
 			c.log.Printf("error reading recipient statistics: %v", err)
 			return nil, echo.NewHTTPError(http.StatusInternalServerError, c.i18n.T("stats.errorReading"))
 		}

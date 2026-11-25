@@ -114,6 +114,7 @@ test('median needs three campaigns that count; small and collecting ones are lef
 
 test('a change inside the neutral width is similar and a falling bounce rate is good', () => {
   assert.equal(change(0.4, 'click').dir, 'same');
+  assert.equal(change(0.499, 'click').dir, 'same');
   assert.equal(change(0.5, 'click').dir, 'up');
   assert.equal(change(-1.2, 'click').good, false);
   assert.equal(change(1.2, 'click').good, true);
@@ -186,29 +187,37 @@ test('list groups name only lists of the caller; the others are merged', () => {
   assert.ok(!JSON.stringify(g).includes('"name":"B"'));
 });
 
-test('overlap uses separate per-campaign counts for the campaigns in view', () => {
+test('overlap uses per-campaign rows and the distinct period total for the selected team', () => {
   const a = camp();
   const b = camp();
+  const totals = [
+    { id: 0, team: '', recipients: 300, overlap7: 100, overlap30: 200 },
+    { id: 0, team: '팀:가', recipients: 100, overlap7: 50, overlap30: 100 },
+  ];
   const o = overlapRows([a, b], [
-    { id: a.id, ledgerRows: 100, overlap7: 5, overlap30: 10 },
-    { id: 1000, ledgerRows: 200, overlap7: 100, overlap30: 200 },
-  ]);
-  assert.equal(o.rows.length, 1);
-  assert.equal(o.overlap30, 10);
-  assert.equal(o.rate, 10);
-  assert.equal(o.recentRate, 5);
+    { id: a.id, ledgerRows: 100, overlap7: 50, overlap30: 100 },
+    { id: b.id, ledgerRows: 100, overlap7: 50, overlap30: 100 },
+    ...totals,
+  ], '팀:가');
+  assert.equal(o.rows.length, 2);
+  assert.equal(o.total.overlap30, 100);
+  assert.equal(o.rate, 100);
+  assert.equal(o.recentRate, 50);
 });
 
 test('recipient groups: rates per group, the merged other group last', () => {
   const groups = [
-    { team: '', key: 'KR', sent: 2000, recipients: 200, opened: 800, clicked: 160, bounced: 20 },
+    { team: '', key: 'KR', sent: 2000, recipients: 200, trackedSent: 1000, trackedRecipients: 200, opened: 800, clicked: 160, bounced: 20 },
     { team: '', key: '__other__', sent: 25, recipients: 20, opened: 5, clicked: 1, bounced: 0 },
     { team: '', key: 'JP', sent: 100, recipients: 90, opened: 40, clicked: 5, bounced: 1 },
     { team: '팀:가', key: 'KR', sent: 10, recipients: 5, opened: 1, clicked: 0, bounced: 0 },
   ];
   const rows = recipientRows(groups, '');
   assert.deepEqual(rows.map((r) => r.key), ['KR', 'JP', '__other__']);
-  assert.equal(rows[0].click, 8);
+  assert.equal(rows[0].click, 16);
+  assert.equal(rows[0].bounce, 1);
+  assert.equal(rows[1].click, null);
+  assert.equal(rows[1].open, null);
   assert.equal(rows[1].ok, false);
 });
 
@@ -237,14 +246,15 @@ test('source tags group different lists together and same-name untagged lists st
   ]);
 });
 
-test('peer comparison excludes the current campaign and falls back to company peers', () => {
+test('campaign median uses only its own team, with the current campaign in the sample', () => {
   const current = camp({ clickers: 100 });
-  const peers = [camp({ clickers: 20 }), camp({ clickers: 40 })];
-  assert.equal(campaignSummary(current, [current, ...peers], NOW).median, null);
-  const company = camp({ teamTags: ['팀:나'], clickers: 60 });
-  const summary = campaignSummary(current, [current, ...peers, company], NOW);
-  assert.equal(summary.team, '');
-  assert.deepEqual(summary.median, { value: 4, n: 3 });
+  const peers = [camp({ clickers: 100 }), camp({ clickers: 100 })];
+  const others = Array.from({ length: 3 }, () => camp({ clickers: 20, teamTags: ['팀:나'] }));
+  assert.equal(campaignSummary(current, [current, peers[0], ...others], NOW).median, null);
+  const summary = campaignSummary(current, [current, ...peers, ...others], NOW);
+  assert.equal(summary.team, '팀:가');
+  assert.deepEqual(summary.median, { value: 10, n: 3 });
+  assert.equal(summary.cmp.delta, 0);
 });
 
 test('a follow-up shows combined unique people over original sent even outside the current range', () => {

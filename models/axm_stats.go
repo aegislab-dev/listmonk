@@ -50,24 +50,28 @@ type StatsList struct {
 	CreatedAt string `json:"created_at,omitempty"`
 }
 
-// StatsOverlap counts recipients of a campaign who received other campaigns shortly before it.
+// StatsOverlap counts earlier sends per campaign, or distinct recipients per team when ID is 0.
 type StatsOverlap struct {
-	ID         int `db:"id" json:"id"`
-	LedgerRows int `db:"ledger_rows" json:"ledger_rows"`
-	Overlap7   int `db:"overlap7" json:"overlap7"`
-	Overlap30  int `db:"overlap30" json:"overlap30"`
+	ID         int    `db:"id" json:"id"`
+	Team       string `db:"team" json:"team"`
+	Recipients int    `db:"recipients" json:"recipients"`
+	LedgerRows int    `db:"ledger_rows" json:"ledger_rows"`
+	Overlap7   int    `db:"overlap7" json:"overlap7"`
+	Overlap30  int    `db:"overlap30" json:"overlap30"`
 }
 
 // StatsRecipientGroup is an aggregate for a team ("" is everyone). Groups below
 // StatsMinGroup unique recipients use StatsOtherKey.
 type StatsRecipientGroup struct {
-	Team       string `db:"team" json:"team"`
-	Key        string `db:"key" json:"key"`
-	Sent       int    `db:"sent" json:"sent"`
-	Recipients int    `db:"recipients" json:"recipients"`
-	Opened     int    `db:"opened" json:"opened"`
-	Clicked    int    `db:"clicked" json:"clicked"`
-	Bounced    int    `db:"bounced" json:"bounced"`
+	Team              string `db:"team" json:"team"`
+	Key               string `db:"key" json:"key"`
+	Sent              int    `db:"sent" json:"sent"`
+	Recipients        int    `db:"recipients" json:"recipients"`
+	TrackedSent       int    `db:"tracked_sent" json:"tracked_sent"`
+	TrackedRecipients int    `db:"tracked_recipients" json:"tracked_recipients"`
+	Opened            int    `db:"opened" json:"opened"`
+	Clicked           int    `db:"clicked" json:"clicked"`
+	Bounced           int    `db:"bounced" json:"bounced"`
 }
 
 // StatsTeam is a team role and the number of lists that carry its tag.
