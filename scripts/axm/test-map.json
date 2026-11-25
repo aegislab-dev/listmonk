@@ -183,7 +183,8 @@
     "from-addresses.cy.js",
     "campaign-delete-guard.cy.js",
     "campaign-send-confirm.cy.js",
-    "campaign-clone-lists.cy.js"
+    "campaign-clone-lists.cy.js",
+    "list-teams.cy.js"
    ]
   },
   {
@@ -205,7 +206,8 @@
     "from-addresses.cy.js",
     "campaign-delete-guard.cy.js",
     "campaign-send-confirm.cy.js",
-    "campaign-clone-lists.cy.js"
+    "campaign-clone-lists.cy.js",
+    "list-teams.cy.js"
    ]
   },
   {

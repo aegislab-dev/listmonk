@@ -272,10 +272,10 @@ describe('teams', () => {
     });
     cy.get('[data-cy=team-form] [data-cy=btn-save]').should('exist');
 
-    // The API refuses it too, and the message names the permissions.
-    cy.request({
+    // The API refuses it too, and the message names the permissions (wideId is known only now).
+    cy.then(() => cy.request({
       method: 'POST', url: '/api/teams', body: { name: `시험C팀${stamp}`, user_role_id: wideId }, failOnStatusCode: false,
-    }).then((res) => {
+    })).then((res) => {
       expect(res.status).to.eq(400);
       expect(res.body.message).to.contain('lists:manage_all').and.to.contain('campaigns:manage_all');
     });
@@ -289,7 +289,7 @@ describe('teams', () => {
       expect(res.status).to.eq(400);
       expect(res.body.message).to.contain(teamA).and.to.contain('campaigns:manage_all');
     });
-    cy.request('DELETE', `/api/roles/${wideId}`);
+    cy.then(() => cy.request('DELETE', `/api/roles/${wideId}`));
   });
 
   it('warns on the teams screen about a team whose role shows other teams\' data', () => {
