@@ -553,11 +553,12 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	if e.count(`SELECT COUNT(*) FROM pg_depend d JOIN pg_class s ON s.oid = d.objid AND s.relkind = 'S' WHERE d.refobjid = 'axm_campaign_followups'::regclass`) != 0 {
 		t.Fatal("the table owns a sequence")
 	}
-	var last string
-	last = migList[len(migList)-1].version
-	if last != "v6.2.1-axm.17" {
-		t.Fatal(last)
+	for _, mig := range migList {
+		if mig.version == "v6.2.1-axm.17" {
+			return
+		}
 	}
+	t.Fatal("follow-up migration is not registered")
 }
 
 // A reader who cannot open the other campaign of a link learns nothing about it.

@@ -224,6 +224,7 @@ func TestScheduledSaveOneConnection(t *testing.T) {
 	e.db.MustExec(`UPDATE campaigns SET type='regular' WHERE id = $1`, camp)
 	e.db.SetMaxOpenConns(1)
 	defer e.db.SetMaxOpenConns(8)
+	e.db.MustExec(`SET work_mem = '8MB'`)
 
 	var o models.Campaign
 	o.Name, o.Subject, o.FromEmail, o.Body, o.ContentType, o.Messenger = "N", "One connection", "Team <team@crevasse.ai>", "<p>x</p>", "richtext", "email"
@@ -250,6 +251,18 @@ func TestScheduledSaveOneConnection(t *testing.T) {
 	}
 	if asked != 1 {
 		t.Fatalf("the check ran %d times", asked)
+	}
+	var workMem string
+	e.get(&workMem, `SHOW work_mem`)
+	if workMem != "8MB" {
+		t.Fatalf("the save left work_mem at %q", workMem)
+	}
+	if _, _, err := e.core.GetPreflightAudience(context.Background(), camp, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	e.get(&workMem, `SHOW work_mem`)
+	if workMem != "8MB" {
+		t.Fatalf("the audience read left work_mem at %q", workMem)
 	}
 }
 

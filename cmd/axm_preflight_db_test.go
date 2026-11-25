@@ -159,11 +159,12 @@ func TestPreflightAudienceMatchesSend(t *testing.T) {
 			base, other := e.pfList("single", ""), e.pfList("single", "")
 			e.pfSub("enabled", "pro", map[int]string{base: "confirmed", other: "confirmed"})
 			e.pfSub("enabled", "pro", map[int]string{base: "confirmed"})
+			e.pfSub("enabled", "pro", map[int]string{base: "confirmed", other: "unsubscribed"})
 			e.pfSub("enabled", "free", map[int]string{base: "confirmed", other: "confirmed"})
 			e.pfSub("enabled", "free", map[int]string{other: "unsubscribed"})
 			d := e.pfList("single", dynFilter(base))
-			return e.pfCampaign("regular", "draft", other, d), map[int]int{other: 2, d: 2}
-		}, 3, 1, 1},
+			return e.pfCampaign("regular", "draft", other, d), map[int]int{other: 2, d: 3}
+		}, 4, 1, 1},
 		{"opt-in campaign never reaches a dynamic list", func() (int, map[int]int) {
 			base, dbl := e.pfList("single", ""), e.pfList("double", "")
 			e.pfSub("enabled", "pro", map[int]string{base: "confirmed"})
@@ -289,6 +290,8 @@ func TestPreflightRemainingWithCheckpointZero(t *testing.T) {
 	e.pfSub("enabled", "", map[int]string{l: "confirmed"})
 	camp := e.pfCampaign("regular", "paused", l)
 	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, camp, a)
+	// A follow-up can retain both records for one delivery.
+	e.db.MustExec(`INSERT INTO axm_campaign_followup_claims(campaign_id,subscriber_id,sent) VALUES($1,$2,TRUE)`, camp, a)
 
 	_, aud, err := e.core.GetPreflightAudience(ctx, camp, 0, true)
 	if err != nil {
@@ -969,8 +972,8 @@ func TestCampaignStatusSeenUpdatedAt(t *testing.T) {
 	}
 }
 
-// TestPreflightSpeed measures the confirmation's counts on a big list. It only runs with
-// AXM_PREFLIGHT_BENCH=<subscribers>, e.g. 400000, and logs the times (FORK.md quotes them).
+// TestPreflightSpeed measures audience reads and scheduled saves on the same large-list
+// fixture. It only runs with AXM_PREFLIGHT_BENCH=<subscribers>.
 func TestPreflightSpeed(t *testing.T) {
 	raw := os.Getenv("AXM_PREFLIGHT_BENCH")
 	n, _ := strconv.Atoi(raw)
@@ -995,19 +998,67 @@ func TestPreflightSpeed(t *testing.T) {
 	resume := e.pfCampaign("regular", "paused", a, b)
 	e.db.MustExec(`UPDATE campaigns SET last_subscriber_id=$2 WHERE id=$1`, resume, n/2)
 	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) SELECT $1, id FROM subscribers WHERE id <= $2`, resume, n/2+n/10)
+	e.db.MustExec(`ANALYZE axm_campaign_sends`)
 
-	for _, c := range []struct {
-		name  string
-		id    int
-		after int
-	}{{"one list", one, 0}, {"two lists, 37% on both", two, 0}, {"regular + dynamic list", mixed, 0}, {"resume (half done)", resume, n / 2}} {
-		for i := 0; i < 2; i++ { // the second run is the warm one
+	cases := []struct {
+		name    string
+		id      int
+		after   int
+		listIDs []int
+	}{
+		{"one list", one, 0, []int{a}},
+		{"two lists, 37% on both", two, 0, []int{a, b}},
+		{"regular + dynamic list", mixed, 0, []int{b, dyn}},
+		{"resume (half done)", resume, n / 2, []int{a, b}},
+	}
+	const runs = 5
+	want := make(map[int]models.PreflightAudience, len(cases))
+	for _, c := range cases {
+		for i := 1; i <= runs; i++ {
 			start := time.Now()
 			_, aud, err := e.core.GetPreflightAudience(ctx, c.id, c.after, c.after > 0)
+			elapsed := time.Since(start)
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("%-26s run %d: %6.2fs  total %d remaining %d", c.name, i+1, time.Since(start).Seconds(), aud.Total, aud.Remaining)
+			if aud.Total == 0 || aud.Remaining == 0 {
+				t.Fatalf("%s returned an empty audience: %+v", c.name, aud)
+			}
+			t.Logf("preflight %-26s run %d: %8s  total %d remaining %d overlap %d excluded %d",
+				c.name, i, elapsed.Round(time.Millisecond), aud.Total, aud.Remaining, aud.Multi, aud.Excluded)
+			want[c.id] = aud
+			if n == 400000 && elapsed > time.Second {
+				t.Errorf("preflight %s run %d exceeded 1s", c.name, i)
+			}
+		}
+	}
+
+	app := App{}
+	edit := models.Campaign{
+		Name: "Large list", Subject: "Updated subject", FromEmail: "sender@example.invalid",
+		Body: "<p>Updated.</p>", ContentType: "richtext", Messenger: "email",
+		SendAt: null.TimeFrom(time.Now().Add(time.Hour)), Headers: models.Headers{},
+		Attribs: models.JSON{}, ArchiveMeta: json.RawMessage("{}"),
+	}
+	for _, c := range cases {
+		e.db.MustExec(`UPDATE campaigns SET status='scheduled', send_at=$2 WHERE id=$1`, c.id, edit.SendAt)
+		for i := 1; i <= runs; i++ {
+			start := time.Now()
+			saved, err := e.core.UpdateScheduledCampaign(ctx, c.id, edit, c.listIDs, nil, func(lists []models.PreflightList, aud models.PreflightAudience) error {
+				if base := want[c.id]; aud.Total != base.Total || aud.Remaining != base.Remaining ||
+					aud.Multi != base.Multi || aud.Excluded != base.Excluded {
+					return fmt.Errorf("save counted %+v, preflight counted %+v", aud, base)
+				}
+				return app.scheduledSaveCheck(lists, aud)
+			})
+			elapsed := time.Since(start)
+			if err != nil || saved.Status != models.CampaignStatusScheduled || saved.Subject != edit.Subject {
+				t.Fatalf("save: %q %s: %v", saved.Subject, saved.Status, err)
+			}
+			t.Logf("save      %-26s run %d: %8s", c.name, i, elapsed.Round(time.Millisecond))
+			if n == 400000 && elapsed > time.Second {
+				t.Errorf("save %s run %d exceeded 1s", c.name, i)
+			}
 		}
 	}
 }

@@ -16,10 +16,15 @@ import (
 
 // GetPreflightAudience counts, for the pre-send confirmation (LST-48), who campaign id
 // would reach: each list alone and all lists together with every person counted once.
-// afterID is the campaign's sending checkpoint, used when resume is true. Everything comes
-// from one statement, so it is one snapshot.
+// The audience and ledger counts use one SQL snapshot. afterID is the sending checkpoint
+// when resume is true.
 func (c *Core) GetPreflightAudience(ctx context.Context, id, afterID int, resume bool) ([]models.PreflightList, models.PreflightAudience, error) {
-	return c.preflightAudience(ctx, onPool, id, afterID, resume)
+	tx, err := c.db.BeginTxx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, models.PreflightAudience{}, err
+	}
+	defer tx.Rollback()
+	return c.preflightAudience(ctx, tx, id, afterID, resume)
 }
 
 // stmtOn is where a prepared statement runs: on the pool (onPool) or on a transaction's own
@@ -30,10 +35,16 @@ type stmtOn func(*sqlx.Stmt) *sqlx.Stmt
 
 func onPool(s *sqlx.Stmt) *sqlx.Stmt { return s }
 
-// preflightAudience is GetPreflightAudience on the connection that run says.
-func (c *Core) preflightAudience(ctx context.Context, run stmtOn, id, afterID int, resume bool) ([]models.PreflightList, models.PreflightAudience, error) {
+// preflightAudience keeps the larger working memory for the aggregate scoped to
+// the transaction. At the default 4 MB PostgreSQL spills both the join and the
+// grouping sets to temporary files on the 400k-participant fixture.
+func (c *Core) preflightAudience(ctx context.Context, tx *sqlx.Tx, id, afterID int, resume bool) ([]models.PreflightList, models.PreflightAudience, error) {
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('work_mem', '24MB', true)
+		WHERE pg_size_bytes(current_setting('work_mem')) < pg_size_bytes('24MB')`); err != nil {
+		return nil, models.PreflightAudience{}, err
+	}
 	var rows []models.PreflightRow
-	if err := run(c.q.AxmPreflightAudience).SelectContext(ctx, &rows, id, afterID, resume); err != nil {
+	if err := tx.Stmtx(c.q.AxmPreflightAudience).SelectContext(ctx, &rows, id, afterID, resume); err != nil {
 		c.log.Printf("error counting the recipients of campaign %d: %v", id, err)
 		return nil, models.PreflightAudience{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
@@ -52,7 +63,7 @@ func (c *Core) preflightAudience(ctx context.Context, run stmtOn, id, afterID in
 	// follow-up that would reach nobody is stopped as any empty campaign is. They are only on
 	// the follow-up list among the campaign's lists (else they are not held).
 	if len(rows) > 0 {
-		held, listID, err := c.followupHeldNow(ctx, run, id)
+		held, listID, err := c.followupHeldNow(ctx, func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }, id)
 		if err != nil {
 			c.log.Printf("error counting who the check would hold back from campaign %d: %v", id, err)
 			return nil, models.PreflightAudience{}, echo.NewHTTPError(http.StatusInternalServerError,
@@ -231,7 +242,7 @@ func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Cam
 
 	// Clearing the send time makes the campaign a draft. Opt-in campaigns only warn.
 	if o.SendAt.Valid && before.Type == models.CampaignTypeRegular && check != nil {
-		lists, aud, err := c.preflightAudience(ctx, func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }, id, before.LastSubscriberID, true)
+		lists, aud, err := c.preflightAudience(ctx, tx, id, before.LastSubscriberID, true)
 		if err != nil {
 			return models.Campaign{}, err
 		}
