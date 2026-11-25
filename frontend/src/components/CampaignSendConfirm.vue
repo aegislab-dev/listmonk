@@ -159,7 +159,7 @@
       <!-- The window of a scheduled campaign that was just saved (LST-67): the schedule stays, or
            is taken off to edit. Nothing is sent or started from here. -->
       <template v-if="review">
-        <b-button data-cy="send-unschedule" :loading="busy" @click="unschedule">
+        <b-button v-if="canUnschedule" data-cy="send-unschedule" :loading="busy" @click="unschedule">
           {{ $t('campaigns.sendConfirm.review.unschedule') }}
         </b-button>
         <b-button type="is-primary" data-cy="send-ok" :class="{ 'send-ok-warn': model && model.warnings }" :disabled="busy"
@@ -262,7 +262,10 @@ export default Vue.extend({
   },
 
   computed: {
-    isResume() { return this.pf && this.pf.mode === 'resume'; },
+    isResume() { return !!this.pf && (this.pf.mode === 'resume' || (this.pf.mode === 'scheduled' && !!this.pf.resumed)); },
+
+    // Taking the schedule off is a status change that needs the right to send (LST-67 review).
+    canUnschedule() { return this.$can('campaigns:send'); },
 
     // The time zone the scheduled time is shown in: the one it was chosen in on the campaign
     // page (LST-50, attribs.axm_send_tz), Korean time when none is stored, as the picker does.
@@ -440,6 +443,13 @@ export default Vue.extend({
         const pf = await this.$api.getCampaignPreflight(this.campaignId, this.ctl ? { signal: this.ctl.signal } : {});
         this.skew = pf.now ? new Date(pf.now).getTime() - Date.now() : 0;
         if (!Number.isFinite(this.skew)) this.skew = 0;
+        // The window of a saved scheduled campaign that was unscheduled by someone else meanwhile
+        // has nothing true to say: close it (LST-67 review).
+        if (this.review && pf.status !== 'scheduled') {
+          this.$emit('gone');
+          this.$parent.close();
+          return;
+        }
         this.pf = pf;
         this.lastSubject = pf.subject || '';
         this.now = this.serverNow();

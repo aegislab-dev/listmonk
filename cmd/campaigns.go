@@ -406,6 +406,12 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	user := auth.GetUser(c)
 	o.ListIDs = user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, o.ListIDs)
 
+	// AXM (LST-67): the last list taken off a scheduled campaign is not "invalid list IDs": say what
+	// is wrong and how to go on (the check of the people on the lists is made when it is saved).
+	if cm.Status == models.CampaignStatusScheduled && cm.Type == models.CampaignTypeRegular && o.SendAt.Valid && len(o.ListIDs) == 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.recheck.noLists"))
+	}
+
 	if c, err := a.validateCampaignFields(o, user); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
@@ -1160,14 +1166,21 @@ func (a *App) campaignSenderMode(c campReq, user auth.User, strict bool) (campRe
 // (LST-67): no list left to send to, or no one on them. It asks audienceBlock, as the
 // pre-send window does, so the two cannot disagree on what is blocked. Warnings are not judged
 // here: the page reads them from the preflight and shows them.
-func (a *App) scheduledSaveCheck(lists []models.PreflightList, aud models.PreflightAudience) error {
+//
+// resumed: the campaign was sent from before (paused, then scheduled again): who it still reaches
+// are the people left after the checkpoint, as in the window.
+func (a *App) scheduledSaveCheck(lists []models.PreflightList, aud models.PreflightAudience, resumed bool) error {
 	live := 0
 	for _, l := range lists {
 		if !l.Deleted {
 			live++
 		}
 	}
-	key, level := audienceBlock(models.CampaignTypeRegular, models.PreflightModeScheduled, live, aud.Total)
+	count := aud.Total
+	if resumed {
+		count = aud.Remaining
+	}
+	key, level := audienceBlock(models.CampaignTypeRegular, models.PreflightModeScheduled, live, count)
 	if level != models.PreflightBlock {
 		return nil
 	}

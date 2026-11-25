@@ -55,6 +55,7 @@ describe('Saving a scheduled campaign', () => {
         body: '<p>Hi <a href="https://example.invalid/x@TrackLink">x</a> <a href="{{ UnsubscribeURL }}">leave</a></p>{{ TrackView }}',
       });
       create('refuse', {});
+      create('nolist', {});
       create('tail', {});
     });
   });
@@ -115,6 +116,17 @@ describe('Saving a scheduled campaign', () => {
     // After a reload the old list is still there.
     cy.reload();
     cy.get(`.list-selector .tag[data-id=${listOk}]`).should('exist');
+  });
+
+  it('says there is no list when the last one is taken off', () => {
+    cy.visit(`/admin/campaigns/${camp.nolist}`);
+    cy.get(`.list-selector .tag[data-id=${listOk}] .delete`).click();
+    cy.get('[data-cy=btn-save]').click();
+    cy.get('.toast.is-danger').should('contain', 'no list to send to');
+    status('nolist').then((c) => {
+      expect(c.status).to.equal('scheduled');
+      expect(c.lists.map((l) => l.id)).to.deep.equal([listOk]);
+    });
   });
 
   it('does not open the window for a draft', () => {

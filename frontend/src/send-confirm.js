@@ -137,7 +137,10 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   // LST-67: a campaign that is already scheduled, read again after it was saved. Nothing is asked
   // for: the window says what the send will be and the person keeps or undoes the schedule.
   const scheduled = pf.mode === 'scheduled';
-  const n = resume ? pf.remaining : pf.recipients;
+  // A scheduled campaign that was sent from before (paused, then scheduled again) goes on after
+  // its checkpoint: its people are the ones left, as for a resume (LST-67 review).
+  const left = resume || (scheduled && !!pf.resumed);
+  const n = left ? pf.remaining : pf.recipients;
   const all = checkLines(pf);
   const blocked = all.some((c) => c.level === 'block');
   // Nobody to send to (approved design A5): the reason is the only line. Otherwise (a From the
@@ -210,7 +213,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
       : null,
     overlap: pf.overlap || 0,
     excluded: pf.excluded || 0,
-    zero: !resume && pf.recipients === 0,
+    zero: !resume && n === 0,
     asOf,
   };
 };

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/internal/messenger/email"
 	"github.com/knadh/listmonk/models"
@@ -28,6 +29,10 @@ type preflightResponse struct {
 	Name      string    `json:"name"`
 	Messenger string    `json:"messenger"`
 	Mode      string    `json:"mode"`
+	// Resumed (LST-67): a scheduled campaign that was sent from before (a checkpoint or sent
+	// mails), as after a pause and a new schedule. Its people are the Remaining ones, as when it is
+	// resumed: the sender goes on after the checkpoint and skips who was sent to.
+	Resumed bool `json:"resumed"`
 
 	// What the recipients will really see: the stored values, replaced by what the custom
 	// headers of an e-mail campaign set, which the mail goes out with (see sendEnvelope).
@@ -88,6 +93,8 @@ type preflightFacts struct {
 	CampType    string
 	Messenger   string
 	ContentType string
+	// Resumed: a scheduled campaign that was sent from before; its people are the Remaining ones.
+	Resumed bool
 
 	Total, Remaining int
 	// Lists of the campaign, and how many of them still exist.
@@ -186,7 +193,7 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 	}
 
 	count := f.Total
-	if f.Mode == models.PreflightModeResume {
+	if f.Mode == models.PreflightModeResume || f.Resumed {
 		count = f.Remaining
 	}
 	if key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists, count); key != "" {
@@ -228,7 +235,7 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 	// the count of people in the title does not hold them (LST-48 review).
 	if len(f.Copies) > 0 {
 		count := f.Total
-		if f.Mode == models.PreflightModeResume {
+		if f.Mode == models.PreflightModeResume || f.Resumed {
 			count = f.Remaining
 		}
 		add("mail.copies", models.PreflightWarn, map[string]any{
@@ -347,11 +354,14 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	mode := preflightMode(camp.Status, camp.SendAt)
 
 	ctx := c.Request().Context()
+	// A resumed campaign, and a scheduled one that was sent from before (paused and scheduled
+	// again), go on after the checkpoint and skip who was sent to (LST-67).
+	resumed := mode == models.PreflightModeResume || (mode == models.PreflightModeScheduled && core.Progressed(camp.LastSubscriberID, camp.Sent))
 	afterID := 0
-	if mode == models.PreflightModeResume {
+	if resumed {
 		afterID = camp.LastSubscriberID
 	}
-	lists, aud, err := a.core.GetPreflightAudience(ctx, id, afterID, mode == models.PreflightModeResume)
+	lists, aud, err := a.core.GetPreflightAudience(ctx, id, afterID, resumed)
 	if err != nil {
 		return err
 	}
@@ -414,7 +424,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	subject, from, replyTo := sendEnvelope(env.Subject, from, camp.ReplyTo, camp.Messenger, server, env.Headers, policy)
 	// Headers taken from each subscriber: their example values are not the ones every mail
 	// gets. Cc and Bcc addresses of that kind are not listed (the fixed ones are).
-	sample := a.core.GetPreflightSample(ctx, id, 10, afterID, mode == models.PreflightModeResume)
+	sample := a.core.GetPreflightSample(ctx, id, 10, afterID, resumed)
 	perSub := perSubscriberHeaders(a, sendCamp, statuses[0], env, server, sample)
 	copies := envelopeCopies(camp.Messenger, server, env.Headers, perSub)
 	perSubscriber := perSub["Cc"] || perSub["Bcc"]
@@ -434,7 +444,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	}
 
 	facts := preflightFacts{
-		Mode: mode, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
+		Mode: mode, Resumed: mode != models.PreflightModeResume && resumed, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
 		Total: aud.Total, Remaining: aud.Remaining, ListCount: len(lists),
 		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1, HeadersVary: headersVary,
 	}
@@ -495,7 +505,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode,
+		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode, Resumed: mode != models.PreflightModeResume && resumed,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,

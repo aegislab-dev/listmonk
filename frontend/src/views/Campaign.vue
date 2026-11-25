@@ -64,7 +64,7 @@
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
         :campaign-name="sendAsk.name" :review="!!sendAsk.review" :initial="sendAsk.initial || null"
         @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" @failed="onSendFailed"
-        @unscheduled="onUnscheduled" />
+        @unscheduled="onUnscheduled" @gone="onReviewGone" />
     </b-modal>
 
     <b-tabs type="is-boxed" :animated="false" v-model="activeTab" @input="onTab">
@@ -926,11 +926,19 @@ export default Vue.extend({
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
         // The target is saved now, whatever happens to the rule below.
         if (this.madeList && this.sentMadeList(data.lists)) this.madeList = { ...this.madeList, error: '' };
-        await this.saveRecentRule(d.id);
+        // The rule failing must not hide what the saved campaign now has: the campaign is saved, and
+        // the check below reads it (LST-67 review). The rule's error goes on after it.
+        let ruleError = null;
+        try {
+          await this.saveRecentRule(d.id);
+        } catch (err) {
+          ruleError = err;
+        }
         // A scheduled campaign goes out at its time with nothing between: what the save left is
         // checked again and shown (LST-67). The start and schedule buttons save a draft or a
         // paused campaign, so they never come here.
-        const shown = d.status === 'scheduled' ? await this.recheckScheduled(d, quiet) : false;
+        const shown = d.status === 'scheduled' ? await this.recheckScheduled(d, quiet || !!ruleError) : false;
+        if (ruleError) throw ruleError;
         if (!quiet && !shown) this.$utils.toast(this.$t(typMsg, { name: d.name }));
         // Saving can change what the check reads beyond the page (the sender of the
         // person who saves, merged headers): check again (LST-44).
@@ -1001,6 +1009,9 @@ export default Vue.extend({
       } catch (e) {
         pf = null;
       }
+      // Someone else took the schedule off (or changed the campaign) between the save and this
+      // reading: what it says is not about a scheduled campaign, so it is not shown as one.
+      if (pf && pf.status !== 'scheduled') return false;
       if (pf) {
         const m = sendConfirmModel(pf, {
           tz: splitAttribs({ [TZ_ATTRIB]: pf.sendTz }).tz, lang: this.serverConfig.lang || 'ko',
@@ -1019,6 +1030,12 @@ export default Vue.extend({
       };
       this.isSendVisible = true;
       return true;
+    },
+
+    // The saved campaign was unscheduled by someone else before the window could read it.
+    onReviewGone() {
+      if (this.sendAsk) this.sendAsk.handled = true;
+      this.$utils.toast(this.$t('globals.messages.updated', { name: this.data.name }));
     },
 
     onUnscheduled(d) {

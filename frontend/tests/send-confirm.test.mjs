@@ -298,3 +298,18 @@ test('scheduled: the new texts exist in the Korean and English files', () => {
     ['recheck.noLists', 'recheck.zero', 'recheck.passed'].forEach((k) => assert.ok(t[`campaigns.${k}`], `${lang} ${k}`));
   }
 });
+
+// LST-67 review: a campaign paused and scheduled again goes on after its checkpoint, so its people
+// are the ones left.
+test('scheduled and sent from before: the title counts the people left, not all that are eligible', () => {
+  const m = model({
+    mode: 'scheduled', resumed: true, sendAt: '2026-11-20T00:00:00Z', recipients: 40, remaining: 20,
+  });
+  assert.equal(m.count, 20);
+  assert.deepEqual(m.title.params, { n: 20, month: '11', day: '20', time: '09:00' });
+  const none = model({
+    mode: 'scheduled', resumed: true, sendAt: '2026-11-20T00:00:00Z', recipients: 40, remaining: 0, checks: [{ key: 'recipients.zero', level: 'block' }],
+  });
+  assert.equal(none.zero, true);
+  assert.equal(none.blocked, true);
+});
