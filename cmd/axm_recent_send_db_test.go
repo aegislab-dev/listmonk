@@ -138,6 +138,52 @@ func TestRecentRuleOffSendsToEveryone(t *testing.T) {
 	}
 }
 
+func TestRecentRuleCapsOnlyItsOwnCandidateBatches(t *testing.T) {
+	e := newSendsEnv(t, 1003)
+	prior := e.rsPrior(models.CampaignTypeRegular, e.listID, nil)
+	e.rsRule(models.RecentRule{
+		Enabled: true, Days: 7, Scope: models.RecentScopeCampaigns, CampaignIDs: pq.Int64Array{int64(prior)},
+	})
+	ordinary := e.pfCampaign(models.CampaignTypeRegular, models.CampaignStatusRunning, e.listID)
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+	read := func(campID, limit int, want []int) {
+		t.Helper()
+		batch, err := e.store.NextSubscribers(campID, 0, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]int, 0, len(batch))
+		for _, sub := range batch {
+			ids = append(ids, sub.ID)
+		}
+		if !slices.Equal(ids, want) {
+			t.Fatalf("campaign %d, limit %d: got %d IDs, want %d in the requested range", campID, limit, len(ids), len(want))
+		}
+	}
+	record := func(ids []int) {
+		t.Helper()
+		e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
+			SELECT $1, unnest($2::INT[])`, prior, pq.Array(ids))
+	}
+
+	read(ordinary, 1000, e.eligible[:1000])
+	read(e.campID, 1000, e.eligible[:500])
+	read(e.campID, 300, e.eligible[:300])
+
+	// A recipient just beyond the first 500 must not be decided until the next query.
+	record(e.eligible[499:501])
+	read(e.campID, 1000, e.eligible[:499])
+	wantSame(t, "held in the first batch", e.held(), e.eligible[499:500])
+
+	// When all 500 are held, the next read still applies the cap and advances by ID.
+	record(e.eligible[:499])
+	read(e.campID, 1000, e.eligible[501:1000])
+	wantSame(t, "held after reading past the first batch", e.held(), e.eligible[:501])
+	read(ordinary, 1000, e.eligible[:1000])
+}
+
 func (e *sendsEnv) count(query string, args ...any) int {
 	e.t.Helper()
 	var n int

@@ -208,15 +208,6 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 // campaign for good. It is empty for a campaign without a rule. An error means the batch must not be
 // sent: the rule could not be applied.
 func (c *Core) HoldRecentBatch(ctx context.Context, campID int, ids []int) (map[int]bool, error) {
-	// A campaign without a rule (nearly all of them) costs one lookup by key per batch, and nothing
-	// of the send records is touched: a send that never used the rule does not depend on them.
-	var has bool
-	if err := c.q.AxmRecentHasRule.GetContext(ctx, &has, campID); err != nil {
-		return nil, err
-	}
-	if !has {
-		return map[int]bool{}, nil
-	}
 	arr := make(pq.Int64Array, len(ids))
 	for i, id := range ids {
 		arr[i] = int64(id)

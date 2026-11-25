@@ -42,6 +42,9 @@ const (
 	campaignLockSQL     = `SELECT pg_try_advisory_lock(4282445, hashtext(current_schema()::TEXT))`
 	campaignLockTimeout = 5 * time.Second
 
+	// AXM (LST-65): cap the candidates read at once when recording recent exclusions.
+	recentSendBatchLimit = 500
+
 	// pgUndefinedTable is the Postgres error code for a relation that does not exist.
 	pgUndefinedTable = "42P01"
 )
@@ -123,14 +126,27 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	// it, are blocked, or whose reactions cannot be seen), and the batch is given back without them.
 	// A batch of only such people is read past, so the position always moves on. Any other campaign
 	// is read as before, except for its recent-send rule (LST-65, below).
-	isFollowup, known := s.followups.Load(campID)
+	followup, known := s.followups.Load(campID)
 	if !known {
 		var f bool
 		if err := s.queries.AxmFollowupIsFollowup.Get(&f, campID); err != nil {
 			return nil, err
 		}
 		s.followups.Store(campID, f)
-		isFollowup = f
+		followup = f
+	}
+	isFollowup := followup.(bool)
+	ctx := context.Background()
+	var hasRecentRule bool
+	if !isFollowup && camps[0].CampaignType == models.CampaignTypeRegular {
+		// The rule is locked while the campaign is running. Look it up before selecting
+		// any candidates, so each recent exclusion decision receives at most 500 IDs.
+		if err := s.queries.AxmRecentHasRule.GetContext(ctx, &hasRecentRule, campID); err != nil {
+			return nil, err
+		}
+		if hasRecentRule {
+			limit = min(limit, recentSendBatchLimit)
+		}
 	}
 	after := camps[0].LastSubscriberID
 	for {
@@ -138,7 +154,7 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 		if err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, after, camps[0].MaxSubscriberID, pq.Array(listIDs), limit); err != nil {
 			return out, err
 		}
-		if len(out) == 0 {
+		if len(out) == 0 || (!isFollowup && !hasRecentRule) {
 			return out, nil
 		}
 		ids := make([]int, len(out))
@@ -153,14 +169,14 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 		// such people is read past too, but the campaign is looked at again first: it may have been
 		// paused or cancelled meanwhile, and the sender must not read on to the end of the list.
 		var left map[int]bool
-		if isFollowup.(bool) {
+		if isFollowup {
 			var err error
-			if left, _, err = s.core.ClaimFollowupBatch(context.Background(), campID, ids); err != nil {
+			if left, _, err = s.core.ClaimFollowupBatch(ctx, campID, ids); err != nil {
 				return nil, err
 			}
 		} else {
 			var err error
-			if left, err = s.core.HoldRecentBatch(context.Background(), campID, ids); err != nil {
+			if left, err = s.core.HoldRecentBatch(ctx, campID, ids); err != nil {
 				return nil, err
 			}
 		}
@@ -178,7 +194,7 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 		}
 		after = out[len(out)-1].ID
 
-		if !isFollowup.(bool) {
+		if !isFollowup {
 			var again []runningCamp
 			if err := s.queries.GetRunningCampaign.Select(&again, campID); err != nil {
 				return nil, err
