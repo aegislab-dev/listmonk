@@ -225,6 +225,22 @@ describe('Clone window: the copy picks its own lists', () => {
     cloneId(name).then((id) => cy.request(`/api/campaigns/${id}/recent-exclude`).its('body.data.enabled').should('eq', false));
   });
 
+  it('recovers the default inheritance on retrying the original rule read', () => {
+    const url = `/api/campaigns/${ruledId}/recent-exclude`;
+    cy.intercept('GET', url).as('ruleLoaded');
+    cy.intercept({ method: 'GET', url, times: 1 }, { statusCode: 500 }).as('ruleFailed');
+    openWindow(ruledName);
+    cy.wait('@ruleFailed');
+    cy.get('[data-cy=clone-same-lists]').click();
+    cy.get('[data-cy=btn-clone-confirm]').should('be.disabled');
+    cy.get('[data-cy=clone-rule-retry]').click();
+    cy.wait('@ruleLoaded');
+    cy.get('[data-cy=clone-rule-error]').should('not.exist');
+    cy.get('[data-cy=clone-rule-inherit]').should('be.checked');
+    cy.get('[data-cy=btn-clone-confirm]').should('not.be.disabled');
+    cy.get('[data-cy=btn-clone-cancel]').click();
+  });
+
   it('says so when the count cannot be read, and still copies', () => {
     const name = `Clone unread ${stamp}`;
     cy.intercept('POST', preview, { statusCode: 500, body: { message: 'boom' } }).as('count');
