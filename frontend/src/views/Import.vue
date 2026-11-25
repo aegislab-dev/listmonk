@@ -12,11 +12,11 @@
             <div class="column">
               <b-field :label="$t('import.mode')" :addons="false">
                 <div>
-                  <b-radio v-model="form.mode" name="mode" native-value="subscribe" data-cy="check-subscribe">
+                  <b-radio v-model="form.mode" name="mode" native-value="subscribe" :disabled="isUpdatingLists" data-cy="check-subscribe">
                     {{ $t('import.subscribe') }}
                   </b-radio>
                   <br />
-                  <b-radio v-model="form.mode" name="mode" native-value="blocklist" data-cy="check-blocklist">
+                  <b-radio v-model="form.mode" name="mode" native-value="blocklist" :disabled="isUpdatingLists" data-cy="check-blocklist">
                     {{ $t('import.blocklist') }}
                   </b-radio>
                 </div>
@@ -75,10 +75,10 @@
               <div class="target-field">
                 <list-selector :label="$t('import.targetLists')"
                   :placeholder="$t('import.listSubHelp')" :message="$t('import.targetListsHelp')" v-model="form.lists"
-                  :selected="form.lists" :all="(lists.results || []).filter(l => !l.axmFilter)" />
+                  :selected="form.lists" :all="(lists.results || []).filter(l => !l.axmFilter)" :disabled="isUpdatingLists" />
               </div>
               <b-button v-if="$canCreateList()" class="target-new" icon-left="plus" data-cy="import-new-list"
-                :disabled="isProcessing" @click="openNewList('add')">
+                :disabled="isProcessing || isUpdatingLists" @click="openNewList('add')">
                 {{ $t('import.newList') }}
               </b-button>
             </div>
@@ -151,7 +151,7 @@
       <p
         class="is-size-5 is-capitalized"
         :class="[{ 'has-text-success': status.status === 'finished' && !countMismatch }, { 'has-text-danger': (status.status === 'failed' || status.status === 'stopped') }]">
-        {{ status.status }}
+        {{ status.status === 'stopped' ? $t('import.status.stopped') : status.status }}
       </p>
 
       <b-message v-if="countMismatch" type="is-warning" :closable="false" data-cy="map-mismatch" class="has-text-left">
@@ -217,7 +217,7 @@
     <!-- A new list for the import (LST-63): the list form of the lists page, static lists only. -->
     <b-modal custom-class="axm-list-modal" has-modal-card scroll="keep" :aria-modal="true" :active.sync="isNewListVisible"
       :width="860">
-      <list-form :key="newListKey" :data="newListItem" :teams="teams" static-only @finished="onNewList" />
+      <list-form :key="newListKey" :data="newListItem" :teams="teams" for-import @finished="onNewList" />
     </b-modal>
   </section>
 </template>
@@ -337,6 +337,7 @@ export default Vue.extend({
       // The list form for a new list: 'add' puts the list next to the chosen ones, 'replace'
       // (from the warning) swaps the already used lists for it.
       isNewListVisible: false,
+      isUpdatingLists: false,
       newListMode: 'add',
       newListItem: {},
       newListKey: 0,
@@ -869,26 +870,19 @@ export default Vue.extend({
     usedEntries(lists, rows) {
       return lists.map((list) => {
         const items = (rows || []).filter((r) => r.listId === list.id);
-        return { list, items, total: items.length ? items[0].total : 0 };
+        const first = items[0];
+        return {
+          list, items, total: first?.total || 0, count: first?.subscriberCount,
+        };
       }).filter((e) => e.items.length);
     },
 
     // The server answers for at most 200 lists at a time.
-    fetchUse(ids) {
+    fetchUse(ids, includeCount = false) {
       const parts = [];
       for (let i = 0; i < ids.length; i += 200) parts.push(ids.slice(i, i + 200));
-      return Promise.all(parts.map((p) => this.$api.getListCampaigns({ list_id: p }))).then((all) => [].concat(...all.map((r) => r || [])));
-    },
-
-    // Adds the people a used list holds now (an import joins them); without it the box says so in words.
-    withCounts(entries) {
-      return Promise.all(entries.map((e) => this.$api.getList(e.list.id).then((l) => {
-        const st = l.subscriberStatuses;
-        // GET /api/lists/:id adds the status counts to the total again: the statuses are the real number.
-        const byStatus = st && !l.axmFilter ? Object.values(st).reduce((a, b) => a + b, 0) : 0;
-        const count = byStatus || l.subscriberCount;
-        return { ...e, count };
-      }).catch(() => e)));
+      const params = includeCount ? { include_count: true } : {};
+      return Promise.all(parts.map((p) => this.$api.getListCampaigns({ ...params, list_id: p }))).then((all) => [].concat(...all.map((r) => r || [])));
     },
 
     // Asks which of the chosen lists went out in a campaign already. A late answer for lists
@@ -901,8 +895,8 @@ export default Vue.extend({
         this.used = [];
         return;
       }
-      this.fetchUse(lists.map((l) => l.id)).then((rows) => this.withCounts(this.usedEntries(lists, rows))).then((entries) => {
-        if (request === this.usedRequest) this.used = entries;
+      this.fetchUse(lists.map((l) => l.id), true).then((rows) => {
+        if (request === this.usedRequest) this.used = this.usedEntries(lists, rows);
       }).catch(() => {
         if (request === this.usedRequest) this.used = [];
       });
@@ -933,6 +927,7 @@ export default Vue.extend({
 
     // Opens the list form for a new list. The teams are read when the form is first needed.
     openNewList(mode) {
+      if (this.isProcessing || this.isUpdatingLists) return;
       this.newListMode = mode;
       if (!this.teams.length) {
         this.$api.getListTeams().then((out) => { this.teams = out.teams || []; }).catch(() => {});
@@ -944,19 +939,27 @@ export default Vue.extend({
 
     // The new list goes next to the chosen lists; from the warning it takes the place of the
     // lists that were already used.
-    onNewList(created) {
-      this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' }).then(() => {
-        const made = created && (this.lists.results || []).find((l) => l.id === created.id);
+    async onNewList(created) {
+      if (!created) return;
+      const selected = [...this.form.lists];
+      const replace = this.newListMode === 'replace';
+      this.isUpdatingLists = true;
+      try {
+        await this.$api.getLists({ minimal: true, per_page: 'all', status: 'active' });
+        const made = (this.lists.results || []).find((l) => l.id === created.id);
         if (!made) return;
-        let keep = this.form.lists;
-        if (this.newListMode === 'replace') {
-          const usedIds = this.used.map((e) => e.list.id);
-          keep = keep.filter((l) => !usedIds.includes(l.id));
-        }
-        this.form.lists = [...keep.filter((l) => l.id !== made.id), made];
-        // A team member's lists changed: the permission checks need the new ones.
+        // The visible warning may still be waiting for a response for some of these lists.
+        // Hold upload until every selected list is checked for the replacement.
+        const used = replace ? await this.fetchUse(selected.map((l) => l.id)) : [];
+        const remove = new Set(used.map((row) => row.listId));
+        this.form.lists = [...selected.filter((l) => l.id !== made.id && !remove.has(l.id)), made];
+      } catch (_) {
+        if (replace) this.$utils.toast(this.$t('import.used.replaceError'), 'is-danger');
+      } finally {
+        this.isUpdatingLists = false;
+        // The new list exists even when the history check fails.
         this.$refreshProfile();
-      });
+      }
     },
 
     // Opens a campaign for the displayed import and then clears that result.
@@ -1064,7 +1067,7 @@ export default Vue.extend({
       return !!this.form.file && /\.csv$/i.test(this.form.file.name);
     },
     canUpload() {
-      if (!this.form.file || this.isProcessing || this.form.delim.length !== 1) return false;
+      if (!this.form.file || this.isProcessing || this.isUpdatingLists || this.form.delim.length !== 1) return false;
       if (!this.isCSV) return true;
       if (this.csv.busy || this.csv.error) return false;
       // Uploading before the check answers would let the rows it leaves out through.
@@ -1223,7 +1226,7 @@ export default Vue.extend({
       return this.submittedImport ? this.submittedImport.count : null;
     },
     countMismatch() {
-      return this.sentCount !== null && this.isDone() && this.status.imported + this.serverRejected !== this.sentCount;
+      return this.sentCount !== null && this.isSuccessful() && this.status.imported + this.serverRejected !== this.sentCount;
     },
 
     // Import progress bar value.

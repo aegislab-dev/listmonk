@@ -1,9 +1,61 @@
 package subimporter
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 )
+
+// There is no observable interleaving point inside the active stop path. Guard the lock
+// boundary directly so introducing an unlock before the signal fails even when Go does
+// not schedule another worker into that gap during the behavioral tests.
+func TestStopImportKeepsOneLockAcrossTheOperation(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "importer.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || fn.Name.Name != "StopImport" {
+			continue
+		}
+		if len(fn.Body.List) < 2 {
+			t.Fatal("StopImport must take the lock and defer its release")
+		}
+		lock, locked := fn.Body.List[0].(*ast.ExprStmt)
+		unlock, deferred := fn.Body.List[1].(*ast.DeferStmt)
+		if !locked || !deferred {
+			t.Fatal("StopImport must take the lock and defer its release before inspecting the import")
+		}
+		method := func(expr ast.Expr, name string) bool {
+			call, ok := expr.(*ast.CallExpr)
+			if !ok {
+				return false
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return false
+			}
+			id, ok := sel.X.(*ast.Ident)
+			return ok && id.Name == fn.Recv.List[0].Names[0].Name && sel.Sel.Name == name
+		}
+		if !method(lock.X, "Lock") || !method(unlock.Call, "Unlock") {
+			t.Fatal("StopImport must hold the importer lock until it returns")
+		}
+		for _, stmt := range fn.Body.List[2:] {
+			ast.Inspect(stmt, func(n ast.Node) bool {
+				if call, ok := n.(*ast.CallExpr); ok && (method(call, "Unlock") || method(call, "Stop")) {
+					t.Error("the numbered stop must not release the lock or delegate to the unnumbered stop")
+				}
+				return true
+			})
+		}
+		return
+	}
+	t.Fatal("StopImport method not found")
+}
 
 // StopImport clears a finished import only when the number is that of the import held (LST-63).
 func TestStopImportOnlyThatImport(t *testing.T) {

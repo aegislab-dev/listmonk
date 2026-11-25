@@ -7,17 +7,18 @@ import "time"
 // campaign's count; ListsN says how many lists it targets. Total is how many such
 // campaigns the list has, of which a response carries the newest few.
 type ListCampaignUse struct {
-	ListID     int        `db:"list_id" json:"list_id"`
-	CampaignID int        `db:"campaign_id" json:"campaign_id"`
-	Name       string     `db:"name" json:"name"`
-	Status     string     `db:"status" json:"status"`
-	Sent       int        `db:"sent" json:"sent"`
-	ToSend     int        `db:"to_send" json:"to_send"`
-	StartedAt  *time.Time `db:"started_at" json:"started_at"`
-	SendAt     *time.Time `db:"send_at" json:"send_at"`
-	UpdatedAt  time.Time  `db:"updated_at" json:"updated_at"`
-	ListsN     int        `db:"lists_n" json:"lists_n"`
-	Total      int        `db:"total" json:"total"`
+	ListID          int        `db:"list_id" json:"list_id"`
+	CampaignID      int        `db:"campaign_id" json:"campaign_id"`
+	Name            string     `db:"name" json:"name"`
+	Status          string     `db:"status" json:"status"`
+	Sent            int        `db:"sent" json:"sent"`
+	ToSend          int        `db:"to_send" json:"to_send"`
+	StartedAt       *time.Time `db:"started_at" json:"started_at"`
+	SendAt          *time.Time `db:"send_at" json:"send_at"`
+	UpdatedAt       time.Time  `db:"updated_at" json:"updated_at"`
+	ListsN          int        `db:"lists_n" json:"lists_n"`
+	Total           int        `db:"total" json:"total"`
+	SubscriberCount *int       `db:"subscriber_count" json:"subscriber_count,omitempty"`
 }
 
 // ListUsePerList is how many campaigns of a list the response carries.

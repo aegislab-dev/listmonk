@@ -39,7 +39,7 @@ func (a *App) GetListCampaigns(c echo.Context) error {
 		}
 	}
 
-	rows, err := a.core.GetListCampaigns(seen)
+	rows, err := a.core.GetListCampaigns(seen, c.QueryParam("include_count") == "true")
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.Ts("globals.messages.errorFetching",
 			"name", "{globals.terms.campaigns}", "error", ""))

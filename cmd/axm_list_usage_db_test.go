@@ -32,7 +32,7 @@ func TestListCampaignsWhatCounts(t *testing.T) {
 	other := e.pfList("single", "")
 	mk("finished", 9, other)
 
-	rows, err := e.core.GetListCampaigns([]int{list})
+	rows, err := e.core.GetListCampaigns([]int{list}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestListCampaignsWhatCounts(t *testing.T) {
 			t.Fatalf("%+v", r)
 		}
 	}
-	if rows, err := e.core.GetListCampaigns(nil); err != nil || len(rows) != 0 {
+	if rows, err := e.core.GetListCampaigns(nil, false); err != nil || len(rows) != 0 {
 		t.Fatalf("%v %v", rows, err)
 	}
 }
@@ -71,7 +71,7 @@ func TestListCampaignsLimitAndManyLists(t *testing.T) {
 	both := e.pfCampaign("regular", "finished", list, other)
 	e.db.MustExec(`UPDATE campaigns SET sent = 40, to_send = 40, started_at = now() WHERE id = $1`, both)
 
-	rows, err := e.core.GetListCampaigns([]int{list, other})
+	rows, err := e.core.GetListCampaigns([]int{list, other}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +91,22 @@ func TestListCampaignsLimitAndManyLists(t *testing.T) {
 	}
 	if len(onOther) != 1 || onOther[0].CampaignID != both || onOther[0].Total != 1 {
 		t.Fatalf("%+v", onOther)
+	}
+}
+
+func TestListCampaignsCountsCurrentMembership(t *testing.T) {
+	e := newSendsEnv(t, 1) // Three memberships, even if some cannot receive a campaign.
+	e.db.MustExec(`UPDATE campaigns SET status = 'finished', sent = 1 WHERE id = $1`, e.campID)
+	e.db.MustExec(`REFRESH MATERIALIZED VIEW mat_list_subscriber_stats`)
+	e.addSub("enabled", "confirmed")
+
+	rows, err := e.core.GetListCampaigns([]int{e.listID}, true)
+	if err != nil || len(rows) != 1 || rows[0].SubscriberCount == nil || *rows[0].SubscriberCount != 4 || rows[0].Sent != 1 {
+		t.Fatalf("live count (historical sent unchanged): %+v, %v", rows, err)
+	}
+	rows, err = e.core.GetListCampaigns([]int{e.listID}, false)
+	if err != nil || len(rows) != 1 || rows[0].SubscriberCount != nil {
+		t.Fatalf("default history read should omit live counts: %+v, %v", rows, err)
 	}
 }
 
@@ -135,8 +151,9 @@ func TestGetListCampaignsPermissions(t *testing.T) {
 		PermissionsMap:     map[string]struct{}{auth.PermSubscribersImport: {}},
 		ListPermissionsMap: map[int]map[string]struct{}{mine: {auth.PermListGet: {}}},
 	}
-	code, rows := call(importer, q)
-	if code != 200 || len(rows) != 1 || rows[0].ListID != mine || rows[0].Name != "" || rows[0].CampaignID == 0 || rows[0].Sent != 7 {
+	code, rows := call(importer, q+"&include_count=true")
+	if code != 200 || len(rows) != 1 || rows[0].ListID != mine || rows[0].Name != "" || rows[0].CampaignID == 0 || rows[0].Sent != 7 ||
+		rows[0].SubscriberCount == nil || *rows[0].SubscriberCount != 5 {
 		t.Fatalf("%d %+v", code, rows)
 	}
 	// With the campaign permission the name shows.

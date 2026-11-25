@@ -44,6 +44,7 @@ const (
 	StatusNone      = "none"
 	StatusImporting = "importing"
 	StatusStopping  = "stopping"
+	StatusStopped   = "stopped"
 	StatusFinished  = "finished"
 	StatusFailed    = "failed"
 
@@ -485,21 +486,39 @@ func (im *Importer) incrementImportCount(n int) {
 }
 
 // sendNotif sends admin notifications for import completions.
-func (im *Importer) sendNotif(status string) error {
+func (im *Importer) sendNotif(s Status) error {
 	var (
-		s   = im.GetStats()
 		out = importStatusTpl{
 			Name:     s.Name,
-			Status:   status,
+			Status:   s.Status,
 			Imported: s.Imported,
 			Total:    s.Total,
 
 			AxmRejected: s.AxmRejected,
 			AxmWarned:   s.AxmWarned,
 		}
-		subject = fmt.Sprintf("%s: %s import", cases.Title(language.Und).String(status), s.Name)
+		subject = fmt.Sprintf("%s: %s import", cases.Title(language.Und).String(s.Status), s.Name)
 	)
 	return im.opt.PostCB(subject, out)
+}
+
+// finish publishes the final counts after the writer has committed the rows it accepted.
+// A stop acknowledged while this import was active must not become a successful result.
+func (s *Session) finish(status string) {
+	im := s.im
+	im.Lock()
+	if im.status.AxmImportID != s.id {
+		im.Unlock()
+		return
+	}
+	if status == StatusFinished && im.status.Status == StatusStopping {
+		status = StatusStopped
+	}
+	s.log.Printf("import %s", status)
+	im.status.Status = status
+	result := im.statusSnapshotLocked()
+	im.Unlock()
+	im.sendNotif(result)
 }
 
 // Start is a blocking function that selects on a channel queue until all
@@ -587,35 +606,22 @@ func (s *Session) Start() {
 		}
 	}
 
-	// Queue's closed and there's nothing left to commit.
-	if cur == 0 {
-		s.im.setStatus(StatusFinished)
-		s.log.Printf("imported finished")
-		if _, err := s.im.opt.UpdateListDateStmt.Exec(pq.Array(listIDs)); err != nil {
-			s.log.Printf("error updating lists date: %v", err)
+	if cur > 0 {
+		if err := tx.Commit(); err != nil {
+			tx.Rollback()
+			s.log.Printf("error committing to DB: %v", err)
+			s.finish(StatusFailed)
+			return
 		}
-		s.im.sendNotif(StatusFinished)
-		return
+		s.im.incrementImportCount(cur)
+		s.im.addWarned(s.id, warned)
 	}
 
-	// Queue's closed and there are records left to commit.
-	if err := tx.Commit(); err != nil {
-		tx.Rollback()
-		s.im.setStatus(StatusFailed)
-		s.log.Printf("error committing to DB: %v", err)
-		s.im.sendNotif(StatusFailed)
-		return
-	}
-
-	s.im.incrementImportCount(cur)
-	s.im.addWarned(s.id, warned)
-	s.im.setStatus(StatusFinished)
-	s.log.Printf("imported finished")
 	if _, err := s.im.opt.UpdateListDateStmt.Exec(pq.Array(listIDs)); err != nil {
 		s.log.Printf("error updating lists date: %v", err)
 	}
 
-	s.im.sendNotif(StatusFinished)
+	s.finish(StatusFinished)
 }
 
 // Stop stops an active import session.
@@ -799,8 +805,8 @@ func (s *Session) LoadCSV(srcPath string, delim rune) error {
 		case <-s.stop:
 			failed = false
 			flush() // the rows already read are decided and queued, as they were row by row
-			close(s.subQueue)
 			s.log.Println("stop request received")
+			close(s.subQueue)
 			return nil
 		default:
 		}

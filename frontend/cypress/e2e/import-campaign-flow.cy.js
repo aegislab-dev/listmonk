@@ -7,6 +7,7 @@
 const stamp = Date.now();
 const usedList = 'Cypress reaction audience';
 const usedCampaign = 'Cypress reaction recipients';
+const secondUsedList = 'Cypress followup audience';
 const fresh = (n) => `Flow list ${n} ${stamp}`;
 const modal = '.axm-list-modal';
 const importPath = '/api/import/subscribers';
@@ -39,6 +40,7 @@ const uploadOtherCSV = (id, fileName, row) => cy.window().then(async (win) => {
 
 let usedId;
 let usedCampaignId;
+let secondUsedId;
 
 describe('import to campaign flow', () => {
   beforeEach(() => {
@@ -57,6 +59,7 @@ describe('import to campaign flow', () => {
     cy.get('form.box').should('be.visible');
     cy.request('/api/lists?minimal=true&per_page=all').its('body.data.results').then((lists) => {
       usedId = lists.find((l) => l.name === usedList).id;
+      secondUsedId = lists.find((l) => l.name === secondUsedList).id;
     });
     cy.request('/api/campaigns?query=Cypress%20reaction%20recipients&no_body=true').its('body.data.results').then((camps) => {
       usedCampaignId = camps.find((c) => c.name === usedCampaign).id;
@@ -64,6 +67,12 @@ describe('import to campaign flow', () => {
   });
 
   it('says why the upload is off, and makes a new static list in the screen', () => {
+    cy.intercept('GET', '/api/config', (req) => req.continue((res) => {
+      const presets = res.body.data.axm_column_presets;
+      if (presets.length === 1) presets.push({ ...presets[0], id: 'extra-preset', name: 'Extra preset' });
+    })).as('config');
+    cy.reload();
+    cy.wait('@config').its('response.body.data.axm_column_presets').should('have.length.greaterThan', 1);
     cy.get('[data-cy=import-need-list]').should('contain', 'Choose the target lists first');
     cy.get('[data-cy=import-target] label').first().should('contain', 'Target lists');
     chooseCSV(['a', 'b']);
@@ -75,6 +84,7 @@ describe('import to campaign flow', () => {
     cy.get(modal).should('be.visible');
     // A dynamic list is no import target: the form hides the composition choice.
     cy.get('[data-cy=list-composition]').should('not.exist');
+    cy.get(`${modal} [data-cy=list-preset], ${modal} [data-cy=list-preset-manage], ${modal} [name=description]`).should('not.exist');
     cy.get(`${modal} input[name=name]`).type(fresh('new'));
     cy.get('[data-cy=btn-save]').click();
     cy.get(modal).should('not.exist');
@@ -118,21 +128,81 @@ describe('import to campaign flow', () => {
     cy.get('[data-cy=import-used-list]').should('not.exist');
   });
 
-  it('swaps the used list for a new one from the warning', () => {
+  it('swaps all used lists even if some history is delayed, and uploads only to the resulting selection', () => {
     const empty = fresh('keep');
-    makeList(empty);
+    const replacement = fresh('swap');
+    const row = 'replace-delayed';
+    let unusedId;
+    makeList(empty).then(({ id }) => { unusedId = id; });
     cy.reload();
-    chooseCSV(['d']);
+    chooseCSV([row], { fileName: 'replacement.csv' });
     pickList(empty);
     pickList(usedList);
-    cy.get('[data-cy=import-used-list]').should('be.visible');
+    cy.get('[data-cy=import-used-list]').should('contain', usedList);
+    let release;
+    const held = new Cypress.Promise((resolve) => { release = resolve; });
+    cy.intercept('GET', '/api/lists/campaigns*', (req) => {
+      if (new URL(req.url).searchParams.getAll('list_id').includes(String(secondUsedId))) {
+        req.continue((res) => held.then(() => res.send()));
+      }
+    });
+    pickList(secondUsedList);
+    chosen().should('have.length', 3);
+    cy.get('[data-cy=import-used-list]').should('not.contain', secondUsedList);
     cy.get('[data-cy=import-used-new-list]').click();
-    cy.get(`${modal} input[name=name]`).type(fresh('swap'));
+    cy.get(`${modal} input[name=name]`).type(replacement);
     cy.get('[data-cy=btn-save]').click();
     cy.get(modal).should('not.exist');
-    chosen().should('have.length', 2).and('contain', empty).and('contain', fresh('swap'))
-      .and('not.contain', usedList);
+    submit().should('be.disabled');
+    cy.then(() => { release(); });
+    chosen().should('have.length', 2).and('contain', empty).and('contain', replacement)
+      .and('not.contain', usedList).and('not.contain', secondUsedList);
     cy.get('[data-cy=import-used-list]').should('not.exist');
+    submit().should('not.be.disabled').click();
+    cy.get('.status .has-text-success', { timeout: 30000 }).should('contain', 'finished');
+    cy.request('/api/lists?query=' + encodeURIComponent(replacement)).its('body.data.results.0.id').then((replacementId) => {
+      cy.request({ url: '/api/subscribers', qs: { query: `email = '${row}-${stamp}@example.invalid'` } })
+        .its('body.data.results.0.id').then((id) => {
+          cy.request(`/api/subscribers/${id}`).its('body.data.lists').should((lists) => {
+            expect(lists.map((l) => l.id)).to.have.members([unusedId, replacementId]);
+          });
+        });
+    });
+  });
+
+  it('includes a newly added subscriber in the existing membership count', () => {
+    pickList(usedList);
+    cy.get('[data-cy=import-used-list]').should('contain', 'sent to 2 people').invoke('text').then((text) => {
+      const before = Number(text.match(/with the (\d+) people already on it/)[1]);
+      cy.request('POST', '/api/subscribers', {
+        name: 'Recent member', email: `flow-live-count-${stamp}@example.invalid`, status: 'enabled', lists: [usedId],
+      });
+      cy.get(`.list-selector .tag[data-id="${usedId}"] .delete`).click();
+      cy.get('[data-cy=import-used-list]').should('not.exist');
+      pickList(usedList);
+      cy.get('[data-cy=import-used-list]').should('contain', `with the ${before + 1} people already on it`).and('contain', 'sent to 2 people');
+    });
+  });
+
+  it('offers only Done after stopping a partially written import', () => {
+    const importId = 456;
+    let status = 'importing';
+    cy.intercept('GET', importPath, (req) => req.reply({ data: {
+      status, total: 600, imported: 500, axm_import_id: importId, axm_lists: [usedId],
+    } }));
+    cy.intercept('DELETE', `${importPath}?axm_import_id=${importId}`, (req) => {
+      const previous = status;
+      status = previous === 'importing' ? 'stopped' : 'none';
+      req.reply({ data: { status: previous === 'importing' ? 'stopping' : 'none' } });
+    }).as('stop');
+    cy.reload();
+    cy.get('[data-cy=import-done]').should('contain', 'Stop import').click();
+    cy.wait('@stop');
+    cy.get('.status .has-text-danger').should('contain', 'Stopped');
+    cy.get('.status').should('contain', '500 / 600');
+    makeCampaign().should('not.exist');
+    cy.get('[data-cy=import-done]').should('contain', 'Done').and('have.class', 'is-primary').click();
+    cy.get('form.box').should('be.visible');
   });
 
   it('leads on to a campaign for the list a finished import filled', () => {
