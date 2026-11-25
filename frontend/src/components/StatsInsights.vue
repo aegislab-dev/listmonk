@@ -24,6 +24,10 @@
           </span>
         </div>
         <div v-if="c.foot" class="foot">{{ c.foot }}</div>
+        <router-link v-if="c.followupSource" class="button is-small is-outlined mt-2" data-cy="insight-followup-start"
+          :to="{ name: 'campaign', params: { id: c.followupSource } }">
+          {{ $t('stats.followupStart') }}
+        </router-link>
       </div>
     </div>
   </div>
@@ -33,7 +37,7 @@
 /* eslint-disable max-len, vue/max-len */
 import StatsHelp from './StatsHelp.vue';
 import {
-  groupBy, listGroups, overlapRows, recipientRows, followupPairs, weekdayOf, hourBandOf, lengthBandOf, fmt, pct, pctText, clickRate, classify,
+  groupBy, listGroups, overlapRows, recipientRows, followupPairs, weekdayOf, hourBandOf, lengthBandOf, fmt, pct, pctText, clickRate, classify, signedPoints,
 } from '../stats';
 import { conditionWords } from '../followup';
 import { MIN } from '../stats-definitions';
@@ -75,6 +79,9 @@ export default {
     highest(label, rate) {
       return this.t('bestRate', { label, rate: pctText(rate) });
     },
+    compareClicks(label, rate, baseline, baselineRate) {
+      return this.t('clickRateCompare', { label, baseline, delta: signedPoints(rate - baselineRate) });
+    },
     rates(a) {
       return {
         main: this.t('clickValue', { rate: pctText(a.click) }),
@@ -111,6 +118,7 @@ export default {
     },
     bucketCard(key, fn) {
       const g = groupBy(this.camps, this.t(`${key}Labels`).split('|'), fn, this.now);
+      const next = g.ok.filter((r) => r !== g.best).sort((a, b) => b.a.click - a.a.click)[0];
       const rows = g.rows.map((r) => {
         if (!r.n) return { label: r.label, mute: true, text: this.t('noSend') };
         const { main, sub } = this.rates(r.a);
@@ -125,7 +133,9 @@ export default {
         title: this.t(`${key}Title`),
         help: 'click',
         rows,
-        concl: g.best ? this.highest(g.best.label, g.best.a.click) : this.t('groupInsufficient', { campaigns: MIN.groupCampaigns, sent: fmt(MIN.groupSent) }),
+        concl: g.best
+          ? this.compareClicks(g.best.label, g.best.a.click, next.label, next.a.click)
+          : this.t('groupInsufficient', { campaigns: MIN.groupCampaigns, sent: fmt(MIN.groupSent) }),
       };
     },
     recipientCard(key) {
@@ -136,7 +146,9 @@ export default {
       const hasNamedCountry = data.some((r) => r.key !== '(none)' && r.key !== '__other__');
       if (!data.length || (country && (!hasNamedCountry || (missing && missing.sent > total / 2)))) return null;
       const eligible = data.filter((r) => r.click !== null && r !== missing);
-      const best = eligible.length >= 2 ? eligible.reduce((b, r) => (r.click > b.click ? r : b)) : null;
+      eligible.sort((a, b) => b.click - a.click);
+      const [leader, next] = eligible;
+      const best = next ? leader : null;
       const label = (r) => {
         const labelKey = {
           new7: 'ageNew', new30: 'ageMonth', older: 'ageOld', '(none)': 'countryMissing', __other__: 'recipientOther',
@@ -144,7 +156,7 @@ export default {
         return labelKey ? this.t(labelKey, { n: MIN.recipientGroup }) : r.key;
       };
       const rows = data.map((r) => {
-        if (!r.ok || r === missing) {
+        if (!r.ok) {
           return { label: label(r), mute: true, text: `${this.t('small')} · ${this.t('recipientCount', { n: fmt(r.recipients) })}` };
         }
         const count = this.t('recipientOverallCount', { n: fmt(r.recipients) });
@@ -168,12 +180,23 @@ export default {
           label: label(r), click: r.click, best: best === r, main, sub: sub.join(' · '),
         };
       });
+      let concl = this.t('recipientInsufficient', { n: MIN.recipientSample });
+      if (best && country) concl = this.highest(label(best), best.click);
+      if (best && !country) {
+        const fresh = eligible.find((r) => r.key === 'new7');
+        const older = eligible.find((r) => r.key === 'older');
+        concl = fresh && older ? this.t('ageRateCompare', {
+          baseline: label(older),
+          click: signedPoints(fresh.click - older.click),
+          bounce: signedPoints(fresh.bounce - older.bounce),
+        }) : this.compareClicks(label(best), best.click, label(next), next.click);
+      }
       return {
         key,
         title: this.t(`${key}Title`),
         help: 'click',
         rows,
-        concl: best ? this.highest(label(best), best.click) : this.t('recipientInsufficient', { n: MIN.recipientSample }),
+        concl,
         foot: this.t('recipientFoot', { n: fmt(total) }),
       };
     },
@@ -215,21 +238,27 @@ export default {
       };
     },
     followupCard() {
-      const rows = followupPairs(this.camps, this.now).map(({ followup: c, click, open }) => {
-        const tracked = !classify(c, this.now).untracked;
+      const rows = followupPairs(this.camps).map(({ followup: c, click, open }) => {
+        const { untracked, collecting, hours } = classify(c, this.now);
+        const tracked = !untracked;
         const condition = conditionWords(c.followupCondition, this.$t.bind(this));
         const sub = [this.t('sentCount', { n: fmt(c.sent) })];
+        if (collecting) sub.push(this.t('collectingLong', { h: hours }));
         if (tracked) sub.push(this.t('followupChildCounts', { clickers: fmt(c.clickers), viewers: fmt(c.viewers) }));
         sub.push(this.t('followupCombined', { click: pctText(click), open: pctText(open) }));
         if (click !== null) sub.push(this.t('followupCombinedCounts', { clickers: fmt(c.combinedClickers), sent: fmt(c.followupParentSent) }));
         if (condition) sub.push(this.t('followupTarget', { condition }));
         return {
           label: `#${c.id} ← #${c.followupOf}`,
+          mute: collecting,
           click: tracked ? clickRate(c) : 0,
           main: this.t('followupChild', { click: pctText(tracked ? clickRate(c) : null), open: pctText(tracked ? pct(c.viewers, c.sent) : null) }),
           sub: sub.join(' · '),
         };
       });
+      const canCreate = this.$canCreateList() && this.$can('campaigns:get', 'campaigns:get_all')
+        && this.$can('campaigns:manage', 'campaigns:manage_all');
+      const source = !rows.length && canCreate && this.camps.find((c) => c.own && c.status === 'finished' && !c.followupOf);
       return {
         key: 'followup',
         title: this.t('followupTitle'),
@@ -237,6 +266,7 @@ export default {
         rows,
         concl: rows.length ? '' : this.t('followupEmpty'),
         foot: this.t('followupExplain'),
+        followupSource: source ? source.id : null,
       };
     },
   },

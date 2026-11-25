@@ -12,9 +12,9 @@ import (
 )
 
 // Statistics dashboard (LST-64). Results are public to everyone who may see analytics, in
-// every team: counts, rates, the name and the subject of a campaign. Who the lists are, who
-// is on them, addresses and bodies stay behind the permissions they already had: a campaign
-// outside the caller's list scope carries no list IDs or names here.
+// every team: counts, rates, the name and the subject of a campaign. List details are scoped
+// to the caller's own campaigns. Subscriber identities and message bodies stay behind their
+// existing permissions.
 
 const statsDefaultDays = 90
 
@@ -84,7 +84,7 @@ func (a *App) GetStatsCampaigns(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, okResp{overlap})
 	}
-	camps, err := a.core.StatsCampaigns(from, to)
+	camps, generatedAt, err := a.core.StatsCampaigns(from, to)
 	if err != nil {
 		return err
 	}
@@ -116,7 +116,7 @@ func (a *App) GetStatsCampaigns(c echo.Context) error {
 		MyTeam      string                 `json:"my_team"`
 		Teams       []models.StatsTeam     `json:"teams"`
 		Campaigns   []models.StatsCampaign `json:"campaigns"`
-	}{time.Now(), from, to, a.teamTagOf(user), teams, camps}})
+	}{generatedAt, from, to, a.teamTagOf(user), teams, camps}})
 }
 
 // GetStatsRecipients returns the recipient groups (by=age|country) for everyone and for each

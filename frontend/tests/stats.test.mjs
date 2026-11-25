@@ -283,8 +283,15 @@ test('a follow-up shows combined unique people over original sent even outside t
     followupOf: 900, followupParentSent: 2000, combinedClickers: 120, combinedViewers: 550,
     followupCondition: { open: 'any', click: 'any' },
   });
-  const [pair] = followupPairs([child], NOW);
+  const [pair] = followupPairs([child]);
   assert.equal(pair.click, 6);
   assert.equal(pair.open.toFixed(1), '27.5');
   assert.equal(pair.followup.followupCondition.click, 'any');
+});
+
+test('follow-up history includes recently finished sends while results are collecting', () => {
+  const fresh = camp({ followupOf: 900, startedAt: new Date(NOW.getTime() - 3600000).toISOString(), sent: 3 });
+  const active = { ...fresh, status: 'running' };
+  const unsent = { ...fresh, sent: 0 };
+  assert.deepEqual(followupPairs([fresh, active, unsent]).map((pair) => pair.followup), [fresh]);
 });

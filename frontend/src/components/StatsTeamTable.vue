@@ -34,7 +34,10 @@
           <tr v-else :key="r.tag" class="click" :class="{ sel: selected === r.tag, mute: !r.a.enough }"
             :data-cy="`team-row-${r.tag}`" @click="$emit('select', selected === r.tag ? '' : r.tag)">
             <td>
-              <b v-if="r.tag === myTag">{{ label(r.tag) }}</b><template v-else>{{ label(r.tag) }}</template>
+              <button type="button" class="st-team-select" :aria-pressed="String(selected === r.tag)"
+                @click.stop="$emit('select', selected === r.tag ? '' : r.tag)">
+                <b v-if="r.tag === myTag">{{ label(r.tag) }}</b><template v-else>{{ label(r.tag) }}</template>
+              </button>
               <span v-if="r.tag === myTag" class="st-pill">{{ $t('stats.myTeam') }}</span>
               <span v-if="!r.a.enough" class="st-tag dash">{{ $t('stats.small') }} · {{ $t('stats.sent') }} {{ n(r.a.sent) }}</span>
               <span v-if="selected === r.tag" class="st-tag dash">✓ {{ $t('stats.shownBelow') }}</span>
@@ -167,3 +170,14 @@ export default {
   },
 };
 </script>
+
+<style scoped>
+.st-team-select {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+</style>
