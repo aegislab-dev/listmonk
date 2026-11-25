@@ -204,14 +204,13 @@ test('a rule that leaves out everybody blocks, keeps the other lines and says th
     recent: { enabled: true, days: 14, scope: 'all', excluded: 40, held: 0 },
     checks: [
       { key: 'recent.all', level: 'block', params: { days: 14 } },
-      { key: 'recent.applied', level: 'info', params: { days: 14, scope: 'all', excluded: 40 } },
       { key: 'from.placeholder', level: 'ok' },
     ],
   });
   assert.equal(m.disabled, true);
   assert.equal(m.title.key, 'campaigns.sendConfirm.title.zero');
   assert.equal(m.confirm.key, 'campaigns.sendConfirm.confirm.blocked');
-  assert.deepEqual(m.checks.map((c) => c.name), ['recent.all', 'from.placeholder', 'tracking', 'recent.applied']);
+  assert.deepEqual(m.checks.map((c) => c.name), ['recent.all', 'from.placeholder', 'tracking']);
   assert.equal(m.recent.excluded, 40);
 });
 

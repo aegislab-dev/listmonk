@@ -142,7 +142,10 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	}
 	defer tx.Rollback()
 
-	var campaign struct{ Status, Type string }
+	var campaign struct {
+		Status, Type string
+		Started      bool
+	}
 	if err := tx.Stmtx(c.q.AxmLockRecentCampaign).GetContext(ctx, &campaign, campaignID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return out, c.recentCampaignNotFound()
@@ -152,7 +155,7 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if campaign.Type != models.CampaignTypeRegular {
 		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recent.regularOnly"))
 	}
-	if !models.CanEditRecentRule(campaign.Status) {
+	if !models.CanEditRecentRule(campaign.Status, campaign.Started) {
 		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
 	}
 	// AXM (LST-65): a follow-up campaign goes to the people who got the original, so the rule would
@@ -229,8 +232,8 @@ func (c *Core) HoldRecentBatch(ctx context.Context, campID int, ids []int) (map[
 	return out, nil
 }
 
-// RecentRuleOn tells whether the campaign's recent-send rule is applied to its send: it has one, it
-// is not a follow-up, and a rule on chosen campaigns still has one of them.
+// RecentRuleOn checks whether a regular campaign has a saved rule that the sender must honor.
+// Even if all chosen sources disappear, the saved rule still keeps previous holds in force.
 func (c *Core) RecentRuleOn(campaignID int) (bool, error) {
 	var on bool
 	if err := c.q.AxmRecentHasRule.Get(&on, campaignID); err != nil {

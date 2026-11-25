@@ -91,8 +91,9 @@ const checkLine = (c, pf) => {
       // Who it left out already stays out; who is newly caught is left out when it goes on.
       const kind = (p.held > 0 ? 'held' : '') + (p.fresh > 0 ? 'Fresh' : '');
       key = `${K}.check.recent.applied.resume${{ held: 'Held', Fresh: 'Fresh', heldFresh: 'Both' }[kind] || 'None'}`;
+    } else {
+      key = `${K}.check.recent.applied.${p.excluded > 0 ? p.scope : 'none'}`;
     }
-    else key = `${K}.check.recent.applied.${p.excluded > 0 ? p.scope : 'none'}`;
   }
   if (c.key === 'unsubscribe.missing') p.tag = '{{ UnsubscribeURL }}';
   return {
@@ -145,7 +146,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   const schedule = pf.mode === 'schedule';
   // The people it goes to: those on the lists less the ones the recent-send rule leaves out
   // (LST-65), or what is left when resuming.
-  const n = resume ? pf.remaining : (pf.willSend === undefined ? pf.recipients : pf.willSend);
+  const n = resume ? pf.remaining : (pf.willSend ?? pf.recipients);
   const recent = !resume && pf.recent && pf.recent.enabled && pf.recent.excluded > 0 ? pf.recent : null;
   const all = checkLines(pf);
   const blocked = all.some((c) => c.level === 'block');

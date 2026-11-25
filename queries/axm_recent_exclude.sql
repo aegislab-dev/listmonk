@@ -39,13 +39,13 @@ WHERE l.id = ANY($1) AND tag LIKE '팀:_%'
 ORDER BY tag;
 
 -- name: axm-get-recent-campaign
-SELECT name, status, type FROM campaigns WHERE id = $1;
+SELECT name, status, type, started_at FROM campaigns WHERE id = $1;
 
 -- name: axm-recent-source-campaigns
 SELECT id, type FROM campaigns WHERE id = ANY($1::INT[]) ORDER BY id;
 
 -- name: axm-lock-recent-campaign
-SELECT status, type FROM campaigns WHERE id = $1 FOR UPDATE;
+SELECT status, type, started_at IS NOT NULL AS started FROM campaigns WHERE id = $1 FOR UPDATE;
 
 -- name: axm-recent-campaign-lists
 SELECT list_id FROM campaign_lists WHERE campaign_id = $1 AND list_id IS NOT NULL;

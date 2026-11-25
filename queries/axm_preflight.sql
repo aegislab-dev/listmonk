@@ -73,18 +73,25 @@ eligible AS (
 total AS (
     SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE lists > 1) AS multi FROM eligible
 ),
-recent_out AS (
+held AS (
+    SELECT subscriber_id AS id FROM axm_campaign_recent_holds
+    WHERE campaign_id = $1 AND axm_recent_rule_on($1)
+),
+fresh AS (
     SELECT r.subscriber_id AS id FROM axm_recent_received($1, ARRAY(SELECT id FROM eligible)) r
-    UNION
-    SELECT h.subscriber_id FROM axm_campaign_recent_holds h
-    WHERE h.campaign_id = $1 AND axm_recent_rule_on($1)
-        AND h.subscriber_id IN (SELECT id FROM eligible)
+    WHERE NOT EXISTS (SELECT 1 FROM held h WHERE h.id = r.subscriber_id)
+),
+recent_out AS (
+    SELECT id FROM fresh
+    UNION ALL
+    SELECT id FROM held WHERE id IN (SELECT id FROM eligible)
 )
 SELECT cl.list_id AS id, cl.name, cl.optin, cl.is_dynamic AS dynamic, NOT cl.live AS deleted,
     COALESCE(per.n, 0) AS count,
     (SELECT n FROM total) AS total,
     (SELECT multi FROM total) AS multi,
     (SELECT COUNT(*) FROM recent_out) AS recent,
+    (CASE WHEN $3::BOOLEAN THEN (SELECT COUNT(*) FROM fresh WHERE id > $2) ELSE 0 END) AS recent_fresh,
     (CASE WHEN (SELECT type FROM c) = 'regular' THEN (
         SELECT COUNT(*) FROM (SELECT DISTINCT id FROM memb) x
         WHERE NOT EXISTS (SELECT 1 FROM eligible e WHERE e.id = x.id)

@@ -72,8 +72,10 @@
     </template>
 
     <!-- LST-65: a campaign that has started says how many people the rule left out of its send. -->
-    <div v-if="started && value.enabled" class="recent-made" role="status" data-cy="recent-held">
-      ✓ {{ $t('campaigns.recent.held', { count: (value.held || 0).toLocaleString($i18n.locale), days: value.days, scope: $t(`campaigns.recent.scope.${value.scope}`) }) }}
+    <div v-if="started && (value.enabled || value.held)" class="recent-made" role="status" data-cy="recent-held">
+      ✓ {{ $t(value.enabled ? 'campaigns.recent.held' : 'campaigns.recent.heldCount', {
+        count: (value.held || 0).toLocaleString($i18n.locale), days: value.days, scope: $t(`campaigns.recent.scope.${value.scope}`),
+      }) }}
     </div>
 
     <p class="recent-notice" data-cy="recent-notice">{{ $t(started && disabled ? 'campaigns.recent.locked' : 'campaigns.recent.notice') }}</p>

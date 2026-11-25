@@ -323,6 +323,30 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-cancel]').click();
   });
 
+  it('shows remaining recipients and the exclusion history when resuming with the rule', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('GET', preflight, (req) => {
+      req.continue((res) => {
+        const d = res.body.data;
+        Object.assign(d, {
+          mode: 'resume', status: 'paused', remaining: 12, sent: 180, to_send: 300,
+          recent: { enabled: true, days: 14, scope: 'all', excluded: 7, held: 5 },
+        });
+        d.checks.push({
+          key: 'recent.applied', level: 'info', params: { days: 14, held: 5, fresh: 2 },
+        });
+      });
+    }).as('pf');
+    row('resume').find('[data-cy=btn-start]').click();
+    cy.wait('@pf');
+    ready();
+    cy.get('[data-cy=send-title]').should('contain', 'Resume sending to about 12 remaining people');
+    cy.get('[data-cy=send-recipients]').should('contain', '12');
+    cy.get('[data-cy=send-progress]').should('not.exist');
+    cy.get('[data-cy="send-check-recent.applied"]').should('contain', '5').and('contain', '2');
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
   it('offers a retry and a way on when the checks cannot be read', () => {
     cy.visit('/admin/campaigns');
     cy.intercept('GET', preflight, { statusCode: 500, body: { message: 'boom' } }).as('pf');

@@ -350,6 +350,7 @@
     "frontend/src/components/RecentSendExclude.vue",
     "frontend/src/recent-send-exclude.js",
     "cmd/axm_recent_exclude*.go",
+    "cmd/axm_recent_send_db_test.go",
     "internal/core/axm_recent_exclude*.go",
     "models/axm_recent_exclude.go"
    ],

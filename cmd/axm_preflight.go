@@ -141,6 +141,7 @@ type preflightFacts struct {
 	RecentScope    string
 	RecentExcluded int
 	RecentHeld     int
+	RecentFresh    int
 }
 
 // Hosts that stand for "not set up yet": the example from the stock install and the
@@ -185,6 +186,7 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 	if f.Mode == models.PreflightModeResume {
 		count = f.Remaining
 	}
+	recentAll := f.Mode != models.PreflightModeResume && count == 0 && f.RecentExcluded > 0 && f.Total > 0
 	switch {
 	case f.LiveLists == 0:
 		// A resumed campaign with nothing left only warns, like one with nobody left, and so
@@ -195,7 +197,7 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 			level = models.PreflightWarn
 		}
 		add("lists.none", level, nil)
-	case count == 0 && f.Mode != models.PreflightModeResume && f.RecentExcluded > 0 && f.Total > 0:
+	case recentAll:
 		// Everybody who could get it got a campaign lately: there is nobody to send to (LST-65).
 		add("recent.all", models.PreflightBlock, map[string]any{"days": f.RecentDays})
 	case count == 0:
@@ -260,10 +262,10 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 
 	// The rule is applied by the sender: an information line says who it leaves out (not a warning:
 	// it is what the person asked for). Resuming says who it left out already.
-	if f.RecentEnabled && f.CampType == models.CampaignTypeRegular && f.RecentExcluded+f.RecentHeld >= 0 {
+	if !recentAll && f.CampType == models.CampaignTypeRegular && (f.RecentEnabled || f.RecentHeld > 0) {
 		add("recent.applied", models.PreflightInfo, map[string]any{
 			"days": f.RecentDays, "scope": f.RecentScope, "excluded": f.RecentExcluded, "held": f.RecentHeld,
-			"fresh": max(f.RecentExcluded-f.RecentHeld, 0),
+			"fresh": f.RecentFresh,
 		})
 	}
 	return out
@@ -497,24 +499,22 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		on := false
-		if rule.Enabled {
-			if on, err = a.core.RecentRuleOn(id); err != nil {
-				return err
-			}
+		on, err := a.core.RecentRuleOn(id)
+		if err != nil {
+			return err
 		}
-		if on {
+		if on && (rule.Enabled || mode == models.PreflightModeResume) {
 			held, err := a.core.RecentHeldCount(id)
 			if err != nil {
 				return err
 			}
-			recent = recentFacts{Enabled: true, Days: rule.Days, Scope: rule.Scope, Excluded: aud.Recent, Held: held}
-			facts.RecentEnabled, facts.RecentDays, facts.RecentScope = true, rule.Days, rule.Scope
-			facts.RecentExcluded, facts.RecentHeld = aud.Recent, held
+			recent = recentFacts{Enabled: rule.Enabled, Days: rule.Days, Scope: rule.Scope, Excluded: aud.Recent, Held: held}
+			facts.RecentEnabled, facts.RecentDays, facts.RecentScope = rule.Enabled, rule.Days, rule.Scope
+			facts.RecentExcluded, facts.RecentHeld, facts.RecentFresh = aud.Recent, held, aud.RecentFresh
 		}
 	}
 
-	willSend := aud.Total - recent.Excluded
+	willSend := aud.Total - aud.Recent
 	if mode == models.PreflightModeResume {
 		willSend = aud.Remaining
 	}

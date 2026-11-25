@@ -1,12 +1,12 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -173,8 +173,8 @@ func TestRecentRuleWholeBatchesLeftOut(t *testing.T) {
 }
 
 // Who the campaign left out stays out: when the send records expire or the days pass while it is
-// paused, or the sender starts again; and when the rule is turned off while it is paused the people
-// left out are sent to again (the rule is what keeps them out).
+// paused, or the sender starts again. The rule stays locked after the first start, including when
+// a paused campaign is scheduled to resume later.
 func TestRecentRuleKeepsWhoWasLeftOut(t *testing.T) {
 	e := newSendsEnv(t, 10)
 	prior := e.rsPrior(models.CampaignTypeRegular, e.listID, map[int]time.Duration{e.eligible[1]: hours(6), e.eligible[4]: hours(6)})
@@ -215,10 +215,16 @@ func TestRecentRuleKeepsWhoWasLeftOut(t *testing.T) {
 	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, models.RecentRule{}, 0); err == nil {
 		t.Fatal("the rule of a paused campaign was changed")
 	}
-	// Taken away in the database, it leaves nobody out (the rule is what keeps them out).
-	e.db.MustExec(`DELETE FROM axm_campaign_recent_rules WHERE campaign_id=$1`, e.campID)
-	e.setStatus(models.CampaignStatusRunning)
-	wantSame(t, "rule gone", read(), e.eligible)
+	e.db.MustExec(`UPDATE campaigns SET send_at=NOW() + INTERVAL '1 hour' WHERE id=$1`, e.campID)
+	if _, err := e.q.UpdateCampaignStatus.Exec(e.campID, models.CampaignStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if s, _, _ := e.campaign(); s != models.CampaignStatusScheduled {
+		t.Fatalf("campaign status = %s, want scheduled", s)
+	}
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, models.RecentRule{}, 0); err == nil {
+		t.Fatal("the rule of a rescheduled campaign was changed")
+	}
 }
 
 // A person this campaign sent to is not left out afterwards, because another campaign sent to
@@ -261,7 +267,7 @@ func TestRecentRuleFailureSendsNothing(t *testing.T) {
 // The sender with a rule, paused and resumed, and killed and restarted (the same scenarios as the
 // campaigns without a rule): nobody left out gets it, everybody else gets it exactly once.
 func TestRecentRulePauseResumeAndRestart(t *testing.T) {
-	setup := func(n int) (*sendsEnv, []int, []int) {
+	setup := func(t *testing.T, n int) (*sendsEnv, []int, []int) {
 		e := newSendsEnv(t, n)
 		ago := map[int]time.Duration{}
 		var out []int
@@ -276,11 +282,49 @@ func TestRecentRulePauseResumeAndRestart(t *testing.T) {
 		return e, out, minus(e.eligible, out)
 	}
 
+	t.Run("pause during first read and resume twice", func(t *testing.T) {
+		e, out, want := setup(t, 24)
+		msgr := &gateMessenger{}
+		// Block the recent exclusion query after the sender has read eligible subscribers but before
+		// the first batch is passed to the workers.
+		e.setStatus(models.CampaignStatusPaused)
+		m := e.startManager(e.store, msgr, io.Discard)
+		t.Cleanup(m.Close)
+		for i := 0; i < 2; i++ {
+			readLock := e.db.MustBegin()
+			defer readLock.Rollback()
+			readLock.MustExec(`LOCK TABLE axm_campaign_recent_holds IN ACCESS EXCLUSIVE MODE`)
+			e.setStatus(models.CampaignStatusRunning)
+			waitFor(t, "first batch waiting for holds table", func() bool {
+				var waiting bool
+				e.get(&waiting, `SELECT EXISTS (SELECT 1 FROM pg_locks
+					WHERE relation='axm_campaign_recent_holds'::regclass AND NOT granted)`)
+				return waiting
+			})
+			e.setStatus(models.CampaignStatusPaused)
+			m.StopCampaign(e.campID)
+			if err := readLock.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "the pause to take effect", func() bool { return !m.HasRunningCampaigns() })
+			if got := msgr.sentIDs(); len(got) != 0 {
+				t.Fatalf("delivered %v before pause %d", got, i+1)
+			}
+		}
+		e.setStatus(models.CampaignStatusRunning)
+		e.waitCampaign("finished", len(want))
+		got := msgr.sentIDs()
+		noRepeats(t, slices.Clone(got))
+		wantSame(t, "delivered", got, want)
+		wantSame(t, "held", e.held(), out)
+	})
+
 	t.Run("pause and resume", func(t *testing.T) {
-		e, out, want := setup(45)
+		e, out, want := setup(t, 45)
 		msgr := &gateMessenger{allow: make(chan struct{})}
 		logs := &syncBuffer{}
 		m := e.startManager(e.store, msgr, logs)
+		t.Cleanup(m.Close)
 		for i := 0; i < 9; i++ {
 			select {
 			case msgr.allow <- struct{}{}:
@@ -308,7 +352,7 @@ func TestRecentRulePauseResumeAndRestart(t *testing.T) {
 	})
 
 	t.Run("killed and restarted", func(t *testing.T) {
-		e, out, want := setup(45)
+		e, out, want := setup(t, 45)
 		first := &gateMessenger{hangAfter: 11}
 		dying := e.dyingInstance(first)
 		e.startManager(dying, first, io.Discard)
@@ -319,7 +363,8 @@ func TestRecentRulePauseResumeAndRestart(t *testing.T) {
 
 		second := &gateMessenger{}
 		logs := &syncBuffer{}
-		e.startManagerWith(e.newStore(), second, logs, nil)
+		resumed := e.startManagerWith(e.newStore(), second, logs, nil)
+		t.Cleanup(resumed.Close)
 		waitFor(t, "the campaign to finish", func() bool { s, _, _ := e.campaign(); return s == models.CampaignStatusFinished })
 		delivered := append(slices.Clone(before), second.sentIDs()...)
 		noRepeats(t, delivered)
@@ -328,7 +373,7 @@ func TestRecentRulePauseResumeAndRestart(t *testing.T) {
 	})
 
 	t.Run("closed and restarted", func(t *testing.T) {
-		e, _, want := setup(45)
+		e, _, want := setup(t, 45)
 		first := &gateMessenger{allow: make(chan struct{})}
 		m := e.startManager(e.store, first, io.Discard)
 		for i := 0; i < 7; i++ {
@@ -339,7 +384,8 @@ func TestRecentRulePauseResumeAndRestart(t *testing.T) {
 		m.Close()
 		before := first.sentIDs()
 		second := &gateMessenger{}
-		e.startManagerWith(e.newStore(), second, io.Discard, nil)
+		resumed := e.startManagerWith(e.newStore(), second, io.Discard, nil)
+		t.Cleanup(resumed.Close)
 		waitFor(t, "the campaign to finish", func() bool { s, _, _ := e.campaign(); return s == models.CampaignStatusFinished })
 		delivered := append(slices.Clone(before), second.sentIDs()...)
 		noRepeats(t, delivered)
@@ -448,6 +494,14 @@ func TestPreflightRecentMatchesSend(t *testing.T) {
 	if fresh != aud.Remaining {
 		t.Fatalf("remaining %d, the sender sends %d", aud.Remaining, fresh)
 	}
+
+	// Someone held before has unsubscribed, and a different person now matches the rule.
+	e.db.MustExec(`UPDATE subscriber_lists SET status='unsubscribed' WHERE list_id=$1 AND subscriber_id=$2`, l, subs[8])
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, prior, subs[10])
+	_, aud, err = e.core.GetPreflightAudience(ctx, camp, subs[5], true)
+	if err != nil || aud.RecentFresh != 1 || aud.Remaining != 4 {
+		t.Fatalf("resume with new exclusion: %+v: %v", aud, err)
+	}
 }
 
 // The migration's SQL is the block of schema.sql, runs twice without harm, and a plain install
@@ -507,8 +561,8 @@ func TestRecentHoldsGoWithCampaignAndSubscriber(t *testing.T) {
 }
 
 // The rule is "on" the same way for the sender, the people it left out, the page and the window: a
-// rule on chosen campaigns that were all deleted is off (nobody is left out any more, those kept
-// out earlier too), and a follow-up has none whatever its row says.
+// rule on chosen campaigns that were all deleted has no new matches. Previously held people stay
+// out, and a follow-up has no rule whatever its row says.
 func TestRecentRuleOn(t *testing.T) {
 	e := newSendsEnv(t, 4)
 	ctx := context.Background()
@@ -534,17 +588,21 @@ func TestRecentRuleOn(t *testing.T) {
 	if err != nil || counts.Excluded != 1 || counts.WillSend != counts.Target-1 {
 		t.Fatalf("preview %+v: %v", counts, err)
 	}
-	// All the chosen campaigns are deleted: the rule is off, for the sender as for the page.
+	// The rule has no live sources, but its history still applies.
 	e.db.MustExec(`DELETE FROM campaigns WHERE id=$1`, prior)
-	if on() {
-		t.Fatal("the rule is on with no campaign left to count")
+	if !on() {
+		t.Fatal("the sender no longer applies the saved rule's holds")
 	}
 	rule, err := e.core.GetRecentRule(e.campID)
 	if err != nil || rule.Enabled {
 		t.Fatalf("page rule %+v: %v", rule, err)
 	}
-	if got, _ := e.core.HoldRecentBatch(ctx, e.campID, e.eligible); len(got) != 0 {
-		t.Fatalf("left out %v by a rule that is off", got)
+	if got, err := e.core.HoldRecentBatch(ctx, e.campID, e.eligible); err != nil || !got[e.eligible[1]] || len(got) != 1 {
+		t.Fatalf("holds after source deletion = %v: %v", got, err)
+	}
+	_, aud, err := e.core.GetPreflightAudience(ctx, e.campID, 0, true)
+	if err != nil || aud.Remaining != len(e.eligible)-1 || aud.RecentFresh != 0 {
+		t.Fatalf("resume after source deletion: %+v: %v", aud, err)
 	}
 
 	// A follow-up with a row from before this version: off.

@@ -40,8 +40,10 @@ type PreflightAudience struct {
 	Excluded  int `db:"excluded" json:"excluded"`
 	Remaining int `db:"remaining" json:"remaining"`
 	// Recent (LST-65) is how many of Total the campaign's recent-send rule leaves out of the send.
-	Recent int       `db:"recent" json:"-"`
-	AsOf   time.Time `db:"as_of" json:"as_of"`
+	Recent int `db:"recent" json:"-"`
+	// RecentFresh counts new exclusions in the remaining audience when resuming.
+	RecentFresh int       `db:"recent_fresh" json:"-"`
+	AsOf        time.Time `db:"as_of" json:"as_of"`
 }
 
 // PreflightRow is a row of axm-preflight-audience: a list and the totals of all lists.

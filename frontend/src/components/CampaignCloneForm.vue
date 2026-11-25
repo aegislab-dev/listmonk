@@ -63,6 +63,9 @@
            original, or goes without one. -->
       <div v-if="ruleState === 'error'" class="clone-received is-note" data-cy="clone-rule-error" role="status">
         {{ $t('campaigns.clone.ruleLoadFailed') }}
+        <b-button size="is-small" outlined class="ml-2" data-cy="clone-rule-retry" @click="loadRule">
+          {{ $t('campaigns.sendConfirm.retry') }}
+        </b-button>
       </div>
 
       <fieldset v-if="showRule" class="clone-rule" data-cy="clone-rule">
@@ -107,7 +110,7 @@
 
 <script>
 import ListSelector from './ListSelector.vue';
-import { recentRulePayload } from '../recent-send-exclude';
+import { defaultRecentRule, recentRulePayload } from '../recent-send-exclude';
 
 // Where the copy's lists start (LST-59). false: empty, the person picks them (the original's
 // lists are one click away). true: the original's lists are filled in at the start. This is
@@ -143,7 +146,7 @@ export default {
       // ruleState: 'loading' until the original's rule is read, then 'ok' or 'error' (the copy waits for it).
       ruleState: this.campaign.type === 'regular' ? 'loading' : 'ok',
       ruleOffered: false,
-      original: { enabled: false, days: 14, scope: 'all', campaignIds: [] },
+      original: defaultRecentRule(),
       choice: 'none',
       choiceTouched: false,
       inherited: { state: 'none', excluded: 0, target: 0 },
@@ -183,7 +186,7 @@ export default {
     // Once offered it stays: a count that is read again (lists changed) must not take a choice away.
     showRule() {
       if (this.campaign.type !== 'regular') return false;
-      return this.ruleOffered || this.original.enabled || (this.received.state === 'ok' && this.received.excluded > 0);
+      return this.ruleState === 'error' || this.ruleOffered || this.original.enabled || (this.received.state === 'ok' && this.received.excluded > 0);
     },
 
     // What the copy will do, as the box says it.
@@ -215,9 +218,10 @@ export default {
       });
     },
 
-    // The button is never held back by the count: only a name and one list are needed.
+    // The counts are optional. If reading the rule fails, require an explicit choice.
     canClone() {
-      return !this.busy && this.ruleState !== 'loading' && this.name.trim() !== '' && this.selected.length > 0;
+      const hasRuleChoice = this.ruleState === 'ok' || (this.ruleState === 'error' && this.choiceTouched);
+      return !this.busy && hasRuleChoice && this.name.trim() !== '' && this.selected.length > 0;
     },
   },
 
@@ -251,9 +255,9 @@ export default {
         .map(({ id, name }) => ({ id, name }));
     },
 
-    // The original's rule: absent or unreadable is "no rule" (the copy is never held back by it).
     async loadRule() {
       if (this.campaign.type !== 'regular') return;
+      this.ruleState = 'loading';
       try {
         const rule = await this.$api.getRecentRule(this.campaign.id);
         if (rule && rule.enabled) {
@@ -261,12 +265,13 @@ export default {
             enabled: true, days: rule.days, scope: rule.scope, campaignIds: rule.campaignIds || [],
           };
           // Starts on the original's rule, unless the person chose before it was read.
-          if (!this.choiceTouched) this.choice = 'inherit';
         }
+        if (!this.choiceTouched) this.choice = this.original.enabled ? 'inherit' : 'none';
         this.ruleState = 'ok';
         this.schedulePreview();
       } catch (e) {
-        // The rule could not be read: the copy goes without one, and the window says so.
+        this.choice = '';
+        this.choiceTouched = false;
         this.ruleState = 'error';
       }
     },

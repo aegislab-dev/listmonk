@@ -123,7 +123,7 @@
               <div v-if="stale" class="send-was" data-cy="send-when-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.when }) }}</div>
             </div>
           </div>
-          <div v-if="isResume" class="send-row" data-cy="send-progress">
+          <div v-if="isResume && !(pf.recent && (pf.recent.enabled || pf.recent.held))" class="send-row" data-cy="send-progress">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.progress') }}</div>
             <div class="send-v">
               <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(pf.toSend, pf.sent, 1)" />

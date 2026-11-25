@@ -183,7 +183,7 @@ func (a *App) PutRecentRule(c echo.Context) error {
 		return err
 	}
 	// AXM (LST-65): the rule is fixed once the campaign starts (a pause does not open it).
-	if !models.CanEditRecentRule(cm.Status) {
+	if !models.CanEditRecentRule(cm.Status, cm.StartedAt.Valid) {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.cantUpdate"))
 	}
 	var rule models.RecentRule

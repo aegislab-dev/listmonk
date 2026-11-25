@@ -493,7 +493,7 @@ func TestCampaignPreflightHandler(t *testing.T) {
 	for _, c := range out.Checks {
 		level[c.Key] = c.Level
 	}
-	if got.WillSend != 0 || level["recent.all"] != "block" || level["recipients.zero"] != "" {
+	if got.WillSend != 0 || level["recent.all"] != "block" || level["recent.applied"] != "" || level["recipients.zero"] != "" {
 		t.Fatalf("everybody left out: %s", data)
 	}
 }

@@ -134,11 +134,17 @@ func TestPreflightChecks(t *testing.T) {
 			map[string]string{"from.placeholder": "ok"}},
 		{"opt-in campaigns have no such line", with(func(f *preflightFacts) { f.CampType, f.Unsubscribe = "optin", false }),
 			map[string]string{"from.placeholder": "ok"}},
-		{"recent rule with the number is information, not a warning", with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 42 }),
+		{"recent rule with the number is information, not a warning", with(func(f *preflightFacts) {
+			f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 42
+		}),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.applied": "info"}},
-		{"recent rule that leaves out everybody blocks", with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 300 }),
-			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.applied": "info", "recent.all": "block"}},
-		{"recent rule that leaves out all but some does not block", with(func(f *preflightFacts) { f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 299 }),
+		{"recent rule that leaves out everybody blocks", with(func(f *preflightFacts) {
+			f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 300
+		}),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.all": "block"}},
+		{"recent rule that leaves out all but some does not block", with(func(f *preflightFacts) {
+			f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 299
+		}),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.applied": "info"}},
 		{"recent rule on resume with nobody left only warns", with(func(f *preflightFacts) {
 			f.Mode, f.Remaining, f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded, f.RecentHeld = "resume", 0, true, 14, "all", 300, 300

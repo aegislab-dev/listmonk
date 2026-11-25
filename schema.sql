@@ -1555,10 +1555,8 @@ CREATE TABLE IF NOT EXISTS axm_campaign_recent_holds (
     held_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (campaign_id, subscriber_id)
 );
--- Whether the recent-send rule of campaign p_campaign is on, as the campaign page and the send window
--- read it: there is a rule, the campaign is a regular one that is not a follow-up (the rule is not
--- applied to a follow-up), and a rule on chosen campaigns still has one of them (a rule whose
--- campaigns were all deleted is off). The sender, the people it left out and the window all ask this.
+-- Whether the sender must apply the saved rule and preserve its holds. A rule whose chosen
+-- campaigns were all deleted has no new matches, but any existing holds still apply.
 CREATE OR REPLACE FUNCTION axm_recent_rule_on(p_campaign INT)
 RETURNS BOOL LANGUAGE SQL STABLE AS $$
     SELECT EXISTS (
@@ -1566,8 +1564,6 @@ RETURNS BOOL LANGUAGE SQL STABLE AS $$
         JOIN campaigns own ON own.id = rule.campaign_id AND own.type = 'regular'
         WHERE rule.campaign_id = p_campaign
             AND NOT EXISTS (SELECT 1 FROM axm_campaign_followups f WHERE f.campaign_id = p_campaign)
-            AND (rule.scope <> 'campaigns' OR EXISTS (
-                SELECT 1 FROM campaigns c WHERE c.id = ANY(rule.campaign_ids) AND c.type = 'regular' AND c.id <> p_campaign))
     );
 $$;
 -- Which of p_subs the recent-send rule of campaign p_campaign leaves out now: the people with a send
@@ -1600,12 +1596,14 @@ RETURNS TABLE(subscriber_id INT) LANGUAGE SQL STABLE AS $$
     )
     SELECT s.id
     FROM unnest(p_subs) AS s(id), r
-    WHERE EXISTS (
-            SELECT 1 FROM axm_campaign_sends cs
-            WHERE cs.subscriber_id = s.id
-                AND cs.sent_at > NOW() - make_interval(days => r.days)
-                AND cs.campaign_id IN (SELECT id FROM camps)
-        )
+    CROSS JOIN LATERAL (
+        SELECT 1 FROM axm_campaign_sends cs
+        WHERE cs.subscriber_id = s.id
+            AND cs.sent_at > NOW() - make_interval(days => r.days)
+            AND cs.campaign_id = ANY(ARRAY(SELECT id FROM camps))
+        LIMIT 1
+    ) received
+    WHERE EXISTS (SELECT 1 FROM camps)
         AND NOT EXISTS (
             SELECT 1 FROM axm_campaign_sends own
             WHERE own.campaign_id = p_campaign AND own.subscriber_id = s.id

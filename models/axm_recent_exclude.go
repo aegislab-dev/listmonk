@@ -49,8 +49,8 @@ func CanEditCampaign(status string) bool {
 // CanEditRecentRule reports whether the recent-send rule of a campaign can be changed (LST-65): only
 // before the campaign starts. Once it has started the rule decides who it leaves out, so a pause does
 // not open it (turning it off would let the people it left out in again).
-func CanEditRecentRule(status string) bool {
-	return status == CampaignStatusDraft || status == CampaignStatusScheduled
+func CanEditRecentRule(status string, started bool) bool {
+	return !started && (status == CampaignStatusDraft || status == CampaignStatusScheduled)
 }
 
 // RecentSourceList is one list the exclusion result was made from.
