@@ -488,16 +488,17 @@ func TestScheduledSaveOfAPausedThenScheduledCampaign(t *testing.T) {
 			member := e.as(e.superAdmin)
 			l1, l2 := e.pfList("single", ""), e.pfList("single", "")
 			var xs []int
-			for i := 0; i < 4; i++ {
+			const total, sentBefore = 40, 20
+			for i := 0; i < total; i++ {
 				xs = append(xs, e.pfSub("enabled", "", map[int]string{l1: "confirmed"}))
 			}
-			e.db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$3,'confirmed'),($2,$3,'confirmed')`, xs[0], xs[1], l2)
 			e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, l1)
-			e.db.MustExec(`UPDATE campaigns SET status='paused', to_send=4 WHERE id=$1`, e.campID)
+			e.db.MustExec(`UPDATE campaigns SET status='paused', to_send=$2 WHERE id=$1`, e.campID, total)
 			if savedProgress {
-				e.db.MustExec(`UPDATE campaigns SET last_subscriber_id=$2, sent=2 WHERE id=$1`, e.campID, xs[1])
+				e.db.MustExec(`UPDATE campaigns SET last_subscriber_id=$2, sent=$3 WHERE id=$1`, e.campID, xs[sentBefore-1], sentBefore)
 			}
-			for _, id := range xs[:2] {
+			for _, id := range xs[:sentBefore] {
+				e.db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'confirmed')`, id, l2)
 				e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, e.campID, id)
 			}
 
@@ -510,8 +511,16 @@ func TestScheduledSaveOfAPausedThenScheduledCampaign(t *testing.T) {
 			if err := json.Unmarshal(data, &out); err != nil {
 				t.Fatal(err)
 			}
-			if out.Mode != "scheduled" || !out.Resumed || out.Recipients != 4 || out.Remaining != 2 {
+			if out.Mode != "scheduled" || !out.Resumed || out.Recipients != total ||
+				out.Remaining != total-sentBefore || out.Sent != sentBefore || out.ToSend != total {
 				t.Fatalf("answer: %s", data)
+			}
+			if !savedProgress {
+				var sent int
+				e.get(&sent, `SELECT sent FROM campaigns WHERE id=$1`, e.campID)
+				if sent != 0 {
+					t.Fatalf("preflight wrote the campaign's progress: %d", sent)
+				}
 			}
 
 			tomorrow := time.Now().Add(24 * time.Hour)

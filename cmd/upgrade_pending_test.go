@@ -78,3 +78,22 @@ func TestGetPendingMigrationsFromDB(t *testing.T) {
 		t.Fatalf("%d of %d, %v", len(toRun), len(migList), err)
 	}
 }
+
+func TestCampaignCountUpgradeSmoke(t *testing.T) {
+	e := newSendsEnv(t, 0)
+	e.db.MustExec(`INSERT INTO settings (key, value) VALUES ('migrations', '["v6.2.1-axm.17"]')
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`)
+	e.db.MustExec(`DROP FUNCTION axm_filter_members_unlimited(JSONB, INT, INT, INT)`)
+	for i := 0; i < 2; i++ {
+		upgrade(e.db, nil, false, true)
+		var recorded string
+		e.get(&recorded, `SELECT value->>-1 FROM settings WHERE key = 'migrations'`)
+		if recorded != "v6.2.1-axm.18" {
+			t.Fatalf("upgrade %d: got %s", i+1, recorded)
+		}
+		last, pending, err := getPendingMigrations(e.db)
+		if err != nil || last != recorded || len(pending) != 0 {
+			t.Fatalf("upgrade %d: %s, %+v, %v", i+1, last, names(pending), err)
+		}
+	}
+}

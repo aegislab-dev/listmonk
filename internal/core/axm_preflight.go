@@ -190,19 +190,15 @@ func (c *Core) GetCampaignPausedAt(id int, fallback null.Time) null.Time {
 	return at
 }
 
-// CampaignHasSendProgress reports whether a campaign already started sending. The ledger
-// can contain deliveries even when neither the sent count nor the checkpoint was saved.
-func (c *Core) CampaignHasSendProgress(ctx context.Context, camp models.Campaign) (bool, error) {
-	if camp.LastSubscriberID > 0 || camp.Sent > 0 {
-		return true, nil
-	}
-
-	var sent bool
-	err := c.db.GetContext(ctx, &sent, `SELECT EXISTS (
-		SELECT 1 FROM axm_campaign_sends WHERE campaign_id = $1
-		UNION ALL
-		SELECT 1 FROM axm_campaign_followup_claims WHERE campaign_id = $1 AND sent
-	)`, camp.ID)
+// CampaignRecordedSends counts deliveries the ledger or follow-up decisions record,
+// including those recorded before the campaign's progress counters were saved.
+func (c *Core) CampaignRecordedSends(ctx context.Context, id int) (int, error) {
+	var sent int
+	err := c.db.GetContext(ctx, &sent, `SELECT
+		(SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1) +
+		(SELECT COUNT(*) FROM axm_campaign_followup_claims k WHERE k.campaign_id = $1 AND k.sent
+			AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends s
+				WHERE s.campaign_id = k.campaign_id AND s.subscriber_id = k.subscriber_id))`, id)
 	return sent, err
 }
 

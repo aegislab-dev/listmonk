@@ -35,6 +35,7 @@ test('start: title and button carry the number, nothing is disabled', () => {
   assert.deepEqual(m.title.params, { n: 300 });
   assert.equal(m.sub.key, 'campaigns.sendConfirm.sub.start');
   assert.equal(m.confirm.key, 'campaigns.sendConfirm.confirm.start');
+  assert.equal(m.targetStatus, 'running');
   assert.equal(m.disabled, false);
   assert.equal(m.warnings, 0);
   assert.equal(m.when, null);
@@ -54,6 +55,7 @@ test('warnings rename the button and count in the subtitle, but do not disable i
 test('schedule: the time with its zone, the time left, and the title in the zone', () => {
   const m = model({ mode: 'schedule', sendAt: '2026-11-20T00:00:00Z' });
   assert.equal(m.title.key, 'campaigns.sendConfirm.title.schedule');
+  assert.equal(m.targetStatus, 'scheduled');
   assert.deepEqual(m.title.params, { n: 300, month: '11', day: '20', time: '09:00' });
   assert.equal(m.when.text, '2026-11-20 (금) 09:00');
   assert.equal(m.when.zone, 'Asia/Seoul');
@@ -272,6 +274,7 @@ test('scheduled: warnings count in the subtitle and the one way on is keeping th
   assert.equal(m.warnings, 2);
   assert.deepEqual(m.sub, { key: 'campaigns.sendConfirm.sub.scheduledWarn', params: { n: 2 } });
   assert.equal(m.confirm.key, 'campaigns.sendConfirm.review.keep');
+  assert.equal(m.targetStatus, null);
   assert.equal(m.disabled, false);
 });
 

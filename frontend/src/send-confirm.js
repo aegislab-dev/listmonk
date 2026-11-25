@@ -191,10 +191,12 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   const confirmKey = scheduled
     ? `${K}.review.keep`
     : `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
+  const targetStatus = schedule ? 'scheduled' : 'running';
   const asOf = pf.asOf ? new Date(pf.asOf) : null;
 
   return {
     mode: pf.mode,
+    targetStatus: scheduled ? null : targetStatus,
     count: n,
     title,
     sub,

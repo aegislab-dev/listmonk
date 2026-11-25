@@ -300,7 +300,8 @@
       :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
       @close="sendAsk = null">
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
-        :campaign-name="sendAsk.name" @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" />
+        :campaign-name="sendAsk.name" @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone"
+        @kept="getCampaigns()" />
     </b-modal>
   </section>
 </template>

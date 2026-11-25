@@ -22,6 +22,7 @@ import (
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 	"gopkg.in/volatiletech/null.v6"
 )
 
@@ -1058,6 +1059,37 @@ func TestPreflightSpeed(t *testing.T) {
 			t.Logf("save      %-26s run %d: %8s", c.name, i, elapsed.Round(time.Millisecond))
 			if n == 400000 && elapsed > time.Second {
 				t.Errorf("save %s run %d exceeded 1s", c.name, i)
+			}
+		}
+	}
+
+	// The count and preflight must stay fast when the scope is small even in a large database.
+	sparseBase := e.pfList("single", "")
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status)
+		SELECT id, $1, 'confirmed' FROM subscribers WHERE id > 2 ORDER BY id LIMIT 32`, sparseBase)
+	e.db.MustExec(`ANALYZE subscriber_lists`)
+	for _, op := range []string{"contains", "eq"} {
+		filter := strings.Replace(dynFilter(sparseBase), `"op":"eq"`, `"op":"`+op+`"`, 1)
+		listID := e.pfList("single", filter)
+		campaign := e.pfCampaign("regular", "draft", listID)
+		want := min(n, 32) / 3
+		for i := 1; i <= 3; i++ {
+			var list struct{ ID, Count int }
+			start := time.Now()
+			if err := e.q.AxmDynamicListCounts.Get(&list, pq.Array([]int{listID})); err != nil {
+				t.Fatal(err)
+			}
+			countTime := time.Since(start)
+			start = time.Now()
+			_, aud, err := e.core.GetPreflightAudience(ctx, campaign, 0, false)
+			preflightTime := time.Since(start)
+			if err != nil || list.ID != listID || list.Count != want || aud.Total != want {
+				t.Fatalf("narrow %s: list %+v, audience %+v, want %d: %v", op, list, aud, want, err)
+			}
+			t.Logf("narrow %s run %d: count %s, preflight %s, total %d",
+				op, i, countTime.Round(time.Microsecond), preflightTime.Round(time.Microsecond), want)
+			if n == 400000 && (countTime > time.Second || preflightTime > time.Second) {
+				t.Errorf("narrow %s run %d exceeded 1s", op, i)
 			}
 		}
 	}

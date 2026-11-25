@@ -181,6 +181,24 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-cancel]').click();
   });
 
+  it('keeps the schedule when another session schedules the campaign after the list loads', () => {
+    cy.then(() => create('scheduled-elsewhere', {
+      lists: [listX], send_at: new Date(Date.now() + 86400000).toISOString(),
+    }));
+    cy.visit('/admin/campaigns');
+    row('scheduled-elsewhere').find('[data-cy=btn-schedule]').should('exist');
+    cy.then(() => cy.request('PUT', `/api/campaigns/${camp['scheduled-elsewhere']}/status`, { status: 'scheduled' }))
+      .its('body.data.status').should('eq', 'scheduled');
+
+    cy.intercept('PUT', statusPath).as('status');
+    row('scheduled-elsewhere').find('[data-cy=btn-schedule]').click();
+    ready();
+    cy.get('[data-cy=send-ok]').should('contain', 'keep the schedule').click();
+    cy.get(win).should('not.exist');
+    row('scheduled-elsewhere').find('[data-cy=btn-schedule]').should('not.exist');
+    cy.get('@status.all').should('have.length', 0);
+  });
+
   it('says in the window that a saved exclusion rule is not applied, from the list too', () => {
     cy.visit('/admin/campaigns');
     row('rule').find('[data-cy=btn-start]').click();

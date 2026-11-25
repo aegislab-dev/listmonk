@@ -354,16 +354,16 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	rescheduled := false
-	if mode == models.PreflightModeScheduled {
-		rescheduled = aud.Remaining != aud.Total
-		if !rescheduled {
-			rescheduled, err = a.core.CampaignHasSendProgress(ctx, camp)
-			if err != nil {
-				return err
-			}
+	sent := camp.Sent
+	if countRemaining {
+		recorded, err := a.core.CampaignRecordedSends(ctx, id)
+		if err != nil {
+			return err
 		}
+		// A stored count can lead the retained ledger, for example after records expire.
+		sent = max(sent, recorded)
 	}
+	rescheduled := mode == models.PreflightModeScheduled && (aud.Remaining != aud.Total || sent > 0 || camp.LastSubscriberID > 0)
 
 	// A draft started under the sender policy is sent from the starting user's address.
 	from := camp.FromEmail
@@ -507,7 +507,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode, Resumed: rescheduled,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
-		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
+		Sent: sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
 		Checks: preflightChecks(facts),
 	}
 	if tz, ok := camp.Attribs["axm_send_tz"].(string); ok {

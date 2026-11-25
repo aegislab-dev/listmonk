@@ -197,12 +197,14 @@ import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 const fingerprint = (pf) => {
   const v = new Set(pf.varies || []);
   const keep = (part, value) => (v.has(part) ? null : value);
+  const progress = pf.mode === 'resume' || pf.resumed ? [pf.sent, pf.toSend] : null;
   return JSON.stringify([
     pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, [...v].sort(), pf.senderPerSubscriber,
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
     // Each header's own list: the merged list drops an address of the Bcc that the Cc also has.
     keep('cc', (pf.copyLists || {}).cc), keep('bcc', (pf.copyLists || {}).bcc),
-    pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.name, l.count, l.deleted]),
+    pf.recipients, pf.remaining, progress,
+    (pf.lists || []).map((l) => [l.id, l.name, l.count, l.deleted]),
     (pf.checks || []).filter((c) => c.key !== 'schedule.past')
       .map((c) => {
         // The addresses are compared above, kind by kind; the line itself by its count.
@@ -399,14 +401,6 @@ export default Vue.extend({
       return was === undefined || was === l.count ? null : was;
     },
 
-    // The status to ask for. What was read decides: a campaign that was changed under the window
-    // (a schedule taken off, or put on) is started or scheduled as it is now, not as it was
-    // when the window was opened. Without a reading, the one the caller asked for.
-    statusToAsk(blind) {
-      if (blind || !this.pf) return this.status;
-      return this.pf.mode === 'schedule' ? 'scheduled' : 'running';
-    },
-
     // The send time passed while the window is open: the status change now sends at once.
     // Say so the way the server does (schedule.past) and tell whether it was added now.
     markPast() {
@@ -506,6 +500,13 @@ export default Vue.extend({
     // changed-since check (there is nothing that was shown).
     async confirm(blind) {
       if (this.busy) return;
+      // A different session may have scheduled it before this window read the campaign.
+      const targetStatus = blind || !this.model ? this.status : this.model.targetStatus;
+      if (targetStatus === null) {
+        this.$emit('kept');
+        this.$parent.close();
+        return;
+      }
       // The send time may have passed since the last tick: show that first, do not send.
       this.now = this.serverNow();
       if (!blind && this.markPast()) return;
@@ -536,7 +537,7 @@ export default Vue.extend({
         }
         const out = await this.$api.changeCampaignStatus(
           this.campaignId,
-          this.statusToAsk(blind),
+          targetStatus,
           blind ? undefined : this.pf.updatedAt,
           { disableToast: true },
           // The server refuses a passed send time that the window did not show (412).
