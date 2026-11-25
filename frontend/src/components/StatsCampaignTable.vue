@@ -4,7 +4,7 @@
     <h2>
       ② {{ $t('stats.recent') }}
       <span v-if="team" class="st-tag" data-cy="team-filter">{{ $t('stats.team') }}: {{ teamName }}
-        <a href="#" @click.prevent="$emit('clear')" @keyup.enter="$emit('clear')" :title="$t('globals.buttons.clear')">✕</a></span>
+        <a href="#" @click.prevent="$emit('clear')" @keyup.enter="$emit('clear')" :title="$t('globals.buttons.clear')">×</a></span>
       <small>{{ team ? $t('stats.recentTeamNote', { total: total, shown: shown.length }) : $t('stats.recentNote', { n: shown.length }) }}</small>
     </h2>
     <table class="st-table">
