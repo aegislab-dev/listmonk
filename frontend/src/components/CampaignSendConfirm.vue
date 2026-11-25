@@ -122,7 +122,7 @@
           <div v-if="isResume" class="send-row" data-cy="send-progress">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.progress') }}</div>
             <div class="send-v">
-              <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(pf.toSend, pf.sent, 1)" />
+              <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(progress.total, 1)" />
               <div class="has-text-grey" data-cy="send-progress-text">{{ progressText }}</div>
               <div class="send-sum" data-cy="send-recipients">
                 {{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}
@@ -184,7 +184,7 @@
 <script>
 import Vue from 'vue';
 import dayjs from 'dayjs';
-import { richParts, sendConfirmModel, untilKey } from '../send-confirm';
+import { richParts, sendConfirmModel, sendProgress, untilKey } from '../send-confirm';
 import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 
 // What a reading of the checks shows, to tell whether a new reading differs from the one on
@@ -197,7 +197,7 @@ import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 const fingerprint = (pf) => {
   const v = new Set(pf.varies || []);
   const keep = (part, value) => (v.has(part) ? null : value);
-  const progress = pf.mode === 'resume' || pf.resumed ? [pf.sent, pf.toSend] : null;
+  const progress = pf.mode === 'resume' || pf.resumed ? [pf.sent, pf.sentMax, pf.toSend] : null;
   return JSON.stringify([
     pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, [...v].sort(), pf.senderPerSubscriber,
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
@@ -295,8 +295,10 @@ export default Vue.extend({
       return out;
     },
 
+    progress() { return sendProgress(this.pf); },
+
     progressText() {
-      const p = { sent: this.pf.sent, total: Math.max(this.pf.toSend, this.pf.sent) };
+      const p = this.progress;
       if (!this.pf.pausedAt) return this.$t('campaigns.sendConfirm.progress', p);
       return this.$t('campaigns.sendConfirm.progressPaused', { ...p, time: dayjs(this.pf.pausedAt).format('YYYY-MM-DD HH:mm') });
     },

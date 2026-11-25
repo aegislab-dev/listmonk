@@ -130,6 +130,15 @@ export const checkLines = (pf) => {
     .map(({ l }) => l);
 };
 
+// Use the same progress figures in the label and the bar.
+export const sendProgress = (pf) => {
+  const upper = Math.max(pf.sent, pf.sentMax || 0);
+  return {
+    sent: upper > pf.sent ? `${pf.sent}–${upper}` : pf.sent,
+    total: Math.max(pf.toSend, upper),
+  };
+};
+
 // The whole window for an answer: title, button, whether it can be confirmed, the lines.
 export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {}) => {
   const resume = pf.mode === 'resume';

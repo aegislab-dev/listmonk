@@ -748,6 +748,7 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM recent-send exclusion. Keep this block identical to V6_2_1_axm_13.", "-- End of AXM recent-send exclusion.", "v6.2.1-axm.13.go"},
 		{"-- AXM bounced addresses (LST-56). Keep this block identical to V6_2_1_axm_16.", "-- End of AXM bounced addresses.", "v6.2.1-axm.16.go"},
 		{"-- AXM unbounded dynamic list membership (LST-67). Keep this block identical to V6_2_1_axm_18.", "-- End of AXM unbounded dynamic list membership.", "v6.2.1-axm.18.go"},
+		{"-- AXM preserve removed send totals (LST-67). Keep this block identical to V6_2_1_axm_20.", "-- End of AXM preserve removed send totals.", "v6.2.1-axm.20.go"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
 		if err != nil {
@@ -779,10 +780,14 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 	// 32: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
 	// axm_followup_reaction, axm_followup_recipients, axm_followup_to_send and axm_followup_recount
 	// (LST-47, .17; their parity is in TestFollowupSchemaAndMigration). LST-67 adds
-	// axm_filter_members_unlimited.
-	if len(before) != 33 {
-		t.Fatalf("expected 33 axm functions, got %d", len(before))
+	// axm_filter_members_unlimited and two functions for preserving removed send totals.
+	if len(before) != 35 {
+		t.Fatalf("expected 35 axm functions, got %d", len(before))
 	}
+	db.MustExec(`DROP TRIGGER axm_count_removed_campaign_sends ON axm_campaign_sends;
+		DROP TRIGGER axm_lock_send_campaigns_on_subscriber_delete ON subscribers;
+		DROP FUNCTION axm_count_removed_campaign_sends();
+		DROP FUNCTION axm_lock_send_campaigns_on_subscriber_delete()`)
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.
 	db.MustExec(`DROP FUNCTION axm_recent_exclusion(INT[], INT, TEXT, INT[], INT);
@@ -830,6 +835,9 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := migrations.V6_2_1_axm_18(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_20(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

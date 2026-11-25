@@ -84,12 +84,14 @@ func TestCampaignCountUpgradeSmoke(t *testing.T) {
 	e.db.MustExec(`INSERT INTO settings (key, value) VALUES ('migrations', '["v6.2.1-axm.17"]')
 		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`)
 	e.db.MustExec(`DROP FUNCTION axm_filter_members_unlimited(JSONB, INT, INT, INT)`)
+	e.db.MustExec(`DROP TRIGGER axm_count_removed_campaign_sends ON axm_campaign_sends;
+		DROP TRIGGER axm_lock_send_campaigns_on_subscriber_delete ON subscribers`)
 	e.db.MustExec(`DROP TABLE axm_campaign_expired_sends`)
 	for i := 0; i < 2; i++ {
 		upgrade(e.db, nil, false, true)
 		var recorded string
 		e.get(&recorded, `SELECT value->>-1 FROM settings WHERE key = 'migrations'`)
-		if recorded != "v6.2.1-axm.19" {
+		if recorded != "v6.2.1-axm.20" {
 			t.Fatalf("upgrade %d: got %s", i+1, recorded)
 		}
 		var count int

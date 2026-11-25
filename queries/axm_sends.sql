@@ -47,7 +47,7 @@ SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscrib
 SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1;
 
 -- name: axm-delete-campaign-sends
--- Delete a batch and carry over its count atomically, without retaining recipient IDs.
+-- Delete a batch. The ledger's delete trigger carries its count forward.
 WITH due AS MATERIALIZED (
     SELECT ctid, campaign_id FROM axm_campaign_sends WHERE sent_at < $1 LIMIT $2
 ),
@@ -61,18 +61,6 @@ locked AS MATERIALIZED (
 d AS (
     DELETE FROM axm_campaign_sends s USING due, locked
     WHERE s.ctid = due.ctid AND s.campaign_id = locked.id
-    RETURNING s.campaign_id, s.subscriber_id
-),
-expired AS (
-    INSERT INTO axm_campaign_expired_sends AS tally (campaign_id, sent)
-    SELECT d.campaign_id, COUNT(*) FROM d
-    -- A surviving follow-up decision already records this delivery.
-    WHERE NOT EXISTS (
-        SELECT 1 FROM axm_campaign_followup_claims k
-        WHERE k.campaign_id = d.campaign_id AND k.subscriber_id = d.subscriber_id AND k.sent
-    )
-    GROUP BY d.campaign_id
-    ORDER BY d.campaign_id
-    ON CONFLICT (campaign_id) DO UPDATE SET sent = tally.sent + EXCLUDED.sent
+    RETURNING 1
 )
 SELECT COUNT(*) FROM d;

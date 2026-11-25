@@ -73,6 +73,7 @@ type preflightResponse struct {
 	// Resume: the people still to be sent, the number sent so far and the total counted at the start.
 	Remaining int       `json:"remaining"`
 	Sent      int       `json:"sent"`
+	SentMax   int       `json:"sent_max,omitempty"` // Upper bound when deleted history makes the count uncertain.
 	ToSend    int       `json:"to_send"`
 	AsOf      time.Time `json:"as_of"`
 	// Now is the server's clock when the answer leaves: the window keeps time by it, not by a
@@ -354,14 +355,12 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	sent := camp.Sent
+	sent, sentMax := camp.Sent, 0
 	if countRemaining {
-		recorded, err := a.core.CampaignRecordedSends(ctx, id)
+		sent, sentMax, err = a.core.CampaignSendProgress(ctx, camp)
 		if err != nil {
 			return err
 		}
-		// A stored count can be higher, for example after a send record failed to write.
-		sent = max(sent, recorded)
 	}
 	rescheduled := mode == models.PreflightModeScheduled && (aud.Remaining != aud.Total || sent > 0 || camp.LastSubscriberID > 0)
 
@@ -507,7 +506,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode, Resumed: rescheduled,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
-		Sent: sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
+		Sent: sent, SentMax: sentMax, ToSend: camp.ToSend, AsOf: aud.AsOf,
 		Checks: preflightChecks(facts),
 	}
 	if tz, ok := camp.Attribs["axm_send_tz"].(string); ok {

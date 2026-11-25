@@ -554,13 +554,19 @@ func TestScheduledSaveOfAPausedThenScheduledCampaign(t *testing.T) {
 func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
 	const total, checkpoint, delivered = 40, 10, 30
 	for _, tc := range []struct {
-		name    string
-		saved   int
-		decided int
+		name          string
+		saved         int
+		decided       int
+		deleteUsers   bool
+		legacy        bool
+		partialPrefix bool
 	}{
 		{name: "stored count covers the expired deliveries", saved: checkpoint},
 		{name: "stored count already includes out-of-order deliveries", saved: delivered},
 		{name: "sent follow-up decisions survive retention", saved: checkpoint, decided: 4},
+		{name: "subscriber API deletes the oldest recipients", saved: checkpoint, deleteUsers: true},
+		{name: "legacy purge lost ten deliveries", saved: checkpoint, legacy: true},
+		{name: "legacy counter overlapped nine surviving deliveries", saved: checkpoint, legacy: true, partialPrefix: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := scheduledEnv(t)
@@ -573,6 +579,11 @@ func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
 			e.db.MustExec(`UPDATE campaigns SET status='paused', to_send=$2, sent=$3, last_subscriber_id=$4 WHERE id=$1`,
 				e.campID, total, tc.saved, ids[checkpoint-1])
 			for i, id := range ids[:delivered] {
+				if tc.partialPrefix && i < checkpoint-1 {
+					// The same saved count and surviving ledger can also come from a
+					// history where only the checkpoint delivery expired.
+					continue
+				}
 				age := "1 day"
 				if i < checkpoint {
 					age = "13 months"
@@ -586,32 +597,56 @@ func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
 			member := e.as(e.superAdmin)
 			path := fmt.Sprintf("/api/campaigns/%d", e.campID)
 			id := strconv.Itoa(e.campID)
-			check := func(mode string) {
+			check := func(mode string, sent, sentMax int) {
 				t.Helper()
 				data := pfRead(t, e, member, path+"/preflight", id)
 				var out preflightResponse
 				if err := json.Unmarshal(data, &out); err != nil {
 					t.Fatal(err)
 				}
-				if out.Mode != mode || out.Sent != delivered || out.ToSend != total || out.Remaining != total-delivered ||
+				if out.Mode != mode || out.Sent != sent || out.SentMax != sentMax || out.ToSend != total || out.Remaining != total-delivered ||
 					(mode == "scheduled" && !out.Resumed) {
-					t.Fatalf("%s: sent=%d, total=%d, remaining=%d, resumed=%t", out.Mode, out.Sent, out.ToSend, out.Remaining, out.Resumed)
+					t.Fatalf("%s: sent=%d, sent_max=%d, total=%d, remaining=%d, resumed=%t", out.Mode, out.Sent, out.SentMax, out.ToSend, out.Remaining, out.Resumed)
 				}
 			}
-			check("resume")
-			if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != checkpoint {
-				t.Fatalf("deleted %d expired records: %v", n, err)
+			before := delivered
+			if tc.partialPrefix {
+				before = delivered - checkpoint + 1
 			}
-			if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 0 {
-				t.Fatalf("second purge deleted %d records: %v", n, err)
+			check("resume", before, 0)
+			wantExpired, sent, sentMax := checkpoint-tc.decided, delivered, 0
+			switch {
+			case tc.legacy:
+				e.db.MustExec(`DROP TRIGGER axm_count_removed_campaign_sends ON axm_campaign_sends;
+					DROP TRIGGER axm_lock_send_campaigns_on_subscriber_delete ON subscribers;
+					DROP TABLE axm_campaign_expired_sends`)
+				e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE sent_at < NOW()-INTERVAL '12 months'`)
+				e.db.MustExec(`INSERT INTO settings (key, value) VALUES ('migrations', '["v6.2.1-axm.17"]')
+					ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`)
+				upgrade(e.db, nil, false, true)
+				wantExpired, sent, sentMax = 0, delivered-checkpoint+1, delivered
+			case tc.deleteUsers:
+				for _, subID := range ids[:checkpoint] {
+					if code, _ := e.call(e.a.DeleteSubscriber, member, http.MethodDelete,
+						fmt.Sprintf("/api/subscribers/%d", subID), strconv.Itoa(subID), ""); code != http.StatusOK {
+						t.Fatalf("delete subscriber %d: %d", subID, code)
+					}
+				}
+			default:
+				if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != checkpoint {
+					t.Fatalf("deleted %d expired records: %v", n, err)
+				}
+				if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 0 {
+					t.Fatalf("second purge deleted %d records: %v", n, err)
+				}
 			}
 			var expired, retained int
-			e.get(&expired, `SELECT sent FROM axm_campaign_expired_sends WHERE campaign_id=$1`, e.campID)
+			e.get(&expired, `SELECT COALESCE((SELECT sent FROM axm_campaign_expired_sends WHERE campaign_id=$1), 0)`, e.campID)
 			e.get(&retained, `SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id=$1`, e.campID)
-			if expired != checkpoint-tc.decided || retained != delivered-checkpoint {
+			if expired != wantExpired || retained != delivered-checkpoint {
 				t.Fatalf("expired tally %d, retained ledger %d", expired, retained)
 			}
-			check("resume")
+			check("resume", sent, sentMax)
 			if code, data := e.call(e.a.UpdateCampaignStatus, member, http.MethodPut, path+"/status", id, `{"status":"running"}`); code != http.StatusOK {
 				t.Fatalf("reschedule: %d %s", code, data)
 			}
@@ -619,11 +654,11 @@ func TestScheduledPreflightIncludesExpiredSends(t *testing.T) {
 			if code, data := e.save("Edited", []int{list}, &tomorrow, "regular"); code != http.StatusOK {
 				t.Fatalf("save: %d %s", code, data)
 			}
-			check("scheduled")
-			var sent int
-			e.get(&sent, `SELECT sent FROM campaigns WHERE id=$1`, e.campID)
-			if sent != tc.saved {
-				t.Fatalf("read or retention changed saved progress to %d", sent)
+			check("scheduled", sent, sentMax)
+			var stored int
+			e.get(&stored, `SELECT sent FROM campaigns WHERE id=$1`, e.campID)
+			if stored != tc.saved {
+				t.Fatalf("read or deletion changed saved progress to %d", stored)
 			}
 		})
 	}
