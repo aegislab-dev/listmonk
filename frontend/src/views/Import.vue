@@ -207,7 +207,7 @@
 
       <address-check v-if="showImportCheck" :key="status.axmImportId" :list-ids="status.axmLists" :lists="lists.results || []"
         :hidden-lists="status.axmListsHidden || 0"
-        :scope-note="$t('addressCheck.listScope', { lists: importListNames })" />
+        :scope-note="importScopeNote" />
 
       <div class="import-logs">
         <log-view :lines="logs" :loading="false" />
@@ -1116,6 +1116,15 @@ export default Vue.extend({
     // subscribe import that put someone in, to a user who may make campaigns.
     showMakeCampaign() {
       return this.showImportCheck && this.status.imported > 0 && this.$can('campaigns:manage', 'campaigns:manage_all');
+    },
+    // Describe the audience rule per list. The check counts current subscriptions across
+    // the whole list, including subscriptions that already existed before the import.
+    importScopeNote() {
+      const all = this.lists.results || [];
+      const ids = this.status.axmLists || [];
+      const doubleOptin = all.some((list) => list.optin === 'double' && ids.includes(list.id));
+      const note = this.$t('addressCheck.listScope', { lists: this.importListNames });
+      return doubleOptin ? `${note} ${this.$t('addressCheck.listScopeOptin')}` : note;
     },
     importListNames() {
       const all = this.lists.results || [];

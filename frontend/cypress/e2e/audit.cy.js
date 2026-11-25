@@ -22,6 +22,9 @@ describe('activity log', () => {
 
   it('is in the settings menu and lists what was done, newest first', () => {
     cy.visit('/admin/settings/audit');
+    // The page says what is recorded and, in a second line, what is not.
+    cy.get('[data-cy=audit-help]').should('contain', 'These actions are recorded').and('contain', 'test sends');
+    cy.get('[data-cy=audit-not-logged]').should('contain', 'Not recorded').and('contain', 'editing subscribers').and('contain', 'from address');
     cy.get('[data-cy=audit-query]').type(renamed);
     cy.get('[data-cy=btn-audit-query]').click();
     cy.get('tbody tr:not(.detail)').should('have.length.at.least', 2);

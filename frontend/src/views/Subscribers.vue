@@ -533,6 +533,8 @@ export default Vue.extend({
     },
 
     showBulkListForm() {
+      // The form would only say after the lists were picked that "select all" needs a list.
+      if (this.needListForAll()) return;
       this.isBulkListFormVisible = true;
     },
 
@@ -635,6 +637,34 @@ export default Vue.extend({
       );
     },
 
+    // "Select all" with no list chosen reaches only the people who are on every list of the
+    // user at once (the statement for a bulk change matches all the lists it is given), which is
+    // nobody once the user has two lists or more (archived ones count: the server reads them too). Say so before asking, as nothing would happen.
+    // Whoever may read all subscribers is not affected.
+    needListForAll() {
+      const byQuery = this.bulk.all || this.bulk.checked.length === 0;
+      if (!byQuery || this.queryParams.listID || this.$can('subscribers:get_all')) return false;
+      if (this.$userListCount() < 2) return false;
+      this.$utils.notice(this.$t('teams.needListTitle'), this.$t('teams.needListBody'));
+      return true;
+    },
+
+    // What a bulk change by query reports: the server counts the people it changed when the
+    // user may not manage all lists (an object), and answers true otherwise.
+    bulkAllReport(resp, done) {
+      if (resp && typeof resp === 'object' && typeof resp.done === 'number') {
+        if (resp.done === 0) {
+          this.$utils.notice(this.$t('teams.bulkAllZero'), this.$t('teams.bulkAllZeroBody'));
+        } else {
+          this.$utils.toast(this.$t('teams.bulkAllCount', {
+            num: this.$utils.formatNumber(resp.done), skipped: this.$utils.formatNumber(resp.skipped || 0),
+          }));
+        }
+        return;
+      }
+      done();
+    },
+
     // Asks before deleting or blocking everybody the conditions match. The page cannot count
     // the locked people there, so a user who may not manage all lists is told that they are
     // left out (the server leaves them out).
@@ -657,6 +687,7 @@ export default Vue.extend({
     },
 
     blocklistSubscribers() {
+      if (this.needListForAll()) return;
       if (!this.bulk.all && this.bulk.checked.length > 0) {
         // If 'all' is not selected, blocklist subscribers by IDs.
         this.confirmChecked('block', (subs) => {
@@ -675,11 +706,13 @@ export default Vue.extend({
             query: this.queryParams.queryExp,
             list_ids: this.queryParams.listID ? [this.queryParams.listID] : null,
             subscription_status: this.queryParams.subStatus,
-          }).then(() => {
+          }).then((resp) => {
             this.querySubscribers();
-            if (!this.$can('lists:manage_all')) {
-              this.$utils.toast(this.$t('teams.bulkAllDone'));
-            }
+            this.bulkAllReport(resp, () => {
+              if (!this.$can('lists:manage_all')) {
+                this.$utils.toast(this.$t('teams.bulkAllDone'));
+              }
+            });
           });
         };
         this.confirmAll('block', this.$t('subscribers.confirmBlocklist', { num: this.numSelectedSubscribers }), fn);
@@ -687,6 +720,7 @@ export default Vue.extend({
     },
 
     exportSubscribers() {
+      if (this.needListForAll()) return;
       const num = !this.bulk.all && this.bulk.checked.length > 0
         ? this.bulk.checked.length : this.subscribers.total;
 
@@ -724,6 +758,7 @@ export default Vue.extend({
     },
 
     deleteSubscribers() {
+      if (this.needListForAll()) return;
       if (!this.bulk.all && this.bulk.checked.length > 0) {
         // If 'all' is not selected, delete subscribers by IDs.
         this.confirmChecked('delete', (subs) => {
@@ -748,14 +783,16 @@ export default Vue.extend({
             query: this.queryParams.queryExp,
             list_ids: this.queryParams.listID ? [this.queryParams.listID] : null,
             subscription_status: this.queryParams.subStatus,
-          }).then(() => {
+          }).then((resp) => {
             this.querySubscribers();
 
-            // The server leaves out the people who are on other teams' lists too, so a user
-            // who may not manage all lists is not told a number that may be too high.
-            this.$utils.toast(this.$can('lists:manage_all')
-              ? this.$t('subscribers.subscribersDeleted', { num })
-              : this.$t('teams.bulkAllDone'));
+            // The server leaves out the people who are on other teams' lists too and, for a user
+            // who may not manage all lists, says how many it deleted.
+            this.bulkAllReport(resp, () => {
+              this.$utils.toast(this.$can('lists:manage_all')
+                ? this.$t('subscribers.subscribersDeleted', { num })
+                : this.$t('teams.bulkAllDone'));
+            });
           });
         };
         this.confirmAll('delete', this.$t('subscribers.confirmDelete', { num }), fn);
@@ -763,6 +800,7 @@ export default Vue.extend({
     },
 
     bulkChangeLists(action, preconfirm, lists) {
+      if (this.needListForAll()) return;
       const data = {
         action,
         query: this.fullQueryExp,

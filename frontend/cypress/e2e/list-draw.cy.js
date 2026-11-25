@@ -41,6 +41,8 @@ describe('list draws and exclude lists', () => {
   it('checks the numbers, makes the list, and leaves the drawn people out of the next draw', () => {
     openList(srcName).find('[data-cy=btn-draw]').click();
     cy.get('[data-cy=list-draw]').should('be.visible');
+    // The window says what the draw is for (LST-62).
+    cy.get('[data-cy=draw-purpose]').should('contain', 'send to a few people first');
     cy.get('[data-cy=draw-create]').should('be.disabled');
 
     // Nothing is counted for a value out of range.
@@ -53,6 +55,12 @@ describe('list draws and exclude lists', () => {
     cy.get('[data-cy=draw-candidates]').should('contain', String(people));
     cy.get('[data-cy=draw-will]').should('contain', '10');
     cy.get('[data-cy=draw-name]').invoke('val').should('contain', srcName).and('contain', '10');
+
+    // 'Already received' only knows the send records, which start on 2026-11-13: the box says so,
+    // and says so again under the numbers when nobody was counted.
+    cy.get('[data-cy=draw-ledger-note]').should('be.visible').and('contain', '2026-11-13');
+    cy.get('[data-cy=draw-already-received]').should('contain', '0');
+    cy.get('[data-cy=draw-received-zero]').should('be.visible').and('contain', '2026-11-13');
 
     // Changing the settings clears the numbers: the button asks for a new check.
     cy.get('[data-cy=draw-value]').clear().type('12');
@@ -87,7 +95,13 @@ describe('list draws and exclude lists', () => {
     cy.get('[data-cy=draw-check]').click();
     cy.get('[data-cy=draw-already-drawn]').should('contain', '10');
     cy.get('[data-cy=draw-candidates]').should('contain', String(people - 10));
-    cy.get('[data-cy=draw-short]').should('be.visible');
+    cy.get('[data-cy=draw-short]').should('be.visible').and(($warning) => {
+      const warning = $warning[0];
+      const bounds = warning.getBoundingClientRect();
+      const body = warning.closest('.modal-card-body').getBoundingClientRect();
+      expect(bounds.top).to.be.at.least(body.top);
+      expect(bounds.bottom).to.be.at.most(body.bottom);
+    });
     cy.get('[data-cy=draw-create]').should('contain', String(people - 10));
     cy.get('[data-cy=draw-create]').click();
     cy.get('[data-cy=draw-done-count]').should('contain', String(people - 10));
@@ -104,7 +118,10 @@ describe('list draws and exclude lists', () => {
   });
 
   it('marks drawn lists, filters to them, and shows the draw records of the source', () => {
-    openList(srcName).find('[data-cy=btn-draw]').should('exist');
+    openList(srcName).find('[data-cy=btn-draw]').should('have.attr', 'aria-label', 'Draw a small sample for a trial send');
+    // The drawn-lists link comes first in the line under the title; the team link, used once, last.
+    cy.get('.page-header .is-size-7 a').first().should('have.attr', 'data-cy', 'drawn-only')
+      .and('contain', 'trial sends');
     openList(srcName).find('[data-cy=drawn-from]').should('not.exist');
     cy.get('[data-cy=query]').clear().type(srcName);
     cy.get('[data-cy=btn-query]').click();
@@ -205,5 +222,25 @@ describe('list draws and exclude lists', () => {
     cy.get('[data-cy=exclude-recount]').should('be.visible');
     cy.get('[data-cy=exclude-made-import]').click();
     cy.get('@open').should('have.been.calledTwice');
+  });
+  it('refuses to delete an exclude list in plain words, with the name of the dynamic list', () => {
+    const dynName = `Draw guard ${stamp}`;
+    cy.request('POST', '/api/lists', {
+      name: dynName,
+      type: 'private',
+      optin: 'single',
+      axm_filter: {
+        version: 2, base: { type: 'lists', lists: [srcId] }, match: 'all', conditions: [], exclude: { lists: [exId] },
+      },
+    });
+    cy.request({ method: 'DELETE', url: `/api/lists/${exId}`, failOnStatusCode: false }).then(({ status, body }) => {
+      expect(status).to.eq(400);
+      // The name is whichever dynamic list the DB found first (an earlier test has one too).
+      expect(body.message).to.match(/^The dynamic list ".+" uses this list as an exclude list, so it cannot be deleted/);
+      expect(body.message).not.to.contain('exclude list of the dynamic list');
+    });
+    cy.request('/api/lists?per_page=all&query=' + encodeURIComponent(dynName)).then(({ body }) => {
+      body.data.results.forEach((l) => cy.request('DELETE', `/api/lists/${l.id}`));
+    });
   });
 });

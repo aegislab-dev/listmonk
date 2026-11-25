@@ -5,6 +5,9 @@ const teamSelect = '[data-cy=reaction-team] select, select[data-cy=reaction-team
 const listNameInput = '[data-cy=reaction-name] input, input[data-cy=reaction-name]';
 const draftLists = '.list-selector';
 const input = (axis, condition) => `[data-cy=reaction-${axis}-${condition}] input`;
+// A finished campaign opens the window as "send again" (LST-62): the follow-up draft box starts
+// ticked. followup.cy.js covers that; these tests make the list alone, so they untick it.
+const noFollowup = () => cy.get('[data-cy=followup-toggle] input').uncheck({ force: true });
 let campaignId;
 
 function onCampaign() {
@@ -23,6 +26,7 @@ function saveNamedList(name) {
   cy.intercept('POST', '**/reaction-list').as('makeReaction');
   onCampaign();
   cy.get('[data-cy=reaction-check]').click();
+  noFollowup();
   cy.get(teamSelect).select('__none__');
   cy.get(listNameInput).clear().type(name);
   cy.get('[data-cy=reaction-create]').click();
@@ -62,6 +66,7 @@ describe('campaign reaction lists', () => {
     cy.get(input('click', 'no')).check({ force: true });
     cy.get('[data-cy=reaction-check]').click();
     cy.get('[data-cy=reaction-count-eligible]').should('have.text', '1');
+    noFollowup();
     cy.get(teamSelect).closest('.field').find('p.help').should('not.exist');
     cy.get(teamSelect).select('__none__');
     cy.get(listNameInput).invoke('val').should('contain', campaign);
@@ -113,6 +118,8 @@ describe('campaign reaction lists', () => {
     cy.get(input('open', 'no')).should('be.disabled');
     cy.get(input('open', 'any')).should('be.checked');
     cy.get(input('click', 'no')).should('not.be.disabled');
+    // A finished campaign opens "send again": clicks are told apart here, so that axis is preset.
+    cy.get(input('click', 'no')).should('be.checked');
   });
 
   it('locks checking and creation without send records', () => {

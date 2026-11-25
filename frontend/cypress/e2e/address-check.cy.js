@@ -160,10 +160,17 @@ describe('Address check before sending and on import', () => {
     cy.visit(`/admin/campaigns/${campaignId}`);
     cy.wait('@check');
     cy.get('[data-cy=address-check]').should('have.class', 'is-ok');
-    cy.get('[data-cy=address-summary]').should('contain', '2');
+    cy.get('[data-cy=address-summary]').should('contain', '2').and('contain', 'caught by the format and domain checks');
+    // What the check does not look at is said while the panel is closed, too.
+    cy.get('[data-cy=address-limits]').should('be.visible').and('contain', 'gmail.con').and('contain', 'bounce history');
     // Pending lookups are asked about again after three seconds.
     cy.wait('@check', { timeout: 10000 });
-    cy.get('[data-cy=address-toggle]').should('be.disabled');
+    cy.get('[data-cy=address-toggle]').should('contain', 'Details').and('have.attr', 'aria-expanded', 'false');
+    cy.get('[data-cy=address-body]').should('not.exist');
+    cy.get('[data-cy=address-toggle]').click().should('have.attr', 'aria-expanded', 'true');
+    cy.get('[data-cy=address-recheck]').should('be.visible');
+    cy.get('[data-cy=address-body] .ac-group').should('not.exist');
+    cy.get('[data-cy=address-toggle]').click();
     cy.get('[data-cy=address-body]').should('not.exist');
     cy.wait(3500).then(() => expect(calls).to.eq(2));
 
@@ -220,6 +227,7 @@ describe('Address check before sending and on import', () => {
     cy.wait('@noAccess');
     cy.get('[data-cy=address-check]').should('have.class', 'is-busy').and('not.have.class', 'is-ok');
     cy.get('[data-cy=address-summary]').should('contain', 'Not checked');
+    cy.get('[data-cy=address-toggle]').should('be.disabled');
 
     // Some of the lists were not checked (the user cannot see them): the counts are those of
     // the checked lists only, never a green "no risky addresses" for the whole send.
@@ -337,13 +345,51 @@ describe('Address check before sending and on import', () => {
     cy.request('/api/import/subscribers').its('body.data.axm_lists').should('have.length', 1);
     cy.wait('@listCheck').its('request.body.list_ids').should('have.length', 1);
     cy.get('.status [data-cy=address-check]').should('have.class', 'is-ok');
-    cy.get('.status [data-cy=address-scope]').should('contain', importListName);
+    cy.get('.status [data-cy=address-scope]').should('contain', importListName).and('not.contain', 'double opt-in');
     cy.reload();
     cy.get('.status [data-cy=address-scope]').should('contain', importListName);
     cy.get('[data-cy=import-done]').click();
     cy.get('form.box').should('be.visible');
     cy.get('[data-cy=address-check]').should('not.exist');
     cy.request('/api/import/subscribers').its('body.data.axm_lists').should('have.length', 0);
+  });
+
+  it('keeps the per-list opt-in rule after reloading confirmed and mixed imports', () => {
+    const rule = 'For double opt-in lists, only confirmed subscriptions count toward the audience.';
+    const importAndCheck = (scenario, optins, confirmed) => {
+      const names = optins.map((optin) => `Address import ${scenario} ${optin} ${stamp}`);
+      optins.forEach((optin, index) => {
+        cy.request('POST', '/api/lists', {
+          name: names[index], type: 'private', optin, no_team: true,
+        });
+      });
+      cy.request('DELETE', '/api/import/subscribers');
+      cy.visit('/admin/subscribers/import');
+      names.forEach((name) => {
+        cy.get('.list-selector input').type(name);
+        cy.contains('.list-selector .autocomplete a', name).click();
+      });
+      if (confirmed) cy.get('[data-cy=check-confirmed] .check').click();
+      cy.get('input[type=file]').selectFile({
+        contents: Cypress.Buffer.from(`email,name,attributes\n${scenario}-${stamp}@example.invalid,Synthetic,{}\n`),
+        fileName: 'optin.csv',
+        mimeType: 'text/csv',
+      }, { force: true });
+      cy.get('form.box button[type=submit]').should('not.be.disabled').click();
+
+      const checkFinished = () => {
+        cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+        cy.get('[data-cy=address-scope]').should('contain', rule).and('contain', names.join(', '));
+        cy.get('[data-cy=address-summary]', { timeout: 20000 }).should('contain', '1 recipients');
+      };
+      checkFinished();
+      cy.reload();
+      checkFinished();
+    };
+
+    importAndCheck('confirmed', ['double'], true);
+    importAndCheck('mixed', ['single', 'double'], false);
+    cy.request('DELETE', '/api/import/subscribers');
   });
 
   it('checks the audience of an opt-in campaign: the unconfirmed subscribers of its double opt-in lists', () => {

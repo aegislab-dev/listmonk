@@ -12,31 +12,32 @@
         </h1>
 
         <div class="is-size-7">
+          <!-- The one used most (the drawn lists) comes first and the team link, used once, last (LST-62). -->
+          <template v-if="queryParams.status !== 'archived'">
+            <a v-if="!queryParams.drawn" href="#" data-cy="drawn-only" @click.prevent="setDrawn(true)">
+              {{ $t('lists.draw.onlyDrawn') }} &rarr;
+            </a>
+            <a v-else href="#" data-cy="drawn-all" @click.prevent="setDrawn(false)">
+              {{ $t('lists.draw.allLists') }} &rarr;
+            </a>
+            &nbsp;&middot;&nbsp;
+          </template>
           <router-link v-if="queryParams.status !== 'archived'" :to="{ name: 'lists', query: { status: 'archived' } }">
             {{ $t('globals.buttons.view') }} {{ $t('lists.archived').toLowerCase() }} &rarr;
           </router-link>
           <router-link v-else :to="{ name: 'lists' }">
             {{ $t('globals.buttons.view') }} {{ $t('menu.allLists').toLowerCase() }} &rarr;
           </router-link>
-          <template v-if="queryParams.status !== 'archived' && teamless > 0 && queryParams.team !== NO_TEAM">
-            &nbsp;&middot;&nbsp;
-            <a href="#" data-cy="teamless-link" @click.prevent="setTeam(NO_TEAM)">
-              {{ $t('teams.teamlessLink', { num: teamless }) }} &rarr;
-            </a>
-          </template>
           <template>
             &nbsp;&middot;&nbsp;
             <router-link :to="{ name: 'listTrash' }" data-cy="trash-link">
               <b-icon icon="trash-can-outline" size="is-small" /> {{ $t('lists.trash.link') }} &rarr;
             </router-link>
           </template>
-          <template v-if="queryParams.status !== 'archived'">
+          <template v-if="queryParams.status !== 'archived' && teamless > 0 && queryParams.team !== NO_TEAM">
             &nbsp;&middot;&nbsp;
-            <a v-if="!queryParams.drawn" href="#" data-cy="drawn-only" @click.prevent="setDrawn(true)">
-              {{ $t('lists.draw.onlyDrawn') }} &rarr;
-            </a>
-            <a v-else href="#" data-cy="drawn-all" @click.prevent="setDrawn(false)">
-              {{ $t('lists.draw.allLists') }} &rarr;
+            <a href="#" data-cy="teamless-link" @click.prevent="setTeam(NO_TEAM)">
+              {{ $t('teams.teamlessLink', { num: teamless }) }} &rarr;
             </a>
           </template>
         </div>

@@ -368,8 +368,10 @@ func TestBoundaryBulkByQuerySkipsShared(t *testing.T) {
 	}
 	body := fmt.Sprintf(`{"all":true,"list_ids":[%d]}`, e.aList)
 
-	if code, _ := e.call(e.a.BlocklistSubscribersByQuery, ua, "PUT", "/x", "", body); code != 200 {
-		t.Fatal(code)
+	// A member is told how many were changed and how many were left out (0 included); an admin is
+	// told true, as upstream answers.
+	if code, out := e.call(e.a.BlocklistSubscribersByQuery, ua, "PUT", "/x", "", body); code != 200 || string(out) != `{"done":2,"skipped":3}` {
+		t.Fatal(code, string(out))
 	}
 	if got := e.names(`status = 'blocklisted'`); got != "s1,s5" {
 		t.Fatalf("blocklisted: %s", got)
@@ -383,8 +385,8 @@ func TestBoundaryBulkByQuerySkipsShared(t *testing.T) {
 		t.Fatalf("the added condition is not the user's query: %s", r.Detail)
 	}
 
-	if code, _ := e.call(e.a.DeleteSubscribersByQuery, ua, "POST", "/x", "", body); code != 200 {
-		t.Fatal(code)
+	if code, out := e.call(e.a.DeleteSubscribersByQuery, ua, "POST", "/x", "", body); code != 200 || string(out) != `{"done":2,"skipped":3}` {
+		t.Fatal(code, string(out))
 	}
 	if got := e.names(`TRUE`); got != "s2,s3,s4,s6" {
 		t.Fatalf("left after the delete: %s", got)
@@ -395,8 +397,8 @@ func TestBoundaryBulkByQuerySkipsShared(t *testing.T) {
 	}
 
 	// A search works the same way.
-	if code, _ := e.call(e.a.DeleteSubscribersByQuery, ua, "POST", "/x", "", fmt.Sprintf(`{"search":"s2","list_ids":[%d]}`, e.aList)); code != 200 {
-		t.Fatal(code)
+	if code, out := e.call(e.a.DeleteSubscribersByQuery, ua, "POST", "/x", "", fmt.Sprintf(`{"search":"s2","list_ids":[%d]}`, e.aList)); code != 200 || string(out) != `{"done":0,"skipped":1}` {
+		t.Fatal(code, string(out))
 	}
 	if !e.row(e.s2).Exists {
 		t.Fatal("a search deleted a shared subscriber")
@@ -415,8 +417,8 @@ func TestBoundaryBulkByQuerySkipsShared(t *testing.T) {
 	}
 
 	// An admin reaches everybody, and the row has no skipped number.
-	if code, _ := e.call(e.a.DeleteSubscribersByQuery, e.as(e.admin), "POST", "/x", "", body); code != 200 {
-		t.Fatal(code)
+	if code, out := e.call(e.a.DeleteSubscribersByQuery, e.as(e.admin), "POST", "/x", "", body); code != 200 || string(out) != `true` {
+		t.Fatal(code, string(out))
 	}
 	if got := e.names(`TRUE`); got != "" {
 		t.Fatalf("left after the admin's delete: %s", got)
