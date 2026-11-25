@@ -46,7 +46,7 @@
           </table>
           <p class="help">{{ $t('lists.draw.drawnHelp') }}</p>
         </div>
-        <b-field :label="$t('lists.dynamic.composition')">
+        <b-field v-if="!forImport" :label="$t('lists.dynamic.composition')">
           <b-select v-model="composition" :disabled="isEditing" expanded data-cy="list-composition">
             <option value="static">{{ $t('lists.dynamic.static') }}</option>
             <option value="dynamic">{{ $t('lists.dynamic.dynamic') }}</option>
@@ -82,7 +82,7 @@
         <dynamic-list-filter v-if="composition === 'dynamic'" v-model="filter" :list-id="data.id || 0" />
         <p v-if="filterError" role="alert" class="help is-danger">{{ filterError }}</p>
         <!-- Shown only when there is a choice to make: with one preset every list has it. -->
-        <b-field v-if="presets.length > 1" :label="$t('lists.preset.label')" label-position="on-border"
+        <b-field v-if="!forImport && presets.length > 1" :label="$t('lists.preset.label')" label-position="on-border"
           >
           <template #message>
             {{ presetHelp }}
@@ -97,6 +97,10 @@
               {{ presetName(p) }} — {{ p.columns.join(', ') }}
             </option>
           </b-select>
+        </b-field>
+        <b-field v-if="forImport" :label="$t('globals.terms.tags')" label-position="on-border">
+          <b-taginput v-model="form.tags" name="tags" ellipsis icon="tag-outline"
+            :placeholder="$t('globals.terms.tags')" />
         </b-field>
         <!-- The team of the list (LST-24): an admin picks it, a member's is fixed. -->
         <div v-if="showTeamField" class="field team-field" data-cy="list-team-field">
@@ -113,17 +117,17 @@
           </div>
           <p class="help" :class="{ 'is-danger': teamRequired && !teamChoice }" data-cy="list-team-help">{{ teamHelp }}</p>
         </div>
-        <b-field :label="$t('globals.terms.tags')" label-position="on-border">
+        <b-field v-if="!forImport" :label="$t('globals.terms.tags')" label-position="on-border">
           <b-taginput v-model="form.tags" name="tags" ellipsis icon="tag-outline"
             :placeholder="$t('globals.terms.tags')" />
         </b-field>
 
-        <b-field :label="$t('globals.fields.description')" label-position="on-border">
+        <b-field v-if="!forImport" :label="$t('globals.fields.description')" label-position="on-border">
           <b-input :maxlength="2000" v-model="form.description" name="description" type="textarea"
             :placeholder="$t('globals.fields.description')" />
         </b-field>
 
-        <b-field :message="$t('lists.archivedHelp')" :label="$t('lists.archived')">
+        <b-field v-if="!forImport" :message="$t('lists.archivedHelp')" :label="$t('lists.archived')">
           <b-switch v-model="isArchived" name="status" />
         </b-field>
 
@@ -203,6 +207,8 @@ export default Vue.extend({
     isEditing: { type: Boolean, default: false },
     // The teams on the lists the user may read (GET /api/lists/teams).
     teams: { type: Array, default: () => [] },
+    // In the import dialog a new list is static and uses the default column preset.
+    forImport: { type: Boolean, default: false },
   },
 
   data() {
@@ -297,7 +303,8 @@ export default Vue.extend({
 
     createList() {
       this.$api.createList(this.payload()).then((data) => {
-        this.$emit('finished');
+        // The new list goes along, for a caller that wants to use it (the import screen).
+        this.$emit('finished', data);
         this.$parent.close();
         this.$utils.toast(this.$t('globals.messages.created', { name: data.name }));
       });

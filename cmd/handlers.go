@@ -173,6 +173,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		// Individual list permissions are applied within the handler.
 		g.POST("/api/lists/address-check", a.CheckListAddresses)
 		g.GET("/api/lists/draws", a.GetListDraws)
+		g.GET("/api/lists/campaigns", a.GetListCampaigns)
 		g.POST("/api/lists/:id/draw/preview", a.listMaker(hasID(a.PreviewListDraw)))
 		g.POST("/api/lists/:id/draw", a.listMaker(hasID(a.DrawList)))
 		g.POST("/api/lists", a.listMaker(a.CreateList))

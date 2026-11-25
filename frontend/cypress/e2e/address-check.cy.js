@@ -348,7 +348,7 @@ describe('Address check before sending and on import', () => {
     cy.get('.status [data-cy=address-scope]').should('contain', importListName).and('not.contain', 'double opt-in');
     cy.reload();
     cy.get('.status [data-cy=address-scope]').should('contain', importListName);
-    cy.get('.status button').first().click();
+    cy.get('[data-cy=import-done]').click();
     cy.get('form.box').should('be.visible');
     cy.get('[data-cy=address-check]').should('not.exist');
     cy.request('/api/import/subscribers').its('body.data.axm_lists').should('have.length', 0);
@@ -455,7 +455,7 @@ describe('Address check before sending and on import', () => {
     cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
 
     // Done, and the next file in the same tab: back to the defaults, without touching anything.
-    cy.get('.status button').first().click();
+    cy.get('[data-cy=import-done]').click();
     cy.get('form.box').should('be.visible');
     cy.get('input[type=file]').selectFile(file('second.csv', second), { force: true });
     cy.get('[data-cy=map-busy]').should('not.exist');
@@ -473,7 +473,7 @@ describe('Address check before sending and on import', () => {
     found(second[0], 0);
     found(second[1], 1);
     found(second[2], 1);
-    cy.get('.status button').first().click();
+    cy.get('[data-cy=import-done]').click();
   });
 
   it('does not block the upload when the check fails, and has no check for a blocklist import', () => {
@@ -532,7 +532,7 @@ describe('Address check before sending and on import', () => {
     cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
     found(good, 1);
     found(bad, 0);
-    cy.get('.status button').first().click();
+    cy.get('[data-cy=import-done]').click();
   });
 
   it('checks again when another column becomes the address, and leaves out the rows of that column', () => {
@@ -569,7 +569,7 @@ describe('Address check before sending and on import', () => {
     cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
     found(good, 1);
     found(bad, 0);
-    cy.get('.status button').first().click();
+    cy.get('[data-cy=import-done]').click();
   });
 
   it('leaves out a row that is both confirmed and a role address without a switch', () => {
