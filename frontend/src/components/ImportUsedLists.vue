@@ -51,8 +51,8 @@ export default {
   computed: {
     // The people the used lists hold now, when every one of them is known.
     total() {
-      return this.entries.length && this.entries.every((e) => typeof e.count === 'number')
-        ? this.entries.reduce((a, e) => a + e.count, 0) : null;
+      // With several lists the same person may be on more than one: no sum is shown then.
+      return this.entries.length === 1 && typeof this.entries[0].count === 'number' ? this.entries[0].count : null;
     },
     // The name of a campaign comes only to a user who may read campaigns; the link needs it too.
     canRead() { return this.$can('campaigns:get_all', 'campaigns:get'); },

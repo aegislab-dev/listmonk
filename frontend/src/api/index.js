@@ -361,7 +361,8 @@ export const getImportLogs = async () => http.get(
   { camelCase: false },
 );
 
-export const stopImport = () => http.delete('/api/import/subscribers');
+// With an import id only that import is cleared (the server leaves a newer one alone).
+export const stopImport = (importId) => http.delete('/api/import/subscribers', importId ? { params: { axm_import_id: importId } } : undefined);
 
 // Bounces.
 export const getBounces = async (params) => http.get(

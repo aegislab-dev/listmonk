@@ -953,11 +953,13 @@ export default Vue.extend({
       this.$api.getImportStatus().then((cur) => {
         if (cur.status !== 'finished' || cur.axmImportId !== importId) {
           this.status = cur;
+          this.getLogs();
+          this.loadDoneUsed();
           this.isProcessing = false;
           return null;
         }
         // Clear the finished import only once the campaign screen is open.
-        return this.$router.push({ path: '/campaigns/new', query: { list_id: lists } }).then(() => this.$api.stopImport());
+        return this.$router.push({ path: '/campaigns/new', query: { list_id: lists } }).then(() => this.$api.stopImport(importId));
       }).catch(() => { this.isProcessing = false; });
     },
 

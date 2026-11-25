@@ -179,6 +179,24 @@ describe('import to campaign flow', () => {
     cy.get('form.box').should('be.visible');
   });
 
+  it('clears only the import it was asked about', () => {
+    const list = fresh('stale');
+    makeList(list).then(({ id }) => {
+      cy.reload();
+      chooseCSV(['i']);
+      pickList(list);
+      submit().click();
+      cy.get('.status .has-text-success', { timeout: 120000 }).should('contain', 'finished');
+      cy.request('/api/import/subscribers').its('body.data.axm_import_id').then((importId) => {
+        // An older import's id leaves the finished one alone; its own id clears it.
+        cy.request('DELETE', `/api/import/subscribers?axm_import_id=${importId + 1}`).its('body.data.status').should('eq', 'finished');
+        cy.request('/api/import/subscribers').its('body.data.status').should('eq', 'finished');
+        cy.request('DELETE', `/api/import/subscribers?axm_import_id=${importId}`);
+        cy.request('/api/import/subscribers').its('body.data.status').should('eq', 'none');
+      });
+    });
+  });
+
   it('shows where a list was used in the list table', () => {
     const empty = fresh('table');
     makeList(empty);

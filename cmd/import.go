@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/knadh/listmonk/internal/auth"
@@ -181,6 +182,13 @@ func (a *App) GetImportSubscriberStats(c echo.Context) error {
 // is finished, it's state is cleared.
 func (a *App) StopImportSubscribers(c echo.Context) error {
 	st := a.importer.GetStats()
+	// ?axm_import_id= clears only that import: a screen that still shows an older one must not
+	// stop or clear the import that came after it (LST-63). The current state comes back as is.
+	if v := c.QueryParam("axm_import_id"); v != "" {
+		if id, err := strconv.Atoi(v); err != nil || id != st.AxmImportID {
+			return c.JSON(http.StatusOK, okResp{st})
+		}
+	}
 	a.importer.Stop()
 	if st.Status == subimporter.StatusImporting || st.Status == subimporter.StatusStopping {
 		a.audit(c, auditImportStop, auditTarget{Type: auditTargetImport}, auditNoCount, map[string]any{
