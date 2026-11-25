@@ -56,7 +56,7 @@
             </td>
           </template>
           <td>
-            <stats-campaign-actions v-if="c.own" :campaign="c" show-open />
+            <stats-campaign-actions v-if="c.own" :campaign="c" />
             <span v-else class="st-note">{{ $t('stats.noOpen') }}</span>
           </td>
         </tr>

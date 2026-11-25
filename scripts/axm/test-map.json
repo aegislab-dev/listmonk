@@ -533,7 +533,8 @@
    "specs": [
     "stats-dashboard.cy.js",
     "analytics-proof.cy.js",
-    "list-teams.cy.js"
+    "list-teams.cy.js",
+    "followup.cy.js"
    ]
   }
  ],
