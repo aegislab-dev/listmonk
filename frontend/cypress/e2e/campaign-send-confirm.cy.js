@@ -799,6 +799,7 @@ describe('Pre-send confirmation window', () => {
       });
     });
     cy.visit('/admin/campaigns');
+    cy.get('input[name=query]').clear().type(`Send rule ${stamp}{enter}`);
     row('rule').find('[data-cy=btn-start]').click();
     ready();
     cy.get('[data-cy=send-title]').should('contain', 'Send to 28 people now');

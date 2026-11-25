@@ -99,10 +99,12 @@ describe('Recent-send exclusion settings', () => {
     cy.get('[data-cy=recent-held]').should('contain', '1');
   });
 
-  it('keeps completed send counts when later mail reaches the same list', () => {
+  it('keeps the completed audience when some sends fail and later mail reaches the same list', () => {
     cy.intercept('GET', `/api/campaigns/${campaignId}`, (req) => {
       req.continue((res) => {
-        Object.assign(res.body.data, { status: 'finished', sent: 28 });
+        Object.assign(res.body.data, {
+          status: 'finished', to_send: 40, sent: 27, started_at: new Date().toISOString(),
+        });
       });
     });
     cy.intercept('GET', rulePath(), (req) => {
@@ -117,6 +119,8 @@ describe('Recent-send exclusion settings', () => {
     cy.get('[data-cy=recent-counts] td').should(($cells) => {
       expect([...$cells].map((cell) => cell.textContent)).to.deep.equal(['40', '−12', '28']);
     });
+    cy.get('[data-cy=recent-as-of]').should('contain', 'As of');
+    cy.contains('[data-cy=recent-exclude]', 'including addresses that later bounced').should('be.visible');
     cy.get('[data-cy=recent-held]').should('contain', '12');
     cy.get('@laterSendsPreview.all').should('have.length', 0);
   });

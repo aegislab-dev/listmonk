@@ -63,11 +63,11 @@
               </tr>
             </tbody>
           </table>
-          <template v-if="finishedSent === null">
-            <p class="recent-help" data-cy="recent-as-of">{{ $t('campaigns.recent.asOf', { date: formatDate(counts.asOf) }) }}</p>
-            <p class="recent-help">{{ $t('campaigns.recent.bounces') }}</p>
-            <p v-if="coverageWarning" class="recent-warning" data-cy="recent-coverage">{{ coverageWarning }}</p>
-          </template>
+          <p v-if="displayCounts.asOf" class="recent-help" data-cy="recent-as-of">
+            {{ $t('campaigns.recent.asOf', { date: formatDate(displayCounts.asOf) }) }}
+          </p>
+          <p class="recent-help">{{ $t('campaigns.recent.bounces') }}</p>
+          <p v-if="coverageWarning" class="recent-warning" data-cy="recent-coverage">{{ coverageWarning }}</p>
         </template>
         <p v-else-if="!listIds.length" class="recent-help">{{ $t('campaigns.recent.selectLists') }}</p>
       </div>
@@ -165,7 +165,7 @@ export default {
     // The campaign has started (running, paused, finished or cancelled): the page says how many
     // people the rule left out of its send (LST-65).
     started: Boolean,
-    finishedSent: { type: Number, default: null },
+    finishedAudience: { type: Object, default: null },
     // The campaign's lists can still be changed (a new, draft or scheduled campaign).
     listsEditable: Boolean,
     // The campaign exists on the server, so making the list also saves it.
@@ -203,23 +203,26 @@ export default {
 
   computed: {
     displayCounts() {
-      if (this.finishedSent === null) return this.counts;
+      if (!this.finishedAudience) return this.counts;
+      const { target, asOf } = this.finishedAudience;
       const excluded = this.value.held || 0;
-      return { target: this.finishedSent + excluded, excluded, willSend: this.finishedSent };
+      return { target, excluded, willSend: Math.max(0, target - excluded), asOf };
     },
 
     previewKey() {
       if (!this.$can('campaigns:manage_all', 'campaigns:manage') || this.campaignType === 'optin'
-        || this.finishedSent !== null || !this.value.enabled || !this.listIds.length
+        || this.finishedAudience || !this.value.enabled || !this.listIds.length
         || (this.value.scope === 'campaigns' && !this.value.campaignIds.length)) return '';
 
       return JSON.stringify({ ...recentRulePayload(this.value), list_ids: this.listIds, campaign_id: this.campaignId });
     },
 
     coverageWarning() {
-      if (!this.counts.recordsFrom) return this.$t('campaigns.recent.noRecords');
-      if (dayjs(this.counts.recordsFrom).isAfter(dayjs(this.counts.asOf).subtract(this.value.days, 'day'))) {
-        return this.$t('campaigns.recent.coverage', { date: this.formatDate(this.counts.recordsFrom, 'YYYY-MM-DD') });
+      const { recordsFrom, asOf } = this.displayCounts || {};
+      if (recordsFrom === undefined) return '';
+      if (!recordsFrom) return this.$t('campaigns.recent.noRecords');
+      if (dayjs(recordsFrom).isAfter(dayjs(asOf).subtract(this.value.days, 'day'))) {
+        return this.$t('campaigns.recent.coverage', { date: this.formatDate(recordsFrom, 'YYYY-MM-DD') });
       }
       return '';
     },
