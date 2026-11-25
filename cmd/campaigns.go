@@ -290,7 +290,11 @@ func (a *App) CreateCampaign(c echo.Context) error {
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
-	o.ListIDs = user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, o.ListIDs)
+	listIDs, err := campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
+	if err != nil {
+		return err
+	}
+	o.ListIDs = listIDs
 
 	// If the campaign's 'opt-in', prepare a default message.
 	switch o.Type {
@@ -404,7 +408,11 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
-	o.ListIDs = user.FilterListsByPerm(auth.PermTypeGet|auth.PermTypeManage, o.ListIDs)
+	listIDs, err := campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
+	if err != nil {
+		return err
+	}
+	o.ListIDs = listIDs
 
 	// AXM (LST-67): the last list taken off a scheduled campaign is not "invalid list IDs": say what
 	// is wrong and how to go on (the check of the people on the lists is made when it is saved).
@@ -594,7 +602,7 @@ func (a *App) DeleteCampaigns(c echo.Context) error {
 	if !hasAllPerm {
 		// Either the user has campaigns:manage_all permissions and can manage all campaigns,
 		// or the campaigns are filtered by the lists the user has get|manage access to.
-		hasAllPerm, permittedLists = user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage)
+		hasAllPerm, permittedLists = campaignWriteLists(user) // AXM (LST-68)
 	}
 
 	var (
@@ -1070,6 +1078,12 @@ func (a *App) makeOptinCampaignMessage(o campReq) (campReq, error) {
 // Either the user has blanket get_all/manage_all permissions, or the campaign
 // belongs to lists that the user has access to.
 func (a *App) checkCampaignPerm(types auth.PermType, id int, c echo.Context) error {
+	return a.checkCampaignPermMode(types, id, c, types&auth.PermTypeGet == 0)
+}
+
+// checkCampaignPermMode is checkCampaignPerm. strict (AXM, LST-68) asks for a write that reaches
+// every list of the campaign (a send, an edit, a delete): all of them must be the user's.
+func (a *App) checkCampaignPermMode(types auth.PermType, id int, c echo.Context, strict bool) error {
 	// Get the authenticated user.
 	user := auth.GetUser(c)
 
@@ -1092,8 +1106,19 @@ func (a *App) checkCampaignPerm(types auth.PermType, id int, c echo.Context) err
 	// blanket get_all/manage_all list permissions. If yes, then the user can access
 	// all campaigns. If there are no *_all permissions, then ensure that the
 	// campaign belongs to the lists that the user has access to.
-	if hasAllPerm, permittedListIDs := user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage); !hasAllPerm {
-		if ok, err := a.core.CampaignHasLists(id, permittedListIDs); err != nil {
+	hasAllPerm, permittedListIDs := user.GetPermittedLists(auth.PermTypeGet | auth.PermTypeManage)
+	if types&auth.PermTypeGet == 0 {
+		// AXM (LST-68): lists:get_all is read access, not a right to change campaigns.
+		hasAllPerm, permittedListIDs = campaignWriteLists(user)
+	}
+	if !hasAllPerm {
+		// AXM (LST-68): a change reaches every list of the campaign, so for a write all of them
+		// must be the user's (upstream: one of them is enough).
+		has := a.core.CampaignHasLists
+		if strict {
+			has = a.core.CampaignListsWithin
+		}
+		if ok, err := has(id, permittedListIDs); err != nil {
 			return err
 		} else if !ok {
 			return echo.NewHTTPError(http.StatusForbidden,

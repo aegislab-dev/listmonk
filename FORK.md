@@ -480,13 +480,30 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - 한 사람은 한 팀에만(`users.list_role_id` 하나). 두 팀 리스트에 다 들어 있는 구독자는 양쪽 팀이 다 보고, 구독자 목록·상세에 `other_teams`(팀 이름·리스트 수, 남의 리스트 이름은 없음)로 「다른 팀 리스트에서도 사용 중」을 알린다. `subscribers:get_all`·`lists:*_all`이 없는 사용자에게만 붙는다.
 
 ### 팀 API와 규칙
-- `GET/POST /api/teams`, `PUT/DELETE /api/teams/:id`, `PUT /api/teams/:id/members`(`roles:get`/`roles:manage`). 팀 만들기 = 팀 역할 만들기. 이름 바꾸기 = 역할 이름·태그와 **그 태그가 붙은 리스트의 태그를 같은 트랜잭션에서** 바꾸기(리스트가 이미 가진 태그로는 못 바꿈). 팀원 넣기는 팀의 「기본 사용자 역할」(`roles.axm_team_user_role_id`, `lists:*_all`·Super Admin 역할은 못 고름)을 함께 주고, 다른 팀·일반 리스트 역할에 있던 사람은 옮긴다. Super Admin은 못 넣고, `lists:*_all`을 가진 사람은 기본 역할이 있어야 넣는다. 팀에 팀원이나 리스트가 있으면 지울 수 없다.
+- `GET/POST /api/teams`, `PUT/DELETE /api/teams/:id`, `PUT /api/teams/:id/members`(`roles:get`/`roles:manage`). 팀 만들기 = 팀 역할 만들기. 이름 바꾸기 = 역할 이름·태그와 **그 태그가 붙은 리스트의 태그를 같은 트랜잭션에서** 바꾸기(리스트가 이미 가진 태그로는 못 바꿈). 팀원 넣기는 팀의 「기본 사용자 역할」(`roles.axm_team_user_role_id`, 아래 「쓰기 전사 권한」이 있는 역할·Super Admin 역할은 못 고름)을 함께 주고, 다른 팀·일반 리스트 역할에 있던 사람은 옮긴다. Super Admin은 못 넣고, 쓰기 전사 권한을 가진 사람은 기본 역할이 있어야 넣는다. 팀에 팀원이나 리스트가 있으면 지울 수 없다.
 - 팀 역할은 리스트 역할 화면·API로 고치거나 지울 수 없다(400). **리스트 역할을 쓰는 사용자가 있으면 어느 리스트 역할도 지울 수 없다**: `users.list_role_id`가 `ON DELETE CASCADE`라 upstream은 역할을 지우면 그 사용자 계정까지 지운다.
 - `GET /api/lists/teams`: 볼 수 있는 리스트의 팀 태그와 리스트 수. 각 팀에 `has_role`(팀 역할이 있는 팀인지, 누구에게나 — 리스트를 만드는 화면이 고를 수 있는 팀을 아는 데 쓴다), `roles:get` 보유자에게만 역할 ID·이름, `lists:get_all`·`lists:manage_all` 보유자에게 「팀 없는 리스트 수」. `GET /api/lists?team=none`은 팀 없는 리스트만. 특정 팀은 기존 `tag=`.
 - **리스트는 만들 때 팀이 정해진다**(팀이 하나라도 생긴 뒤부터): 팀원(팀 역할 사용자)은 직접·동적·제외·뽑기 어느 경로로 만들어도 서버가 **자기 팀 태그를 붙이고** 보낸 `팀:` 태그는 버린다. 관리자(`lists:manage_all`)는 존재하는 팀을 하나 이상 골라야 하고(400), 팀 없이 만들려면 `no_team: true`를 명시한다. 팀원 권한: `POST /api/lists`, 뽑기·미리보기, 새 동적 리스트 미리보기는 `lists:manage_all` 대신 「`lists:manage_all` 또는 팀원」(`App.listMaker`). 뽑기는 원본을 볼 수 있어야 하고 뽑은 리스트의 팀은 팀원이면 자기 팀, 관리자면 요청한 팀 또는 원본의 팀(원본에 팀이 없으면 `team` 또는 `no_team` 필수).
 - 리스트를 저장할 때 팀원(그리고 `lists:manage_all`이 없는 모든 사용자)은 팀 태그를 못 바꾼다(서버가 기존 팀 태그를 유지). 관리자가 팀 태그를 바꿀 때 모두 떼려면 `no_team: true`. 팀을 바꾸지 않는 저장(팀 없던 리스트 포함)은 그대로 된다.
 - API 사용자는 권한을 메모리에 캐시하므로(`cacheUsers`) 팀이 하나라도 있으면 리스트 만들기·고치기·지우기·뽑기, 팀 변경 뒤 캐시를 다시 읽는다.
 - `/api/profile`의 `list_role.team_tag`에 팀 태그가 들어간다(화면이 팀원 여부를 안다).
+
+### 팀원이 가질 수 없는 권한 — 쓰기 전사 권한 (LST-68)
+- 팀원은 **전사로 읽고 일한다**(이강주 결정 2026-11-25): 반송 화면은 전사 보기 그대로(범위 제한 없음), 동적 리스트의 「전체 구독자」 대상 뽑기, 다른 팀 구독자 열람은 지금 운영과 같다. 막는 것은 **다른 팀의 리스트·캠페인을 고치는 것** 하나다.
+- **쓰기 전사 권한** = `lists:manage_all`, `campaigns:manage_all`(`core.TeamWidePerms`, 프론트 `frontend/src/teams.js`의 `TEAM_WIDE_PERMS`와 같은 목록). `lists:manage_all`은 어느 리스트든 고치고 지우고 팀 태그를 바꾸며, LST-42의 「잠긴 구독자」 잠금도 풀어 다른 팀 사람을 고치고 지우고 차단하게 한다. `campaigns:manage_all`은 어느 캠페인이든 고친다. 읽기 권한(`subscribers:get_all`, `bounces:get`, `campaigns:get_analytics`)은 팀 역할에 허용한다. `lists:get_all`·`campaigns:get_all`·`subscribers:get_all`은 팀 역할에 **허용**한다(이강주 결정 B, 2026-11-25): 팀원은 다른 팀 구독자·리스트·캠페인을 읽는다. 대신 **캠페인 쓰기 판정은 `lists:get_all`을 관리 권한으로 읽지 않는다**(아래). SQL에는 목록을 인자(`$2::TEXT[]`)로 넘긴다.
+- **캠페인 쓰기는 자기 리스트로 한정 (`lists:get_all`)**: upstream은 `GetPermittedLists(Get|Manage)`로 캠페인 접근을 판정해 `lists:get_all`만 있어도 「전체」였고, `campaigns:manage`가 있으면 다른 팀 캠페인을 고치고 지우고 보내고 다른 팀 리스트로 만들 수 있었다. 이제 `lists:manage_all`·Super Admin이 아니면 쓰기(`checkCampaignPerm`의 관리 쪽, `DeleteCampaigns`, 캠페인 만들기·수정의 리스트 거르기)는 **그 사용자의 리스트 역할에 든 리스트**(`cmd/axm_teams.go`의 `campaignWriteLists`·`campaignWriteListIDs`)로만 허용한다. 읽기(목록·열람·분석)는 그대로 전사다. 시험: `TestListsGetAllDoesNotManageOtherTeamsCampaigns`.
+- **혼합 캠페인**: 발송·상태 변경·삭제는 캠페인의 **모든** 받는 리스트에 닿는다. 그래서 쓰기 판정은 「한 곳이라도 내 리스트」(upstream의 `CampaignHasLists`)가 아니라 **「받는 리스트가 전부 내 리스트」**(`core.CampaignListsWithin`, 쿼리 `axm-campaign-lists-within`; 지워진 리스트의 빈 행은 세지 않고, 내 리스트가 하나도 없으면 거절)다. 일괄·조건 삭제의 잠금 쿼리 `axm-lock-campaigns-to-delete`(`queries/axm_audit.sql`)도 같은 기준으로 바꿨다. `lists:manage_all`·Super Admin은 그대로(전부 허용). 이 기준은 `lists:get_all` 이 없는 일반 리스트 역할 사용자에게도 적용된다(전엔 한 곳이면 통과). 읽기는 그대로다.
+- **리스트를 거르지 않고 거절한다 (`lists:get_all`)**: 이 사용자가 캠페인을 만들거나 저장할 때 자기 것이 아닌 리스트를 보내면 403이다(조용히 빼면 의도보다 적은 리스트로 저장·발송된다). `lists:get_all` 이 없는 사용자는 upstream의 걸러내기 그대로다.
+- **「내 캠페인」 판정**(`campaignIsOwn`, `cmd/axm_teams.go`): LST-64 대시보드에서 캠페인 읽기 권한과 함께 받는 리스트가 전부 자기 리스트 역할에 있는지 확인한다. `lists:manage_all`·Super Admin은 리스트 범위가 전사다. 전사 읽기 권한을 가진 팀원도 다른 팀·혼합 캠페인은 결과 숫자만 본다.
+- **동시 저장**: 팀 기본 역할, 팀원 넣기, 사용자 역할 수정, 관리자 API의 사용자 만들기·수정은 PostgreSQL 트랜잭션 잠금(`pg_advisory_xact_lock(741968)`, `core.beginTeamRoleTx`)을 사용한다. 검증과 저장은 같은 연결에서 실행하며, 커밋·롤백 때 PostgreSQL이 잠금을 해제한다. 프로세스가 여럿이거나 연결 풀이 하나여도 동작한다.
+- 네 길(전부 400 + 설명 문구):
+  - 팀 만들기·수정의 기본 사용자 역할(`validTeamUserRole`): 쓰기 전사 권한이 있는 역할은 못 고른다(전엔 `lists:*_all`만 걸렀다).
+  - 팀원 넣기(`SetTeamMembers`): 쓰기 전사 권한이 있는 사람은 팀에 기본 역할이 있어야 넣고, **팀의 기본 역할 자체가 그 권한을 가졌으면 새 팀원을 넣는 저장을 거절**한다. 이미 있는 팀원만 다시 저장하거나 빼는 것은 된다.
+  - 역할 화면의 사용자 역할 수정(`UpdateUserRole` → `guardTeamUserRole`, `cmd/axm_teams.go`): 그 역할이 어느 팀의 기본 역할이거나 팀원이 쓰고 있으면, 저장하려는 권한에 쓰기 전사 권한이 있을 때 거절(`teams.roleInUseByTeam`: 팀 이름·권한 이름). 그 권한이 없는 저장은 통과 — 이미 어긋난 역할은 이 화면에서 권한을 빼서 고친다.
+  - 사용자 만들기·수정(`CreateUser`·`UpdateUser` → `guardTeamMemberRole`): **저장될 조합**을 본다(`update-user` 쿼리처럼: 사용자 역할 0 = 지금 역할 유지, 리스트 역할 없음 = 해제, 리스트 역할 0 = 지금 것 유지). 저장 뒤 팀원(리스트 역할이 팀 역할)이면서 사용자 역할이 쓰기 전사 권한을 가졌거나 Super Admin이면 거절(`teams.memberWideRole`). 두 역할 모두 지금 값과 같은 저장(이름·비밀번호만)은 통과.
+- **이미 어긋난 구성은 코드가 고치지 않는다.** 배포해도 누구의 접근도 줄지 않는다. `GET /api/teams`가 팀마다 `wide`(기본 역할이 가진 쓰기 전사 권한)와 `wide_members`(그 권한이나 Super Admin 역할을 가진 팀원 수)를 주고, 팀 화면이 경고(「다른 팀 것을 고칠 수 있음」, 역할 이름·권한·인원, 역할 화면 링크)를 띄운다. 팀 수정 창은 어긋난 기본 역할을 「(다른 팀 것을 고칠 수 있는 권한 있음)」 표시로 남기고 저장을 막는다. 사람이 역할 화면에서 권한을 뺀다.
+- 세션 사용자는 요청마다 DB에서 읽으므로(`auth.validateSession`) 역할을 고친 뒤 다음 요청부터 적용되고, API 사용자는 `UpdateUserRole`이 캐시를 다시 읽는다. 화면의 `$can`은 프로필을 다시 읽거나 새로고침해야 바뀐다.
+- 반송은 건드리지 않았다. 반송 화면·API(`bounces:get`/`bounces:manage`)는 upstream 그대로 전사이고, 삭제·「모두 차단」도 그대로다(아래 「팀 경계」 절 「남긴 것」).
 
 ### 수신거부·차단·삭제는 전사 (`.9`)
 - **메일의 수신거부(링크, 페이지 버튼, 원클릭 `List-Unsubscribe-Post`)는 항상 전체 차단이다**: `SubscriptionPrefs`가 `unsubscribe-by-campaign`을 `blocklist=true`로 부른다(SQL은 그대로). 모든 리스트의 구독이 `unsubscribed`가 되고 상태가 `blocklisted`라 어느 팀도 다시 보낼 수 없다. 「구독 설정 관리」(리스트별 선택) 화면은 그대로 리스트별이다.
@@ -573,6 +590,7 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 - 옵트인 메일 재발송은 읽기 규칙을 따른다(구독자를 바꾸지 않는다).
 
 ### upstream을 따라갈 때
+- (LST-68) `cmd/campaigns.go`: 캠페인 만들기·수정의 `campaignWriteListIDs` 두 곳, `DeleteCampaigns`의 `campaignWriteLists` 한 줄, `checkCampaignPerm`의 관리 쪽 분기(`CampaignListsWithin`)(upstream의 `GetPermittedLists(Get|Manage)` 줄은 그대로 두고 그 아래에서 덮어쓴다). upstream이 캠페인 접근 판정을 바꾸면 이 네 곳을 다시 본다. `cmd/roles.go` `UpdateUserRole`의 `guardTeamUserRole`, `cmd/users.go` `CreateUser`·`UpdateUser`의 `guardTeamMemberRole`(본문은 `cmd/axm_teams.go`). 새 권한이 생기면 쓰기 전사 권한 목록(`core.TeamWidePerms`, `teams.js`)을 다시 본다.
 - `cmd/subscribers.go`: `GetSubscriber`·`QuerySubscribers`의 `attachLocked`, `UpdateSubscriber`·`PatchSubscriber`의 `updateSub`, 차단·삭제·반송 삭제 5곳의 `blocklistSubs`·`deleteSubs`·`deleteSubBounces`(upstream의 `hasSubPerm` 줄은 그대로), 조건 일괄 2곳의 `guardBulkQuery`·`bulkByQuery`. upstream이 `update-subscriber-with-lists`의 구독 부분을 바꾸면 `axm-update-subscriber-lists`에도 넣는다. `cmd/import.go`의 `restrictImportOverwrite` 한 줄. `internal/core/subscribers.go`의 `QuerySubscribers`·`getSubscriberCount`에 「리스트 2개 이상이면 multi 문장」 두 블록(upstream의 `stmt` 줄은 그대로 두고 그 아래에 덧붙였다 — CodeQL이 그 줄의 변경을 새 경고로 본다).
 - upstream이 `query-subscribers`의 조인·조건을 바꾸면 `axm-query-subscribers-multi`(-count)에도 같은 변경을 넣는다.
 - 판정 코드는 `cmd/axm_sub_boundary.go`·`internal/core/axm_sub_boundary.go`, 시험은 `cmd/axm_sub_boundary_db_test.go`·`internal/core/axm_sub_boundary_test.go`·`frontend/cypress/e2e/list-teams.cy.js`.
@@ -1500,7 +1518,7 @@ DB(4·5)를 DNS(7·8)보다 먼저 본다: 차단·반송이면 DNS를 기다리
 
 ### 공개 범위 (A안)
 
-`GET /api/stats/campaigns`·`/api/stats/recipients`는 `campaigns:get_analytics` 권한으로 열린다. 응답은 모든 팀의 **결과**다: 캠페인 번호·이름·제목·시작·발송·열람자·클릭자·반송 종류별 건수·팀 태그. 리스트 번호·이름은 **읽을 수 있는 캠페인**(`campaigns:get_all`, 모든 리스트 권한, 또는 캠페인의 리스트 중 하나가 내 리스트 — `checkCampaignPerm`의 읽기 규칙과 같다)에만 붙고(`own`), 그 밖에는 `lists_n`(개수)만 나간다. 명단·주소·본문은 이 API에 없다. 캠페인 열기·복제·반응 리스트·분석은 기존 권한 그대로 403이다(`cmd/axm_stats_db_test.go`가 이 둘을 같이 고정한다). 국가와 주소 나이 모두 전사와 각 팀 범위에서 고유 수신자를 세어 30명 미만인 분류를 서버에서 「기타」(`__other__`)로 합친다. 「팀 없음」의 수신자 묶음도 같은 기준을 쓴다. 공개 표본과 반송률은 묶음 전체 발송 기록으로, 열람률과 클릭률은 추적된 발송 기록으로 계산한다. 카드에는 추적 발송 수와 고유 수신자 수가 함께 보인다. 추적 수신자가 200명 미만이면 반응률 대신 추적 표본 상태를 표시한다.
+`GET /api/stats/campaigns`·`/api/stats/recipients`는 `campaigns:get_analytics` 권한으로 열린다. 응답은 모든 팀의 **결과**다: 캠페인 번호·이름·제목·시작·발송·열람자·클릭자·반송 종류별 건수·팀 태그. 캠페인 읽기 권한이 있고 받는 리스트가 모두 자기 리스트 범위에 있으면 `own=true`다. `lists:manage_all`·Super Admin의 리스트 범위는 전사다. `own=true`인 줄에만 리스트 번호·이름·출처·생성일과 권한에 따른 분석·복제·후속 메일 동작이 붙는다. 다른 팀·혼합 캠페인은 결과와 리스트 개수(`lists_n`)가 나온다. 일반 캠페인 API는 사용자 역할에 따른 읽기 권한을 적용한다. 국가와 주소 나이 모두 전사와 각 팀 범위에서 고유 수신자를 세어 30명 미만인 분류를 서버에서 「기타」(`__other__`)로 합친다. 「팀 없음」의 수신자 묶음도 같은 기준을 쓴다. 공개 표본과 반송률은 묶음 전체 발송 기록으로, 열람률과 클릭률은 추적된 발송 기록으로 계산한다. 카드에는 추적 발송 수와 고유 수신자 수가 함께 보인다. 추적 수신자가 200명 미만이면 반응률 대신 추적 표본 상태를 표시한다.
 
 ### 숫자 정의
 
@@ -1510,7 +1528,7 @@ DB(4·5)를 DNS(7·8)보다 먼저 본다: 차단·반송이면 DNS를 기다리
 - 기준선: 반올림 전 반송 2%·신고 0.1% 초과를 빨강 ⚠로 표시한다. 캠페인별 최소 발송 표본은 각각 200통·1,000통이다. 「비슷함」 폭(클릭 0.5·열람 1.0·반송 0.3%p), 최소 표본(캠페인 200, 팀·묶음 캠페인 3건 그리고 1,000통), 집계 중 3일은 `frontend/src/stats-definitions.js` 한 곳이다. 「?」와 접힌 정의 표도 같은 항목을 읽는다.
 - 소속 팀 중앙값은 해당 캠페인을 포함해 같은 팀의 비교 가능한 캠페인 3건 이상으로 계산한다. 캠페인이 팀 태그 둘이면 두 팀에 다 센다, 없으면 「팀 없음」. 캠페인 화면의 결과 요약은 캠페인 시작 전후 최대 90일을 읽어 중앙값을 낸다(대시보드의 기간과 다를 수 있다).
 - 팀 줄은 팀 역할이 있는 **모든 팀**(발송이 없어도 「발송 없음 · 리스트 N개」). 리스트가 삭제된 캠페인은 팀을 모른다(「팀 없음」).
-- 리스트 통계는 `출처:` 태그로 묶는다. 출처가 없으면 리스트 ID를 쓴다. 열람할 수 있는 캠페인의 리스트에만 출처와 생성일이 포함된다.
+- 리스트 통계는 `출처:` 태그로 묶는다. 출처가 없으면 리스트 ID를 쓴다. `own=true`인 캠페인의 리스트에 출처와 생성일이 포함된다.
 - 후속 효과는 원본·후속 양쪽에서 반응한 사람을 한 번만 세어 원본의 발송 수로 나눈다. 후속을 고를 때 사용한 실제 열람·클릭 조건을 옆에 표시한다.
 
 ### 서버

@@ -129,20 +129,39 @@ func (c *Core) DeleteListPermission(roleID, listID int) error {
 	return nil
 }
 
-// UpdateUserRole updates a given role.
-func (c *Core) UpdateUserRole(id int, r auth.Role) (auth.Role, error) {
-	var out auth.Role
+// UpdateUserRole updates a user role and returns the previous and current state for audit.
+func (c *Core) UpdateUserRole(id int, r auth.Role) (auth.Role, auth.Role, error) {
+	var before, out auth.Role
+	tx, err := c.beginTeamRoleTx()
+	if err != nil {
+		return before, out, err
+	}
+	defer tx.Rollback()
+	if err := c.guardTeamUserRole(tx, id, r); err != nil {
+		return before, out, err
+	}
 
-	if err := c.q.UpdateRole.Get(&out, id, r.Name, pq.Array(r.Permissions)); err != nil {
-		return out, echo.NewHTTPError(http.StatusInternalServerError,
+	// These statements include team-only columns. Keep the app's row mapping
+	// when rebinding them to the transaction.
+	var roles []auth.Role
+	if err := tx.Stmtx(c.q.GetUserRoles).Unsafe().Select(&roles, id); err != nil {
+		return before, out, c.teamFail(err)
+	}
+	if len(roles) > 0 {
+		before = roles[0]
+	}
+	if err := tx.Stmtx(c.q.UpdateRole).Unsafe().Get(&out, id, r.Name, pq.Array(r.Permissions)); err != nil {
+		return before, out, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{users.userRole}", "error", pqErrMsg(err)))
 	}
 
 	if out.ID == 0 {
-		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.Ts("globals.messages.notFound", "name", "{users.userRole}"))
+		return before, out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.Ts("globals.messages.notFound", "name", "{users.userRole}"))
 	}
-
-	return out, nil
+	if err := tx.Commit(); err != nil {
+		return before, out, c.teamFail(err)
+	}
+	return before, out, nil
 }
 
 // UpdateListRole updates a given role.

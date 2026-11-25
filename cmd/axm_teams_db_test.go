@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/knadh/listmonk/models"
@@ -99,6 +101,7 @@ func (e *teamsEnv) call(h echo.HandlerFunc, user auth.User, method, target, id, 
 	}
 	if err := h(c); err != nil {
 		if he, ok := err.(*echo.HTTPError); ok {
+			e.t.Logf("%s %s: %d %v", method, target, he.Code, he.Message)
 			return he.Code, nil
 		}
 		if err == auth.ErrPermDenied {
@@ -628,5 +631,453 @@ func TestOperatorWithoutRolesSeesTeamsToChoose(t *testing.T) {
 	}
 	if code, data := e.call(create, op, "POST", "/api/lists", "", `{"name":"Op list","tags":["팀:가"]}`); code != 200 {
 		t.Fatalf("%d %s", code, data)
+	}
+}
+
+// LST-68: the permissions a team member must not have (core.TeamWidePerms), on the four ways in.
+
+func (e *teamsEnv) userRole(name string, perms ...string) int {
+	e.t.Helper()
+	var id int
+	e.get(&id, `INSERT INTO roles(type,name,permissions) VALUES('user',$1,$2) RETURNING id`, name, pq.StringArray(perms))
+	return id
+}
+
+// allowPerms lets the role screen accept the permissions (the audit env knows only two).
+func (e *teamsEnv) allowPerms(perms ...string) {
+	for _, p := range perms {
+		e.a.cfg.Permissions[p] = struct{}{}
+	}
+}
+
+func teamBody(name string, role int) string {
+	return fmt.Sprintf(`{"name":%q,"user_role_id":%d}`, name, role)
+}
+
+func roleBody(name string, perms ...string) string {
+	b, _ := json.Marshal(map[string]any{"name": name, "permissions": perms})
+	return string(b)
+}
+
+func TestTeamDefaultRoleRefusesWidePerms(t *testing.T) {
+	e := newAuditEnv(t)
+	admin := e.as(e.admin)
+	for i, p := range core.TeamWidePerms {
+		r := e.userRole("wide-"+itoa(i), p, "subscribers:get")
+		if code, _ := e.call(e.a.CreateTeam, admin, "POST", "/x", "", teamBody("새"+itoa(i), r)); code != http.StatusBadRequest {
+			t.Fatalf("create with %s: %d", p, code)
+		}
+		if code, _ := e.call(e.a.UpdateTeam, admin, "PUT", "/x", itoa(e.team1), teamBody("가", r)); code != http.StatusBadRequest {
+			t.Fatalf("update with %s: %d", p, code)
+		}
+	}
+	// What a team may keep: the dashboard numbers, the bounce screen, ordinary rights.
+	ok := e.userRole("clean", "campaigns:get_analytics", "bounces:get", "bounces:manage", "subscribers:get", "campaigns:get")
+	if code, data := e.call(e.a.CreateTeam, admin, "POST", "/x", "", teamBody("깨끗", ok)); code != 200 {
+		t.Fatalf("clean role: %d %s", code, data)
+	}
+	// Reading across teams is how members work: subscribers:get_all stays allowed.
+	reads := e.userRole("reads", "subscribers:get_all", "subscribers:get")
+	if code, data := e.call(e.a.CreateTeam, admin, "POST", "/x", "", teamBody("읽기", reads)); code != 200 {
+		t.Fatalf("a role that only reads all subscribers: %d %s", code, data)
+	}
+	if code, _ := e.call(e.a.CreateTeam, admin, "POST", "/x", "", teamBody("슈퍼", 1)); code != http.StatusBadRequest {
+		t.Fatalf("super admin role: %d", code)
+	}
+}
+
+func TestTeamMemberWithWidePermsNeedsTheTeamsRole(t *testing.T) {
+	e := newAuditEnv(t)
+	admin := e.as(e.admin)
+	for _, p := range core.TeamWidePerms {
+		r := e.userRole("w-"+p, p)
+		var u int
+		e.get(&u, `INSERT INTO users(username,email,name,user_role_id,status,type) VALUES($1,$1||'@example.invalid','w',$2,'enabled','user') RETURNING id`, "w-"+strings.ReplaceAll(p, ":", "-"), r)
+		bare, err := e.core.CreateTeam("무역할"+p, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code, _ := e.call(e.a.SetTeamMembers, admin, "PUT", "/x", itoa(bare.ID), fmt.Sprintf(`{"user_ids":[%d]}`, u)); code != http.StatusBadRequest {
+			t.Fatalf("%s into a team without a default role: %d", p, code)
+		}
+		if code, _ := e.call(e.a.SetTeamMembers, admin, "PUT", "/x", itoa(e.team1), fmt.Sprintf(`{"user_ids":[%d,%d]}`, e.ua, u)); code != 200 {
+			t.Fatalf("%s into a team with one: %d", p, code)
+		}
+		var got int
+		e.get(&got, `SELECT user_role_id FROM users WHERE id = $1`, u)
+		if got != e.memberRole {
+			t.Fatalf("%s: the new member gets the team's role: %d", p, got)
+		}
+		e.call(e.a.SetTeamMembers, admin, "PUT", "/x", itoa(e.team1), fmt.Sprintf(`{"user_ids":[%d]}`, e.ua))
+	}
+}
+
+// The roles screen: a role a team uses keeps no wide permission; any other role is free.
+func TestUserRoleOfATeamKeepsNoWidePerms(t *testing.T) {
+	e := newAuditEnv(t)
+	e.allowPerms(append([]string{"campaigns:get_analytics", "roles:get", "subscribers:manage", "campaigns:manage", "subscribers:get_all", "lists:get_all", "campaigns:get_all"}, core.TeamWidePerms...)...)
+	admin := e.as(e.admin)
+	save := func(id int, perms ...string) (int, string) {
+		code, data := e.call(e.a.UpdateUserRole, admin, "PUT", "/x", itoa(id), roleBody("r"+itoa(id), perms...))
+		return code, string(data)
+	}
+	// The default role of a team.
+	r := e.userRole("team-role", "subscribers:get")
+	if _, err := e.core.CreateTeam("다", r); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range core.TeamWidePerms {
+		if code, _ := save(r, "subscribers:get", p); code != http.StatusBadRequest {
+			t.Fatalf("adding %s to a team's role: %d", p, code)
+		}
+	}
+	if code, _ := save(r, "subscribers:get", "campaigns:get", "campaigns:get_analytics", "subscribers:get_all"); code != 200 {
+		t.Fatalf("other permissions: %d", code)
+	}
+	// Used by a member only.
+	solo := e.userRole("solo", "subscribers:get")
+	e.db.MustExec(`UPDATE users SET user_role_id = $1 WHERE id = $2`, solo, e.ub)
+	if code, _ := save(solo, "campaigns:manage_all"); code != http.StatusBadRequest {
+		t.Fatalf("a member's role: %d", code)
+	}
+	// A role no team uses; the operator role, used by an admin who is no member.
+	free := e.userRole("free", "subscribers:get")
+	if code, _ := save(free, "lists:get_all", "campaigns:manage_all"); code != 200 {
+		t.Fatalf("free role: %d", code)
+	}
+	var operator int
+	e.get(&operator, `SELECT user_role_id FROM users WHERE id = $1`, e.admin)
+	if code, _ := save(operator, "lists:get_all", "lists:manage_all", "subscribers:get_all", "roles:get"); code != 200 {
+		t.Fatalf("operator: %d", code)
+	}
+}
+
+// The users screen: a team member does not get a wide user role.
+func TestTeamMemberUserRoleChange(t *testing.T) {
+	e := newAuditEnv(t)
+	admin := e.as(e.admin)
+	var operator int
+	e.get(&operator, `SELECT user_role_id FROM users WHERE id = $1`, e.admin)
+	body := func(name string, userRole int, listRole any) string {
+		b, _ := json.Marshal(map[string]any{"username": name + "-user", "email": name + "@example.invalid", "name": "N " + name,
+			"type": "user", "status": "enabled", "user_role_id": userRole, "list_role_id": listRole})
+		return string(b)
+	}
+	update := func(id int, b string) int {
+		code, _ := e.call(e.a.UpdateUser, admin, "PUT", "/x", itoa(id), b)
+		return code
+	}
+	if code := update(e.ua, body("ua", e.memberRole, e.team1)); code != 200 {
+		t.Fatalf("a rename: %d", code)
+	}
+	if code := update(e.ua, body("ua", operator, e.team1)); code != http.StatusBadRequest {
+		t.Fatalf("a member given the operator role: %d", code)
+	}
+	if code := update(e.ua, body("ua", 1, e.team1)); code != http.StatusBadRequest {
+		t.Fatalf("a member given the super admin role: %d", code)
+	}
+	// A person who is not a member, or who leaves the team in the same save.
+	if code := update(e.plain, body("plain", operator, nil)); code != 200 {
+		t.Fatalf("not a member: %d", code)
+	}
+	if code := update(e.ub, body("ub", operator, nil)); code != 200 {
+		t.Fatalf("leaving the team: %d", code)
+	}
+	// Joining a team with a wide role at the same time.
+	if code := update(e.admin, body("admin", operator, e.team2)); code != http.StatusBadRequest {
+		t.Fatalf("an operator joining a team: %d", code)
+	}
+	// New users.
+	create := func(b string) int {
+		code, _ := e.call(e.a.CreateUser, admin, "POST", "/x", "", b)
+		return code
+	}
+	if code := create(body("newwide", operator, e.team1)); code != http.StatusBadRequest {
+		t.Fatalf("new wide member: %d", code)
+	}
+	if code := create(body("newmember", e.memberRole, e.team1)); code != 200 {
+		t.Fatalf("new member: %d", code)
+	}
+	if code := create(body("neweditor", operator, nil)); code != 200 {
+		t.Fatalf("new operator without a team: %d", code)
+	}
+}
+
+// What production looked like: the team's default role (and so its members) already had
+// lists:*_all and subscribers:get_all. Nothing is mended by the code; the screens tell, the
+// save that keeps things as they are works, and the ways to make it worse are shut.
+func TestTeamAlreadyWide(t *testing.T) {
+	e := newAuditEnv(t)
+	e.allowPerms(append([]string{"campaigns:get_analytics", "roles:get", "subscribers:manage", "campaigns:manage", "subscribers:get_all", "lists:get_all", "campaigns:get_all"}, core.TeamWidePerms...)...)
+	admin := e.as(e.admin)
+	wide := []string{"lists:manage_all"}
+	// Production's role: the two reading permissions beside it are not what the screens warn about.
+	e.db.MustExec(`UPDATE roles SET permissions = $2 WHERE id = $1`, e.memberRole, pq.StringArray([]string{"subscribers:get", "subscribers:manage", "campaigns:get", "campaigns:manage", "lists:get_all", "lists:manage_all", "subscribers:get_all"}))
+
+	teams := func() map[int]models.Team {
+		code, data := e.call(e.a.GetTeams, admin, "GET", "/x", "", "")
+		if code != 200 {
+			t.Fatal(code)
+		}
+		var ts []models.Team
+		json.Unmarshal(data, &ts)
+		m := map[int]models.Team{}
+		for _, tm := range ts {
+			m[tm.ID] = tm
+		}
+		return m
+	}
+	tm := teams()[e.team1]
+	if !sameSet(tm.Wide, wide) || tm.WideMembers != 1 {
+		t.Fatalf("the teams screen: wide %v, %d members", tm.Wide, tm.WideMembers)
+	}
+	if raw, _ := json.Marshal(tm); !strings.Contains(string(raw), `"wide_members":1`) {
+		t.Fatalf("%s", raw)
+	}
+
+	// Saving the team as it is, or its name, is refused: its default role is wide.
+	if code, _ := e.call(e.a.UpdateTeam, admin, "PUT", "/x", itoa(e.team1), teamBody("가", e.memberRole)); code != http.StatusBadRequest {
+		t.Fatalf("update of a wide team: %d", code)
+	}
+	// A member can still change their name or password: the role does not change.
+	b, _ := json.Marshal(map[string]any{"username": "ua-user", "email": "ua@example.invalid", "name": "새 이름", "type": "user", "status": "enabled",
+		"user_role_id": e.memberRole, "list_role_id": e.team1})
+	if code, _ := e.call(e.a.UpdateUser, admin, "PUT", "/x", itoa(e.ua), string(b)); code != 200 {
+		t.Fatalf("member rename: %d", code)
+	}
+	// The same members saved again, or fewer, pass; a new one does not.
+	set := func(ids ...int) int {
+		b, _ := json.Marshal(map[string]any{"user_ids": ids})
+		code, _ := e.call(e.a.SetTeamMembers, admin, "PUT", "/x", itoa(e.team1), string(b))
+		return code
+	}
+	if code := set(e.ua); code != 200 {
+		t.Fatalf("same members: %d", code)
+	}
+	if code := set(e.ua, e.plain); code != http.StatusBadRequest {
+		t.Fatalf("a new member of a wide team: %d", code)
+	}
+	if code := set(); code != 200 {
+		t.Fatalf("no members: %d", code)
+	}
+	e.db.MustExec(`UPDATE users SET list_role_id = $1 WHERE id = $2`, e.team1, e.ua)
+	// The role screen: keeping the wide permissions is refused, taking them out is how it is mended.
+	save := func(perms ...string) int {
+		code, _ := e.call(e.a.UpdateUserRole, admin, "PUT", "/x", itoa(e.memberRole), roleBody("member", perms...))
+		return code
+	}
+	if code := save("subscribers:get", "lists:manage_all"); code != http.StatusBadRequest {
+		t.Fatalf("keeping a wide permission: %d", code)
+	}
+	if code := save("subscribers:get", "subscribers:manage", "campaigns:get", "campaigns:manage"); code != 200 {
+		t.Fatalf("mending: %d", code)
+	}
+	tm = teams()[e.team1]
+	if len(tm.Wide) != 0 || tm.WideMembers != 0 {
+		t.Fatalf("mended: %v %d", tm.Wide, tm.WideMembers)
+	}
+	if code, _ := e.call(e.a.UpdateTeam, admin, "PUT", "/x", itoa(e.team1), teamBody("가", e.memberRole)); code != 200 {
+		t.Fatalf("update after the mend: %d", code)
+	}
+}
+
+// LST-68, decision B: lists:get_all is read access. Upstream reads "get or manage" list access as
+// one in its campaign checks, so a member with lists:get_all and campaigns:manage could change,
+// send and aim campaigns at the lists of other teams. They may read everything, and write to
+// the campaigns of their own lists only. lists:manage_all and the super admin keep every
+// campaign; campaigns:get_all reads every campaign and writes none.
+func TestListsGetAllDoesNotManageOtherTeamsCampaigns(t *testing.T) {
+	e := newAuditEnv(t)
+	camp := func(name string, list int) int {
+		var id int
+		e.get(&id, `INSERT INTO campaigns(uuid,name,subject,from_email,body,messenger) VALUES(gen_random_uuid(),$1,'S','test@example.invalid','b','email') RETURNING id`, name)
+		e.db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) SELECT $1, id, name FROM lists WHERE id = $2`, id, list)
+		return id
+	}
+	campA, campB := camp("A camp", e.aList), camp("B camp", e.bList)
+
+	can := func(user, c int, typ auth.PermType) int {
+		h := func(ctx echo.Context) error { return e.a.checkCampaignPerm(typ, getID(ctx), ctx) }
+		code, _ := e.call(h, e.as(user), "PUT", "/x", itoa(c), "")
+		return code
+	}
+	member := func(name string, perms ...string) int {
+		role := e.userRole("camp-"+name, perms...)
+		var id int
+		e.get(&id, `INSERT INTO users(username,email,name,user_role_id,list_role_id,status,type) VALUES($1,$1||'@example.invalid',$1,$2,$3,'enabled','user') RETURNING id`, "u-"+name, role, e.team1)
+		return id
+	}
+	plain := member("plain", "campaigns:get", "campaigns:manage")
+	readsLists := member("lga", "campaigns:get", "campaigns:manage", "lists:get_all")
+	readsCamps := member("cga", "campaigns:get", "campaigns:manage", "campaigns:get_all")
+	both := member("both", "campaigns:get", "campaigns:manage", "lists:get_all", "lists:manage_all")
+	writesAll := member("cma", "campaigns:get", "campaigns:manage", "campaigns:manage_all")
+
+	for name, u := range map[string]int{"plain": plain, "lists:get_all": readsLists, "campaigns:get_all": readsCamps} {
+		if code := can(u, campA, auth.PermTypeManage); code != 200 {
+			t.Fatalf("%s manages their own team's campaign: %d", name, code)
+		}
+		if code := can(u, campB, auth.PermTypeManage); code != http.StatusForbidden {
+			t.Fatalf("%s manages another team's campaign: %d", name, code)
+		}
+	}
+	// Reading stays as it was.
+	for name, u := range map[string]int{"lists:get_all": readsLists, "campaigns:get_all": readsCamps} {
+		if code := can(u, campB, auth.PermTypeGet); code != 200 {
+			t.Fatalf("%s reads another team's campaign: %d", name, code)
+		}
+	}
+	if code := can(plain, campB, auth.PermTypeGet); code != http.StatusForbidden {
+		t.Fatalf("a member without a reading permission: %d", code)
+	}
+	// A campaign that sends to a list of another team as well is not the member's to change: a
+	// send or a delete reaches all of its lists.
+	mixed := camp("A and B", e.aList)
+	e.db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES($1,$2,'B1')`, mixed, e.bList)
+	both2 := camp("Both", e.bothList)
+	gone := camp("A and a deleted list", e.aList)
+	e.db.MustExec(`INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES($1,NULL,'gone')`, gone)
+	for name, u := range map[string]int{"plain": plain, "lists:get_all": readsLists} {
+		if code := can(u, mixed, auth.PermTypeManage); code != http.StatusForbidden {
+			t.Fatalf("%s manages a campaign that also sends to another team: %d", name, code)
+		}
+		if code := can(u, mixed, auth.PermTypeGet); name == "lists:get_all" && code != 200 {
+			t.Fatalf("%s reads it: %d", name, code)
+		}
+		if code := can(u, both2, auth.PermTypeManage); code != 200 {
+			t.Fatalf("%s: a list that both teams own: %d", name, code)
+		}
+		if code := can(u, gone, auth.PermTypeManage); code != 200 {
+			t.Fatalf("%s: a campaign whose other list was deleted: %d", name, code)
+		}
+	}
+	// The delete by IDs, by query and "all" has the same reach.
+	deleted, err := e.core.DeleteCampaignsGuarded([]int{mixed, campA, campB}, "", true, false, []int{e.aList, e.bothList})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 1 || deleted[0].ID != campA {
+		t.Fatalf("only the campaign of the user's own lists is deleted: %+v", deleted)
+	}
+	// What the *_all permissions that write still do (the decision keeps them off team roles).
+	for name, u := range map[string]int{"lists:manage_all": both, "campaigns:manage_all": writesAll, "super admin": e.superAdmin} {
+		if code := can(u, campB, auth.PermTypeManage); code != 200 {
+			t.Fatalf("%s: %d", name, code)
+		}
+	}
+
+	// The lists a campaign is saved with.
+	ids := []int{e.aList, e.bList, e.bothList, e.plainList}
+	same := func(who string, got, want []int) {
+		t.Helper()
+		g, w := []string{}, []string{}
+		for _, id := range got {
+			g = append(g, itoa(id))
+		}
+		for _, id := range want {
+			w = append(w, itoa(id))
+		}
+		if !sameSet(g, w) {
+			t.Fatalf("%s: %v, want %v", who, got, want)
+		}
+	}
+	ids = []int{e.aList, e.bothList}
+	got := func(u int, in []int) ([]int, error) { return campaignWriteListIDs(e.as(u), in) }
+	g, err := got(plain, []int{e.aList, e.bList, e.bothList, e.plainList})
+	if err != nil {
+		t.Fatal(err)
+	}
+	same("plain (upstream filter)", g, ids)
+	// A user with lists:get_all is refused a list that is not theirs, not given fewer lists.
+	if g, err = got(readsLists, []int{e.aList, e.bList}); err != auth.ErrPermDenied {
+		t.Fatalf("lists:get_all asking for another team's list: %v %v", g, err)
+	}
+	g, err = got(readsLists, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same("lists:get_all", g, ids)
+	all4 := []int{e.aList, e.bList, e.bothList, e.plainList}
+	g, _ = got(both, all4)
+	same("lists:manage_all", g, all4)
+	g, _ = got(e.superAdmin, all4)
+	same("super admin", g, all4)
+	if all, own := campaignWriteLists(e.as(readsLists)); all || len(own) != 2 {
+		t.Fatalf("lists:get_all writes to %v %v", all, own)
+	}
+	// The dashboard's "own" (LST-64) uses the write rule, not the read one.
+	own := func(u int, lists ...int) bool { return campaignIsOwn(e.as(u), lists) }
+	if !own(readsLists, e.aList) || !own(readsLists, e.aList, e.bothList) || own(readsLists, e.aList, e.bList) || own(readsLists, e.bList) || own(readsLists) {
+		t.Fatal("lists:get_all owns the campaigns of its own lists only")
+	}
+	if !own(both, e.bList) || !own(e.superAdmin, e.bList) {
+		t.Fatal("lists:manage_all owns every campaign")
+	}
+	if all, _ := campaignWriteLists(e.as(both)); !all {
+		t.Fatal("lists:manage_all writes everywhere")
+	}
+}
+
+// The users screen judges the pair of roles the save will store, not only the ones in the request:
+// a user role ID of 0 keeps the present role, a list role ID of 0 keeps the present list role, and
+// no list role clears it (queries/users.sql update-user).
+func TestTeamMemberRoleIsJudgedByTheStoredPair(t *testing.T) {
+	e := newAuditEnv(t)
+	admin := e.as(e.admin)
+	var operator int
+	e.get(&operator, `SELECT user_role_id FROM users WHERE id = $1`, e.admin)
+	update := func(id int, body map[string]any) int {
+		body["username"], body["email"], body["type"], body["status"] = "user-"+itoa(id), "user"+itoa(id)+"@example.invalid", "user", "enabled"
+		b, _ := json.Marshal(body)
+		code, _ := e.call(e.a.UpdateUser, admin, "PUT", "/x", itoa(id), string(b))
+		return code
+	}
+	// The admin has the operator role and no team. Only the list role is sent: the stored pair
+	// would be a team member with the operator role.
+	if code := update(e.admin, map[string]any{"list_role_id": e.team1}); code != http.StatusBadRequest {
+		t.Fatalf("joining a team with the kept operator role: %d", code)
+	}
+	var lr *int
+	e.get(&lr, `SELECT list_role_id FROM users WHERE id = $1`, e.admin)
+	if lr != nil {
+		t.Fatalf("nothing was stored: %v", *lr)
+	}
+	// A member is sent with a new user role and list role 0 (keep): still a member.
+	if code := update(e.ua, map[string]any{"user_role_id": operator, "list_role_id": 0}); code != http.StatusBadRequest {
+		t.Fatalf("a member given the operator role, list role kept: %d", code)
+	}
+	// A member sent with the new role and no list role leaves the team in the same save.
+	if code := update(e.ub, map[string]any{"user_role_id": operator}); code != 200 {
+		t.Fatalf("leaving the team while the role changes: %d", code)
+	}
+	// Neither role in the request, a member of a wide team keeps working.
+	e.db.MustExec(`UPDATE roles SET permissions = '{subscribers:get,lists:manage_all}' WHERE id = $1`, e.memberRole)
+	if code := update(e.plain, map[string]any{"name": "N", "list_role_id": 0}); code != 200 {
+		t.Fatalf("a rename of somebody in an ordinary list role: %d", code)
+	}
+}
+
+func TestTeamRoleSavesWithOneDBConnection(t *testing.T) {
+	e := newAuditEnv(t)
+	admin := e.as(e.admin)
+	e.db.SetMaxOpenConns(1)
+
+	for _, tc := range []struct {
+		name, method, id, body string
+		handler                echo.HandlerFunc
+	}{
+		{"create team", "POST", "", teamBody("새 팀", e.memberRole), e.a.CreateTeam},
+		{"update team", "PUT", itoa(e.team1), teamBody("가", e.memberRole), e.a.UpdateTeam},
+		{"update members", "PUT", itoa(e.team1), fmt.Sprintf(`{"user_ids":[%d,%d]}`, e.ua, e.plain), e.a.SetTeamMembers},
+		{"update role", "PUT", itoa(e.memberRole), roleBody("member", "subscribers:get"), e.a.UpdateUserRole},
+		{"create user", "POST", "", fmt.Sprintf(`{"username":"new-member","email":"new-member@example.invalid","type":"user","status":"enabled","user_role_id":%d,"list_role_id":%d}`, e.memberRole, e.team1), e.a.CreateUser},
+		{"update user", "PUT", itoa(e.ua), fmt.Sprintf(`{"username":"user-a","email":"ua@example.invalid","name":"Updated","type":"user","status":"enabled","list_role_id":%d}`, e.team1), e.a.UpdateUser},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, data := e.call(tc.handler, admin, tc.method, "/x", tc.id, tc.body)
+			if code != http.StatusOK {
+				t.Fatalf("status = %d, data = %s", code, data)
+			}
+		})
 	}
 }

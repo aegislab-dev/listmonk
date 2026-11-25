@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
@@ -228,7 +229,7 @@ func TestTeamMembers(t *testing.T) {
 // read all lists.
 func TestTeamDeleteAndUserRole(t *testing.T) {
 	e := newTeamEnv(t)
-	admin := e.userRole("operator", "lists:get_all")
+	admin := e.userRole("operator", "lists:manage_all")
 	member := e.userRole("member", "subscribers:get")
 	if _, err := e.c.CreateTeam("가", admin); statusOf(err) != http.StatusBadRequest {
 		t.Fatalf("default role that reads all lists: %v", err)
@@ -369,4 +370,47 @@ func TestTeamRoleTagCleared(t *testing.T) {
 	wantStrings(t, "kept", e.roleLists(team.ID), []string{"A"})
 	e.setTags(l)
 	wantStrings(t, "no longer follows the tag", e.roleLists(team.ID), []string{"A"})
+}
+
+// A team save waiting on a role edit must validate against the committed role.
+func TestTeamRoleTransactionSerializes(t *testing.T) {
+	e := newTeamEnv(t)
+	role := e.userRole("member", "campaigns:get")
+	e.db.SetMaxOpenConns(2)
+
+	tx, err := e.c.beginTeamRoleTx()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE roles SET permissions = '{campaigns:manage_all}' WHERE id = $1`, role); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := e.c.CreateTeam("가", role)
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("team save completed before the role change committed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-result:
+		if statusOf(err) != http.StatusBadRequest {
+			t.Fatalf("team save after role change: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("team save still waiting after commit")
+	}
+
+	if _, err := e.c.CreateTeam("가", 0); err != nil {
+		t.Fatalf("rejected save must roll back and release the lock: %v", err)
+	}
 }

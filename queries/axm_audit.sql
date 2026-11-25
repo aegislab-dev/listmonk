@@ -48,8 +48,11 @@ WHERE (
     END
 )
 AND (
-    $3 OR EXISTS (
-        SELECT 1 FROM campaign_lists WHERE campaign_id = c.id AND list_id = ANY($4::INT[])
+    -- LST-68: a user without the blanket right deletes a campaign only when every list it
+    -- sends to (a deleted list leaves no list) is among $4, not when one of them is.
+    $3 OR (
+        EXISTS (SELECT 1 FROM campaign_lists WHERE campaign_id = c.id AND list_id = ANY($4::INT[]))
+        AND NOT EXISTS (SELECT 1 FROM campaign_lists WHERE campaign_id = c.id AND list_id IS NOT NULL AND NOT (list_id = ANY($4::INT[])))
     )
 )
 ORDER BY c.id

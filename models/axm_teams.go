@@ -1,6 +1,10 @@
 package models
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/lib/pq"
+)
 
 // TeamTagPrefix starts the tag of every team ("팀:마케팅2팀"). A team role holds exactly the
 // lists carrying its tag (see migration v6.2.1-axm.8).
@@ -53,6 +57,11 @@ type Team struct {
 	Lists      int          `db:"lists" json:"lists"`
 	Members    []TeamMember `db:"-" json:"members"`
 	NumMembers int          `db:"members" json:"-"`
+	// Wide lists the team-wide permissions (LST-68) the default user role has, WideMembers
+	// counts the members whose user role has one (or is the super admin role): they read other
+	// teams' data. The teams screen warns about both.
+	Wide        pq.StringArray `db:"wide" json:"wide"`
+	WideMembers int            `db:"wide_members" json:"wide_members"`
 }
 
 // TeamMember is a user who belongs to a team.

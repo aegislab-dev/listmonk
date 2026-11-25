@@ -37,6 +37,7 @@
 
 <script>
 import Vue from 'vue';
+import { widePermsOf } from '../teams';
 
 export default Vue.extend({
   name: 'TeamMembers',
@@ -56,17 +57,27 @@ export default Vue.extend({
     };
   },
 
+  computed: {
+    teamRoleWide() {
+      return widePermsOf((this.userRoles || []).find((r) => r.id === this.team.userRoleId));
+    },
+  },
+
   methods: {
     roleOf(user) { return (this.userRoles || []).find((r) => r.id === user.userRole.id); },
 
+    // A team-wide permission (LST-68): the person would read other teams' lists, subscribers or campaigns.
     readsAllLists(user) {
-      const role = this.roleOf(user);
-      return !!role && (role.permissions || []).some((p) => p === 'lists:get_all' || p === 'lists:manage_all');
+      return widePermsOf(this.roleOf(user)).length > 0;
     },
 
-    // A super admin cannot join; someone who reads all lists needs the team's default role.
+    // A super admin cannot join; someone who reads all lists needs the team's default role; and
+    // nobody new joins a team whose default role itself has a team-wide permission (LST-68).
     blocked(user) {
       if (user.userRole.id === 1) return this.$t('teams.superAdmin');
+      if (!this.isMember(user) && this.teamRoleWide.length) {
+        return this.$t('teams.wideRoleBlocked', { perms: this.teamRoleWide.join(', ') });
+      }
       if (this.readsAllLists(user) && !this.team.userRoleId && !this.isMember(user)) return this.$t('teams.needsUserRole');
       return '';
     },

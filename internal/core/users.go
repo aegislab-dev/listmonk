@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/utils"
 	"github.com/labstack/echo/v4"
@@ -25,8 +26,12 @@ func (c *Core) GetUsers() ([]auth.User, error) {
 
 // GetUser retrieves a specific user based on any one given identifier.
 func (c *Core) GetUser(id int, username, email string) (auth.User, error) {
+	return c.getUser(c.q.GetUser, id, username, email)
+}
+
+func (c *Core) getUser(stmt *sqlx.Stmt, id int, username, email string) (auth.User, error) {
 	var out auth.User
-	if err := c.q.GetUser.Get(&out, id, username, email); err != nil {
+	if err := stmt.Get(&out, id, username, email); err != nil {
 		if err == sql.ErrNoRows {
 			return out, echo.NewHTTPError(http.StatusNotFound,
 				c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.user}"))
@@ -42,6 +47,31 @@ func (c *Core) GetUser(id int, username, email string) (auth.User, error) {
 
 // CreateUser creates a new user.
 func (c *Core) CreateUser(u auth.User) (auth.User, error) {
+	return c.createUser(u, c.q.CreateUser, c.q.GetUser)
+}
+
+// CreateUserWithTeamRole validates the team assignment in the admin user API.
+func (c *Core) CreateUserWithTeamRole(u auth.User) (auth.User, error) {
+	tx, err := c.beginTeamRoleTx()
+	if err != nil {
+		return auth.User{}, err
+	}
+	defer tx.Rollback()
+	if err := c.guardTeamMemberRole(tx, u, auth.User{}); err != nil {
+		return auth.User{}, err
+	}
+
+	out, err := c.createUser(u, tx.Stmtx(c.q.CreateUser), tx.Stmtx(c.q.GetUser))
+	if err != nil {
+		return auth.User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return auth.User{}, c.teamFail(err)
+	}
+	return out, nil
+}
+
+func (c *Core) createUser(u auth.User, create, get *sqlx.Stmt) (auth.User, error) {
 	var (
 		apiToken   string
 		dbPassword = u.Password
@@ -64,27 +94,39 @@ func (c *Core) CreateUser(u auth.User) (auth.User, error) {
 	}
 
 	var id int
-	if err := c.q.CreateUser.Get(&id, u.Username, u.PasswordLogin, dbPassword, u.Email, u.Name, u.Type, u.UserRoleID, u.ListRoleID, u.Status); err != nil {
+	if err := create.Get(&id, u.Username, u.PasswordLogin, dbPassword, u.Email, u.Name, u.Type, u.UserRoleID, u.ListRoleID, u.Status); err != nil {
 		return auth.User{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorCreating", "name", "{globals.terms.user}", "error", pqErrMsg(err)))
 	}
 
-	// Hide the password field in the response except for when the user type is an API token,
-	// where the frontend shows the token on the UI just once.
-	if u.Type != auth.UserTypeAPI {
-		u.Password = null.String{Valid: false}
+	out, err := c.getUser(get, id, "", "")
+	if err != nil {
+		return auth.User{}, err
 	}
-
-	out, err := c.GetUser(id, "", "")
+	// The frontend shows the plaintext API token once.
 	if u.Type == auth.UserTypeAPI {
 		out.Password = null.String{String: apiToken, Valid: true}
 	}
 
-	return out, err
+	return out, nil
 }
 
-// UpdateUser updates a given user.
-func (c *Core) UpdateUser(id int, u auth.User) (auth.User, error) {
+// UpdateUser updates a user and returns the previous and current state for audit.
+func (c *Core) UpdateUser(id int, u auth.User) (auth.User, auth.User, error) {
+	tx, err := c.beginTeamRoleTx()
+	if err != nil {
+		return auth.User{}, auth.User{}, err
+	}
+	defer tx.Rollback()
+	get := tx.Stmtx(c.q.GetUser)
+	before, err := c.getUser(get, id, "", "")
+	if err != nil {
+		return before, auth.User{}, err
+	}
+	if err := c.guardTeamMemberRole(tx, u, before); err != nil {
+		return before, auth.User{}, err
+	}
+
 	listRoleID := 0
 	if u.ListRoleID == nil {
 		listRoleID = -1
@@ -92,19 +134,24 @@ func (c *Core) UpdateUser(id int, u auth.User) (auth.User, error) {
 		listRoleID = *u.ListRoleID
 	}
 
-	res, err := c.q.UpdateUser.Exec(id, u.Username, u.PasswordLogin, u.Password, u.Email, u.Name, u.Type, u.UserRoleID, listRoleID, u.Status)
+	res, err := tx.Stmtx(c.q.UpdateUser).Exec(id, u.Username, u.PasswordLogin, u.Password, u.Email, u.Name, u.Type, u.UserRoleID, listRoleID, u.Status)
 	if err != nil {
-		return auth.User{}, echo.NewHTTPError(http.StatusInternalServerError,
+		return before, auth.User{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.user}", "error", pqErrMsg(err)))
 	}
 
 	if n, _ := res.RowsAffected(); n == 0 {
-		return auth.User{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("users.needSuper"))
+		return before, auth.User{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("users.needSuper"))
 	}
 
-	out, err := c.GetUser(id, "", "")
-
-	return out, err
+	out, err := c.getUser(get, id, "", "")
+	if err != nil {
+		return before, auth.User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return before, auth.User{}, c.teamFail(err)
+	}
+	return before, out, nil
 }
 
 // UpdateUserProfile updates the basic fields of a given uesr (name, email, password).

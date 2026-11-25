@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
@@ -85,7 +86,7 @@ func (a *App) CreateUser(c echo.Context) error {
 	}
 
 	// Create the user in the DB.
-	user, err := a.core.CreateUser(u)
+	user, err := a.core.CreateUserWithTeamRole(u)
 	if err != nil {
 		return err
 	}
@@ -163,12 +164,11 @@ func (a *App) UpdateUser(c echo.Context) error {
 	}
 
 	// Update the user in the DB.
-	before := a.userInfoOf(id)
-	user, err := a.core.UpdateUser(id, u)
+	before, user, err := a.core.UpdateUser(id, u)
 	if err != nil {
 		return err
 	}
-	a.auditUserUpdated(c, id, before, user, u.Password.String != "")
+	a.auditUserUpdated(c, id, userFrom(before), user, u.Password.String != "")
 
 	// Blank out the password hash in the response.
 	user.Password = null.String{}
@@ -362,10 +362,16 @@ func (a *App) DisableTOTP(c echo.Context) error {
 	return c.JSON(http.StatusOK, okResp{true})
 }
 
+// Serialize refreshes so a slower read cannot replace a newer API user cache.
+var cacheUsersMu sync.Mutex
+
 // cacheUsers fetches (API) users and caches them in the auth module.
 // It also returns a bool indicating whether there are any actual users in the DB at all,
 // which if there aren't, the first time user setup needs to be run.
 func cacheUsers(co *core.Core, a *auth.Auth) (bool, error) {
+	cacheUsersMu.Lock()
+	defer cacheUsersMu.Unlock()
+
 	users, err := co.GetUsers()
 	if err != nil {
 		return false, err

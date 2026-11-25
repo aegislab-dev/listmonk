@@ -8,7 +8,7 @@ import (
 )
 
 // StatsCampaign is one campaign of the statistics dashboard (LST-64). Aggregates only: the
-// lists of a campaign are named only to people who may read the campaign (Own).
+// lists of a campaign are included when Own is true for the caller.
 type StatsCampaign struct {
 	ID            int            `db:"id" json:"id"`
 	Name          string         `db:"name" json:"name"`

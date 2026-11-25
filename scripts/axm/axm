@@ -1261,7 +1261,8 @@ def go_test(ctx, steps, pkgs, pg, tag=''):
     lines = ['set -uo pipefail', 'fail=0', MARK_FN]
     whole = sorted(d for d, r in pkgs.items() if r is None)
     if whole:
-        lines.append(f'mark whole:start; go test -count=1 -timeout 180s -p {n} {" ".join("./" + d if d != "." else "." for d in whole)} || fail=1; mark whole:end')
+        # Match axm-image for whole packages: cmd's DB fixtures can exceed 180s under the local CPU limit.
+        lines.append(f'mark whole:start; go test -count=1 -timeout 300s -p {n} {" ".join("./" + d if d != "." else "." for d in whole)} || fail=1; mark whole:end')
     for d, r in sorted(pkgs.items()):
         if r is not None:
             lines.append(f"mark {d.replace('/', '_')}:start; go test -count=1 -timeout 180s -p {n} -run '{r}' ./{d} || fail=1; mark {d.replace('/', '_')}:end")

@@ -88,17 +88,16 @@ func (a *App) UpdateUserRole(c echo.Context) error {
 	if err := a.validateUserRole(r); err != nil {
 		return err
 	}
-
 	// Validate.
 	r.Name.String = strings.TrimSpace(r.Name.String)
 
 	// Update the role in the DB.
-	before := a.roleInfoOf(id)
-	out, err := a.core.UpdateUserRole(id, r)
+	before, out, err := a.core.UpdateUserRole(id, r)
 	if err != nil {
 		return err
 	}
-	a.auditRoleUpdated(c, id, before, roleInfo{found: true, name: out.Name.String, kind: auth.RoleTypeUser, perms: out.Permissions})
+	a.auditRoleUpdated(c, id, roleInfo{found: before.ID != 0, name: before.Name.String, kind: auth.RoleTypeUser, perms: before.Permissions},
+		roleInfo{found: true, name: out.Name.String, kind: auth.RoleTypeUser, perms: out.Permissions})
 
 	// Cache API tokens for in-memory, off-DB /api/* request auth.
 	if _, err := cacheUsers(a.core, a.auth); err != nil {
