@@ -263,6 +263,7 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 	if f.RecentEnabled && f.CampType == models.CampaignTypeRegular && f.RecentExcluded+f.RecentHeld >= 0 {
 		add("recent.applied", models.PreflightInfo, map[string]any{
 			"days": f.RecentDays, "scope": f.RecentScope, "excluded": f.RecentExcluded, "held": f.RecentHeld,
+			"fresh": max(f.RecentExcluded-f.RecentHeld, 0),
 		})
 	}
 	return out
@@ -496,7 +497,13 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		if err != nil {
 			return err
 		}
+		on := false
 		if rule.Enabled {
+			if on, err = a.core.RecentRuleOn(id); err != nil {
+				return err
+			}
+		}
+		if on {
 			held, err := a.core.RecentHeldCount(id)
 			if err != nil {
 				return err

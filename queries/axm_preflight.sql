@@ -77,7 +77,7 @@ recent_out AS (
     SELECT r.subscriber_id AS id FROM axm_recent_received($1, ARRAY(SELECT id FROM eligible)) r
     UNION
     SELECT h.subscriber_id FROM axm_campaign_recent_holds h
-    WHERE h.campaign_id = $1 AND EXISTS (SELECT 1 FROM axm_campaign_recent_rules WHERE campaign_id = $1)
+    WHERE h.campaign_id = $1 AND axm_recent_rule_on($1)
         AND h.subscriber_id IN (SELECT id FROM eligible)
 )
 SELECT cl.list_id AS id, cl.name, cl.optin, cl.is_dynamic AS dynamic, NOT cl.live AS deleted,
@@ -145,5 +145,5 @@ SELECT s.* FROM subscribers s WHERE s.id IN (SELECT id FROM eligible)
     AND NOT EXISTS (
         SELECT 1 FROM axm_campaign_recent_holds h
         WHERE h.campaign_id = $1 AND h.subscriber_id = s.id
-            AND EXISTS (SELECT 1 FROM axm_campaign_recent_rules WHERE campaign_id = $1))
+            AND axm_recent_rule_on($1))
 ORDER BY s.id LIMIT $2;

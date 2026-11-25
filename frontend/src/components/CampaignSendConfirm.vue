@@ -93,6 +93,10 @@
                 {{ sumParts.length ? sumParts.join(' · ') : $t('campaigns.sendConfirm.total', { n: pf.recipients }) }}
                 <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
               </div>
+              <div v-if="isResume" class="send-sum" data-cy="send-recipients">
+                {{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}
+                <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
+              </div>
               <div v-if="model.zero" class="send-sum lv-block-text" data-cy="send-zero">{{ $t('campaigns.sendConfirm.zeroSummary') }}</div>
             </div>
           </div>
@@ -124,10 +128,6 @@
             <div class="send-v">
               <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(pf.toSend, pf.sent, 1)" />
               <div class="has-text-grey" data-cy="send-progress-text">{{ progressText }}</div>
-              <div class="send-sum" data-cy="send-recipients">
-                {{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}
-                <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
-              </div>
             </div>
           </div>
         </div>

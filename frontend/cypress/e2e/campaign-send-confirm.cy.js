@@ -58,7 +58,9 @@ describe('Pre-send confirmation window', () => {
       create('plain', { lists: [listX], content_type: 'plain', body: 'Plain text with no links {{ UnsubscribeURL }}' });
     });
     cy.then(() => {
-      cy.request('PUT', `/api/campaigns/${camp.rule}/recent-exclude`, { enabled: true, days: 14, scope: 'all' });
+      cy.request('PUT', `/api/campaigns/${camp.rule}/recent-exclude`, {
+        enabled: true, days: 14, scope: 'campaigns', campaign_ids: [camp.empty],
+      });
     });
   });
 

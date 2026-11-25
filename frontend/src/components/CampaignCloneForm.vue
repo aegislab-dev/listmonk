@@ -61,6 +61,10 @@
       <!-- LST-65: the rule that leaves out the people who got a campaign lately now works when the
            copy is sent. The copy takes the original's rule, leaves out the people who got the
            original, or goes without one. -->
+      <div v-if="ruleState === 'error'" class="clone-received is-note" data-cy="clone-rule-error" role="status">
+        {{ $t('campaigns.clone.ruleLoadFailed') }}
+      </div>
+
       <fieldset v-if="showRule" class="clone-rule" data-cy="clone-rule">
         <legend class="clone-rule-title">{{ $t('campaigns.clone.ruleTitle') }}</legend>
         <label v-if="original.enabled" class="clone-radio">
@@ -85,7 +89,7 @@
           <input v-model="choice" type="radio" value="none" data-cy="clone-rule-none" @change="choiceTouched = true">
           <span>
             {{ $t('campaigns.clone.ruleNone') }}
-            <small v-if="!original.enabled">{{ $t('campaigns.clone.ruleNoneHelp') }}</small>
+            <small v-if="!original.enabled && ruleState === 'ok'">{{ $t('campaigns.clone.ruleNoneHelp') }}</small>
           </span>
         </label>
       </fieldset>
@@ -136,7 +140,10 @@ export default {
       // The original's recent-send rule (LST-65) and what the copy does with it: 'inherit' (take
       // it), 'exclude' (leave out whoever got the original) or 'none'. The first one is the start
       // when the original has a rule.
-      original: { loaded: false, enabled: false, days: 14, scope: 'all', campaignIds: [] },
+      // ruleState: 'loading' until the original's rule is read, then 'ok' or 'error' (the copy waits for it).
+      ruleState: this.campaign.type === 'regular' ? 'loading' : 'ok',
+      ruleOffered: false,
+      original: { enabled: false, days: 14, scope: 'all', campaignIds: [] },
       choice: 'none',
       choiceTouched: false,
       inherited: { state: 'none', excluded: 0, target: 0 },
@@ -173,9 +180,10 @@ export default {
 
     // The choice is offered when the original has a rule, or when people in the lists got the
     // original lately (there is something to leave out).
+    // Once offered it stays: a count that is read again (lists changed) must not take a choice away.
     showRule() {
       if (this.campaign.type !== 'regular') return false;
-      return this.original.enabled || (this.received.state === 'ok' && this.received.excluded > 0);
+      return this.ruleOffered || this.original.enabled || (this.received.state === 'ok' && this.received.excluded > 0);
     },
 
     // What the copy will do, as the box says it.
@@ -209,12 +217,13 @@ export default {
 
     // The button is never held back by the count: only a name and one list are needed.
     canClone() {
-      return !this.busy && this.name.trim() !== '' && this.selected.length > 0;
+      return !this.busy && this.ruleState !== 'loading' && this.name.trim() !== '' && this.selected.length > 0;
     },
   },
 
   watch: {
     selectedIds: { handler: 'schedulePreview' },
+    showRule(on) { if (on) this.ruleOffered = true; },
   },
 
   async mounted() {
@@ -249,14 +258,16 @@ export default {
         const rule = await this.$api.getRecentRule(this.campaign.id);
         if (rule && rule.enabled) {
           this.original = {
-            loaded: true, enabled: true, days: rule.days, scope: rule.scope, campaignIds: rule.campaignIds || [],
+            enabled: true, days: rule.days, scope: rule.scope, campaignIds: rule.campaignIds || [],
           };
           // Starts on the original's rule, unless the person chose before it was read.
           if (!this.choiceTouched) this.choice = 'inherit';
-          this.schedulePreview();
         }
+        this.ruleState = 'ok';
+        this.schedulePreview();
       } catch (e) {
-        // Nothing to take over.
+        // The rule could not be read: the copy goes without one, and the window says so.
+        this.ruleState = 'error';
       }
     },
 

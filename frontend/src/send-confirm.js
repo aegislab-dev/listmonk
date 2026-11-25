@@ -87,7 +87,11 @@ const checkLine = (c, pf) => {
   // The recent-send rule is applied by the sender (LST-65): who it leaves out, who it left out
   // already when resuming, and the rule on with nobody to leave out.
   if (c.key === 'recent.applied') {
-    if (pf.mode === 'resume') key = `${K}.check.recent.applied.${p.held > 0 ? 'resume' : 'resumeNone'}`;
+    if (pf.mode === 'resume') {
+      // Who it left out already stays out; who is newly caught is left out when it goes on.
+      const kind = (p.held > 0 ? 'held' : '') + (p.fresh > 0 ? 'Fresh' : '');
+      key = `${K}.check.recent.applied.resume${{ held: 'Held', Fresh: 'Fresh', heldFresh: 'Both' }[kind] || 'None'}`;
+    }
     else key = `${K}.check.recent.applied.${p.excluded > 0 ? p.scope : 'none'}`;
   }
   if (c.key === 'unsubscribe.missing') p.tag = '{{ UnsubscribeURL }}';
@@ -147,7 +151,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   const blocked = all.some((c) => c.level === 'block');
   // Nobody to send to (approved design A5): the reason is the only line. Otherwise (a From the
   // send refuses) every line stays, the blocking one first: the rest is to be fixed too (A2).
-  const nobody = all.some((c) => c.level === 'block' && (c.name === 'recipients.zero' || c.name === 'lists.none' || c.name === 'recent.all'));
+  const nobody = all.some((c) => c.level === 'block' && (c.name === 'recipients.zero' || c.name === 'lists.none'));
   const checks = nobody ? all.filter((c) => c.level === 'block') : all;
   const warnings = all.filter((c) => c.level === 'warn').length;
   // A paused campaign with a send time is scheduled by the status change, not sent at once.
@@ -187,7 +191,9 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   else if (resume && when && until) sub = { key: `${K}.sub.resumeAt`, params: {} };
   else sub = { key: `${K}.sub.${pf.mode}`, params: {} };
 
-  const confirmKey = `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
+  let confirmKey = `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
+  // Everybody who could get it got a campaign lately (LST-65): the button says it cannot be sent.
+  if (blocked && checks.some((c) => c.name === 'recent.all')) confirmKey = `${K}.confirm.blocked`;
   const asOf = pf.asOf ? new Date(pf.asOf) : null;
 
   return {

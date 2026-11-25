@@ -1555,6 +1555,21 @@ CREATE TABLE IF NOT EXISTS axm_campaign_recent_holds (
     held_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (campaign_id, subscriber_id)
 );
+-- Whether the recent-send rule of campaign p_campaign is on, as the campaign page and the send window
+-- read it: there is a rule, the campaign is a regular one that is not a follow-up (the rule is not
+-- applied to a follow-up), and a rule on chosen campaigns still has one of them (a rule whose
+-- campaigns were all deleted is off). The sender, the people it left out and the window all ask this.
+CREATE OR REPLACE FUNCTION axm_recent_rule_on(p_campaign INT)
+RETURNS BOOL LANGUAGE SQL STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM axm_campaign_recent_rules rule
+        JOIN campaigns own ON own.id = rule.campaign_id AND own.type = 'regular'
+        WHERE rule.campaign_id = p_campaign
+            AND NOT EXISTS (SELECT 1 FROM axm_campaign_followups f WHERE f.campaign_id = p_campaign)
+            AND (rule.scope <> 'campaigns' OR EXISTS (
+                SELECT 1 FROM campaigns c WHERE c.id = ANY(rule.campaign_ids) AND c.type = 'regular' AND c.id <> p_campaign))
+    );
+$$;
 -- Which of p_subs the recent-send rule of campaign p_campaign leaves out now: the people with a send
 -- record of a campaign in the rule's scope (as axm_recent_exclusion counts it) in the last days of
 -- the rule. A campaign without a rule, a follow-up campaign and a campaign other than a regular one
@@ -1564,9 +1579,7 @@ RETURNS TABLE(subscriber_id INT) LANGUAGE SQL STABLE AS $$
     WITH r AS (
         SELECT rule.days, rule.scope, rule.campaign_ids
         FROM axm_campaign_recent_rules rule
-        JOIN campaigns own ON own.id = rule.campaign_id AND own.type = 'regular'
-        WHERE rule.campaign_id = p_campaign
-            AND NOT EXISTS (SELECT 1 FROM axm_campaign_followups f WHERE f.campaign_id = p_campaign)
+        WHERE rule.campaign_id = p_campaign AND axm_recent_rule_on(p_campaign)
     ), team_tags AS (
         SELECT DISTINCT tag
         FROM r, campaign_lists cl

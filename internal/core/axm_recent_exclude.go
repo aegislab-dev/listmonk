@@ -152,7 +152,7 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if campaign.Type != models.CampaignTypeRegular {
 		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recent.regularOnly"))
 	}
-	if !models.CanEditCampaign(campaign.Status) {
+	if !models.CanEditRecentRule(campaign.Status) {
 		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
 	}
 	// AXM (LST-65): a follow-up campaign goes to the people who got the original, so the rule would
@@ -227,6 +227,16 @@ func (c *Core) HoldRecentBatch(ctx context.Context, campID int, ids []int) (map[
 		out[int(id)] = true
 	}
 	return out, nil
+}
+
+// RecentRuleOn tells whether the campaign's recent-send rule is applied to its send: it has one, it
+// is not a follow-up, and a rule on chosen campaigns still has one of them.
+func (c *Core) RecentRuleOn(campaignID int) (bool, error) {
+	var on bool
+	if err := c.q.AxmRecentHasRule.Get(&on, campaignID); err != nil {
+		return false, c.recentError(err)
+	}
+	return on, nil
 }
 
 // RecentHeldCount is how many people the recent-send rule has left out of the campaign so far.

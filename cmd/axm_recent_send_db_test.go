@@ -210,12 +210,15 @@ func TestRecentRuleKeepsWhoWasLeftOut(t *testing.T) {
 	wantSame(t, "after the records are gone", read(), want)
 
 	// A person who was not read yet and now has no record of the prior campaign is sent to.
+	// A pause does not open the rule: it cannot be turned off from the page or the API.
 	e.setStatus(models.CampaignStatusPaused)
-	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, models.RecentRule{}, 0); err != nil {
-		t.Fatal(err)
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, models.RecentRule{}, 0); err == nil {
+		t.Fatal("the rule of a paused campaign was changed")
 	}
+	// Taken away in the database, it leaves nobody out (the rule is what keeps them out).
+	e.db.MustExec(`DELETE FROM axm_campaign_recent_rules WHERE campaign_id=$1`, e.campID)
 	e.setStatus(models.CampaignStatusRunning)
-	wantSame(t, "rule turned off", read(), e.eligible)
+	wantSame(t, "rule gone", read(), e.eligible)
 }
 
 // A person this campaign sent to is not left out afterwards, because another campaign sent to
@@ -291,8 +294,9 @@ func TestRecentRulePauseResumeAndRestart(t *testing.T) {
 		close(msgr.allow)
 		waitFor(t, "the pause to take effect", func() bool { return !m.HasRunningCampaigns() })
 		e.waitCampaign("paused", 9)
-		// Paused, the days pass for the people left out.
-		e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at = NOW() - INTERVAL '60 days'`)
+		// Paused, the days pass for the people already left out (the ones not read yet still count).
+		e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at = NOW() - INTERVAL '60 days'
+			WHERE subscriber_id IN (SELECT subscriber_id FROM axm_campaign_recent_holds WHERE campaign_id=$1)`, e.campID)
 		e.setStatus(models.CampaignStatusRunning)
 		waitFor(t, "the campaign to finish", func() bool { s, _, _ := e.campaign(); return s == models.CampaignStatusFinished })
 		got := msgr.sentIDs()
@@ -499,5 +503,58 @@ func TestRecentHoldsGoWithCampaignAndSubscriber(t *testing.T) {
 	e.db.MustExec(`DELETE FROM campaigns WHERE id=$1`, other)
 	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_recent_holds`); n != 2 {
 		t.Fatalf("%d holds after a campaign went", n)
+	}
+}
+
+// The rule is "on" the same way for the sender, the people it left out, the page and the window: a
+// rule on chosen campaigns that were all deleted is off (nobody is left out any more, those kept
+// out earlier too), and a follow-up has none whatever its row says.
+func TestRecentRuleOn(t *testing.T) {
+	e := newSendsEnv(t, 4)
+	ctx := context.Background()
+	prior := e.rsPrior(models.CampaignTypeRegular, e.listID, map[int]time.Duration{e.eligible[1]: hours(1)})
+	e.rsRule(models.RecentRule{Enabled: true, Days: 7, Scope: models.RecentScopeCampaigns, CampaignIDs: pq.Int64Array{int64(prior)}})
+	on := func() bool {
+		t.Helper()
+		v, err := e.core.RecentRuleOn(e.campID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if !on() {
+		t.Fatal("the rule is not on")
+	}
+	if got, err := e.core.HoldRecentBatch(ctx, e.campID, e.eligible); err != nil || !got[e.eligible[1]] || len(got) != 1 {
+		t.Fatalf("held %v: %v", got, err)
+	}
+	// The preview of a started campaign counts the people it left out already, whatever the records say.
+	e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at = NOW() - INTERVAL '90 days'`)
+	counts, err := e.core.RecentExcludeCounts(ctx, []int{e.listID}, models.RecentRule{Enabled: true, Days: 7, Scope: models.RecentScopeCampaigns, CampaignIDs: pq.Int64Array{int64(prior)}}, e.campID)
+	if err != nil || counts.Excluded != 1 || counts.WillSend != counts.Target-1 {
+		t.Fatalf("preview %+v: %v", counts, err)
+	}
+	// All the chosen campaigns are deleted: the rule is off, for the sender as for the page.
+	e.db.MustExec(`DELETE FROM campaigns WHERE id=$1`, prior)
+	if on() {
+		t.Fatal("the rule is on with no campaign left to count")
+	}
+	rule, err := e.core.GetRecentRule(e.campID)
+	if err != nil || rule.Enabled {
+		t.Fatalf("page rule %+v: %v", rule, err)
+	}
+	if got, _ := e.core.HoldRecentBatch(ctx, e.campID, e.eligible); len(got) != 0 {
+		t.Fatalf("left out %v by a rule that is off", got)
+	}
+
+	// A follow-up with a row from before this version: off.
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_rules(campaign_id,days,scope) VALUES ($1,7,'all') ON CONFLICT (campaign_id) DO UPDATE SET scope='all', campaign_ids='{}'`, e.campID)
+	if !on() {
+		t.Fatal("a rule on all campaigns is not on")
+	}
+	parent := e.rsPrior(models.CampaignTypeRegular, e.listID, nil)
+	e.db.MustExec(`INSERT INTO axm_campaign_followups(campaign_id,parent_campaign_id,list_uuid,condition) SELECT $1,$2,uuid,'{}' FROM lists WHERE id=$3`, e.campID, parent, e.listID)
+	if on() {
+		t.Fatal("a follow-up has the rule on")
 	}
 }

@@ -120,7 +120,7 @@
                   :optin="data.type === 'optin'" />
 
                 <recent-send-exclude v-if="canShowRecentRule && !isFollowup" v-model="recentRule" :campaign-id="data.id || createdDraftId"
-                  :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || !recentRuleLoaded || savingCampaign"
+                  :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || data.status === 'paused' || !recentRuleLoaded || savingCampaign"
                   :started="recentStarted" :lists-editable="canChangeLists" :saved-campaign="!!data.id" :made-list="madeListView"
                   @list-made="onRecentListMade" />
                 <p v-if="recentRuleError" class="help is-danger mb-4" role="alert">{{ recentRuleError }}</p>

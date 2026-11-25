@@ -1,6 +1,10 @@
 -- name: axm-recent-exclude-counts
-SELECT COUNT(*) AS target, COUNT(*) FILTER (WHERE excluded) AS excluded, NOW() AS as_of
-FROM axm_recent_exclusion($1, $2, $3, $4, $5);
+-- (LST-65) A campaign that has started also counts as excluded the people its sender left out
+-- already (axm_campaign_recent_holds), whatever the send records say now.
+SELECT COUNT(*) AS target,
+    COUNT(*) FILTER (WHERE e.excluded OR h.subscriber_id IS NOT NULL) AS excluded, NOW() AS as_of
+FROM axm_recent_exclusion($1, $2, $3, $4, $5) e
+LEFT JOIN axm_campaign_recent_holds h ON h.campaign_id = $5 AND h.subscriber_id = e.subscriber_id;
 
 -- name: axm-recent-sends-coverage
 SELECT MIN(sent_at) FROM axm_campaign_sends;
@@ -85,7 +89,7 @@ UPDATE campaigns SET updated_at = NOW() WHERE id = $1;
 -- out now (and keeps from now on in axm_campaign_recent_holds) and the people it left out before,
 -- while the rule is on. Nothing for a campaign without a rule.
 WITH on_rule AS (
-    SELECT 1 FROM axm_campaign_recent_rules WHERE campaign_id = $1
+    SELECT 1 WHERE axm_recent_rule_on($1)
 ), fresh AS (
     SELECT subscriber_id FROM axm_recent_received($1, $2::INT[])
 ), keep AS (
@@ -99,7 +103,7 @@ SELECT h.subscriber_id FROM axm_campaign_recent_holds h
 WHERE h.campaign_id = $1 AND h.subscriber_id = ANY($2::INT[]) AND EXISTS (SELECT 1 FROM on_rule);
 
 -- name: axm-recent-has-rule
-SELECT EXISTS (SELECT 1 FROM axm_campaign_recent_rules WHERE campaign_id = $1);
+SELECT axm_recent_rule_on($1);
 
 -- name: axm-recent-held-count
 SELECT COUNT(*) FROM axm_campaign_recent_holds WHERE campaign_id = $1;

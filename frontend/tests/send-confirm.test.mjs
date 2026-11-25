@@ -42,7 +42,7 @@ test('start: title and button carry the number, nothing is disabled', () => {
 
 test('warnings rename the button and count in the subtitle, but do not disable it', () => {
   const m = model({
-    checks: [{ key: 'from.placeholder', level: 'warn', params: { from: 'noreply@x' } }, { key: 'recent.notApplied', level: 'warn', params: { days: 14, excluded: 42 } }],
+    checks: [{ key: 'from.placeholder', level: 'warn', params: { from: 'noreply@x' } }, { key: 'mail.headers', level: 'warn' }],
     tracking: { ...trackingOk, view: 'missing', links: { ...trackingOk.links, untracked: 3 } },
   });
   assert.equal(m.warnings, 4);
@@ -149,14 +149,14 @@ test('check lines: blocking first, warnings, then the passed ones; server order 
       { key: 'from.placeholder', level: 'ok' },
       { key: 'schedule.past', level: 'warn' },
       { key: 'recipients.zero', level: 'block' },
-      { key: 'recent.notApplied', level: 'warn', params: { days: 7, excluded: 0 } },
+      { key: 'mail.headers', level: 'warn' },
       { key: 'unsubscribe.missing', level: 'ok' },
     ],
     tracking: { ...trackingOk, state: 'off' },
   }));
   assert.deepEqual(lines.map((l) => `${l.level}:${l.name}`), [
     'block:recipients.zero',
-    'warn:schedule.past', 'warn:recent.notApplied', 'warn:tracking',
+    'warn:schedule.past', 'warn:mail.headers', 'warn:tracking',
     'ok:from.placeholder', 'ok:unsubscribe.missing',
   ]);
   // The tracking text is the one of the tracking check (LST-44).
@@ -181,13 +181,45 @@ test('tracking: ok adds a passed line, a missing pixel and untracked links are t
   assert.equal(failed.key, 'campaigns.sendConfirm.check.tracking.failed');
 });
 
-test('the recent rule line says the number only when there is one; the unsubscribe line carries the tag', () => {
-  const a = checkLines(pf({ checks: [{ key: 'recent.notApplied', level: 'warn', params: { days: 14, excluded: 42 } }] }))[0];
-  assert.equal(a.key, 'campaigns.sendConfirm.check.recent.notApplied.warn');
-  const b = checkLines(pf({ checks: [{ key: 'recent.notApplied', level: 'warn', params: { days: 14 } }] }))[0];
-  assert.equal(b.key, 'campaigns.sendConfirm.check.recent.notApplied.noCount');
+test('the recent rule line is information that says who is left out; the unsubscribe line carries the tag', () => {
+  const line = (mode, params) => checkLines(pf({ mode, checks: [{ key: 'recent.applied', level: 'info', params }] })).find((l) => l.name === 'recent.applied');
+  const a = line('start', { days: 14, scope: 'all', excluded: 42, held: 0, fresh: 0 });
+  assert.equal(a.key, 'campaigns.sendConfirm.check.recent.applied.all');
+  assert.equal(a.level, 'info');
+  assert.equal(line('start', { days: 14, scope: 'team', excluded: 3 }).key, 'campaigns.sendConfirm.check.recent.applied.team');
+  assert.equal(line('start', { days: 14, scope: 'campaigns', excluded: 3 }).key, 'campaigns.sendConfirm.check.recent.applied.campaigns');
+  assert.equal(line('start', { days: 14, scope: 'all', excluded: 0 }).key, 'campaigns.sendConfirm.check.recent.applied.none');
+  // Resuming: who was left out already, who is newly caught, both, or none.
+  assert.equal(line('resume', { days: 7, excluded: 12, held: 12, fresh: 0 }).key, 'campaigns.sendConfirm.check.recent.applied.resumeHeld');
+  assert.equal(line('resume', { days: 7, excluded: 12, held: 0, fresh: 12 }).key, 'campaigns.sendConfirm.check.recent.applied.resumeFresh');
+  assert.equal(line('resume', { days: 7, excluded: 15, held: 12, fresh: 3 }).key, 'campaigns.sendConfirm.check.recent.applied.resumeBoth');
+  assert.equal(line('resume', { days: 7, excluded: 0, held: 0, fresh: 0 }).key, 'campaigns.sendConfirm.check.recent.applied.resumeNone');
   const c = checkLines(pf({ checks: [{ key: 'unsubscribe.missing', level: 'warn' }] }))[0];
   assert.equal(c.params.tag, '{{ UnsubscribeURL }}');
+});
+
+test('a rule that leaves out everybody blocks, keeps the other lines and says the button cannot send (LST-65)', () => {
+  const m = model({
+    recipients: 40, willSend: 0,
+    recent: { enabled: true, days: 14, scope: 'all', excluded: 40, held: 0 },
+    checks: [
+      { key: 'recent.all', level: 'block', params: { days: 14 } },
+      { key: 'recent.applied', level: 'info', params: { days: 14, scope: 'all', excluded: 40 } },
+      { key: 'from.placeholder', level: 'ok' },
+    ],
+  });
+  assert.equal(m.disabled, true);
+  assert.equal(m.title.key, 'campaigns.sendConfirm.title.zero');
+  assert.equal(m.confirm.key, 'campaigns.sendConfirm.confirm.blocked');
+  assert.deepEqual(m.checks.map((c) => c.name), ['recent.all', 'from.placeholder', 'tracking', 'recent.applied']);
+  assert.equal(m.recent.excluded, 40);
+});
+
+test('the count is what goes out: the recipients less the ones the rule leaves out', () => {
+  const m = model({ recipients: 40, willSend: 28, recent: { enabled: true, days: 14, scope: 'all', excluded: 12, held: 0 } });
+  assert.equal(m.count, 28);
+  assert.equal(m.title.params.n, 28);
+  assert.equal(m.recent.excluded, 12);
 });
 
 test('rich parts: bold and code marks', () => {
@@ -212,7 +244,7 @@ test('every i18n key the window can use exists in Korean and English, with the s
   const combos = [
     ['from.placeholder', 'ok'], ['from.placeholder', 'warn'], ['lists.none', 'block'], ['lists.none', 'warn'],
     ['recipients.zero', 'block'], ['recipients.zero', 'warn'], ['schedule.past', 'warn'], ['unsubscribe.missing', 'ok'],
-    ['unsubscribe.missing', 'warn'], ['recent.notApplied', 'warn'], ['mail.headers', 'warn'],
+    ['unsubscribe.missing', 'warn'], ['mail.headers', 'warn'],
   ];
   combos.forEach(([key, level]) => {
     ['start', 'resume'].forEach((mode) => {
@@ -224,9 +256,11 @@ test('every i18n key the window can use exists in Korean and English, with the s
   const used = new Set();
   const take = (i) => used.add(i.key);
   [
+    pf({ mode: 'resume', checks: [{ key: 'recent.applied', level: 'info', params: { days: 7, held: 1, fresh: 0 } }, { key: 'recent.applied', level: 'info', params: { days: 7, held: 0, fresh: 2 } }, { key: 'recent.applied', level: 'info', params: { days: 7, held: 1, fresh: 2 } }, { key: 'recent.applied', level: 'info', params: { days: 7 } }] }),
+    pf({ checks: [{ key: 'recent.all', level: 'block', params: { days: 7 } }], recipients: 3, willSend: 0 }),
     pf(), pf({ mode: 'schedule', sendAt: '2026-11-20T00:00:00Z' }), pf({ mode: 'resume' }),
     pf({ recipients: 0, checks: [{ key: 'recipients.zero', level: 'block' }, { key: 'lists.none', level: 'block' }] }),
-    pf({ checks: [{ key: 'from.placeholder', level: 'warn' }, { key: 'from.placeholder', level: 'ok' }, { key: 'schedule.past', level: 'warn' }, { key: 'unsubscribe.missing', level: 'warn' }, { key: 'unsubscribe.missing', level: 'ok' }, { key: 'recent.notApplied', level: 'warn', params: { days: 7 } }, { key: 'recent.notApplied', level: 'warn', params: { days: 7, excluded: 1 } }, { key: 'recipients.zero', level: 'warn' }], tracking: null }),
+    pf({ checks: [{ key: 'from.placeholder', level: 'warn' }, { key: 'from.placeholder', level: 'ok' }, { key: 'schedule.past', level: 'warn' }, { key: 'unsubscribe.missing', level: 'warn' }, { key: 'unsubscribe.missing', level: 'ok' }, { key: 'recent.applied', level: 'info', params: { days: 7, scope: 'all', excluded: 1 } }, { key: 'recent.applied', level: 'info', params: { days: 7, scope: 'team', excluded: 1 } }, { key: 'recent.applied', level: 'info', params: { days: 7, scope: 'campaigns', excluded: 1 } }, { key: 'recent.applied', level: 'info', params: { days: 7, excluded: 0 } }, { key: 'recent.all', level: 'block', params: { days: 7 } }, { key: 'recipients.zero', level: 'warn' }], tracking: null }),
   ].forEach((p) => {
     const m = sendConfirmModel(p, { now: NOW, tz: 'UTC' });
     [m.title, m.sub, m.confirm].forEach(take);
@@ -240,7 +274,7 @@ test('a refused From blocks but keeps every other line: the rest is to be fixed 
     recipients: 11,
     checks: [
       { key: 'unsubscribe.missing', level: 'warn' },
-      { key: 'recent.notApplied', level: 'warn', params: { days: 14 } },
+      { key: 'recent.applied', level: 'info', params: { days: 14, scope: 'all', excluded: 2 } },
       { key: 'from.refused', level: 'block', params: { message: 'x' } },
       { key: 'from.placeholder', level: 'warn' },
     ],
@@ -248,7 +282,7 @@ test('a refused From blocks but keeps every other line: the rest is to be fixed 
   assert.equal(m.disabled, true);
   assert.equal(m.title.key, 'campaigns.sendConfirm.title.fromRefused');
   assert.deepEqual(m.checks.map((c) => `${c.level}:${c.name}`).slice(0, 1), ['block:from.refused'], 'the blocking line first');
-  for (const name of ['unsubscribe.missing', 'recent.notApplied', 'from.placeholder']) {
+  for (const name of ['unsubscribe.missing', 'recent.applied', 'from.placeholder']) {
     assert.ok(m.checks.some((c) => c.name === name), `${name} is kept`);
   }
 });
