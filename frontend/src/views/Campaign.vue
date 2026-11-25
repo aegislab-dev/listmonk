@@ -51,12 +51,21 @@
             </b-field>
           </b-field>
         </div>
+        <!-- A finished campaign has no other button here: the follow-up entry goes in its place (LST-62). -->
+        <div v-if="canFollowup" class="buttons is-right">
+          <b-button type="is-primary is-light" icon-left="format-list-bulleted-square" data-cy="btn-campaign-followup"
+            @click="followupOpen = true">
+            {{ $t('campaigns.followup.entry') }}
+          </b-button>
+        </div>
       </div>
     </header>
+    <campaign-reaction-list v-if="followupOpen" :campaign-id="data.id" preset="followup"
+      @close="followupOpen = false; followupKey += 1" />
 
     <b-loading :active="loading.campaigns || savingCampaign" />
 
-    <campaign-followup-banner v-if="isEditing && data.id" :campaign-id="data.id" :status="data.status"
+    <campaign-followup-banner v-if="isEditing && data.id" :key="followupKey" :campaign-id="data.id" :status="data.status"
       :updated-at="data.updatedAt" @loaded="onFollowupLoaded" />
     <b-modal has-modal-card scroll="keep" :aria-modal="true" :active.sync="isSendVisible" :width="600" trap-focus
       :can-cancel="sendAsk && sendAsk.busy ? false : ['escape', 'x', 'outside']"
@@ -387,6 +396,7 @@ import Editor from '../components/Editor.vue';
 import ListSelector from '../components/ListSelector.vue';
 import AddressCheck from '../components/AddressCheck.vue';
 import CampaignFollowupBanner from '../components/CampaignFollowupBanner.vue';
+import CampaignReactionList from '../components/CampaignReactionList.vue';
 import RecentSendExclude from '../components/RecentSendExclude.vue';
 import TimezonePicker from '../components/TimezonePicker.vue';
 import Media from './Media.vue';
@@ -414,6 +424,7 @@ export default Vue.extend({
     SenderAddressInput,
     AddressCheck,
     CampaignFollowupBanner,
+    CampaignReactionList,
     RecentSendExclude,
     TimezonePicker,
     TrackingCheck,
@@ -432,6 +443,9 @@ export default Vue.extend({
 
       isNew: false,
       isFollowup: false,
+      followupOpen: false,
+      // Bumped when the window closes: a follow-up may have been made, so the banner reads again.
+      followupKey: 0,
       isEditing: false,
       isHeadersVisible: false,
       isAttachFieldVisible: false,
@@ -1168,6 +1182,13 @@ export default Vue.extend({
 
     canSend() {
       return this.$can('campaigns:send');
+    },
+
+    // Same conditions as the campaign list's entry.
+    canFollowup() {
+      return this.isEditing && this.data.status === 'finished' && this.data.type !== 'optin' && !this.isFollowup
+        && this.$canCreateList()
+        && this.$can('campaigns:get_analytics') && this.$can('campaigns:get', 'campaigns:get_all');
     },
 
     // The target can change only while the campaign has not started (not while paused).
