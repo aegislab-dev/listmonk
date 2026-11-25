@@ -200,10 +200,10 @@ campMedia AS (
     WHERE campaign_id = ANY(SELECT id FROM camps) AND media_id IS NOT NULL
     GROUP BY campaign_id
 ),
-counts AS (
-    SELECT camps.id AS campaign_id, COUNT(DISTINCT sl.subscriber_id) AS to_send, COALESCE(MAX(sl.subscriber_id), 0) AS max_subscriber_id
+eligible AS (
+    SELECT camps.id AS campaign_id, sl.subscriber_id
     FROM camps
-    JOIN campLists cl ON cl.campaign_id = camps.id
+    JOIN campLists cl ON cl.campaign_id = camps.id AND NOT cl.is_dynamic
     JOIN subscriber_lists sl ON sl.list_id = cl.list_id
         AND (
             CASE
@@ -212,44 +212,42 @@ counts AS (
                 ELSE sl.status != 'unsubscribed'
             END
         )
-    JOIN subscribers s ON (s.id = sl.subscriber_id AND s.status != 'blocklisted')
-    GROUP BY camps.id
-),
-dynCounts AS (
-    SELECT ca.id AS campaign_id, COUNT(DISTINCT members.id) AS to_send,
-        COALESCE(MAX(members.id), 0) AS max_subscriber_id
-    FROM camps ca
+    JOIN subscribers s ON s.id = sl.subscriber_id AND s.status != 'blocklisted'
+    UNION ALL
+    -- Keep a count of zero for dynamic campaigns with no current members.
+    SELECT camps.id, members.subscriber_id
+    FROM camps
+    JOIN campLists cl ON cl.campaign_id = camps.id AND cl.is_dynamic
     LEFT JOIN LATERAL (
-        SELECT s.id FROM campLists cl
-        JOIN subscriber_lists sl ON sl.list_id = cl.list_id
-        JOIN subscribers s ON s.id = sl.subscriber_id AND s.status != 'blocklisted'
-        WHERE cl.campaign_id = ca.id AND NOT cl.is_dynamic
-            AND CASE WHEN ca.type = 'optin' THEN sl.status = 'unconfirmed' AND cl.optin = 'double'
-                WHEN cl.optin = 'double' THEN sl.status = 'confirmed'
-                ELSE sl.status != 'unsubscribed' END
-        UNION
-        SELECT m.subscriber_id FROM campLists cl
-        CROSS JOIN LATERAL axm_dynamic_list_members(cl.list_id) m
-        WHERE cl.campaign_id = ca.id AND cl.is_dynamic AND ca.type != 'optin'
+        SELECT m.subscriber_id FROM axm_dynamic_list_members(cl.list_id) m WHERE camps.type != 'optin'
     ) members ON TRUE
-    WHERE EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = ca.id AND cl.is_dynamic)
-    GROUP BY ca.id
+),
+audience AS (
+    SELECT campaign_id, subscriber_id, TRUE AS eligible FROM eligible
+    UNION ALL
+    -- A past exclusion remains part of the original audience after a change in eligibility.
+    SELECT h.campaign_id, h.subscriber_id, FALSE
+    FROM camps JOIN axm_campaign_recent_holds h ON h.campaign_id = camps.id
+    WHERE camps.type = 'regular'
+),
+counts AS (
+    SELECT campaign_id, COUNT(DISTINCT subscriber_id) AS to_send,
+        COALESCE(MAX(subscriber_id) FILTER (WHERE eligible), 0) AS max_subscriber_id
+    FROM audience
+    GROUP BY campaign_id
 ),
 u AS (
-    -- For each campaign, update the to_send count and set the max_subscriber_id.
-    -- Previously excluded subscribers who were deleted still count toward the historical audience.
+    -- Count each eligible or previously excluded person once, plus exclusions whose IDs were deleted.
+    -- The send cursor still uses only currently eligible subscribers.
     UPDATE campaigns AS ca
-    SET to_send = co.to_send + COALESCE(r.removed_held_count, 0),
-        status = (CASE WHEN status != 'running' THEN 'running' ELSE status END),
-        max_subscriber_id = co.max_subscriber_id,
-        started_at=(CASE WHEN ca.started_at IS NULL THEN NOW() ELSE ca.started_at END)
-    FROM (
-        SELECT * FROM counts co WHERE NOT EXISTS (
-            SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
-        )
-        UNION ALL SELECT * FROM dynCounts
-    ) co LEFT JOIN axm_campaign_recent_rules r USING (campaign_id)
-    WHERE ca.id = co.campaign_id
+    SET to_send = COALESCE(co.to_send, 0) + COALESCE(r.removed_held_count, 0),
+        status = (CASE WHEN ca.status != 'running' THEN 'running' ELSE ca.status END),
+        max_subscriber_id = COALESCE(co.max_subscriber_id, 0),
+        started_at = (CASE WHEN ca.started_at IS NULL THEN NOW() ELSE ca.started_at END)
+    FROM camps
+    LEFT JOIN counts co ON co.campaign_id = camps.id
+    LEFT JOIN axm_campaign_recent_rules r ON r.campaign_id = camps.id
+    WHERE ca.id = camps.id AND (co.campaign_id IS NOT NULL OR r.removed_held_count > 0)
 )
 SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);
 

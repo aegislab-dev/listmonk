@@ -12,6 +12,7 @@ import (
 
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/models"
+	"github.com/lib/pq"
 )
 
 func TestRecentAudienceRescheduledListUsesHolds(t *testing.T) {
@@ -65,8 +66,36 @@ func TestRecentAudienceRescheduledListUsesHolds(t *testing.T) {
 }
 
 func TestRecentAudienceCountsSurviveDeletionDuringSend(t *testing.T) {
-	t.Run("uninterrupted", func(t *testing.T) { testRecentAudienceDeletionDuringSend(t, false) })
-	t.Run("pause and resume", func(t *testing.T) { testRecentAudienceDeletionDuringSend(t, true) })
+	deleteHeld := func(e *recentListEnv, held []int) {
+		e.t.Helper()
+		sub := strconv.Itoa(held[0])
+		if code, raw := e.call(e.a.DeleteSubscriber, e.admin, http.MethodDelete, "/api/subscribers/"+sub, sub, ""); code != http.StatusOK {
+			e.t.Fatalf("delete held subscriber: HTTP %d %s", code, raw)
+		}
+		wantSame(e.t, "remaining holds", e.held(), held[1:])
+	}
+	t.Run("uninterrupted", func(t *testing.T) { testRecentAudienceChangeDuringSend(t, false, false, deleteHeld) })
+	t.Run("pause and resume", func(t *testing.T) { testRecentAudienceChangeDuringSend(t, true, false, deleteHeld) })
+}
+
+func TestRecentAudienceCountsSurviveUnsubscribeDuringSend(t *testing.T) {
+	unsubscribeHeld := func(e *recentListEnv, held []int) {
+		e.t.Helper()
+		body := fmt.Sprintf(`{"ids":[%d],"action":"unsubscribe","target_list_ids":[%d]}`, held[0], e.listID)
+		if code, raw := e.call(e.a.ManageSubscriberLists, e.admin, http.MethodPut, "/api/subscribers/lists", "", body); code != http.StatusOK {
+			e.t.Fatalf("unsubscribe held subscriber: HTTP %d %s", code, raw)
+		}
+		var status string
+		e.get(&status, `SELECT status FROM subscriber_lists WHERE subscriber_id=$1 AND list_id=$2`, held[0], e.listID)
+		if status != "unsubscribed" {
+			e.t.Fatalf("subscription is %s, want unsubscribed", status)
+		}
+		wantSame(e.t, "remaining holds", e.held(), held)
+	}
+	t.Run("static audience", func(t *testing.T) { testRecentAudienceChangeDuringSend(t, true, false, unsubscribeHeld) })
+	t.Run("overlapping static and dynamic audience", func(t *testing.T) {
+		testRecentAudienceChangeDuringSend(t, true, true, unsubscribeHeld)
+	})
 }
 
 type recentAudiencePauseStore struct {
@@ -82,7 +111,7 @@ func (s *recentAudiencePauseStore) NextSubscribers(campaignID, lastID, limit int
 	return s.store.NextSubscribers(campaignID, lastID, limit)
 }
 
-func testRecentAudienceDeletionDuringSend(t *testing.T, pause bool) {
+func testRecentAudienceChangeDuringSend(t *testing.T, pause, dynamic bool, change func(*recentListEnv, []int)) {
 	e := newRecentListEnv(t)
 	audience := make([]int, 40)
 	priorSends := make(map[int]time.Duration, 12)
@@ -91,6 +120,11 @@ func testRecentAudienceDeletionDuringSend(t *testing.T, pause bool) {
 		if i < 12 {
 			priorSends[audience[i]] = 3 * time.Hour
 		}
+	}
+	if dynamic {
+		e.db.MustExec(`UPDATE subscribers SET attribs = '{"plan":"pro"}' WHERE id = ANY($1)`, pq.Array(audience))
+		list := e.pfList("single", dynFilter(e.listID))
+		e.db.MustExec(`INSERT INTO campaign_lists (campaign_id, list_id, list_name) VALUES ($1, $2, 'Synthetic dynamic')`, e.campID, list)
 	}
 	e.rsPrior(models.CampaignTypeRegular, e.listID, priorSends)
 	e.rsRule(models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll})
@@ -129,13 +163,9 @@ func testRecentAudienceDeletionDuringSend(t *testing.T, pause bool) {
 		}
 	}
 	assertCounts(models.CampaignStatusRunning)
-	sub := strconv.Itoa(audience[0])
-	if code, raw := e.call(e.a.DeleteSubscriber, e.admin, http.MethodDelete, "/api/subscribers/"+sub, sub, ""); code != http.StatusOK {
-		t.Fatalf("delete held subscriber: HTTP %d %s", code, raw)
-	}
-	wantSame(t, "remaining holds", e.held(), audience[1:12])
+	change(e, audience[:12])
 	if status, _, _ := e.campaign(); status != models.CampaignStatusRunning {
-		t.Fatalf("status after deletion: %s, want running", status)
+		t.Fatalf("status after changing a held subscriber: %s, want running", status)
 	}
 	release()
 	if pause {
