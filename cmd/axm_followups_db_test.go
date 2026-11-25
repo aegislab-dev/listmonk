@@ -555,7 +555,7 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	}
 	var last string
 	last = migList[len(migList)-1].version
-	if last != "v6.2.1-axm.18" {
+	if last != "v6.2.1-axm.19" {
 		t.Fatal(last)
 	}
 }

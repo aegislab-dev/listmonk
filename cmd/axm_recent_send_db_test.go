@@ -611,6 +611,43 @@ func TestRecentHoldsGoWithCampaignAndSubscriber(t *testing.T) {
 	}
 }
 
+func TestRecentHoldsFinishedCountMigration(t *testing.T) {
+	e := newSendsEnv(t, 2)
+	e.db.MustExec(`DROP TRIGGER axm_recent_holds_finished ON campaigns;
+		DROP FUNCTION axm_snapshot_recent_holds();
+		ALTER TABLE axm_campaign_recent_rules DROP COLUMN finished_held_count;`)
+	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}
+	e.rsRule(rule)
+	active, _ := e.addCampaign("draft")
+	if _, err := e.core.SaveRecentRule(context.Background(), active, rule, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int{e.campID, active} {
+		e.db.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id) VALUES ($1, $2), ($1, $3)`,
+			id, e.eligible[0], e.eligible[1])
+	}
+	e.setStatus(models.CampaignStatusFinished)
+
+	migrate := func() {
+		t.Helper()
+		if err := migrations.V6_2_1_axm_19(e.db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertHeld := func(id, want int) {
+		t.Helper()
+		if got, err := e.core.RecentHeldCount(id); err != nil || got != want {
+			t.Fatalf("campaign %d: held %d, want %d, err %v", id, got, want, err)
+		}
+	}
+	migrate()
+	assertHeld(e.campID, 2)
+	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[0])
+	migrate()
+	assertHeld(e.campID, 2)
+	assertHeld(active, 1)
+}
+
 // The rule is "on" the same way for the sender, the people it left out, the page and the window: a
 // rule on chosen campaigns that were all deleted has no new matches. Previously held people stay
 // out, and a follow-up has no rule whatever its row says.

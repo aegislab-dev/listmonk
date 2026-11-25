@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/knadh/listmonk/models"
 )
@@ -58,4 +60,46 @@ func TestRecentAudienceRescheduledListUsesHolds(t *testing.T) {
 	if got := e.members(saved.List.ID); !sameInts(got, want) || saved.Counts != initial.Counts {
 		t.Fatalf("list after later send: members %v, counts %+v; want %v and %+v", got, saved.Counts, want, initial.Counts)
 	}
+}
+
+func TestRecentAudienceFinishedCountsSurviveSubscriberDeletion(t *testing.T) {
+	e := newRecentListEnv(t)
+	var audience []int
+	priorSends := make(map[int]time.Duration)
+	for i := 0; i < 40; i++ {
+		id := e.addSub("enabled", "confirmed")
+		audience = append(audience, id)
+		if i < 12 {
+			priorSends[id] = 3 * time.Hour
+		}
+	}
+	e.rsPrior(models.CampaignTypeRegular, e.listID, priorSends)
+	e.rsRule(models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll})
+	var failingEmail string
+	e.get(&failingEmail, `SELECT email FROM subscribers WHERE id=$1`, audience[39])
+	body := fmt.Sprintf(`<p>{{ if eq .Subscriber.Email %q }}{{ index "a" 9 }}{{ else }}Hello{{ end }}</p>`, failingEmail)
+	e.db.MustExec(`UPDATE campaigns SET body=$2 WHERE id=$1`, e.campID, body)
+	wantSame(t, "delivered", e.rsRun(t, 5), audience[12:39])
+
+	assertCounts := func() {
+		t.Helper()
+		status, sent, target := e.campaign()
+		path := fmt.Sprintf("/api/campaigns/%d/recent-exclude", e.campID)
+		code, raw := e.call(e.a.GetRecentRule, e.admin, http.MethodGet, path, strconv.Itoa(e.campID), "")
+		var rule models.RecentRule
+		if code != http.StatusOK || json.Unmarshal(raw, &rule) != nil {
+			t.Fatalf("get recent rule: HTTP %d %s", code, raw)
+		}
+		if status != models.CampaignStatusFinished || sent != 27 || target != 40 || rule.Held != 12 {
+			t.Fatalf("status=%s sent=%d target=%d held=%d, want finished/27/40/12", status, sent, target, rule.Held)
+		}
+	}
+	assertCounts()
+	sub := strconv.Itoa(audience[0])
+	if code, raw := e.call(e.a.DeleteSubscriber, e.admin, http.MethodDelete, "/api/subscribers/"+sub, sub, ""); code != http.StatusOK {
+		t.Fatalf("delete held subscriber: HTTP %d %s", code, raw)
+	}
+	wantSame(t, "remaining holds", e.held(), audience[1:12])
+	wantSame(t, "send ledger", e.recorded(), audience[12:39])
+	assertCounts()
 }

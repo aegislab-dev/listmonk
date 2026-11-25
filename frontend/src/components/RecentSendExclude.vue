@@ -206,7 +206,12 @@ export default {
       if (!this.finishedAudience) return this.counts;
       const { target, asOf } = this.finishedAudience;
       const excluded = this.value.held || 0;
-      return { target, excluded, willSend: Math.max(0, target - excluded), asOf };
+      return {
+        target,
+        excluded,
+        willSend: Math.max(0, target - excluded),
+        asOf,
+      };
     },
 
     previewKey() {
