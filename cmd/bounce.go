@@ -78,6 +78,21 @@ func (a *App) GetSubscriberBounces(c echo.Context) error {
 func (a *App) DeleteBounces(c echo.Context) error {
 	all, _ := strconv.ParseBool(c.QueryParam("all"))
 
+	// "all" deletes what the bounces screen shows: the same campaign_id and source filters as
+	// GET /api/bounces. A filter that is given but unreadable must not turn into "no filter",
+	// or one typo deletes every bounce.
+	var (
+		campID int
+		source = c.QueryParam("source")
+	)
+	if v := c.QueryParam("campaign_id"); v != "" {
+		id, err := strconv.Atoi(v)
+		if err != nil || id < 1 {
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidID", "error", "campaign_id"))
+		}
+		campID = id
+	}
+
 	var ids []int
 	if !all {
 		// There are multiple IDs in the query string.
@@ -93,7 +108,7 @@ func (a *App) DeleteBounces(c echo.Context) error {
 	}
 
 	// Delete bounces from the DB.
-	if err := a.core.DeleteBounces(ids, all); err != nil {
+	if err := a.core.DeleteBouncesFiltered(ids, all, campID, source); err != nil {
 		return err
 	}
 

@@ -55,7 +55,11 @@ WHERE ($1 = 0 OR bounces.id = $1)
 ORDER BY %order% OFFSET $5 LIMIT (CASE WHEN $6 < 1 THEN NULL ELSE $6 END);
 
 -- name: delete-bounces
-DELETE FROM bounces WHERE $2 = TRUE OR id = ANY($1);
+-- $2 (all) deletes every bounce that matches the filter ($3 campaign id, 0 = any; $4 source, ''
+-- = any), the same filter query-bounces takes, so "select all" on a filtered screen stays inside it.
+DELETE FROM bounces
+WHERE id = ANY($1)
+    OR ($2 = TRUE AND ($3 = 0 OR campaign_id = $3) AND ($4 = '' OR source = $4));
 
 -- name: delete-bounces-by-subscriber
 WITH sub AS (

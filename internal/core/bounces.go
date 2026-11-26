@@ -147,9 +147,16 @@ func (c *Core) DeleteBounce(id int) error {
 	return c.DeleteBounces([]int{id}, false)
 }
 
-// DeleteBounces deletes multiple lists.
+// DeleteBounces deletes the given bounces, or every bounce when all is true.
 func (c *Core) DeleteBounces(ids []int, all bool) error {
-	if _, err := c.q.DeleteBounces.Exec(pq.Array(ids), all); err != nil {
+	return c.DeleteBouncesFiltered(ids, all, 0, "")
+}
+
+// DeleteBouncesFiltered deletes the given bounces. With all = true it deletes every bounce
+// that matches campID (0 = any campaign) and source ("" = any source) instead, which is what
+// the bounces screen shows when it is filtered.
+func (c *Core) DeleteBouncesFiltered(ids []int, all bool, campID int, source string) error {
+	if _, err := c.q.DeleteBounces.Exec(pq.Array(ids), all, campID, source); err != nil {
 		c.log.Printf("error deleting lists: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.list}", "error", pqErrMsg(err)))

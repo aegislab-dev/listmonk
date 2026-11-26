@@ -89,7 +89,9 @@ To delete all bounces.
 
 | Name    | Type      | Required | Description                          |
 |:--------|:----------|:---------|:-------------------------------------|
-| all     | bool      | Yes      | Bool to confirm deleting all bounces |
+| all         | bool   | Yes      | Bool to confirm deleting all bounces |
+| campaign_id | number | No       | With `all`, delete only the bounces of this campaign. |
+| source      | string | No       | With `all`, delete only the bounces from this source. |
 
 ##### Example Request
 

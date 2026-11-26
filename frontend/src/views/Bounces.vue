@@ -175,7 +175,14 @@ export default Vue.extend({
       if (!this.bulk.all && this.bulk.checked.length > 0) {
         params.id = this.bulk.checked.map((s) => s.id);
       } else if (this.bulk.all) {
+        // Only what the screen shows: the campaign / source filter goes along.
         params.all = true;
+        if (this.queryParams.campaign_id) {
+          params.campaign_id = this.queryParams.campaign_id;
+        }
+        if (this.queryParams.source) {
+          params.source = this.queryParams.source;
+        }
       }
 
       this.$api.deleteBounces(params).then(() => {
