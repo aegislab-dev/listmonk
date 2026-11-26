@@ -940,10 +940,10 @@ export default Vue.extend({
       // A scheduled campaign must validate the audience against the rule being saved, in the
       // same server transaction. Sending the rule separately can validate stale settings and can
       // make the follow-up preflight look like somebody else's edit.
-      // Always send the rule with a scheduled edit. The server must judge even an unchanged rule
-      // against the exact lists and rule shown in this editor; making inclusion depend on the
-      // dirty comparison can split rule and audience saves when the editor's baseline is stale.
-      const recentRuleInCampaignSave = this.data.status === 'scheduled' && this.recentRuleLoaded;
+      // Send only a rule the person changed in this editor. A second tab may have saved a newer
+      // rule after this page loaded; resending this tab's unchanged baseline would overwrite it.
+      // The server checks an omitted rule against the current saved rule in its transaction.
+      const recentRuleInCampaignSave = this.data.status === 'scheduled' && this.recentRuleDirty;
       if (recentRuleInCampaignSave) data.recent_rule = recentRulePayload(this.recentRule);
 
       let typMsg = 'globals.messages.updated';
@@ -971,6 +971,16 @@ export default Vue.extend({
         if (recentRuleInCampaignSave) {
           this.savedRecentRule = this.recentRuleKey;
           this.recentRuleError = '';
+        } else if (d.status === 'scheduled') {
+          // Another editor may have changed the rule since this page loaded. Keep the panel in
+          // sync with the rule the server just used to check this save.
+          try {
+            const currentRule = await this.$api.getRecentRule(d.id);
+            this.recentRule = { ...defaultRecentRule(), ...currentRule };
+            this.savedRecentRule = this.recentRuleKey;
+          } catch (err) {
+            this.recentRuleError = this.$t('campaigns.recent.loadError');
+          }
         }
         // The target is saved now, whatever happens to the rule below.
         if (this.madeList && this.sentMadeList(data.lists)) this.madeList = { ...this.madeList, error: '' };

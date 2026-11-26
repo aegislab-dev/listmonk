@@ -256,9 +256,10 @@ func (c *Core) updateScheduledCampaign(ctx context.Context, id int, o models.Cam
 
 	run := func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }
 	var before struct {
-		Status, Type     string
-		LastSubscriberID int
-		Started          bool
+		Status           string `db:"status"`
+		Type             string `db:"type"`
+		LastSubscriberID int    `db:"last_subscriber_id"`
+		Started          bool   `db:"started"`
 	}
 	if err := tx.GetContext(ctx, &before, `SELECT status, type, last_subscriber_id, started_at IS NOT NULL AS started FROM campaigns WHERE id = $1 FOR NO KEY UPDATE`, id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

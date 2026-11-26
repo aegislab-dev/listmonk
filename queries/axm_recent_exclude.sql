@@ -47,7 +47,8 @@ SELECT name, status, type, started_at FROM campaigns WHERE id = $1;
 SELECT id, type FROM campaigns WHERE id = ANY($1::INT[]) ORDER BY id;
 
 -- name: axm-lock-recent-campaign
-SELECT status, type, started_at IS NOT NULL AS started FROM campaigns WHERE id = $1 FOR UPDATE;
+SELECT status, type, started_at IS NOT NULL AS started, last_subscriber_id
+FROM campaigns WHERE id = $1 FOR UPDATE;
 
 -- name: axm-recent-campaign-lists
 SELECT list_id FROM campaign_lists WHERE campaign_id = $1 AND list_id IS NOT NULL;
@@ -113,8 +114,10 @@ SELECT axm_recent_rule_on($1);
 -- name: axm-recent-held-count
 -- Count the decisions already made, including those whose subscriber records were deleted.
 SELECT COALESCE(
-    (SELECT r.finished_held_count FROM axm_campaign_recent_rules r
-     JOIN campaigns c ON c.id = r.campaign_id AND c.status = 'finished'
+    (SELECT COALESCE(r.finished_held_count,
+             (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id)
+             + r.removed_held_count)
+     FROM axm_campaign_recent_rules r JOIN campaigns c ON c.id = r.campaign_id AND c.status = 'finished'
      WHERE r.campaign_id = $1),
     (SELECT COUNT(*) FROM axm_campaign_recent_holds WHERE campaign_id = $1)
     + COALESCE((SELECT removed_held_count FROM axm_campaign_recent_rules WHERE campaign_id = $1), 0)

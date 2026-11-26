@@ -664,6 +664,128 @@ func TestRecentHoldsFinishedCountMigration(t *testing.T) {
 	assertHeld(active, 1)
 }
 
+func TestRecentHoldsFinishedCountMigrationCapturesAConcurrentFinalBatch(t *testing.T) {
+	e := newSendsEnv(t, 2)
+	e.db.MustExec(`DROP TRIGGER axm_recent_holds_finished ON campaigns;
+		DROP FUNCTION axm_snapshot_recent_holds();
+		ALTER TABLE axm_campaign_recent_rules DROP COLUMN finished_held_count`)
+	prior := e.rsPrior(models.CampaignTypeRegular, e.listID, map[int]time.Duration{
+		e.eligible[0]: hours(1), e.eligible[1]: hours(2),
+	})
+	e.rsRule(models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns,
+		CampaignIDs: pq.Int64Array{int64(prior)}})
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id,subscriber_id) VALUES($1,$2)`, e.campID, e.eligible[0])
+
+	// Pause the .22 backfill after its statement snapshot and rule-row lock. The campaign finish
+	// trigger must already be committed by then, so a final sender batch can still be snapshotted.
+	e.db.MustExec(`CREATE FUNCTION axm_test_wait_for_finished_count_backfill() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+	BEGIN
+		PERFORM pg_advisory_lock(65165, 22);
+		PERFORM pg_advisory_unlock(65165, 22);
+		RETURN NEW;
+	END;
+	$$;
+	ALTER TABLE axm_campaign_recent_rules ADD COLUMN finished_held_count INTEGER;
+	CREATE TRIGGER axm_test_wait_for_finished_count_backfill
+		BEFORE UPDATE OF finished_held_count ON axm_campaign_recent_rules
+		FOR EACH ROW EXECUTE FUNCTION axm_test_wait_for_finished_count_backfill();`)
+	gate, err := e.db.Connx(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Close()
+	if _, err := gate.ExecContext(context.Background(), `SELECT pg_advisory_lock(65165, 22)`); err != nil {
+		t.Fatal(err)
+	}
+	defer gate.ExecContext(context.Background(), `SELECT pg_advisory_unlock(65165, 22)`)
+
+	migrated := make(chan error, 1)
+	go func() { migrated <- migrations.V6_2_1_axm_22(e.db, nil, nil, nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		err := e.db.Get(&waiting, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity a
+			WHERE a.datname=current_database() AND a.wait_event_type='Lock' AND a.wait_event='advisory'
+			AND a.query ILIKE '%UPDATE axm_campaign_recent_rules r%')`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("migration did not pause in the finished-count backfill")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM pg_trigger WHERE tgname='axm_recent_holds_finished'
+		AND tgrelid='campaigns'::regclass AND NOT tgisinternal`); n != 1 {
+		t.Fatalf("finish trigger was not installed before backfill: %d", n)
+	}
+
+	held, err := e.core.HoldRecentBatch(context.Background(), e.campID, []int{e.eligible[1]})
+	if err != nil || !held[e.eligible[1]] {
+		t.Fatalf("final sender batch did not hold the second recipient: %v, %v", held, err)
+	}
+	finished := make(chan error, 1)
+	go func() {
+		_, err := e.db.Exec(`UPDATE campaigns SET status='finished' WHERE id=$1`, e.campID)
+		finished <- err
+	}()
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		if err := e.db.Get(&waiting, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity a
+			WHERE a.datname=current_database() AND a.wait_event_type='Lock'
+			AND a.query ILIKE '%UPDATE campaigns SET status=%finished%')`); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("campaign did not wait for the backfill's rule row")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := gate.ExecContext(context.Background(), `SELECT pg_advisory_unlock(65165, 22)`); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-migrated:
+		if err != nil {
+			t.Fatalf(".22 migration: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal(".22 migration did not finish after releasing the backfill")
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("finish campaign: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("campaign did not finish after the migration released its rule row")
+	}
+	if count, err := e.core.RecentHeldCount(e.campID); err != nil || count != 2 {
+		t.Fatalf("finished held count = %d, want 2: %v", count, err)
+	}
+}
+
+func TestRecentHeldCountAddsDeletedHoldsAfterFinish(t *testing.T) {
+	e := newSendsEnv(t, 2)
+	e.rsRule(models.RecentRule{Enabled: true, Days: 7, Scope: models.RecentScopeAll})
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id,subscriber_id) VALUES($1,$2),($1,$3)`,
+		e.campID, e.eligible[0], e.eligible[1])
+	e.setStatus(models.CampaignStatusFinished)
+	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[0])
+	if count, err := e.core.RecentHeldCount(e.campID); err != nil || count != 2 {
+		t.Fatalf("finished held count after subscriber deletion = %d, want 2: %v", count, err)
+	}
+}
+
 func TestRecentHoldsFinishedCountMigrationDoesNotHoldRuleLockWhileWaitingForCampaignDDL(t *testing.T) {
 	e := newSendsEnv(t, 2)
 	e.db.MustExec(`DROP TRIGGER axm_recent_holds_finished ON campaigns;

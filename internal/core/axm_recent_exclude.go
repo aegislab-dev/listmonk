@@ -153,8 +153,10 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	defer tx.Rollback()
 
 	var campaign struct {
-		Status, Type string
-		Started      bool
+		Status           string `db:"status"`
+		Type             string `db:"type"`
+		Started          bool   `db:"started"`
+		LastSubscriberID int    `db:"last_subscriber_id"`
 	}
 	if err := tx.Stmtx(c.q.AxmLockRecentCampaign).GetContext(ctx, &campaign, campaignID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -172,6 +174,11 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if err != nil {
 		return out, err
 	}
+	if campaign.Status == models.CampaignStatusScheduled {
+		if err := c.checkScheduledRecentAudience(ctx, tx, campaignID, campaign.LastSubscriberID); err != nil {
+			return models.RecentRule{}, err
+		}
+	}
 	// Dedicated rule edits do not also update the campaign row, so invalidate an open send
 	// confirmation here. Scheduled campaign edits already update updated_at in their campaign
 	// UPDATE; touching it again there would make the save's own preflight look stale.
@@ -182,6 +189,32 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 		return out, c.recentError(err)
 	}
 	return out, nil
+}
+
+// checkScheduledRecentAudience applies the scheduled-save recipient check to the rule API too.
+// The caller has already locked the campaign and saved the candidate rule in tx, so both the
+// rule and the audience are judged as one atomic change.
+func (c *Core) checkScheduledRecentAudience(ctx context.Context, tx *sqlx.Tx, campaignID, checkpoint int) error {
+	run := func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }
+	followupListID, err := c.preflightFollowupList(ctx, run, campaignID)
+	if err != nil {
+		return c.recentError(err)
+	}
+	var audience struct {
+		HasLists      bool `db:"has_lists"`
+		HasRecipients bool `db:"has_recipients"`
+	}
+	if err := run(c.q.AxmPreflightHasRecipient).GetContext(ctx, &audience,
+		campaignID, checkpoint, followupListID, c.tracking()); err != nil {
+		return c.recentError(err)
+	}
+	if !audience.HasLists {
+		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recheck.noLists"))
+	}
+	if !audience.HasRecipients {
+		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recheck.zero"))
+	}
+	return nil
 }
 
 // saveRecentRuleTx updates a campaign's rule within the caller's transaction. The caller must

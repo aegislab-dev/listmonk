@@ -204,6 +204,64 @@ describe('Pre-send confirmation window', () => {
     cy.get('@status.all').should('have.length', 0);
   });
 
+  it('keeps a newer exclusion rule when an older editor saves only the title', () => {
+    let sourceID;
+    let targetID;
+    let sourceList;
+    let targetList;
+    const path = (id, suffix = '') => `/api/campaigns/${id}${suffix}`;
+    const sourceFinished = (tries = 30) => cy.request(path(sourceID)).then(({ body: { data } }) => {
+      if (data.status !== 'finished' && tries > 0) {
+        cy.wait(1000);
+        return sourceFinished(tries - 1);
+      }
+      return data;
+    });
+
+    cy.request('POST', '/api/lists', {
+      name: `Send two-tab target ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { targetList = body.data.id; });
+    cy.request('POST', '/api/lists', {
+      name: `Send two-tab source ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { sourceList = body.data.id; });
+    cy.then(() => {
+      person('two-tab-shared', [targetList, sourceList]);
+      person('two-tab-target-a', [targetList]);
+      person('two-tab-target-b', [targetList]);
+      person('two-tab-source-only', [sourceList]);
+    }).then(() => create('two-tab-source', { lists: [sourceList] }))
+      .then(({ id }) => {
+        sourceID = id;
+        return create('two-tab-target', {
+          lists: [targetList], send_at: new Date(Date.now() + 86400000).toISOString(),
+        });
+      })
+      .then(({ id }) => {
+        targetID = id;
+        return cy.request('PUT', path(id, '/status'), { status: 'scheduled' });
+      })
+      .then(() => cy.request('PUT', path(sourceID, '/status'), { status: 'running' }))
+      .then(() => sourceFinished())
+      .its('status').should('eq', 'finished')
+      .then(() => cy.visit(`/admin/campaigns/${targetID}`))
+      // This API write represents the other tab saving after the first editor loaded its rule.
+      .then(() => cy.request('PUT', path(targetID, '/recent-exclude'), {
+        enabled: true, days: 14, scope: 'all',
+      }))
+      .then(() => {
+        cy.get('[name=subject]').clear().type(`Send two-tab changed ${stamp}`);
+        cy.intercept('PUT', path(targetID)).as('staleEditorSave');
+        cy.get('[data-cy=btn-save]').click();
+        cy.wait('@staleEditorSave').then(({ request, response }) => {
+          expect(request.body).not.to.have.property('recent_rule');
+          expect(response.statusCode).to.equal(200);
+        });
+        cy.get('[data-cy=recent-enabled] input').should('be.checked');
+        cy.request(path(targetID, '/recent-exclude')).its('body.data.enabled').should('eq', true);
+        cy.request(path(targetID, '/preflight')).its('body.data.will_send').should('eq', 2);
+      });
+  });
+
   it('agrees with scheduled editing when sending history leaves zero recipients', () => {
     let scheduledSourceID;
     cy.then(() => create('scheduled-zero-source', { lists: [listY] }))
