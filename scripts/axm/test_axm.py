@@ -372,12 +372,12 @@ class Round6Test(unittest.TestCase):
 
     def test_union_of_feature_files_never_runs_the_whole_ci_suite(self):
         # F27: 기능 파일 셋의 합이 CI 전체가 되어도 로컬은 전체를 돌리지 않는다.
-        r = pick('cmd/campaigns.go', 'cmd/subscribers.go', 'frontend/src/views/ListForm.vue')
+        r = pick('cmd/campaigns.go', 'cmd/subscribers.go', 'frontend/src/views/ListForm.vue', 'frontend/src/views/Bounces.vue')
         self.assertNotEqual(set(r['specs']), set(TMAP['ci_specs']))
         self.assertEqual(set(r['specs']), set(TMAP['smoke']))
         self.assertEqual(set(r['specs']) | set(r['deferred_specs']), set(TMAP['ci_specs']))
         # 바뀐 spec 은 로컬에서 돈다.
-        r = pick('cmd/campaigns.go', 'cmd/subscribers.go', 'frontend/src/views/ListForm.vue',
+        r = pick('cmd/campaigns.go', 'cmd/subscribers.go', 'frontend/src/views/ListForm.vue', 'frontend/src/views/Bounces.vue',
                  'frontend/cypress/e2e/reaction-lists.cy.js')
         self.assertIn('reaction-lists.cy.js', r['specs'])
         self.assertNotEqual(set(r['specs']), set(TMAP['ci_specs']))
@@ -531,7 +531,7 @@ class RouteCoverageTest(unittest.TestCase):
         return calls
 
     def test_subscribers_screens_select_exactly_the_specs_that_visit_them(self):
-        want = self._visitors(r'^/admin/subscribers(?!/import)')
+        want = self._visitors(r'^/admin/subscribers(?!/import|/bounces)')
         for f in ('Subscribers.vue', 'SubscriberBulkList.vue', 'SubscriberForm.vue'):
             self.assertEqual(set(pick('frontend/src/views/' + f)['specs']), want, f)
 
@@ -553,7 +553,7 @@ class RouteCoverageTest(unittest.TestCase):
         def uses(spec):
             return any(not c.startswith('create') and '/address-check' not in c and '/bounces' not in c
                        for c in self._api_calls(spec, '/api/subscribers'))
-        want = self._visitors(r'^/admin/subscribers(?!/import)') | {s for s in TMAP['ci_specs'] if uses(s)}
+        want = self._visitors(r'^/admin/subscribers(?!/import|/bounces)') | {s for s in TMAP['ci_specs'] if uses(s)}
         self.assertIn('address-check.cy.js', want)
         for f in ('cmd/subscribers.go', 'internal/core/subscribers.go'):
             self.assertEqual(set(pick(f)['specs']), want, f)
@@ -723,7 +723,7 @@ class Round8Test(unittest.TestCase):
         self.assertTrue(r['python'])
         self.assertTrue(any('파일이 없다' in n for n in r['notes']))
         # 줄여도 빠지지 않는다.
-        r = axm.affected(['cmd/campaigns.go', 'cmd/subscribers.go', 'frontend/src/views/ListForm.vue'], FILES, raw)
+        r = axm.affected(['cmd/campaigns.go', 'cmd/subscribers.go', 'frontend/src/views/ListForm.vue', 'frontend/src/views/Bounces.vue'], FILES, raw)
         self.assertIn('gone-renamed.cy.js', r['specs'])
 
     def test_spec_without_a_result_row_is_failed(self):
