@@ -17,7 +17,7 @@
       <template #top-left>
         <div class="actions">
           <template v-if="bulk.checked.length > 0">
-            <a class="a" href="#" @click.prevent="$utils.confirm(null, () => deleteBounces())" data-cy="btn-delete">
+            <a class="a" href="#" @click.prevent="confirmDelete" data-cy="btn-delete">
               <b-icon icon="trash-can-outline" size="is-small" /> {{ $t('globals.buttons.delete') }}
             </a>
             <a class="a" href="#" @click.prevent="$utils.confirm(null, () => blocklistSubscribers())"
@@ -109,6 +109,9 @@ export default Vue.extend({
     return {
       bounces: {},
 
+      // campaign_id / source of the address as written, sent along with "delete all".
+      routeFilter: {},
+
       // Table bulk row selection states.
       bulk: {
         checked: [],
@@ -170,28 +173,30 @@ export default Vue.extend({
       });
     },
 
-    deleteBounces() {
+    // Ask first, and fix what is deleted at the moment of the click: the selection and the
+    // filter of the address this list was opened with. The dialog outlives the screen (browser
+    // back leaves it open on another list), so nothing is read again when it is confirmed.
+    confirmDelete() {
       const params = {};
       if (!this.bulk.all && this.bulk.checked.length > 0) {
         params.id = this.bulk.checked.map((s) => s.id);
       } else if (this.bulk.all) {
-        // Only what the screen shows: the campaign / source filter of the address goes along,
-        // as written. A value that cannot be read (campaign_id=abc, or empty) is refused by the
+        // Only what the screen shows: the campaign / source filter of the address goes along, as
+        // written. A value that cannot be read (campaign_id=abc, or empty) is refused by the
         // server instead of being dropped, which would delete every bounce.
         params.all = true;
-        const q = this.$route.query;
-        ['campaign_id', 'source'].forEach((k) => {
-          if (k in q) {
-            params[k] = q[k] === null ? '' : q[k];
-          }
-        });
+        Object.assign(params, this.routeFilter);
       }
+      const num = this.numSelectedBounces;
+      this.$utils.confirm(null, () => this.deleteBounces(params, num));
+    },
 
+    deleteBounces(params, num) {
       this.$api.deleteBounces(params).then(() => {
         this.getBounces();
         this.$utils.toast(this.$t(
           'globals.messages.deletedCount',
-          { name: this.$tc('globals.terms.bounces'), num: this.numSelectedBounces },
+          { name: this.$tc('globals.terms.bounces'), num },
         ));
       });
     },
@@ -231,6 +236,13 @@ export default Vue.extend({
   },
 
   mounted() {
+    ['campaign_id', 'source'].forEach((k) => {
+      if (k in this.$route.query) {
+        const val = this.$route.query[k];
+        this.routeFilter[k] = val === null ? '' : val;
+      }
+    });
+
     if (this.$route.query.campaign_id) {
       this.queryParams.campaign_id = parseInt(this.$route.query.campaign_id, 10);
     }

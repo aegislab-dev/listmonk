@@ -19,12 +19,14 @@ const stubList = () => cy.intercept('GET', /\/api\/bounces\?/, {
   data: { results: rows, total: 25, per_page: 5, page: 1 },
 }).as('list');
 
-const selectAllAndDelete = () => {
+const selectAllAndDelete = ({ confirm = true } = {}) => {
   cy.wait('@list');
   cy.get('thead .b-checkbox').first().click();
   cy.get('.actions a').contains('25').click();
   cy.get('a[data-cy=btn-delete]').first().click();
-  cy.get('.modal.is-active button.is-primary').last().click();
+  if (confirm) {
+    cy.get('.modal.is-active button.is-primary').last().click();
+  }
 };
 
 describe('Bounces: delete all inside the filter', () => {
@@ -60,6 +62,21 @@ describe('Bounces: delete all inside the filter', () => {
       selectAllAndDelete();
       cy.wait('@del').its('request.query').should('deep.equal', want);
     });
+  });
+
+  // The confirm dialog outlives the screen: browser back leaves it open on another list. What
+  // it deletes is what was selected when it opened, filter included.
+  it('keeps the filter of the selection when back is pressed behind the open dialog', () => {
+    stubList();
+    cy.loginAndVisit('/admin/subscribers/bounces');
+    cy.wait('@list');
+    cy.get('tbody a').contains('ses').first().click();
+    cy.location('search').should('contain', 'source=ses');
+    selectAllAndDelete({ confirm: false });
+    cy.go('back');
+    cy.location('search').should('eq', '');
+    cy.get('.modal.is-active button.is-primary').last().click();
+    cy.wait('@del').its('request.query').should('deep.equal', { all: 'true', source: 'ses' });
   });
 
   it('sends no filter when the screen is not filtered', () => {

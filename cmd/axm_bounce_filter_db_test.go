@@ -33,8 +33,8 @@ func TestDeleteAllBouncesStaysInsideFilter(t *testing.T) {
 		e.get(&n, `SELECT COUNT(*) FROM bounces`)
 		return n
 	}
-	del := func(q url.Values) int {
-		req := httptest.NewRequest(http.MethodDelete, "/api/bounces?"+q.Encode(), nil)
+	delRaw := func(raw string) int {
+		req := httptest.NewRequest(http.MethodDelete, "/api/bounces?"+raw, nil)
 		c := echo.New().NewContext(req, httptest.NewRecorder())
 		if err := e.a.DeleteBounces(c); err != nil {
 			he, ok := err.(*echo.HTTPError)
@@ -45,6 +45,7 @@ func TestDeleteAllBouncesStaysInsideFilter(t *testing.T) {
 		}
 		return http.StatusOK
 	}
+	del := func(q url.Values) int { return delRaw(q.Encode()) }
 	camp := func(id int) url.Values { return url.Values{"all": {"true"}, "campaign_id": {itoa(id)}} }
 
 	for _, c := range []struct {
@@ -70,6 +71,32 @@ func TestDeleteAllBouncesStaysInsideFilter(t *testing.T) {
 		if code := del(c.q); code != c.code || total() != c.left {
 			t.Errorf("%s: code %d (want %d), %d bounces left (want %d)", c.name, code, c.code, total(), c.left)
 		}
+	}
+
+	// A filter that is not encoded right is dropped by URL.Query() without a word: it must not
+	// read as "no filter". These are built by hand, url.Values.Encode() never writes them.
+	for _, raw := range []string{
+		"all=true&campaign_id=%zz",
+		"all=true&campaign_id=1%",
+		"all=true&source=%zz",
+		"all=true&source=a%2",
+		"all=true&campaign_id=7;x=1",
+		"campaign_id=%zz&all=true",
+		"all=true&campaign_id=%zz&source=ses",
+	} {
+		seed()
+		if code := delRaw(raw); code != 400 || total() != 5 {
+			t.Errorf("%s: code %d (want 400), %d bounces left (want 5)", raw, code, total())
+		}
+	}
+	// By id, a pair that is not encoded right is still ignored as before.
+	seed()
+	var first []int
+	if err := e.db.Select(&first, `SELECT id FROM bounces ORDER BY id LIMIT 1`); err != nil {
+		t.Fatal(err)
+	}
+	if code := delRaw("id=" + itoa(first[0]) + "&campaign_id=%zz"); code != 200 || total() != 4 {
+		t.Errorf("by id with a bad pair: code %d, %d left (want 4)", code, total())
 	}
 
 	// Ids given with a filter: the ids win, the filter only narrows "all".
