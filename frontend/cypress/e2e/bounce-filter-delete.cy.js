@@ -35,7 +35,8 @@ describe('Bounces: delete all inside the filter', () => {
 
   it('sends the campaign and the source with all=true', () => {
     stubList();
-    cy.loginAndVisit('/admin/subscribers/bounces?campaign_id=7&source=ses');
+    // loginAndVisit puts the path in ?next= unencoded: a second parameter would be lost.
+    cy.loginAndVisit(encodeURIComponent('/admin/subscribers/bounces?campaign_id=7&source=ses'));
     selectAllAndDelete();
     cy.wait('@del').its('request.query').should('deep.equal', { all: 'true', campaign_id: '7', source: 'ses' });
   });
