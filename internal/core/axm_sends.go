@@ -29,12 +29,16 @@ func (c *Core) MarkCampaignSendClicked(campUUID, subUUID string, kind int) error
 func (c *Core) DeleteCampaignSends(before time.Time) (int, error) {
 	total := 0
 	for {
-		var n int
-		if err := c.q.AxmDeleteCampaignSends.Get(&n, before, sendDeleteBatch); err != nil {
+		var batch struct {
+			Selected int `db:"selected"`
+			Deleted  int `db:"deleted"`
+		}
+		if err := c.q.AxmDeleteCampaignSends.Get(&batch, before, sendDeleteBatch); err != nil {
 			return total, err
 		}
-		total += n
-		if n < sendDeleteBatch {
+		total += batch.Deleted
+		// A concurrent deletion can reduce the number deleted after selection.
+		if batch.Selected < sendDeleteBatch {
 			return total, nil
 		}
 	}

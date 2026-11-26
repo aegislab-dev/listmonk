@@ -182,7 +182,8 @@ SELECT EXISTS (
 -- a campaign. This is used to fetch and slice subscribers for the campaign in next-campaign-subscribers.
 WITH camps AS (
     -- Get all running campaigns and their template bodies (if the template's deleted, the default template body instead)
-    SELECT campaigns.*, COALESCE(templates.body, (SELECT body FROM templates WHERE is_default = true LIMIT 1), '') AS template_body
+    SELECT campaigns AS campaign, campaigns.id, campaigns.type, campaigns.xmin AS row_version,
+        COALESCE(templates.body, (SELECT body FROM templates WHERE is_default = true LIMIT 1), '') AS template_body
     FROM campaigns
     LEFT JOIN templates ON (templates.id = campaigns.template_id)
     WHERE (status='running' OR (status='scheduled' AND NOW() >= campaigns.send_at))
@@ -234,7 +235,7 @@ audience AS (
     SELECT camps.id, sent.subscriber_id, FALSE
     FROM camps
     CROSS JOIN LATERAL axm_recent_campaign_sent_ids(camps.id) sent
-    WHERE camps.started_at IS NOT NULL AND axm_recent_rule_on(camps.id)
+    WHERE (camps.campaign).started_at IS NOT NULL AND axm_recent_rule_on(camps.id)
 ),
 counts AS (
     SELECT campaign_id, COUNT(DISTINCT subscriber_id) AS to_send,
@@ -242,20 +243,35 @@ counts AS (
     FROM audience
     GROUP BY campaign_id
 ),
-u AS (
+picked AS MATERIALIZED (
     -- Count each eligible, excluded or sent ID once, plus the aggregate for deleted subscribers.
-    -- The send cursor still uses only currently eligible subscribers.
-    UPDATE campaigns AS ca
-    SET to_send = COALESCE(co.to_send, 0) + COALESCE(r.removed_held_count + r.removed_sent_count, 0),
-        status = (CASE WHEN ca.status != 'running' THEN 'running' ELSE ca.status END),
-        max_subscriber_id = COALESCE(co.max_subscriber_id, 0),
-        started_at = (CASE WHEN ca.started_at IS NULL THEN NOW() ELSE ca.started_at END)
+    -- The send cursor only uses currently eligible subscribers.
+    -- If a save raced the count or holds the row, let the next scan read the new revision.
+    SELECT camps.id,
+        CASE WHEN co.to_send IS NOT NULL OR r.removed_held_count + r.removed_sent_count > 0
+            THEN COALESCE(co.to_send, 0) + COALESCE(r.removed_held_count + r.removed_sent_count, 0)
+        END AS to_send,
+        COALESCE(co.max_subscriber_id, 0) AS max_subscriber_id
     FROM camps
     LEFT JOIN counts co ON co.campaign_id = camps.id
     LEFT JOIN axm_campaign_recent_rules r ON r.campaign_id = camps.id
-    WHERE ca.id = camps.id AND (co.campaign_id IS NOT NULL OR r.removed_held_count + r.removed_sent_count > 0)
+    JOIN campaigns ca ON ca.id = camps.id AND ca.xmin = camps.row_version
+    FOR NO KEY UPDATE OF ca SKIP LOCKED
+),
+u AS (
+    -- As before, static campaigns without recipients keep their state. Return them
+    -- through picked so the store can still finish an empty follow-up.
+    UPDATE campaigns AS ca
+    SET to_send = picked.to_send,
+        status = 'running',
+        max_subscriber_id = picked.max_subscriber_id,
+        started_at = COALESCE(ca.started_at, NOW())
+    FROM picked
+    WHERE ca.id = picked.id AND picked.to_send IS NOT NULL
 )
-SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);
+SELECT (camps.campaign).*, camps.template_body, campMedia.media_id
+FROM picked JOIN camps ON camps.id = picked.id
+LEFT JOIN campMedia ON campMedia.campaign_id = picked.id;
 
 -- name: get-campaign-analytics-unique-counts
 WITH intval AS (

@@ -36,6 +36,7 @@ export default {
   data() {
     return {
       isMediaVisible: false,
+      renderTimer: null,
     };
   },
 
@@ -93,6 +94,7 @@ export default {
 
     render(source) {
       const iframe = this.$refs.visualEditor;
+      this.stopRenderTimer();
 
       // If the editor is not-rendered, render it the first time. This can happen
       // on first loads and importing an email template via render().
@@ -102,6 +104,7 @@ export default {
           data: {},
           personalization: this.personalization(),
           onChange: (data, body) => {
+            if (this.$refs.visualEditor !== iframe) return;
             // Hack to fix quotes in Go {{ templating }} in the HTML body.
             const tpl = body.replace(/\{\{[^}]*\}\}/g, (match) => match.replace(/&quot;/g, '"'));
             this.$emit('change', { source: JSON.stringify(data), body: tpl });
@@ -118,20 +121,25 @@ export default {
       // onChange(), which is required to set the source+HTML state in the parent for preview to work.
       // Couldn't figure out if there was an on load/on init event etc. in email-builder, so brute force it
       // with a timer.
-      let n = 10;
-      const timer = window.setInterval(() => {
+      let attempts = 0;
+      this.renderTimer = window.setInterval(() => {
         const container = iframe.contentWindow.document.getElementById('visual-editor-container');
         if (container && container.hasChildNodes()) {
+          this.stopRenderTimer();
           em.resetDocument(source);
-          window.clearInterval(timer);
           return;
         }
 
-        n += 1;
-        if (n > 10) {
-          window.clearInterval(timer);
+        attempts += 1;
+        if (attempts >= 10) {
+          this.stopRenderTimer();
         }
       }, 100);
+    },
+
+    stopRenderTimer() {
+      window.clearInterval(this.renderTimer);
+      this.renderTimer = null;
     },
 
     // Inject media URL into the image URL input field in the visual edior sidebar.
@@ -186,6 +194,7 @@ export default {
 
     iframe.onload = () => {
       this.loadScript().then(() => {
+        if (this.$refs.visualEditor !== iframe) return;
         let source = null;
         if (this.$props.source) {
           source = JSON.parse(this.$props.source);
@@ -193,6 +202,7 @@ export default {
 
         this.render(source);
       }).catch((error) => {
+        if (this.$refs.visualEditor !== iframe) return;
         /* eslint-disable-next-line no-console */
         console.error('Failed to load email-builer script:', error);
       });
@@ -201,7 +211,10 @@ export default {
     window.addEventListener('message', this.onSidebarMount, false);
   },
 
-  unmounted() {
+  beforeDestroy() {
+    const iframe = this.$refs.visualEditor;
+    if (iframe) iframe.onload = null;
+    this.stopRenderTimer();
     window.removeEventListener('message', this.onSidebarMount, false);
   },
 };

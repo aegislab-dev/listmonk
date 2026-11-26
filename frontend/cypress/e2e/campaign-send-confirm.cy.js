@@ -183,6 +183,75 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-cancel]').click();
   });
 
+  it('keeps the schedule when another session schedules the campaign after the list loads', () => {
+    cy.then(() => create('scheduled-elsewhere', {
+      lists: [listX], send_at: new Date(Date.now() + 86400000).toISOString(),
+    }));
+    cy.visit('/admin/campaigns');
+    row('scheduled-elsewhere').find('[data-cy=btn-schedule]').should('exist');
+    cy.then(() => cy.request('PUT', `/api/campaigns/${camp['scheduled-elsewhere']}/status`, { status: 'scheduled' }))
+      .its('body.data.status').should('eq', 'scheduled');
+
+    cy.intercept('PUT', statusPath).as('status');
+    row('scheduled-elsewhere').find('[data-cy=btn-schedule]').click();
+    ready();
+    cy.get('[data-cy=send-ok]').should('contain', 'keep the schedule').click();
+    cy.get(win).should('not.exist');
+    row('scheduled-elsewhere').find('[data-cy=btn-schedule]').should('not.exist');
+    cy.get('@status.all').should('have.length', 0);
+  });
+
+  it('agrees with scheduled editing when sending history leaves zero recipients', () => {
+    cy.then(() => {
+      create('scheduled-zero-source', { lists: [listY] });
+      create('scheduled-zero', {
+        lists: [listY], send_at: new Date(Date.now() + 86400000).toISOString(),
+      });
+    });
+    const path = () => `/api/campaigns/${camp['scheduled-zero']}`;
+    cy.then(() => {
+      cy.request('PUT', `${path()}/recent-exclude`, {
+        enabled: true, days: 14, scope: 'campaigns', campaign_ids: [camp['scheduled-zero-source']],
+      });
+      cy.request('PUT', `/api/campaigns/${camp['scheduled-zero-source']}/status`, { status: 'running' });
+    });
+    const withHistory = (tries = 30) => cy.request(`${path()}/preflight`).then(({ body: { data } }) => {
+      if (data.will_send > 0 && tries > 0) {
+        cy.wait(1000);
+        return withHistory(tries - 1);
+      }
+      return data;
+    });
+    cy.then(() => withHistory()).its('will_send').should('equal', 0);
+
+    cy.visit('/admin/campaigns');
+    row('scheduled-zero').find('[data-cy=btn-schedule]').should('exist');
+    cy.then(() => {
+      cy.intercept('GET', `${path()}/preflight`).as('scheduledZeroCheck');
+      cy.request('PUT', `${path()}/status`, { status: 'scheduled' });
+    });
+    row('scheduled-zero').find('[data-cy=btn-schedule]').click();
+    cy.wait('@scheduledZeroCheck').its('response.body.data').should((data) => {
+      expect(data).to.include({
+        mode: 'scheduled', recipients: 2, remaining: 0, will_send: 0,
+      });
+      expect(data.recent.excluded).to.equal(2);
+    });
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`).should('exist');
+    cy.get('[data-cy="send-check-recent.all"]').should('have.attr', 'data-level', 'block');
+    cy.get('[data-cy=send-ok]').should('contain', 'keep the schedule').click();
+    cy.get(win).should('not.exist');
+
+    cy.then(() => {
+      cy.intercept('PUT', path()).as('zeroSave');
+      cy.visit(`/admin/campaigns/${camp['scheduled-zero']}`);
+    });
+    cy.get('[data-cy=btn-save]').click();
+    cy.wait('@zeroSave').its('response.statusCode').should('equal', 400);
+    cy.get('.toast.is-danger').should('contain', 'Not saved').and('contain', '0 recipients');
+    cy.then(() => cy.request(path())).its('body.data.status').should('equal', 'scheduled');
+  });
+
   it('says in the window that a saved exclusion rule is applied and what goes out, from the list too', () => {
     cy.visit('/admin/campaigns');
     row('rule').find('[data-cy=btn-start]').click();

@@ -8,31 +8,13 @@ import (
 	"github.com/knadh/stuffbin"
 )
 
-// V6_2_1_axm_19 preserves the finished exclusion count independently of subscriber deletion.
+// V6_2_1_axm_19 preserves campaign totals when per-recipient send records expire.
 func V6_2_1_axm_19(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger) error {
-	_, err := db.Exec(`-- AXM completed recent-send counts (LST-65). Keep this block identical to V6_2_1_axm_19.
-ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS finished_held_count INTEGER;
-
--- Existing finished campaigns can only be backfilled from their remaining holds.
-UPDATE axm_campaign_recent_rules r
-SET finished_held_count = (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id)
-FROM campaigns c
-WHERE c.id = r.campaign_id AND c.status = 'finished' AND r.finished_held_count IS NULL;
-
--- Save the aggregate with the status change. The subscriber-specific holds can still cascade.
-CREATE OR REPLACE FUNCTION axm_snapshot_recent_holds()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-    UPDATE axm_campaign_recent_rules r
-    SET finished_held_count = (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = NEW.id)
-    WHERE r.campaign_id = NEW.id;
-    RETURN NEW;
-END;
-$$;
-DROP TRIGGER IF EXISTS axm_recent_holds_finished ON campaigns;
-CREATE TRIGGER axm_recent_holds_finished AFTER UPDATE OF status ON campaigns
-    FOR EACH ROW WHEN (NEW.status = 'finished' AND OLD.status IS DISTINCT FROM 'finished')
-    EXECUTE FUNCTION axm_snapshot_recent_holds();
--- End of AXM completed recent-send counts.`)
+	_, err := db.Exec(`-- AXM expired send totals (LST-67). Keep this block identical to V6_2_1_axm_19.
+CREATE TABLE IF NOT EXISTS axm_campaign_expired_sends (
+    campaign_id INT PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    sent BIGINT NOT NULL CHECK (sent > 0)
+);
+-- End of AXM expired send totals.`)
 	return err
 }

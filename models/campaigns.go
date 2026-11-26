@@ -50,6 +50,8 @@ type Campaign struct {
 	// campaign is done with every subscriber up to it. The campaign manager continues
 	// after it when it picks a campaign up (AXM, LST-20). It is not part of the API.
 	LastSubscriberID int `db:"last_subscriber_id" json:"-"`
+	// LegacySendHistory means earlier deliveries may have been removed before the tally existed.
+	LegacySendHistory bool `db:"axm_legacy_send_history" json:"-"`
 	Base
 	CampaignMeta
 

@@ -553,11 +553,12 @@ func TestFollowupSchemaAndMigration(t *testing.T) {
 	if e.count(`SELECT COUNT(*) FROM pg_depend d JOIN pg_class s ON s.oid = d.objid AND s.relkind = 'S' WHERE d.refobjid = 'axm_campaign_followups'::regclass`) != 0 {
 		t.Fatal("the table owns a sequence")
 	}
-	var last string
-	last = migList[len(migList)-1].version
-	if last != "v6.2.1-axm.22" {
-		t.Fatal(last)
+	for _, mig := range migList {
+		if mig.version == "v6.2.1-axm.17" {
+			return
+		}
 	}
+	t.Fatal("follow-up migration is not registered")
 }
 
 // A reader who cannot open the other campaign of a link learns nothing about it.
@@ -1707,8 +1708,8 @@ func TestFollowupResumedAfterTheSendRecordExpiredSendsNobodyTwice(t *testing.T) 
 			e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() - INTERVAL '400 days')`, camp, manual)
 			e.db.MustExec(`UPDATE campaigns SET status = 'paused', sent = 1, last_subscriber_id = 0 WHERE id = $1`, camp)
 			// The send records expire while it is paused.
-			var deleted int
-			if err := e.q.AxmDeleteCampaignSends.Get(&deleted, time.Now().Add(-365*24*time.Hour), 1000); err != nil {
+			deleted, err := e.a.core.PurgeOldCampaignSends()
+			if err != nil {
 				t.Fatal(err)
 			}
 			if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1`, camp); deleted == 0 || n != 0 {

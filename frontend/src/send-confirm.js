@@ -140,14 +140,24 @@ export const checkLines = (pf) => {
     .map(({ l }) => l);
 };
 
+// Use the same progress figures in the label and the bar.
+export const sendProgress = (pf) => ({
+  sent: pf.sentIsMinimum ? `≥${pf.sent}` : pf.sent,
+  total: Math.max(pf.toSend, pf.sent),
+});
+
 // The whole window for an answer: title, button, whether it can be confirmed, the lines.
 export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {}) => {
   const resume = pf.mode === 'resume';
   const schedule = pf.mode === 'schedule';
-  // The people it goes to: those on the lists less the ones the recent-send rule leaves out
-  // (LST-65), or what is left when resuming.
-  const n = resume ? pf.remaining : (pf.willSend ?? pf.recipients);
-  const recent = !resume && pf.recent && pf.recent.enabled && pf.recent.excluded > 0 ? pf.recent : null;
+  // LST-67: a campaign that is already scheduled, read again after it was saved. Nothing is asked
+  // for: the window says what the send will be and the person keeps or undoes the schedule.
+  const scheduled = pf.mode === 'scheduled';
+  // A scheduled campaign that was sent from before (paused, then scheduled again) goes on after
+  // its checkpoint: its people are the ones left, as for a resume (LST-67 review).
+  const left = resume || (scheduled && !!pf.resumed);
+  const n = left ? pf.remaining : (pf.willSend ?? pf.recipients);
+  const recent = !left && pf.recent && pf.recent.enabled && pf.recent.excluded > 0 ? pf.recent : null;
   const all = checkLines(pf);
   const blocked = all.some((c) => c.level === 'block');
   // Nobody to send to (approved design A5): the reason is the only line. Otherwise (a From the
@@ -156,7 +166,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   const checks = nobody ? all.filter((c) => c.level === 'block') : all;
   const warnings = all.filter((c) => c.level === 'warn').length;
   // A paused campaign with a send time is scheduled by the status change, not sent at once.
-  const timed = (schedule || resume) && pf.sendAt;
+  const timed = (schedule || scheduled || resume) && pf.sendAt;
   const when = timed ? scheduleDisplay(pf.sendAt, { tz, lang }) : null;
   const until = timed ? timeUntil(pf.sendAt, now) : null;
 
@@ -175,9 +185,9 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
     };
   } else if (resume) {
     title = { key: `${K}.title.resume`, params: { n } };
-  } else if (schedule && when) {
+  } else if ((schedule || scheduled) && when) {
     title = {
-      key: `${K}.title.schedule`,
+      key: `${K}.title.${scheduled ? 'scheduled' : 'schedule'}`,
       params: {
         n, month: when.month, day: when.day, time: when.time,
       },
@@ -191,19 +201,26 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   else if (warnings) sub = { key: `${K}.sub.warn`, params: { n: warnings } };
   else if (resume && when && until) sub = { key: `${K}.sub.resumeAt`, params: {} };
   else sub = { key: `${K}.sub.${pf.mode}`, params: {} };
+  if (scheduled && warnings && !blocked) sub = { key: `${K}.sub.scheduledWarn`, params: { n: warnings } };
 
-  let confirmKey = `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
-  // Everybody who could get it got a campaign lately (LST-65): the button says it cannot be sent.
-  if (blocked && checks.some((c) => c.name === 'recent.all')) confirmKey = `${K}.confirm.blocked`;
+  // The window of a scheduled campaign has one way on: it stays scheduled (the other button
+  // takes the schedule off). No "anyway": nothing is being started here.
+  let confirmKey = scheduled
+    ? `${K}.review.keep`
+    : `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
+  if (!scheduled && blocked && checks.some((c) => c.name === 'recent.all')) confirmKey = `${K}.confirm.blocked`;
+  const targetStatus = schedule ? 'scheduled' : 'running';
   const asOf = pf.asOf ? new Date(pf.asOf) : null;
 
   return {
     mode: pf.mode,
+    targetStatus: scheduled ? null : targetStatus,
     count: n,
     title,
     sub,
     confirm: { key: confirmKey, params: { n } },
-    disabled: blocked,
+    // A scheduled campaign is already saved: the window has nothing to disable.
+    disabled: blocked && !scheduled,
     blocked,
     warnings,
     checks,
@@ -216,7 +233,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
       : null,
     overlap: pf.overlap || 0,
     excluded: pf.excluded || 0,
-    zero: !resume && pf.recipients === 0,
+    zero: !resume && n === 0 && !recent,
     // The rule leaves out some of the recipients: the line that sums it up (null when none).
     recent,
     asOf,

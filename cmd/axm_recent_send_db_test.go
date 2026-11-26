@@ -308,7 +308,7 @@ func TestRecentRuleFailureSendsNothing(t *testing.T) {
 		t.Fatalf("sent to %v while the rule could not be decided", got)
 	}
 
-	if err := migrations.V6_2_1_axm_18(e.db, nil, nil, nil); err != nil {
+	if err := migrations.V6_2_1_axm_21(e.db, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the campaign to finish", func() bool { s, _, _ := e.campaign(); return s == models.CampaignStatusFinished })
@@ -563,11 +563,11 @@ func TestRecentHoldsMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm.18.go"))
+	migration, err := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm.21.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	const start = "-- AXM recent-send exclusion at send time (LST-65). Keep this block identical to V6_2_1_axm_18."
+	const start = "-- AXM recent-send exclusion at send time (LST-65). Keep this block identical to V6_2_1_axm_21."
 	const end = "-- End of AXM recent-send exclusion at send time."
 	_, tail, ok := strings.Cut(string(schema), start)
 	block, _, endOK := strings.Cut(tail, end)
@@ -578,7 +578,7 @@ func TestRecentHoldsMigration(t *testing.T) {
 	e := newSendsEnv(t, 2)
 	e.db.MustExec(`DROP FUNCTION axm_recent_received(INT, INT[]); DROP TABLE axm_campaign_recent_holds`)
 	for i := 0; i < 2; i++ {
-		if err := migrations.V6_2_1_axm_18(e.db, nil, nil, nil); err != nil {
+		if err := migrations.V6_2_1_axm_21(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -632,7 +632,7 @@ func TestRecentHoldsFinishedCountMigration(t *testing.T) {
 
 	migrate := func() {
 		t.Helper()
-		if err := migrations.V6_2_1_axm_19(e.db, nil, nil, nil); err != nil {
+		if err := migrations.V6_2_1_axm_22(e.db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -646,7 +646,7 @@ func TestRecentHoldsFinishedCountMigration(t *testing.T) {
 	// A delete before .20 is recoverable for the finished campaign from the .19 snapshot.
 	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[0])
 	migrate()
-	if err := migrations.V6_2_1_axm_20(e.db, nil, nil, nil); err != nil {
+	if err := migrations.V6_2_1_axm_23(e.db, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	assertHeld(e.campID, 2)
@@ -654,7 +654,7 @@ func TestRecentHoldsFinishedCountMigration(t *testing.T) {
 
 	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[1])
 	assertHeld(active, 1)
-	if err := migrations.V6_2_1_axm_20(e.db, nil, nil, nil); err != nil {
+	if err := migrations.V6_2_1_axm_23(e.db, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.q.UpdateCampaignStatus.Exec(active, models.CampaignStatusFinished); err != nil {

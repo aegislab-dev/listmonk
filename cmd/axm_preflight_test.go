@@ -78,6 +78,8 @@ func TestPreflightMode(t *testing.T) {
 		{models.CampaignStatusDraft, at, "schedule"},
 		{models.CampaignStatusPaused, null.Time{}, "resume"},
 		{models.CampaignStatusPaused, at, "resume"},
+		// LST-67: a campaign that is already scheduled is read again after an edit.
+		{models.CampaignStatusScheduled, at, "scheduled"},
 	} {
 		if got := preflightMode(c.status, c.sendAt); got != c.want {
 			t.Errorf("%s %v: %s", c.status, c.sendAt.Valid, got)
@@ -108,6 +110,8 @@ func TestPreflightChecks(t *testing.T) {
 			map[string]string{"recipients.zero": "warn", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"people left on resume", with(func(f *preflightFacts) { f.Mode, f.Total, f.Remaining = "resume", 0, 12 }),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok"}},
+		{"nobody left on a scheduled send blocks", with(func(f *preflightFacts) { f.Mode, f.Total, f.Remaining = "scheduled", 40, 0 }),
+			map[string]string{"recipients.zero": "block", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"no list left blocks", with(func(f *preflightFacts) { f.LiveLists, f.Total = 0, 0 }),
 			map[string]string{"lists.none": "block", "from.placeholder": "ok", "unsubscribe.missing": "ok"}},
 		{"scheduled in the past", with(func(f *preflightFacts) { f.Mode, f.SendAt = "schedule", null.TimeFrom(now.Add(-time.Minute)) }),
@@ -302,5 +306,31 @@ func TestEnvelopeCopies(t *testing.T) {
 	}
 	if line == nil || line.Level != "warn" || line.Params["mails"] != 3 || line.Params["n"] != 1 {
 		t.Fatalf("copies line: %+v", line)
+	}
+}
+
+// LST-67: the window and the save of a scheduled campaign judge who the campaign reaches by
+// the same function.
+func TestAudienceBlock(t *testing.T) {
+	for _, c := range []struct {
+		name            string
+		typ, mode       string
+		lists, count    int
+		wantKey, wantLv string
+	}{
+		{"people to send to", "regular", "scheduled", 2, 40, "", ""},
+		{"nobody on the lists blocks a regular campaign", "regular", "scheduled", 2, 0, "recipients.zero", "block"},
+		{"no list left blocks a regular campaign", "regular", "scheduled", 0, 0, "lists.none", "block"},
+		{"no list wins over nobody", "regular", "schedule", 0, 5, "lists.none", "block"},
+		{"an opt-in campaign only warns", "optin", "scheduled", 2, 0, "recipients.zero", "warn"},
+		{"an opt-in campaign without a list only warns", "optin", "start", 0, 0, "lists.none", "warn"},
+		{"a resumed campaign with nobody left only warns", "regular", "resume", 2, 0, "recipients.zero", "warn"},
+		{"a resumed campaign without a list only warns", "regular", "resume", 0, 0, "lists.none", "warn"},
+		{"a draft that is started", "regular", "start", 1, 0, "recipients.zero", "block"},
+	} {
+		key, lv := audienceBlock(c.typ, c.mode, c.lists > 0, c.count > 0)
+		if key != c.wantKey || lv != c.wantLv {
+			t.Errorf("%s: %q %q", c.name, key, lv)
+		}
 	}
 }

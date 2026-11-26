@@ -1306,6 +1306,54 @@ func TestSendRecordRetention(t *testing.T) {
 	if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 0 {
 		t.Fatalf("second run deleted %d, err %v", n, err)
 	}
+	var campaigns, total int
+	e.get(&campaigns, `SELECT COUNT(*) FROM axm_campaign_expired_sends`)
+	e.get(&total, `SELECT SUM(sent) FROM axm_campaign_expired_sends`)
+	if campaigns != 30 || total != 45000 {
+		t.Fatalf("expired totals: %d campaigns, %d records", campaigns, total)
+	}
+	e.db.MustExec(`DELETE FROM campaigns WHERE id=(SELECT MIN(campaign_id) FROM axm_campaign_expired_sends)`)
+	e.get(&total, `SELECT SUM(sent) FROM axm_campaign_expired_sends`)
+	if total != 43500 {
+		t.Fatalf("expired totals left after campaign deletion: %d", total)
+	}
+}
+
+func TestSendRecordRetentionSkipsLockedCampaign(t *testing.T) {
+	e := newSendsEnv(t, 0)
+	var other int
+	if err := e.db.Get(&other, `INSERT INTO campaigns (uuid, name, subject, from_email, body, messenger)
+		VALUES (gen_random_uuid(), 'Other', 'Subject', 'sender@example.invalid', 'Body', 'email') RETURNING id`); err != nil {
+		t.Fatal(err)
+	}
+	e.db.MustExec(`INSERT INTO subscribers (uuid, email, name)
+		SELECT gen_random_uuid(), 'lock-' || g || '@example.invalid', 'Synthetic' FROM generate_series(1, 10002) g`)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at)
+		SELECT c.id, s.id, NOW()-INTERVAL '14 months'
+		FROM subscribers s CROSS JOIN campaigns c WHERE s.email LIKE 'lock-%' AND c.id IN ($1, $2)
+		ORDER BY s.id, c.id`, e.campID, other)
+
+	tx := e.db.MustBegin()
+	defer tx.Rollback()
+	tx.MustExec(`SELECT id FROM campaigns WHERE id=$1 FOR UPDATE`, e.campID)
+	if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 10002 {
+		t.Fatalf("purge while the other campaign is locked: deleted %d, err %v", n, err)
+	}
+	var left int
+	e.get(&left, `SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id=$1`, other)
+	if left != 0 {
+		t.Fatalf("unlocked campaign still has %d expired records", left)
+	}
+	e.get(&left, `SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id=$1`, e.campID)
+	if left != 10002 {
+		t.Fatalf("locked campaign has %d expired records", left)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 10002 {
+		t.Fatalf("purge after unlocking: deleted %d, err %v", n, err)
+	}
 }
 
 // The view pixel and the tracked link mark the send record, and never fail because of it.
@@ -1509,7 +1557,7 @@ func TestSendRecordMigration(t *testing.T) {
 // Migrations are registered through the latest version and stay in semver order.
 func TestSendRecordMigrationRegistered(t *testing.T) {
 	last := migList[len(migList)-1]
-	if last.version != "v6.2.1-axm.22" {
+	if last.version != "v6.2.1-axm.25" {
 		t.Fatalf("last migration is %s", last.version)
 	}
 	for i := 1; i < len(migList); i++ {

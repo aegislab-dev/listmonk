@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  checkLines, offsetLabel, richParts, scheduleDisplay, sendConfirmModel, timeUntil, untilKey,
+  checkLines, offsetLabel, richParts, scheduleDisplay, sendConfirmModel, sendProgress, timeUntil, untilKey,
 } from '../src/send-confirm.js';
 
 const NOW = new Date('2026-11-19T12:00:00Z');
@@ -29,12 +29,18 @@ const pf = (over = {}) => ({
 });
 const model = (over, opts) => sendConfirmModel(pf(over), { now: NOW, tz: 'Asia/Seoul', ...opts });
 
+test('delivery progress shows a minimum when earlier records may have been removed', () => {
+  assert.deepEqual(sendProgress({ sent: 20, sentIsMinimum: true, toSend: 40 }), { sent: '≥20', total: 40 });
+  assert.deepEqual(sendProgress({ sent: 30, toSend: 40 }), { sent: 30, total: 40 });
+});
+
 test('start: title and button carry the number, nothing is disabled', () => {
   const m = model();
   assert.equal(m.title.key, 'campaigns.sendConfirm.title.start');
   assert.deepEqual(m.title.params, { n: 300 });
   assert.equal(m.sub.key, 'campaigns.sendConfirm.sub.start');
   assert.equal(m.confirm.key, 'campaigns.sendConfirm.confirm.start');
+  assert.equal(m.targetStatus, 'running');
   assert.equal(m.disabled, false);
   assert.equal(m.warnings, 0);
   assert.equal(m.when, null);
@@ -54,6 +60,7 @@ test('warnings rename the button and count in the subtitle, but do not disable i
 test('schedule: the time with its zone, the time left, and the title in the zone', () => {
   const m = model({ mode: 'schedule', sendAt: '2026-11-20T00:00:00Z' });
   assert.equal(m.title.key, 'campaigns.sendConfirm.title.schedule');
+  assert.equal(m.targetStatus, 'scheduled');
   assert.deepEqual(m.title.params, { n: 300, month: '11', day: '20', time: '09:00' });
   assert.equal(m.when.text, '2026-11-20 (금) 09:00');
   assert.equal(m.when.zone, 'Asia/Seoul');
@@ -284,4 +291,81 @@ test('a refused From blocks but keeps every other line: the rest is to be fixed 
   for (const name of ['unsubscribe.missing', 'recent.applied', 'from.placeholder']) {
     assert.ok(m.checks.some((c) => c.name === name), `${name} is kept`);
   }
+});
+
+// LST-67: a campaign that is already scheduled, read again after it was saved.
+test('scheduled: the title says it is scheduled, with the time in its zone', () => {
+  const m = model({ mode: 'scheduled', sendAt: '2026-11-20T00:00:00Z' });
+  assert.equal(m.title.key, 'campaigns.sendConfirm.title.scheduled');
+  assert.deepEqual(m.title.params, { n: 300, month: '11', day: '20', time: '09:00' });
+  assert.equal(m.when.text, '2026-11-20 (금) 09:00');
+  assert.equal(m.sub.key, 'campaigns.sendConfirm.sub.scheduled');
+});
+
+test('scheduled: warnings count in the subtitle and the one way on is keeping the schedule', () => {
+  const m = model({
+    mode: 'scheduled',
+    sendAt: '2026-11-20T00:00:00Z',
+    checks: [{ key: 'unsubscribe.missing', level: 'warn' }, { key: 'from.placeholder', level: 'ok' }],
+    tracking: { ...trackingOk, view: 'missing' },
+  });
+  assert.equal(m.warnings, 2);
+  assert.deepEqual(m.sub, { key: 'campaigns.sendConfirm.sub.scheduledWarn', params: { n: 2 } });
+  assert.equal(m.confirm.key, 'campaigns.sendConfirm.review.keep');
+  assert.equal(m.targetStatus, null);
+  assert.equal(m.disabled, false);
+});
+
+test('scheduled: all passed is no warning and no block, so the page says it in one line', () => {
+  const m = model({ mode: 'scheduled', sendAt: '2026-11-20T00:00:00Z' });
+  assert.equal(m.warnings, 0);
+  assert.equal(m.blocked, false);
+});
+
+test('scheduled: a campaign that would reach nobody is still named, and nothing is disabled', () => {
+  const m = model({
+    mode: 'scheduled', sendAt: '2026-11-20T00:00:00Z', recipients: 0, checks: [{ key: 'recipients.zero', level: 'block' }],
+  });
+  assert.equal(m.title.key, 'campaigns.sendConfirm.title.zero');
+  assert.equal(m.blocked, true);
+  assert.equal(m.disabled, false);
+});
+
+test('scheduled: the new texts exist in the Korean and English files', () => {
+  for (const lang of ['ko', 'en']) {
+    const t = JSON.parse(fs.readFileSync(new URL(`../../i18n/${lang}.json`, import.meta.url)));
+    ['title.scheduled', 'sub.scheduled', 'sub.scheduledWarn', 'review.keep', 'review.unschedule', 'review.loadFailed']
+      .forEach((k) => assert.ok(t[`campaigns.sendConfirm.${k}`], `${lang} ${k}`));
+    ['recheck.noLists', 'recheck.zero', 'recheck.passed'].forEach((k) => assert.ok(t[`campaigns.${k}`], `${lang} ${k}`));
+  }
+});
+
+test('scheduled: shows when the recent exclusion leaves nobody and can undo the schedule', () => {
+  const m = model({
+    mode: 'scheduled', sendAt: '2026-11-20T00:00:00Z', recipients: 3, willSend: 0,
+    recent: { enabled: true, days: 14, scope: 'all', excluded: 3 },
+    checks: [{ key: 'recent.all', level: 'block', params: { days: 14 } }],
+  });
+  assert.equal(m.count, 0);
+  assert.equal(m.blocked, true);
+  assert.equal(m.zero, false);
+  assert.equal(m.recent.excluded, 3);
+  assert.equal(m.title.key, 'campaigns.sendConfirm.title.zero');
+  assert.equal(m.confirm.key, 'campaigns.sendConfirm.review.keep');
+  assert.equal(m.targetStatus, null);
+});
+
+// LST-67 review: a campaign paused and scheduled again goes on after its checkpoint, so its people
+// are the ones left.
+test('scheduled and sent from before: the title counts the people left, not all that are eligible', () => {
+  const m = model({
+    mode: 'scheduled', resumed: true, sendAt: '2026-11-20T00:00:00Z', recipients: 40, remaining: 20,
+  });
+  assert.equal(m.count, 20);
+  assert.deepEqual(m.title.params, { n: 20, month: '11', day: '20', time: '09:00' });
+  const none = model({
+    mode: 'scheduled', resumed: true, sendAt: '2026-11-20T00:00:00Z', recipients: 40, remaining: 0, checks: [{ key: 'recipients.zero', level: 'block' }],
+  });
+  assert.equal(none.zero, true);
+  assert.equal(none.blocked, true);
 });
