@@ -25,7 +25,8 @@
   "campaign-clone-lists.cy.js",
   "campaign-scheduled-edit.cy.js",
   "import-campaign-flow.cy.js",
-  "stats-dashboard.cy.js"
+  "stats-dashboard.cy.js",
+  "bounce-filter-delete.cy.js"
  ],
  "smoke": [
   "audit.cy.js",
@@ -65,6 +66,17 @@
     "import-mapping.cy.js",
     "address-check.cy.js",
     "import-campaign-flow.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/src/views/Bounces.vue",
+    "cmd/bounce.go",
+    "queries/bounces.sql",
+    "cmd/axm_bounce_*.go"
+   ],
+   "specs": [
+    "bounce-filter-delete.cy.js"
    ]
   },
   {
