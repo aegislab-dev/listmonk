@@ -411,7 +411,7 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
-	if cm.Status == models.CampaignStatusScheduled && o.RecentRule != nil {
+	if o.RecentRule != nil {
 		if err := a.core.ValidateRecentRule(o.RecentRule); err != nil {
 			return err
 		}
@@ -442,30 +442,32 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 		o = c
 	}
 
-	// A send_at value does not activate a draft. Only edits to campaigns
-	// already scheduled or paused must pass the sending checks here.
+	// A send_at value does not activate a draft. The status under the campaign row lock
+	// decides whether the scheduled-save check is needed.
 	if len(a.cfg.SenderDomains) > 0 && (cm.Status == models.CampaignStatusScheduled || cm.Status == models.CampaignStatusPaused) {
 		if err := a.requireVerifiedReply(&o.Campaign); err != nil {
 			return err
 		}
 	}
 	var out models.Campaign
-	if cm.Status == models.CampaignStatusScheduled {
+	if o.RecentRule != nil {
+		// The status read above is not the update's serialization point. If another editor has
+		// locked and scheduled this campaign meanwhile, the core rechecks that live status under
+		// the row lock and saves the rule with the schedule check in the same transaction.
+		out, err = a.core.UpdateCampaignWithRecentRule(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs,
+			*o.RecentRule, user.ID, a.scheduledSaveCheck)
+	} else if cm.Status == models.CampaignStatusScheduled {
 		// AXM (LST-67): a scheduled campaign goes out at its time with nothing between, so what
 		// it would reach is judged again when it is saved, and a save that leaves nobody to send
 		// to is refused (the schedule stays as it was).
-		if o.RecentRule != nil {
-			out, err = a.core.UpdateScheduledCampaignWithRecentRule(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs, *o.RecentRule, user.ID, a.scheduledSaveCheck)
-		} else {
-			out, err = a.core.UpdateScheduledCampaign(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs, a.scheduledSaveCheck)
-		}
+		out, err = a.core.UpdateScheduledCampaign(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs, a.scheduledSaveCheck)
 	} else {
 		out, err = a.core.UpdateCampaign(id, o.Campaign, o.ListIDs, o.MediaIDs)
 	}
 	if err != nil {
 		return err
 	}
-	if cm.Status == models.CampaignStatusScheduled && o.RecentRule != nil {
+	if o.RecentRule != nil {
 		a.audit(c, auditCampaignRecentRule, auditTarget{auditTargetCampaign, id, cm.Name}, auditNoCount, map[string]any{
 			"days": o.RecentRule.Days, "scope": o.RecentRule.Scope, "campaign_ids": o.RecentRule.CampaignIDs, "enabled": o.RecentRule.Enabled,
 		})

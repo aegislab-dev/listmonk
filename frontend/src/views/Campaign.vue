@@ -945,8 +945,8 @@ export default Vue.extend({
       // The server checks an omitted rule against the current saved rule in its transaction.
       // The campaign status can change in another editor after this page loaded. Always include
       // this editor's dirty rule so a draft -> scheduled race validates and saves it atomically.
-      // If the server now sees a draft, it ignores this field; saveRecentRule below then persists
-      // it through the dedicated endpoint instead.
+      // The server locks and rechecks the current status before saving this field, even if this
+      // editor loaded an older draft/scheduled state.
       const recentRuleWasDirty = this.recentRuleDirty;
       if (recentRuleWasDirty) data.recent_rule = recentRulePayload(this.recentRule);
 
@@ -972,7 +972,7 @@ export default Vue.extend({
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
-        const recentRuleSavedWithCampaign = recentRuleWasDirty && d.status === 'scheduled';
+        const recentRuleSavedWithCampaign = recentRuleWasDirty;
         if (recentRuleSavedWithCampaign) {
           this.savedRecentRule = this.recentRuleKey;
           this.recentRuleError = '';

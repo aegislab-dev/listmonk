@@ -282,6 +282,69 @@ func TestScheduledEditChecksAndSavesTheNewRecentRuleAtomically(t *testing.T) {
 	}
 }
 
+func TestDraftSaveUsesStatusAfterConcurrentScheduleLock(t *testing.T) {
+	e := scheduledEnv(t)
+	e.db.MustExec(`UPDATE campaigns SET status='draft' WHERE id=$1`, e.campID)
+	var overlap int
+	e.get(&overlap, `SELECT MIN(subscriber_id) FROM subscriber_lists WHERE list_id=$1`, e.aList)
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, prior, overlap)
+
+	// Another editor has acquired the campaign row and is committing the schedule. The update
+	// handler's initial read still sees the old draft; its write must decide from the locked row.
+	reservation := e.db.MustBegin()
+	defer reservation.Rollback()
+	reservation.MustExec(`UPDATE campaigns SET status='scheduled', send_at=NOW()+INTERVAL '1 day' WHERE id=$1`, e.campID)
+	tomorrow := time.Now().Add(24 * time.Hour)
+	saved := make(chan struct {
+		code int
+		data string
+	}, 1)
+	go func() {
+		code, data := e.saveWithRecentRule("Concurrent rule", []int{e.aList}, &tomorrow, "regular",
+			models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll})
+		saved <- struct {
+			code int
+			data string
+		}{code, data}
+	}()
+	waitFor(t, "the editor write waiting on the reservation's campaign lock", func() bool {
+		var waiting bool
+		e.get(&waiting, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname=current_database() AND wait_event_type='Lock'
+			AND query ILIKE '%FOR NO KEY UPDATE%')`)
+		return waiting
+	})
+	if err := reservation.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		code int
+		data string
+	}
+	select {
+	case result = <-saved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("editor save did not finish after the schedule committed")
+	}
+	if result.code != http.StatusOK {
+		t.Fatalf("editor save = %d: %s", result.code, result.data)
+	}
+	var status string
+	e.get(&status, `SELECT status::TEXT FROM campaigns WHERE id=$1`, e.campID)
+	if status != models.CampaignStatusScheduled {
+		t.Fatalf("campaign status = %q, want scheduled", status)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || !enabled {
+		t.Fatalf("rule after concurrent schedule = %t, err %v", enabled, err)
+	}
+	_, audience, err := e.core.GetPreflightAudience(context.Background(), e.campID, 0, true)
+	if err != nil || audience.Total != 3 || audience.Recent != 1 || audience.Remaining != 2 {
+		t.Fatalf("concurrent scheduled save audience = %+v, err %v", audience, err)
+	}
+}
+
 func TestScheduledEditRejectsEnablingRuleThatExcludesEveryone(t *testing.T) {
 	e := scheduledEnv(t)
 	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}

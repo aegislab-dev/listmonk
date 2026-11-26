@@ -408,14 +408,12 @@ describe('Pre-send confirmation window', () => {
         // A second editor unschedules after this editor loaded the scheduled campaign.
         cy.request('PUT', path(scheduledTargetID, '/status'), { status: 'draft' });
         cy.intercept('PUT', path(scheduledTargetID)).as('scheduledRaceSave');
-        cy.intercept('PUT', path(scheduledTargetID, '/recent-exclude')).as('scheduledRaceRuleSave');
         cy.get('[data-cy=btn-save]').click();
         cy.wait('@scheduledRaceSave').then(({ request, response }) => {
           expect(request.body.recent_rule).to.include({ enabled: true });
           expect(response.statusCode).to.equal(200);
           expect(response.body.data.status).to.equal('draft');
         });
-        cy.wait('@scheduledRaceRuleSave').its('response.statusCode').should('equal', 200);
         cy.get('[data-cy=recent-enabled] input').should('be.checked');
         cy.request(path(scheduledTargetID, '/recent-exclude')).its('body.data.enabled').should('equal', true);
         cy.request('PUT', path(scheduledTargetID, '/status'), { status: 'scheduled' });

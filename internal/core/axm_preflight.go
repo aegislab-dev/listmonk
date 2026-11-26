@@ -238,16 +238,23 @@ type ScheduledCheck func(hasLists, hasRecipients bool) error
 // that has already picked up the campaign wins the race. The sender skips locked rows and
 // discards counts from an older row version if a save commits while it is counting.
 func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, check ScheduledCheck) (models.Campaign, error) {
-	return c.updateScheduledCampaign(ctx, id, o, listIDs, mediaIDs, nil, 0, check)
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, nil, 0, check, true)
 }
 
 // UpdateScheduledCampaignWithRecentRule atomically saves a scheduled campaign, its replacement
 // recent-send rule, and the recipient check that decides whether the new schedule is viable.
 func (c *Core) UpdateScheduledCampaignWithRecentRule(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule models.RecentRule, userID int, check ScheduledCheck) (models.Campaign, error) {
-	return c.updateScheduledCampaign(ctx, id, o, listIDs, mediaIDs, &rule, userID, check)
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, &rule, userID, check, true)
 }
 
-func (c *Core) updateScheduledCampaign(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule *models.RecentRule, userID int, check ScheduledCheck) (models.Campaign, error) {
+// UpdateCampaignWithRecentRule saves a campaign edit and its dirty rule after locking the live
+// campaign status. The status read in the HTTP handler is only a permission check: another editor
+// may schedule the draft while this request is in flight.
+func (c *Core) UpdateCampaignWithRecentRule(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule models.RecentRule, userID int, check ScheduledCheck) (models.Campaign, error) {
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, &rule, userID, check, false)
+}
+
+func (c *Core) updateCampaignSave(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule *models.RecentRule, userID int, check ScheduledCheck, requireScheduled bool) (models.Campaign, error) {
 	tx, err := c.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return models.Campaign{}, err
@@ -271,7 +278,9 @@ func (c *Core) updateScheduledCampaign(ctx context.Context, id int, o models.Cam
 	switch before.Status {
 	case models.CampaignStatusScheduled:
 	case models.CampaignStatusDraft, models.CampaignStatusPaused:
-		return models.Campaign{}, echo.NewHTTPError(http.StatusConflict, c.i18n.T("campaigns.sendConfirm.changed"))
+		if requireScheduled {
+			return models.Campaign{}, echo.NewHTTPError(http.StatusConflict, c.i18n.T("campaigns.sendConfirm.changed"))
+		}
 	default:
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
 	}
@@ -292,7 +301,7 @@ func (c *Core) updateScheduledCampaign(ctx context.Context, id int, o models.Cam
 	}
 
 	// Clearing the send time makes the campaign a draft. Opt-in campaigns only warn.
-	if o.SendAt.Valid && before.Type == models.CampaignTypeRegular && check != nil {
+	if before.Status == models.CampaignStatusScheduled && o.SendAt.Valid && before.Type == models.CampaignTypeRegular && check != nil {
 		followupListID, err := c.preflightFollowupList(ctx, run, id)
 		if err != nil {
 			c.log.Printf("error finding the follow-up list for campaign %d: %v", id, err)

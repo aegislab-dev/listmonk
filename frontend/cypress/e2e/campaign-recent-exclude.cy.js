@@ -166,11 +166,14 @@ describe('Recent-send exclusion settings', () => {
   });
 
   it('removes a saved rule when turned off and hides it for opt-in campaigns', () => {
-    cy.intercept('PUT', '/api/campaigns/*/recent-exclude').as('saveRule');
+    cy.intercept('PUT', `/api/campaigns/${campaignId}`).as('saveRule');
     cy.get(switchInput).should('be.checked');
     cy.get(switchControl).click();
     cy.get('[data-cy=btn-save]').click();
-    cy.wait('@saveRule').its('response.body.data').should('include', { enabled: false });
+    cy.wait('@saveRule').then(({ request, response }) => {
+      expect(request.body.recent_rule).to.deep.equal({ enabled: false });
+      expect(response.statusCode).to.equal(200);
+    });
     cy.request(rulePath()).its('body.data').should('include', { enabled: false });
     cy.reload();
     cy.get(switchInput).should('not.be.checked');
@@ -340,11 +343,10 @@ describe('Recent-send exclusion settings', () => {
     });
   });
 
-  it('says the target changed when only the rule failed to save', () => {
+  it('saves a made list and its changed rule in one campaign update', () => {
     cy.intercept('POST', preview).as('recentPreview');
     cy.intercept('POST', '/api/campaigns/recent-exclude/list').as('makeList');
     cy.intercept('PUT', `/api/campaigns/${campaignId}`).as('updateCampaign');
-    cy.intercept('PUT', rulePath(), { statusCode: 503, body: { message: 'unavailable' } }).as('ruleRefused');
     openCampaign(campaignId);
     cy.get(switchInput).should('be.checked');
     cy.wait('@recentPreview');
@@ -355,14 +357,16 @@ describe('Recent-send exclusion settings', () => {
     cy.get('select[data-cy=recent-list-team]').select('__none__');
     cy.get('[data-cy=recent-list-create]').click();
     cy.wait('@makeList').its('response.body.data.list').then((list) => {
-      cy.wait('@updateCampaign');
-      cy.wait('@ruleRefused');
-      cy.contains('[role=alert]', 'exclusion rule failed to save').should('be.visible');
-      cy.get('[data-cy=recent-list-save-error]').should('not.exist');
+      cy.wait('@updateCampaign').then(({ request, response }) => {
+        expect(request.body.recent_rule).to.include({ enabled: true, days: 30, scope: 'all' });
+        expect(request.body.lists).to.deep.equal([list.id]);
+        expect(response.statusCode).to.equal(200);
+      });
       cy.get('[data-cy=recent-list-made]').should('contain', 'saved');
       cy.request(`/api/campaigns/${campaignId}`).its('body.data.lists').then((lists) => {
         expect(lists.map(({ id }) => id)).to.deep.equal([list.id]);
       });
+      cy.request(rulePath()).its('body.data').should('include', { enabled: true, days: 30, scope: 'all' });
     });
   });
 

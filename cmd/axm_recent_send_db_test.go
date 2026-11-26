@@ -354,8 +354,10 @@ func TestRecentRulePauseResumeAndRestart(t *testing.T) {
 		$$;
 		CREATE TRIGGER axm_test_gate_recent_hold_batch BEFORE INSERT ON axm_campaign_recent_holds
 		FOR EACH ROW EXECUTE FUNCTION axm_test_gate_recent_hold_batch();`)
-		t.Cleanup(func() { e.db.Exec(`DROP TRIGGER IF EXISTS axm_test_gate_recent_hold_batch ON axm_campaign_recent_holds;
-			DROP FUNCTION IF EXISTS axm_test_gate_recent_hold_batch()`) })
+		t.Cleanup(func() {
+			e.db.Exec(`DROP TRIGGER IF EXISTS axm_test_gate_recent_hold_batch ON axm_campaign_recent_holds;
+			DROP FUNCTION IF EXISTS axm_test_gate_recent_hold_batch()`)
+		})
 		gate, err := e.db.Connx(context.Background())
 		if err != nil {
 			t.Fatal(err)
@@ -878,25 +880,34 @@ func TestRecentHoldsDeletionMigrationUsesSenderLockOrder(t *testing.T) {
 			AND a.query ILIKE '%ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS removed_held_count%')`)
 		return waiting
 	})
+	var ownsHoldsLock bool
+	e.get(&ownsHoldsLock, `SELECT EXISTS (
+		SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+		WHERE a.datname=current_database() AND l.relation='axm_campaign_recent_holds'::regclass
+		AND l.mode='AccessExclusiveLock' AND l.granted
+		AND a.query ILIKE '%ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS removed_held_count%')`)
+	if !ownsHoldsLock {
+		t.Fatal(".23 must own the holds lock before waiting for the rules table")
+	}
 
-	batch := make(chan error, 1)
+	scan := make(chan error, 1)
 	go func() {
-		_, err := e.core.HoldRecentBatch(context.Background(), e.campID, e.eligible)
-		batch <- err
+		_, err := e.store.NextCampaigns([]int64{})
+		scan <- err
 	}()
-	waitFor(t, "the sender's real exclusion batch to wait on a migration lock", func() bool {
+	waitFor(t, "the sender's campaign scan to wait before reading holds", func() bool {
 		var waiting bool
 		e.get(&waiting, `SELECT EXISTS (
 			SELECT 1 FROM pg_stat_activity
 			WHERE datname=current_database() AND wait_event_type='Lock'
-			AND query ILIKE '%INSERT INTO axm_campaign_recent_holds%')`)
+			AND query ILIKE '%WITH camps AS (%')`)
 		return waiting
 	})
 
 	if err := readRules.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	for name, result := range map[string]<-chan error{".23 migration": migrated, "sender batch": batch} {
+	for name, result := range map[string]<-chan error{".23 migration": migrated, "sender campaign scan": scan} {
 		select {
 		case err := <-result:
 			if err != nil {
