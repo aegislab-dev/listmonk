@@ -301,7 +301,7 @@
       @close="sendAsk = null">
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
         :campaign-name="sendAsk.name" @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone"
-        @kept="getCampaigns()" />
+        @kept="getCampaigns()" @gone="getCampaigns()" />
     </b-modal>
   </section>
 </template>

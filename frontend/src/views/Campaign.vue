@@ -76,7 +76,7 @@
       <campaign-send-confirm v-if="sendAsk" :campaign-id="sendAsk.id" :status="sendAsk.status"
         :campaign-name="sendAsk.name" :review="!!sendAsk.review" :review-version="sendAsk.reviewVersion || ''" :initial="sendAsk.initial || null"
         @busy="(b) => { if (sendAsk) sendAsk.busy = b; }" @done="onSendDone" @failed="onSendFailed"
-        @unscheduled="onUnscheduled" @gone="onReviewGone" />
+        @unscheduled="onUnscheduled" @gone="onSendRefresh" @kept="onSendRefresh" />
     </b-modal>
 
     <b-tabs type="is-boxed" :animated="false" v-model="activeTab" @input="onTab">
@@ -1037,14 +1037,15 @@ export default Vue.extend({
     // all is well.
     async recheckScheduled(d, quiet) {
       let pf = null;
+      let changed = false;
       try {
         pf = await this.$api.getCampaignPreflight(d.id);
-      } catch (e) {
-        pf = null;
+      } catch (err) {
+        changed = err.response?.status === 409;
       }
       // A change between the save and the check leaves the editor on another version.
       // Refresh the whole form, since the title in the check may be rendered from a template.
-      if (pf && (pf.status !== 'scheduled' || pf.updatedAt !== d.updatedAt)) {
+      if (changed || (pf && (pf.status !== 'scheduled' || pf.updatedAt !== d.updatedAt))) {
         await this.refreshCampaign(d.id);
         this.$utils.toast(this.$t('campaigns.sendConfirm.changed'), 'is-danger');
         return true;
@@ -1076,8 +1077,8 @@ export default Vue.extend({
       return true;
     },
 
-    // The review found a different version or a campaign that is no longer scheduled.
-    onReviewGone() {
+    // A different session edited the campaign or scheduled it before this confirmation.
+    onSendRefresh() {
       if (this.sendAsk) this.sendAsk.handled = true;
       return this.refreshCampaign(this.data.id).catch(() => {});
     },

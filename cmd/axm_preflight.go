@@ -532,6 +532,9 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		out.Tracking = &rep
 	}
 
+	if err := a.core.CheckPreflightVersion(ctx, camp); err != nil {
+		return err
+	}
 	out.Now = time.Now()
 	return c.JSON(http.StatusOK, okResp{out})
 }

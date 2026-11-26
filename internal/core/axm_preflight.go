@@ -27,6 +27,23 @@ func (c *Core) GetPreflightAudience(ctx context.Context, id, afterID int, resume
 	return c.preflightAudience(ctx, tx, id, afterID, resume)
 }
 
+// CheckPreflightVersion rejects a preflight assembled across a campaign edit. The
+// separate reads may see newer lists or samples, so verify the original version
+// after all of them have finished, without locking the campaign while counting.
+func (c *Core) CheckPreflightVersion(ctx context.Context, camp models.Campaign) error {
+	var current bool
+	if err := c.db.GetContext(ctx, &current, `SELECT EXISTS (SELECT 1 FROM campaigns
+		WHERE id = $1 AND status = $2 AND updated_at IS NOT DISTINCT FROM $3)`, camp.ID, camp.Status, camp.UpdatedAt); err != nil {
+		c.log.Printf("error checking the preflight version of campaign %d: %v", camp.ID, err)
+		return echo.NewHTTPError(http.StatusInternalServerError,
+			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
+	}
+	if !current {
+		return echo.NewHTTPError(http.StatusConflict, c.i18n.T("campaigns.sendConfirm.changed"))
+	}
+	return nil
+}
+
 // stmtOn is where a prepared statement runs: on the pool (onPool) or on a transaction's own
 // connection (tx.Stmtx). A caller that holds a row lock must not read on another connection:
 // with a small pool and the sender's lock connection in it, the second one would wait for a

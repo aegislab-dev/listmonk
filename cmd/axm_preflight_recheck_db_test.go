@@ -436,6 +436,65 @@ func TestPreflightOfScheduledCampaign(t *testing.T) {
 	}
 }
 
+func TestScheduledPreflightRejectsEditDuringAudienceCount(t *testing.T) {
+	e := scheduledEnv(t)
+	admin := e.as(e.superAdmin)
+	later := time.Now().Add(48 * time.Hour).Truncate(time.Second)
+	otherList := e.pfList("single", "")
+	e.pfSub("enabled", "", map[int]string{otherList: "confirmed"})
+	if code, _ := e.save("First subject", []int{e.aList}, &later, "regular"); code != http.StatusOK {
+		t.Fatalf("first save: HTTP %d", code)
+	}
+	later = later.Add(24 * time.Hour)
+	writer := e.db.MustBegin()
+	defer writer.Rollback()
+	var blocker int
+	if err := writer.Get(&blocker, `SELECT pg_backend_pid()`); err != nil {
+		t.Fatal(err)
+	}
+	// The handler can read the campaign while the second edit is uncommitted,
+	// but its audience query must wait until that edit is visible.
+	writer.MustExec(`LOCK TABLE subscriber_lists IN ACCESS EXCLUSIVE MODE`)
+	writer.MustExec(`UPDATE campaigns SET subject='Second subject', send_at=$2, updated_at=clock_timestamp() WHERE id=$1`, e.campID, later)
+	writer.MustExec(`UPDATE campaign_lists SET list_id=$2, list_name=(SELECT name FROM lists WHERE id=$2) WHERE campaign_id=$1`, e.campID, otherList)
+
+	id := strconv.Itoa(e.campID)
+	path := fmt.Sprintf("/api/campaigns/%s/preflight", id)
+	read := func() (int, json.RawMessage) {
+		return e.call(e.a.GetCampaignPreflight, admin, http.MethodGet, path, id, "")
+	}
+	type response struct {
+		code int
+		data json.RawMessage
+	}
+	done := make(chan response, 1)
+	go func() {
+		code, data := read()
+		done <- response{code, data}
+	}()
+	waitFor(t, "preflight to wait on the audience count", func() bool {
+		var waiting bool
+		e.get(&waiting, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE datname = current_database()
+			AND query LIKE '%GROUPING SETS%' AND $1 = ANY(pg_blocking_pids(pid)))`, blocker)
+		return waiting
+	})
+	if err := writer.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if result := <-done; result.code != http.StatusConflict {
+		t.Fatalf("preflight returned HTTP %d across the edit: %s", result.code, result.data)
+	}
+	code, data := read()
+	var out preflightResponse
+	if err := json.Unmarshal(data, &out); err != nil || code != http.StatusOK {
+		t.Fatalf("preflight after the edit: HTTP %d %s, %v", code, data, err)
+	}
+	if out.Subject != "Second subject" || !out.SendAt.Time.Equal(later) || out.Status != "scheduled" ||
+		out.Remaining != 1 || len(out.Lists) != 1 || int(out.Lists[0].ID.Int) != otherList || out.Lists[0].Count != 1 {
+		t.Fatalf("preflight after the edit: %s", data)
+	}
+}
+
 // A follow-up (LST-47) whose check would hold everyone back reaches nobody: saving it while it is
 // scheduled is refused, as the window stops it, and is saved while somebody is left.
 func TestScheduledSaveOfFollowupLeavesOutWhoWouldBeHeld(t *testing.T) {

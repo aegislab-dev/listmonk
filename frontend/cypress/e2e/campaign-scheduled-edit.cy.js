@@ -15,7 +15,7 @@ let listEmpty;
 let listLater;
 let tplBare;
 
-const create = (key, data) => cy.request('POST', '/api/campaigns', {
+const create = (key, data, schedule = true) => cy.request('POST', '/api/campaigns', {
   name: `Resched ${key} ${stamp}`,
   subject: `Resched ${key} subject`,
   type: 'regular',
@@ -30,7 +30,7 @@ const create = (key, data) => cy.request('POST', '/api/campaigns', {
   ...data,
 }).then(({ body }) => {
   camp[key] = body.data.id;
-  return cy.request('PUT', `/api/campaigns/${body.data.id}/status`, { status: 'scheduled' });
+  if (schedule) cy.request('PUT', `/api/campaigns/${body.data.id}/status`, { status: 'scheduled' });
 });
 
 const status = (key) => cy.request(`/api/campaigns/${camp[key]}`).its('body.data');
@@ -74,10 +74,13 @@ describe('Saving a scheduled campaign', () => {
       create('undo', {});
       create('conflict', {});
       create('retryChanged', {});
+      create('retryConflicted', {});
       create('retrySame', {});
       create('visualConflict', visualContent(oldOffer));
       create('draftDuringCheck', {});
       create('editDuringCheck', {});
+      create('editDuringCount', {});
+      create('scheduledElsewhere', {}, false);
       create('pass', {
         send_at: passAt.toISOString(),
         attribs: { axm_send_tz: 'Asia/Seoul' },
@@ -156,33 +159,41 @@ describe('Saving a scheduled campaign', () => {
     });
   });
 
-  it('reloads the form and closes a retry that reads another editor’s version', () => {
-    const path = `/api/campaigns/${camp.retryChanged}`;
-    const subject = 'Saved during the preflight outage';
-    const later = new Date(Date.now() + 86400000 * 67).toISOString();
-    cy.intercept({ method: 'GET', url: `${path}/preflight`, times: 2 }, { statusCode: 503 });
-    cy.intercept('PUT', `${path}/status`).as('retryStatus');
-    cy.visit(`/admin/campaigns/${camp.retryChanged}`);
-    cy.get('[data-cy=btn-save]').click();
-    cy.get(`${win}[data-state=error]`);
-    cy.get('[data-cy=send-unschedule]').should('be.disabled');
+  [
+    ['retryChanged', 'reads another editor’s version'],
+    ['retryConflicted', 'gets a version conflict from the server'],
+  ].forEach(([key, result]) => {
+    it(`reloads the form when a retry ${result}`, () => {
+      const path = `/api/campaigns/${camp[key]}`;
+      const subject = 'Saved during the preflight outage';
+      const later = new Date(Date.now() + 86400000 * 67).toISOString();
+      cy.intercept({ method: 'GET', url: `${path}/preflight`, times: 2 }, { statusCode: 503 });
+      cy.intercept('PUT', `${path}/status`).as('retryStatus');
+      cy.visit(`/admin/campaigns/${camp[key]}`);
+      cy.get('[data-cy=btn-save]').click();
+      cy.get(`${win}[data-state=error]`);
+      cy.get('[data-cy=send-unschedule]').should('be.disabled');
 
-    status('retryChanged').then((d) => cy.request('PUT', path, {
-      ...d, lists: [listOk], media: [], subject, send_at: later,
-    }));
-    cy.get('[data-cy=send-retry]').click();
-    cy.get(win).should('not.exist');
-    cy.get('[name=subject]').should('have.value', subject);
-    cy.get('@retryStatus.all').should('have.length', 0);
+      status(key).then((d) => cy.request('PUT', path, {
+        ...d, lists: [listOk], media: [], subject, send_at: later,
+      }));
+      if (key === 'retryConflicted') {
+        cy.intercept({ method: 'GET', url: `${path}/preflight`, times: 1 }, { statusCode: 409 });
+      }
+      cy.get('[data-cy=send-retry]').click();
+      cy.get(win).should('not.exist');
+      cy.get('[name=subject]').should('have.value', subject);
+      cy.get('@retryStatus.all').should('have.length', 0);
 
-    cy.get('[name=name]').clear().type('Name after retry');
-    cy.get('[data-cy=btn-save]').click();
-    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
-    status('retryChanged').then((d) => {
-      expect(d.name).to.equal('Name after retry');
-      expect(d.subject).to.equal(subject);
-      expect(d.status).to.equal('scheduled');
-      expect(new Date(d.send_at).getTime()).to.equal(new Date(later).getTime());
+      cy.get('[name=name]').clear().type('Name after retry');
+      cy.get('[data-cy=btn-save]').click();
+      cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+      status(key).then((d) => {
+        expect(d.name).to.equal('Name after retry');
+        expect(d.subject).to.equal(subject);
+        expect(d.status).to.equal('scheduled');
+        expect(new Date(d.send_at).getTime()).to.equal(new Date(later).getTime());
+      });
     });
   });
 
@@ -266,6 +277,68 @@ describe('Saving a scheduled campaign', () => {
       expect(Date.parse(data.send_at)).to.equal(Date.parse(later));
       expect(data.lists.map((l) => l.id)).to.deep.equal([listLater]);
     });
+  });
+
+  it('reloads the form when the server rejects a check assembled across an edit', () => {
+    const path = `/api/campaigns/${camp.editDuringCount}`;
+    const subject = 'Subject saved while counting';
+    const later = new Date(stamp + 86400000 * 69).toISOString();
+    let release;
+    cy.intercept({ method: 'GET', url: `${path}/preflight`, times: 1 }, (req) => new Cypress.Promise((resolve) => {
+      release = () => {
+        req.reply(409, { message: 'Campaign changed' });
+        resolve();
+      };
+    })).as('conflictedCheck');
+    cy.visit(`/admin/campaigns/${camp.editDuringCount}`);
+    cy.get('[data-cy=btn-save]').click();
+    cy.wrap(null).should(() => expect(release).to.be.a('function'));
+    status('editDuringCount').then((d) => cy.request('PUT', path, {
+      ...d, lists: [listLater], media: [], subject, send_at: later,
+    }));
+    cy.then(() => release());
+    cy.wait('@conflictedCheck').its('response.statusCode').should('equal', 409);
+    cy.get('[name=subject]').should('have.value', subject);
+    cy.get(`.list-selector .tag[data-id=${listLater}]`).should('exist');
+    cy.get(win).should('not.exist');
+
+    cy.get('[name=name]').clear().type('Only the name changed after the conflict');
+    cy.get('[data-cy=btn-save]').click();
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+    status('editDuringCount').then((data) => {
+      expect(data.name).to.equal('Only the name changed after the conflict');
+      expect(data.subject).to.equal(subject);
+      expect(data.status).to.equal('scheduled');
+      expect(Date.parse(data.send_at)).to.equal(Date.parse(later));
+      expect(data.lists.map((l) => l.id)).to.deep.equal([listLater]);
+    });
+  });
+
+  it('shows scheduled in the editor after keeping another session’s schedule', () => {
+    const path = `/api/campaigns/${camp.scheduledElsewhere}`;
+    let release;
+    cy.intercept({ method: 'GET', url: `${path}/preflight`, times: 1 }, (req) => new Cypress.Promise((resolve) => {
+      release = () => {
+        req.continue();
+        resolve();
+      };
+    })).as('otherScheduleCheck');
+    cy.intercept('PUT', `${path}/status`).as('statusWrite');
+    cy.visit(`/admin/campaigns/${camp.scheduledElsewhere}`);
+    cy.get('header .tag.draft').should('exist');
+    cy.get('[data-cy=btn-schedule]').click();
+    cy.wrap(null).should(() => expect(release).to.be.a('function'));
+    cy.request('PUT', `${path}/status`, { status: 'scheduled' })
+      .its('body.data.status').should('equal', 'scheduled');
+    cy.then(() => release());
+    cy.wait('@otherScheduleCheck').its('response.body.data.status').should('equal', 'scheduled');
+    cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+    cy.get('[data-cy=send-ok]').should('contain', 'OK — keep the schedule').click();
+    cy.get(win).should('not.exist');
+    cy.get('header .tag.scheduled').should('exist');
+    cy.get('[data-cy=btn-unschedule]').should('exist');
+    cy.get('[data-cy=btn-schedule]').should('not.exist');
+    cy.get('@statusWrite.all').should('have.length', 0);
   });
 
   it('preserves the other editor’s visual block when only the footer is edited after a conflict', () => {

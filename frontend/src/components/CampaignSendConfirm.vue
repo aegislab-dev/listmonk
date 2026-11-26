@@ -436,6 +436,12 @@ export default Vue.extend({
       return richParts(this.$t(c.key, c.params));
     },
 
+    closeChanged() {
+      this.$utils.toast(this.$t('campaigns.sendConfirm.changed'), 'is-danger');
+      this.$emit('gone');
+      this.$parent.close();
+    },
+
     async load() {
       if (this.ctl) this.ctl.abort();
       this.ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -447,9 +453,7 @@ export default Vue.extend({
         if (!Number.isFinite(this.skew)) this.skew = 0;
         // A retry still checks the saved version. A newer version leaves the form stale.
         if (this.review && (pf.status !== 'scheduled' || pf.updatedAt !== this.reviewVersion)) {
-          this.$utils.toast(this.$t('campaigns.sendConfirm.changed'), 'is-danger');
-          this.$emit('gone');
-          this.$parent.close();
+          this.closeChanged();
           return;
         }
         this.pf = pf;
@@ -458,6 +462,10 @@ export default Vue.extend({
         this.state = 'ready';
       } catch (err) {
         if (err && (err.code === 'ERR_CANCELED' || err.name === 'CanceledError')) return;
+        if (err.response?.status === 409) {
+          this.closeChanged();
+          return;
+        }
         this.pf = null;
         this.state = 'error';
         this.error = (err.response && err.response.data && err.response.data.message) || '';
@@ -532,6 +540,10 @@ export default Vue.extend({
           try {
             fresh = await this.$api.getCampaignPreflight(this.campaignId);
           } catch (err) {
+            if (err.response?.status === 409) {
+              this.closeChanged();
+              return;
+            }
             // It could not be read again: what the window shows may be out of date. Say so, as
             // when the checks cannot be loaded (approved design A6): try again, or go on
             // knowingly without the checks (LST-48 review: it sent on the old reading).
