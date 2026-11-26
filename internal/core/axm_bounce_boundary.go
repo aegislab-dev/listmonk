@@ -87,6 +87,10 @@ func (c *Core) DeleteBouncesBounded(ids []int, all bool, campID int, source stri
 	return done, skipped, nil, nil
 }
 
+// AfterBouncedRead is called by BlocklistBouncedSubscribersBounded after it has read who has
+// bounces and before it takes the locks. Tests use it to change the data in that gap.
+var AfterBouncedRead func()
+
 // BlocklistBouncedSubscribersBounded blocklists everybody who has a bounce record and is not
 // locked for a user who may not manage all lists. It returns how many people were blocklisted
 // and how many were left out because they are on other lists too.
@@ -98,8 +102,31 @@ func (c *Core) BlocklistBouncedSubscribersBounded(manageListIDs []int) (int, int
 	if len(subIDs) == 0 {
 		return 0, 0, nil
 	}
+	if AfterBouncedRead != nil {
+		AfterBouncedRead()
+	}
 	done, skipped := 0, 0
 	_, err := c.boundedTxPresent(subIDs, manageListIDs, func(tx *sqlx.Tx, locked, open []int) (bool, error) {
+		// The candidates were read before the locks: somebody whose last bounce was cleared in
+		// the meantime is not "everybody who bounced" any more. Look again, under the locks.
+		var still []int
+		if err := tx.Stmtx(c.q.AxmBouncedAmong).Select(&still, pq.Array(subIDs)); err != nil {
+			return false, c.teamFail(err)
+		}
+		bounced := make(map[int]bool, len(still))
+		for _, id := range still {
+			bounced[id] = true
+		}
+		keep := func(ids []int) []int {
+			out := []int{}
+			for _, id := range ids {
+				if bounced[id] {
+					out = append(out, id)
+				}
+			}
+			return out
+		}
+		locked, open = keep(locked), keep(open)
 		if len(open) > 0 {
 			if _, err := tx.Stmtx(c.q.BlocklistSubscribers).Exec(pq.Array(open)); err != nil {
 				c.log.Printf("error blocklisting bounced subscribers: %v", err)

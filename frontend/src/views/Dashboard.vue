@@ -37,7 +37,8 @@
       <div class="notification is-light" data-cy="stats-noperm">{{ $t('stats.noPerm') }}</div>
       <div v-if="canCounts" class="st-card" data-cy="counts-summary">
         <h2>{{ $t('stats.status') }} <small>{{ $t('stats.statusAllTime') }}</small></h2>
-        <div v-if="!isCountsLoading" class="is-flex is-flex-wrap-wrap px-4 py-3" style="gap:30px">
+        <div v-if="countsFailed" class="px-4 py-3 st-note" data-cy="counts-failed">{{ $t('stats.countsFailed') }}</div>
+        <div v-else-if="!isCountsLoading" class="is-flex is-flex-wrap-wrap px-4 py-3" style="gap:30px">
           <div v-for="item in countSummary" :key="item.label">
             <strong class="is-size-5">{{ formatCount(item.total) }}</strong><br />{{ item.label }}
           </div>
@@ -48,12 +49,14 @@
     <div v-if="canStats" class="st-fold" data-cy="counts-toggle" tabindex="0" role="button"
       @click="showCounts = !showCounts" @keyup.enter="showCounts = !showCounts">
       ④ {{ $t('stats.status') }} <i class="st-tri" :class="showCounts ? 'down' : 'right'" />
-      <span class="st-note">{{ $t('stats.statusNote', {
+      <span v-if="countsFailed" class="st-note">{{ $t('stats.countsFailed') }}</span>
+      <span v-else class="st-note">{{ $t('stats.statusNote', {
  lists: counts.lists.total || 0, subs: counts.subscribers.total || 0, camps: counts.campaigns.total || 0, msgs: counts.messages || 0,
 }) }}</span>
     </div>
     <section v-if="canStats" v-show="showCounts" class="counts wrap">
-      <div class="tile is-ancestor">
+      <div v-if="countsFailed" class="notification is-warning is-light" data-cy="counts-failed-section">{{ $t('stats.countsFailed') }}</div>
+      <div v-else class="tile is-ancestor">
         <div class="tile is-vertical is-12">
           <div class="tile">
             <div class="tile is-parent is-vertical relative">
@@ -231,6 +234,7 @@ export default Vue.extend({
       showCounts: false,
       defsOpen: false,
       isCountsLoading: true,
+      countsFailed: false,
       counts: {
         lists: {}, subscribers: {}, campaigns: {}, messages: 0,
       },
@@ -383,10 +387,13 @@ export default Vue.extend({
         return;
       }
       this.isCountsLoading = true;
+      this.countsFailed = false;
       this.$api.getDashboardCounts().then((data) => {
         this.counts = data;
         this.isCountsLoading = false;
       }).catch(() => {
+        // Not zeros: the initial values would read as "nothing exists".
+        this.countsFailed = true;
         this.isCountsLoading = false;
       });
     },

@@ -105,5 +105,21 @@ describe('Bounces: delete all inside the filter', () => {
     selectAllAndDelete();
     cy.wait('@del');
     cy.get('.modal.is-active').should('not.exist');
+    cy.get('.toast').should('contain', 'Bounces (25) deleted');
+  });
+
+  it('says the people left out of "block all" are people, not records', () => {
+    cy.intercept('PUT', '/api/subscribers/blocklist', { data: { done: 1, skipped: 2 } }).as('block');
+    cy.intercept('PUT', '/api/bounces/blocklist', { data: { done: 1, skipped: 2 } }).as('blockAll');
+    stubList();
+    cy.loginAndVisit('/admin/subscribers/bounces');
+    cy.wait('@list');
+    cy.get('thead .b-checkbox').first().click();
+    cy.get('.actions a').contains('25').click();
+    cy.get('a[data-cy=btn-manage-blocklist]').click();
+    cy.get('.modal.is-active button.is-primary').last().click();
+    cy.wait('@blockAll');
+    cy.get('.modal.is-active').should('contain', 'Some people were left out')
+      .and('contain', '2 people who are also on other teams');
   });
 });

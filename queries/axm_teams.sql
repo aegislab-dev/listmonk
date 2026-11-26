@@ -187,6 +187,11 @@ WHERE subscriber_id = ANY($1::INT[])
     AND (($2 = FALSE AND id = ANY($3::INT[]))
         OR ($2 = TRUE AND ($4::INT = 0 OR campaign_id = $4::INT) AND ($5::TEXT = '' OR source = $5::TEXT)));
 
+-- name: axm-bounced-among
+-- Of the subscribers $1, those who still have a bounce record. Read inside the transaction that
+-- holds their row locks, so a bounce that was cleared after the candidates were read is seen.
+SELECT DISTINCT subscriber_id FROM bounces WHERE subscriber_id = ANY($1::INT[]);
+
 -- name: axm-bounced-subscribers
 -- Everybody who has a bounce record (what "block everyone who bounced" reaches).
 SELECT DISTINCT subscriber_id FROM bounces;

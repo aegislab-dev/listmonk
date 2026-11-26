@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"strconv"
 	"testing"
+
+	"github.com/knadh/listmonk/internal/core"
+	"github.com/lib/pq"
 )
 
 // LST-73: a user who may not manage all lists deletes or blocks only the bounces of people
@@ -242,5 +245,32 @@ func TestBounceReadStaysCompanyWide(t *testing.T) {
 	json.Unmarshal(data, &page)
 	if code != 200 || page.Total != 14 {
 		t.Fatalf("read: %d total %d, want 14", code, page.Total)
+	}
+}
+
+// "Block everyone who bounced" reads who has bounces before it takes the locks. Somebody whose
+// last bounce is cleared in that gap (and who was set right again) is not blocked.
+func TestBounceBlocklistAllLooksAgainUnderTheLocks(t *testing.T) {
+	e := newBounceEnv(t)
+	ua := e.as(e.ua)
+	core.AfterBouncedRead = func() {
+		// s1 (own) and s2 (locked) lose their last bounce after the candidates were read.
+		e.db.MustExec(`DELETE FROM bounces WHERE subscriber_id = ANY($1)`, pq.Array([]int{e.s1, e.s2}))
+	}
+	defer func() { core.AfterBouncedRead = nil }()
+
+	code, data := e.call(e.a.BlocklistBouncedSubscribers, ua, "PUT", "/x", "", "")
+	r, ok := parseResp(t, data)
+	// Own and still bounced: s5, s6, none. Locked and still bounced: s3, s4. s1 and s2 are gone.
+	if code != 200 || !ok || r.Done != 3 || r.Skipped != 2 {
+		t.Fatalf("block all: %d %s, want done 3 skipped 2", code, data)
+	}
+	if got := e.row(e.s1).Status; got != "enabled" {
+		t.Fatalf("s1 had no bounce left and is %s, want enabled", got)
+	}
+	for _, id := range []int{e.s5, e.s6, e.none} {
+		if e.row(id).Status != "blocklisted" {
+			t.Fatalf("subscriber %d: %s, want blocklisted", id, e.row(id).Status)
+		}
 	}
 }

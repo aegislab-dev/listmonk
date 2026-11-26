@@ -2,8 +2,12 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 
+	"github.com/knadh/listmonk/internal/auth"
+	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 )
 
@@ -37,22 +41,44 @@ func TestDashboardNeedsACompanyWidePermission(t *testing.T) {
 		"super admin":             e.superAdmin,
 		"operator":                e.admin,
 	}
+
+	// The real route table: the two routes as handlers.go registers them, a user set by a
+	// middleware, requests through the router.
+	srv := echo.New()
+	g := srv.Group("", func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			id, _ := strconv.Atoi(c.QueryParam("u"))
+			c.Set(auth.UserHTTPCtxKey, e.as(id))
+			return next(c)
+		}
+	})
+	e.a.dashboardRoutes(g, e.a.auth.Perm)
+	status := func(path string, id int) int {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path+"?u="+strconv.Itoa(id), nil))
+		return rec.Code
+	}
+	// The charts are views and clicks of every campaign: analytics only.
+	charts := map[string]bool{"campaigns:get_analytics": true, "super admin": true}
+
 	for name, id := range denied {
-		u := e.as(id)
-		if code, _ := e.call(e.a.auth.Perm(e.a.GetDashboardCounts, dashboardPerms...), u, "GET", "/api/dashboard/counts", "", ""); code != http.StatusForbidden {
+		if code := status("/api/dashboard/counts", id); code != http.StatusForbidden {
 			t.Errorf("counts for %s: %d, want 403", name, code)
 		}
-		if code, _ := e.call(e.a.auth.Perm(e.a.GetDashboardCharts, dashboardPerms...), u, "GET", "/api/dashboard/charts", "", ""); code != http.StatusForbidden {
+		if code := status("/api/dashboard/charts", id); code != http.StatusForbidden {
 			t.Errorf("charts for %s: %d, want 403", name, code)
 		}
 	}
 	for name, id := range allowed {
-		u := e.as(id)
-		if code, _ := e.call(e.a.auth.Perm(e.a.GetDashboardCounts, dashboardPerms...), u, "GET", "/api/dashboard/counts", "", ""); code != http.StatusOK {
+		if code := status("/api/dashboard/counts", id); code != http.StatusOK {
 			t.Errorf("counts for %s: %d, want 200", name, code)
 		}
-		if code, _ := e.call(e.a.auth.Perm(e.a.GetDashboardCharts, dashboardPerms...), u, "GET", "/api/dashboard/charts", "", ""); code != http.StatusOK {
-			t.Errorf("charts for %s: %d, want 200", name, code)
+		want := http.StatusForbidden
+		if charts[name] {
+			want = http.StatusOK
+		}
+		if code := status("/api/dashboard/charts", id); code != want {
+			t.Errorf("charts for %s: %d, want %d", name, code, want)
 		}
 	}
 }
