@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -125,7 +126,20 @@ func installSchema(curVer string, db *sqlx.DB, fs stuffbin.FileSystem) error {
 		return err
 	}
 
-	if _, err := db.Exec(string(q)); err != nil {
+	// Keep the schema execution on one connection so a failed BEGIN/COMMIT script can
+	// explicitly roll back before the pool reuses it. schema.sql wraps the complete
+	// install in a transaction, including migrations that require transactional locks.
+	ctx := context.Background()
+	conn, err := db.Connx(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, string(q)); err != nil {
+		if _, rollbackErr := conn.ExecContext(ctx, "ROLLBACK"); rollbackErr != nil {
+			return fmt.Errorf("schema install failed (%v), and rollback failed: %w", err, rollbackErr)
+		}
 		return err
 	}
 

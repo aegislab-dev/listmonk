@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/internal/migrations"
 	"github.com/knadh/listmonk/models"
+	"github.com/knadh/stuffbin"
 	"github.com/lib/pq"
 )
 
@@ -626,6 +628,10 @@ func TestRecentSendMigrationsMatchFreshSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	trimmedSchema := strings.TrimSpace(string(schema))
+	if !strings.HasPrefix(trimmedSchema, "BEGIN;") || !strings.HasSuffix(trimmedSchema, "COMMIT;") {
+		t.Fatal("schema.sql must wrap the full install in one transaction")
+	}
 	for _, tc := range []struct {
 		version string
 		start   string
@@ -647,18 +653,77 @@ func TestRecentSendMigrationsMatchFreshSchema(t *testing.T) {
 			if !ok || !endOK {
 				t.Fatalf("schema.sql is missing migration .%s", tc.version)
 			}
-			if tc.version == "23" {
-				// Fresh installs execute the schema as standalone statements; this transaction
-				// is needed for LOCK TABLE but is supplied by the migration wrapper on upgrades.
-				block = strings.Replace(block, "\nBEGIN;\n", "\n", 1)
-				block = strings.TrimSuffix(block, "\nCOMMIT;\n")
-				block += "\n"
-			}
 			expected := tc.start + block + tc.end
 			if !strings.Contains(string(migration), "`"+expected+"`") {
 				t.Fatalf("schema.sql and migration .%s differ", tc.version)
 			}
 		})
+	}
+}
+
+func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
+	dsn := os.Getenv("AXM_TEST_DB_URL")
+	if dsn == "" {
+		t.Skip("AXM_TEST_DB_URL not set")
+	}
+
+	root := repoRoot(t)
+	fs, err := stuffbin.NewLocalFS("/", root+":/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := sqlx.Connect("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("axm_install_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
+	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(name))
+	admin.Close()
+
+	db, err := sqlx.Connect("postgres", withSearchPath(t, dsn, name+",public"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Exec("DROP SCHEMA " + pq.QuoteIdentifier(name) + " CASCADE")
+		db.Close()
+	})
+	// .24 replaces this function with a table-returning function. PostgreSQL rejects that
+	// replacement, simulating an install failure after .23 has already run.
+	db.MustExec(`CREATE FUNCTION axm_recent_campaign_sent_ids(INT) RETURNS INT LANGUAGE SQL AS 'SELECT 1'`)
+	if err := installSchema("v6.2.1-axm.25", db, fs); err == nil {
+		t.Fatal("install succeeded despite an incompatible .24 function")
+	} else if !strings.Contains(err.Error(), "cannot change return type") {
+		t.Fatalf("install failed for an unexpected reason: %v", err)
+	}
+	var partial bool
+	if err := db.Get(&partial, `SELECT to_regclass('settings') IS NOT NULL
+		OR to_regclass('campaigns') IS NOT NULL
+		OR to_regclass('axm_campaign_recent_holds') IS NOT NULL
+		OR to_regprocedure('axm_count_removed_recent_holds()') IS NOT NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if partial {
+		t.Fatal("failed install left schema objects committed; idempotent retry would skip")
+	}
+
+	db.MustExec(`DROP FUNCTION axm_recent_campaign_sent_ids(INT)`)
+	if err := installSchema("v6.2.1-axm.25", db, fs); err != nil {
+		t.Fatalf("retry after removing the conflict: %v", err)
+	}
+	var complete bool
+	if err := db.Get(&complete, `SELECT to_regclass('settings') IS NOT NULL
+		AND to_regclass('campaigns') IS NOT NULL
+		AND to_regclass('axm_campaign_recent_holds') IS NOT NULL
+		AND to_regprocedure('axm_recent_campaign_sent_ids(integer)') IS NOT NULL
+		AND (SELECT value->>-1 FROM settings WHERE key = 'migrations') = 'v6.2.1-axm.25'
+		AND EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'axm_campaign_recent_rules'
+			AND column_name = 'removed_sent_count')`); err != nil {
+		t.Fatal(err)
+	}
+	if !complete {
+		t.Fatal("retry did not install the complete schema through .25")
 	}
 }
 

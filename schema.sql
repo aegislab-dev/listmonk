@@ -1,3 +1,5 @@
+BEGIN;
+
 DROP TYPE IF EXISTS list_type CASCADE; CREATE TYPE list_type AS ENUM ('public', 'private', 'temporary');
 DROP TYPE IF EXISTS list_optin CASCADE; CREATE TYPE list_optin AS ENUM ('single', 'double');
 DROP TYPE IF EXISTS list_status CASCADE; CREATE TYPE list_status AS ENUM ('active', 'archived');
@@ -1836,7 +1838,6 @@ WHERE r.finished_held_count IS NULL AND (
 -- End of AXM completed recent-send counts.
 
 -- AXM recent-send counts after subscriber deletion (LST-65). Keep the DDL identical to V6_2_1_axm_23.
-BEGIN;
 -- Take the exclusive holds lock before acquiring any rule-table DDL lock. The campaign scan
 -- reads holds before rules, and DROP TRIGGER itself needs AccessExclusive on holds; taking this
 -- first keeps scans from holding AccessShare on holds while queued behind the rules DDL.
@@ -1881,7 +1882,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-COMMIT;
 -- End of AXM recent-send counts after subscriber deletion.
 
 -- AXM recent-send audience on resume (LST-65). Keep this block identical to V6_2_1_axm_24.
@@ -1927,3 +1927,5 @@ CREATE TRIGGER axm_recent_sends_removed AFTER DELETE ON axm_campaign_sends
     REFERENCING OLD TABLE AS removed_sends FOR EACH STATEMENT
     EXECUTE FUNCTION axm_count_removed_recent_sends();
 -- End of AXM delivered audience after subscriber deletion.
+
+COMMIT;
