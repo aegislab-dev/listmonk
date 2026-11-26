@@ -108,6 +108,9 @@ type Queries struct {
 	AxmSubscriberOtherTeams        *sqlx.Stmt `query:"axm-subscriber-other-teams"`
 	AxmSubscriberLocked            *sqlx.Stmt `query:"axm-subscriber-locked"`
 	AxmLockSubscribers             *sqlx.Stmt `query:"axm-lock-subscribers"`
+	AxmBounceSubscribers           *sqlx.Stmt `query:"axm-bounce-subscribers"`
+	AxmDeleteBouncesOf             *sqlx.Stmt `query:"axm-delete-bounces-of"`
+	AxmBouncedSubscribers          *sqlx.Stmt `query:"axm-bounced-subscribers"`
 	AxmUpdateSubscriberLists       *sqlx.Stmt `query:"axm-update-subscriber-lists"`
 	AxmQuerySubscribersMulti       string     `query:"axm-query-subscribers-multi"`
 	AxmQuerySubscribersMultiCount  string     `query:"axm-query-subscribers-multi-count"`

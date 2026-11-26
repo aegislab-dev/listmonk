@@ -124,26 +124,41 @@ func (a *App) DeleteBounces(c echo.Context) error {
 	}
 
 	// Delete bounces from the DB.
-	if err := a.core.DeleteBouncesFiltered(ids, all, campID, source); err != nil {
+	resp, err := a.deleteBounces(auth.GetUser(c), ids, all, campID, source)
+	if err != nil {
 		return err
 	}
 
-	return c.JSON(http.StatusOK, okResp{true})
+	return c.JSON(http.StatusOK, okResp{resp})
 }
 
 // DeleteBounce handles bounce deletion of a single bounce record.
 func (a *App) DeleteBounce(c echo.Context) error {
 	// Delete bounces from the DB.
 	id := getID(c)
-	if err := a.core.DeleteBounces([]int{id}, false); err != nil {
+	resp, err := a.deleteBounces(auth.GetUser(c), []int{id}, false, 0, "")
+	if err != nil {
 		return err
 	}
 
-	return c.JSON(http.StatusOK, okResp{true})
+	return c.JSON(http.StatusOK, okResp{resp})
 }
 
 // BlocklistBouncedSubscribers handles blocklisting of all bounced subscribers.
 func (a *App) BlocklistBouncedSubscribers(c echo.Context) error {
+	user := auth.GetUser(c)
+	if all, manage := user.GetPermittedLists(auth.PermTypeManage); !all {
+		// AXM (LST-73): without lists:manage_all only the people who are on no list outside the
+		// user's own.
+		done, skipped, err := a.core.BlocklistBouncedSubscribersBounded(manage)
+		if err != nil {
+			return err
+		}
+		a.audit(c, auditSubBlocklist, auditTarget{Type: auditTargetSubscriber}, done,
+			map[string]any{"via": "bounces", "skipped_shared": skipped, "counted": "done"})
+		return c.JSON(http.StatusOK, okResp{bounceResult{Done: done, Skipped: skipped}})
+	}
+
 	n, err := a.core.CountBouncedSubscribers()
 	if err != nil {
 		a.log.Printf("error counting bounced subscribers for the audit log: %v", err)

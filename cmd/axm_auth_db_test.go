@@ -26,6 +26,7 @@ import (
 	"github.com/knadh/listmonk/internal/tmptokens"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -579,5 +580,63 @@ func TestTOTPAttemptBudgetPerUser(t *testing.T) {
 	}
 	if e.sessions(id) != 0 {
 		t.Fatal("got a session after the budget was used up")
+	}
+}
+
+// LST-73: a user made on the first OIDC login gets the same team check as one made by an
+// administrator: a team member must not get a role that changes other teams' lists or
+// campaigns. A bad pair of default roles lets nobody in and makes nobody.
+func TestOIDCAutoCreateChecksTheTeamRole(t *testing.T) {
+	e := newAuthEnv(t)
+	role := func(name string, perms ...string) int {
+		var id int
+		e.get(&id, `INSERT INTO roles(type,name,permissions) VALUES('user',$1,$2) RETURNING id`, name, pq.StringArray(append([]string{}, perms...)))
+		return id
+	}
+	member := role("member", "subscribers:get", "campaigns:get")
+	wide := role("wide", "lists:manage_all", "campaigns:get")
+	wideCampaigns := role("wide-campaigns", "campaigns:manage_all")
+	team, err := e.core.CreateTeam("가", member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.a.cfg.Security.OIDC.AutoCreateUsers = true
+
+	users := func() int {
+		var n int
+		e.get(&n, `SELECT COUNT(*) FROM users WHERE email LIKE '%@new.invalid'`)
+		return n
+	}
+	login := func(name string, userRole, listRole int) *httptest.ResponseRecorder {
+		e.a.cfg.Security.OIDC.DefaultUserRoleID = userRole
+		e.a.cfg.Security.OIDC.DefaultListRoleID = listRole
+		return e.oidcLogin(name + "@new.invalid")
+	}
+
+	for name, userRole := range map[string]int{"wide": wide, "wideCampaigns": wideCampaigns, "superAdmin": 1} {
+		rec := login(name, userRole, team.ID)
+		if rec.Code != http.StatusOK || rec.Body.String() != "admin-login|teams.memberWideRole" || sessionCookie(rec) != nil {
+			t.Errorf("%s as a team member: %d %q (cookie %v), want the login page with the team error", name, rec.Code, rec.Body.String(), sessionCookie(rec))
+		}
+	}
+	if users() != 0 {
+		t.Fatalf("a refused sign-up made %d users", users())
+	}
+
+	// A role that does not reach across teams, with the team: the user is made and gets in.
+	rec := login("ok", member, team.ID)
+	if rec.Code != http.StatusFound || sessionCookie(rec) == nil || users() != 1 {
+		t.Fatalf("member: %d %q, users %d", rec.Code, rec.Body.String(), users())
+	}
+	var listRole int
+	e.get(&listRole, `SELECT list_role_id FROM users WHERE email = 'ok@new.invalid'`)
+	if listRole != team.ID {
+		t.Fatalf("list role %d, want the team %d", listRole, team.ID)
+	}
+
+	// The same wide role without a team is not a team member: it is let in as before.
+	rec = login("alone", wide, 0)
+	if rec.Code != http.StatusFound || sessionCookie(rec) == nil || users() != 2 {
+		t.Fatalf("wide role without a team: %d %q, users %d", rec.Code, rec.Body.String(), users())
 	}
 }

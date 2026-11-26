@@ -153,7 +153,7 @@ describe('Statistics dashboard (fixed answers)', () => {
   it('shows disabled periods and one cumulative card for a user without analytics access', () => {
     cy.intercept('GET', '/api/profile', (request) => {
       request.continue(({ body }) => {
-        body.data.user_role = { id: 9, permissions: [] };
+        body.data.user_role = { id: 9, permissions: ['lists:get_all'] };
       });
     });
     cy.intercept('GET', '/api/dashboard/counts', {
@@ -170,6 +170,21 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=counts-summary]').should('have.length', 1).and('contain', 'All-time totals')
       .and('contain', '14').and('contain', '3,437').and('contain', '13').and('contain', '48,320');
     cy.get('.dashboard').find('[data-cy=counts-toggle], [data-cy=lists], [data-cy=stats-teams]').should('not.exist');
+  });
+
+  // LST-73: the counts are company-wide, so a role that reads nothing across lists, subscribers
+  // or campaigns does not get them (the server answers 403 as well, see the API spec below).
+  it('shows no counts and asks for none for a user who reads nothing company-wide', () => {
+    cy.intercept('GET', '/api/profile', (request) => {
+      request.continue(({ body }) => {
+        body.data.user_role = { id: 9, permissions: ['campaigns:get', 'subscribers:get'] };
+      });
+    });
+    cy.intercept('GET', '/api/dashboard/counts').as('counts');
+    cy.loginAndVisit('/');
+    cy.get('[data-cy=stats-noperm]').should('be.visible');
+    cy.get('[data-cy=counts-summary]').should('not.exist');
+    cy.get('@counts.all').should('have.length', 0);
   });
 
   it('next-send cards say why a group is too small and hide other teams\' lists', () => {

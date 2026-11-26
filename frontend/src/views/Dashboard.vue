@@ -35,7 +35,7 @@
     </template>
     <template v-else>
       <div class="notification is-light" data-cy="stats-noperm">{{ $t('stats.noPerm') }}</div>
-      <div class="st-card" data-cy="counts-summary">
+      <div v-if="canCounts" class="st-card" data-cy="counts-summary">
         <h2>{{ $t('stats.status') }} <small>{{ $t('stats.statusAllTime') }}</small></h2>
         <div v-if="!isCountsLoading" class="is-flex is-flex-wrap-wrap px-4 py-3" style="gap:30px">
           <div v-for="item in countSummary" :key="item.label">
@@ -193,6 +193,11 @@ import {
 
 const DAY = 86400000;
 
+const DASHBOARD_PERMS = [
+  'lists:get_all', 'lists:manage_all', 'subscribers:get_all',
+  'campaigns:get_all', 'campaigns:manage_all', 'campaigns:get_analytics',
+];
+
 // The dashboard (LST-64): team comparison, the recent campaigns, hints for the next send and
 // the old counts folded at the bottom. The numbers are the results of every team (the
 // server hides lists, members and addresses of other teams, not the results).
@@ -234,6 +239,9 @@ export default Vue.extend({
   computed: {
     ...mapState(['settings']),
     canStats() { return this.$can('campaigns:get_analytics'); },
+    // The counts are company-wide: only roles that read across lists, subscribers or campaigns
+    // get them. The server refuses the others (cmd/axm_dashboard.go dashboardPerms, same list).
+    canCounts() { return this.$can(...DASHBOARD_PERMS); },
     countSummary() {
       return [
         { total: this.counts.lists.total || 0, label: this.$tc('globals.terms.list', 2) },
@@ -370,9 +378,15 @@ export default Vue.extend({
       });
     },
     fetchCounts() {
+      if (!this.canCounts) {
+        this.isCountsLoading = false;
+        return;
+      }
       this.isCountsLoading = true;
       this.$api.getDashboardCounts().then((data) => {
         this.counts = data;
+        this.isCountsLoading = false;
+      }).catch(() => {
         this.isCountsLoading = false;
       });
     },

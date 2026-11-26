@@ -64,6 +64,19 @@ func (a *App) errSharedLocked(ids []int) error {
 	return echo.NewHTTPError(http.StatusForbidden, a.i18n.Ts("teams.sharedLocked", "ids", strings.Join(parts, ", ")))
 }
 
+// errBounceLocked is the 403 for deleting bounce records of locked subscribers by ID (LST-73).
+func (a *App) errBounceLocked(ids []int) error {
+	parts := []string{}
+	for i, id := range ids {
+		if i == lockedIDsMax {
+			parts = append(parts, "+"+strconv.Itoa(len(ids)-lockedIDsMax))
+			break
+		}
+		parts = append(parts, strconv.Itoa(id))
+	}
+	return echo.NewHTTPError(http.StatusForbidden, a.i18n.Ts("teams.bounceLocked", "ids", strings.Join(parts, ", ")))
+}
+
 // refuseLocked turns the locked IDs a bounded write gave back into the 403.
 func (a *App) refuseLocked(locked []int, err error) error {
 	if err != nil {

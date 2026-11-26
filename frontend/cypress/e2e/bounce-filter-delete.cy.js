@@ -85,4 +85,25 @@ describe('Bounces: delete all inside the filter', () => {
     selectAllAndDelete();
     cy.wait('@del').its('request.query').should('deep.equal', { all: 'true' });
   });
+
+  // LST-73: without lists:manage_all the server leaves out the bounces of people who are on
+  // other teams' lists too and answers { done, skipped }: the screen says so instead of
+  // "deleted".
+  it('says how many bounce records were left out as other teams\'', () => {
+    cy.intercept('DELETE', /\/api\/bounces/, { data: { done: 2, skipped: 3 } }).as('del');
+    stubList();
+    cy.loginAndVisit('/admin/subscribers/bounces?source=ses');
+    selectAllAndDelete();
+    cy.wait('@del');
+    cy.get('.modal.is-active').should('contain', 'Some bounce records were left out')
+      .and('contain', '3 bounce records belong to people who are also on other teams');
+  });
+
+  it('keeps the plain "deleted" message when the server answers true', () => {
+    stubList();
+    cy.loginAndVisit('/admin/subscribers/bounces?source=ses');
+    selectAllAndDelete();
+    cy.wait('@del');
+    cy.get('.modal.is-active').should('not.exist');
+  });
 });

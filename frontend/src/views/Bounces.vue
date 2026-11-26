@@ -166,6 +166,18 @@ export default Vue.extend({
       });
     },
 
+    // LST-73: without lists:manage_all the server leaves out the bounces of people who are on other
+    // teams' lists too and answers { done, skipped }; everybody else gets true.
+    skippedNotice(resp) {
+      if (resp && typeof resp === 'object' && resp.skipped > 0) {
+        this.$utils.notice(this.$t('bounces.skippedTitle'), this.$t('bounces.skippedShared', {
+          num: this.$utils.formatNumber(resp.skipped),
+        }));
+        return true;
+      }
+      return false;
+    },
+
     deleteBounce(b) {
       this.$api.deleteBounce(b.id).then(() => {
         this.getBounces();
@@ -192,8 +204,11 @@ export default Vue.extend({
     },
 
     deleteBounces(params, num) {
-      this.$api.deleteBounces(params).then(() => {
+      this.$api.deleteBounces(params).then((resp) => {
         this.getBounces();
+        if (this.skippedNotice(resp)) {
+          return;
+        }
         this.$utils.toast(this.$t(
           'globals.messages.deletedCount',
           { name: this.$tc('globals.terms.bounces'), num },
@@ -202,8 +217,11 @@ export default Vue.extend({
     },
 
     blocklistSubscribers() {
-      const cb = () => {
+      const cb = (resp) => {
         this.getBounces();
+        if (this.skippedNotice(resp)) {
+          return;
+        }
         this.$utils.toast(this.$t('globals.messages.done'));
       };
 

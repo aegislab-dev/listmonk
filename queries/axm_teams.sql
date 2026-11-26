@@ -169,6 +169,28 @@ SELECT COUNT(DISTINCT subscribers.id) AS total FROM subscribers
     AND (CASE WHEN $3 != '' THEN name ~* $3 OR email ~* $3 ELSE TRUE END)
     AND %query%;
 
+-- name: axm-bounce-subscribers
+-- Team boundary on bounce records (LST-73). Who the bounces belong to: the bounces with the IDs $1
+-- when $2 is FALSE, or every bounce that matches the filter ($3 campaign, 0 = any; $4 source,
+-- '' = any; the same filter delete-bounces takes) when $2 is TRUE. One row per subscriber, with
+-- how many of those bounces they have.
+SELECT subscriber_id, COUNT(*) AS num FROM bounces
+WHERE ($2 = FALSE AND id = ANY($1::INT[]))
+    OR ($2 = TRUE AND ($3::INT = 0 OR campaign_id = $3::INT) AND ($4::TEXT = '' OR source = $4::TEXT))
+GROUP BY subscriber_id;
+
+-- name: axm-delete-bounces-of
+-- delete-bounces restricted to the bounces of the subscribers $1 (the ones that are not locked
+-- for the user). $2..$5 are the arguments of delete-bounces.
+DELETE FROM bounces
+WHERE subscriber_id = ANY($1::INT[])
+    AND (($2 = FALSE AND id = ANY($3::INT[]))
+        OR ($2 = TRUE AND ($4::INT = 0 OR campaign_id = $4::INT) AND ($5::TEXT = '' OR source = $5::TEXT)));
+
+-- name: axm-bounced-subscribers
+-- Everybody who has a bounce record (what "block everyone who bounced" reaches).
+SELECT DISTINCT subscriber_id FROM bounces;
+
 -- name: axm-lock-subscribers
 -- Team boundary (LST-42). Takes the row locks of subscribers $1 for the rest of the
 -- transaction. A new subscription row needs a key-share lock on its subscriber, so no
