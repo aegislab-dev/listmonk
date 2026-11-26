@@ -73,6 +73,19 @@ func TestDeleteAllBouncesStaysInsideFilter(t *testing.T) {
 		}
 	}
 
+	// The core call itself: all = true with ids given still deletes by the filter only.
+	seed()
+	var campBRows []int
+	if err := e.db.Select(&campBRows, `SELECT id FROM bounces WHERE campaign_id = $1`, campB); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.a.core.DeleteBouncesFiltered(campBRows, true, campA, "ses"); err != nil {
+		t.Fatal(err)
+	}
+	if total() != 4 {
+		t.Errorf("all with ids and a filter: %d left (want 4: only A/ses deleted)", total())
+	}
+
 	// A filter that is not encoded right is dropped by URL.Query() without a word: it must not
 	// read as "no filter". These are built by hand, url.Values.Encode() never writes them.
 	for _, raw := range []string{
