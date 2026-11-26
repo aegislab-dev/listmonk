@@ -12,6 +12,7 @@ const passAt = new Date(stamp + 86400000 * 60);
 passAt.setUTCHours(0, 15, 0, 0);
 let listOk;
 let listEmpty;
+let listLater;
 let tplBare;
 
 const create = (key, data) => cy.request('POST', '/api/campaigns', {
@@ -51,18 +52,22 @@ describe('Saving a scheduled campaign', () => {
     cy.request('POST', '/api/templates', {
       name: `Resched bare ${stamp}`, type: 'campaign', subject: '', body: '<html><body>{{ template "content" . }}</body></html>',
     }).then(({ body }) => { tplBare = body.data.id; });
-    ['Ok', 'Empty'].forEach((n) => {
+    ['Ok', 'Empty', 'Later'].forEach((n) => {
       cy.request('POST', '/api/lists', {
         name: `Resched ${n} ${stamp}`, type: 'private', optin: 'single', no_team: true,
       }).then(({ body }) => {
         if (n === 'Ok') listOk = body.data.id;
-        else listEmpty = body.data.id;
+        else if (n === 'Empty') listEmpty = body.data.id;
+        else listLater = body.data.id;
       });
     });
     cy.then(() => {
       [1, 2].forEach((n) => cy.request('POST', '/api/subscribers', {
         email: `resched-${n}-${stamp}@example.invalid`, name: `Resched ${n}`, status: 'enabled', lists: [listOk], preconfirm_subscriptions: true,
       }));
+      cy.request('POST', '/api/subscribers', {
+        email: `resched-later-${stamp}@example.invalid`, name: 'Later', status: 'enabled', lists: [listLater], preconfirm_subscriptions: true,
+      });
     });
     cy.then(() => {
       create('warn', {});
@@ -72,6 +77,7 @@ describe('Saving a scheduled campaign', () => {
       create('retrySame', {});
       create('visualConflict', visualContent(oldOffer));
       create('draftDuringCheck', {});
+      create('editDuringCheck', {});
       create('pass', {
         send_at: passAt.toISOString(),
         attribs: { axm_send_tz: 'Asia/Seoul' },
@@ -218,6 +224,48 @@ describe('Saving a scheduled campaign', () => {
     cy.get('[data-cy=btn-schedule]').should('exist');
     cy.get('[data-cy=btn-unschedule]').should('not.exist');
     cy.get(win).should('not.exist');
+  });
+
+  it('updates the form when the check sees a later edit with a different audience', () => {
+    const path = `/api/campaigns/${camp.editDuringCheck}`;
+    const subject = 'Subject of the later edit';
+    const later = new Date(Date.now() + 86400000 * 67).toISOString();
+    let release;
+    let latestVersion;
+    cy.intercept('PUT', path).as('editSave');
+    cy.intercept({ method: 'GET', url: `${path}/preflight`, times: 1 }, (req) => new Cypress.Promise((resolve) => {
+      release = () => {
+        req.continue();
+        resolve();
+      };
+    })).as('concurrentPreflight');
+
+    cy.visit(`/admin/campaigns/${camp.editDuringCheck}`);
+    cy.get('[name=subject]').clear().type('Subject of the first save');
+    cy.get('[data-cy=btn-save]').click();
+    cy.wait('@editSave').its('response.body.data.subject').should('equal', 'Subject of the first save');
+    cy.wrap(null).should(() => expect(release).to.be.a('function'));
+    status('editDuringCheck').then((d) => cy.request('PUT', path, {
+      ...d, lists: [listLater], media: [], subject, send_at: later,
+    })).then(({ body }) => { latestVersion = body.data.updated_at; });
+    cy.then(() => release());
+    cy.wait('@concurrentPreflight').its('response.body.data').should((data) => {
+      expect(data.updated_at).to.equal(latestVersion);
+      expect(data.remaining).to.equal(1);
+    });
+    cy.get('[name=subject]').should('have.value', subject);
+    cy.get(`.list-selector .tag[data-id=${listLater}]`).should('exist');
+    cy.get(win).should('not.exist');
+
+    cy.get('[name=name]').clear().type('Only the name changed');
+    cy.get('[data-cy=btn-save]').click();
+    cy.wait('@editSave').its('response.body.data').should((data) => {
+      expect(data.name).to.equal('Only the name changed');
+      expect(data.subject).to.equal(subject);
+      expect(data.status).to.equal('scheduled');
+      expect(Date.parse(data.send_at)).to.equal(Date.parse(later));
+      expect(data.lists.map((l) => l.id)).to.deep.equal([listLater]);
+    });
   });
 
   it('preserves the other editor’s visual block when only the footer is edited after a conflict', () => {

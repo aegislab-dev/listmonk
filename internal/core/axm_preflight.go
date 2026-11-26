@@ -227,6 +227,7 @@ func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Cam
 	}
 	defer tx.Rollback()
 
+	run := func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }
 	var before models.Campaign
 	if err := tx.GetContext(ctx, &before, `SELECT status, type, last_subscriber_id FROM campaigns WHERE id = $1 FOR NO KEY UPDATE`, id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -243,13 +244,12 @@ func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Cam
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
 	}
 
-	if _, err := tx.Stmtx(c.q.UpdateCampaign).ExecContext(ctx, updateCampaignArgs(id, o, listIDs, mediaIDs)...); err != nil {
+	if _, err := run(c.q.UpdateCampaign).ExecContext(ctx, updateCampaignArgs(id, o, listIDs, mediaIDs)...); err != nil {
 		return models.Campaign{}, c.updateCampaignErr(err)
 	}
 
 	// Clearing the send time makes the campaign a draft. Opt-in campaigns only warn.
 	if o.SendAt.Valid && before.Type == models.CampaignTypeRegular && check != nil {
-		run := func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }
 		followupListID, err := c.preflightFollowupList(ctx, run, id)
 		if err != nil {
 			c.log.Printf("error finding the follow-up list for campaign %d: %v", id, err)
@@ -270,8 +270,14 @@ func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Cam
 		}
 	}
 
+	// Read the response while the row is still locked. The editor uses this version
+	// to tell whether the preflight belongs to its save or to a later edit.
+	saved, err := c.getCampaign(run, id, "", "", campaignTplDefault)
+	if err != nil {
+		return models.Campaign{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return models.Campaign{}, err
 	}
-	return c.GetCampaign(id, "", "")
+	return saved, nil
 }

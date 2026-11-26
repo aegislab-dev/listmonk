@@ -313,6 +313,90 @@ func TestScheduledSaveOneConnection(t *testing.T) {
 	}
 }
 
+func TestScheduledSaveReturnsItsOwnVersion(t *testing.T) {
+	e := newSendsEnv(t, 1)
+	aTime := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	bTime := aTime.Add(24 * time.Hour)
+	bList := e.pfList("single", "")
+	e.pfSub("enabled", "", map[int]string{bList: "confirmed"})
+	e.db.MustExec(`UPDATE campaigns SET status='scheduled', send_at=$2 WHERE id=$1`, e.campID, aTime)
+	e.db.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	type result struct {
+		campaign models.Campaign
+		err      error
+	}
+	startSave := func(subject string, at time.Time, list int, checked, release chan struct{}) <-chan result {
+		done := make(chan result, 1)
+		go func() {
+			edit := models.Campaign{
+				Name: subject, Subject: subject, Body: "<p>" + subject + "</p>", FromEmail: "sender@example.invalid",
+				ContentType: "richtext", Messenger: "email", SendAt: null.TimeFrom(at),
+				Headers: models.Headers{}, Attribs: models.JSON{}, ArchiveMeta: json.RawMessage("{}"),
+			}
+			saved, err := e.core.UpdateScheduledCampaign(ctx, e.campID, edit, []int{list}, nil, func(hasLists, hasRecipients bool) error {
+				close(checked)
+				select {
+				case <-release:
+					return (&App{}).scheduledSaveCheck(hasLists, hasRecipients)
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			done <- result{saved, err}
+		}()
+		return done
+	}
+	waitChecked := func(checked <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-checked:
+		case <-ctx.Done():
+			t.Fatal("save did not reach its check")
+		}
+	}
+
+	aChecked, releaseA := make(chan struct{}), make(chan struct{})
+	bChecked, releaseB := make(chan struct{}), make(chan struct{})
+	a := startSave("Editor A", aTime, e.listID, aChecked, releaseA)
+	waitChecked(aChecked)
+	waits := e.db.Stats().WaitCount
+	b := startSave("Editor B", bTime, bList, bChecked, releaseB)
+	waitFor(t, "B to queue for the connection", func() bool { return e.db.Stats().WaitCount > waits })
+	waits = e.db.Stats().WaitCount
+	close(releaseA)
+	waitChecked(bChecked)
+	// With a post-commit response read, A now waits for the connection held by B
+	// and can only see B's version. With an in-transaction read, A already has its own.
+	waitFor(t, "A to return or queue for the connection", func() bool { return len(a) > 0 || e.db.Stats().WaitCount > waits })
+	close(releaseB)
+
+	ar, br := <-a, <-b
+	assertSaved := func(r result, subject string, at time.Time, list int) {
+		t.Helper()
+		var lists []struct{ ID int }
+		if err := json.Unmarshal(r.campaign.Lists, &lists); r.err != nil || err != nil || len(lists) != 1 || lists[0].ID != list ||
+			r.campaign.Status != "scheduled" || r.campaign.Subject != subject || r.campaign.Body != "<p>"+subject+"</p>" || !r.campaign.SendAt.Time.Equal(at) {
+			t.Fatalf("%s did not receive its own edit: subject=%q body=%q lists=%v status=%q time=%v error=%v", subject,
+				r.campaign.Subject, r.campaign.Body, lists, r.campaign.Status, r.campaign.SendAt.Time, r.err)
+		}
+	}
+	assertSaved(ar, "Editor A", aTime, e.listID)
+	assertSaved(br, "Editor B", bTime, bList)
+	if !br.campaign.UpdatedAt.Time.After(ar.campaign.UpdatedAt.Time) {
+		t.Fatalf("save versions: A=%v B=%v", ar.campaign.UpdatedAt, br.campaign.UpdatedAt)
+	}
+	seenAt := ar.campaign.UpdatedAt.Time.Format(time.RFC3339Nano)
+	_, err := e.core.UpdateCampaignStatus(e.campID, models.CampaignStatusDraft, "", seenAt, false)
+	if he, ok := err.(*echo.HTTPError); !ok || he.Code != http.StatusConflict {
+		t.Fatalf("unscheduling with A's version: %v", err)
+	}
+	current, err := e.core.GetCampaign(e.campID, "", "")
+	assertSaved(result{current, err}, "Editor B", bTime, bList)
+}
+
 // The preflight answers for a scheduled campaign: its mode, the warnings the save did not refuse,
 // and a count that is who the send reaches.
 func TestPreflightOfScheduledCampaign(t *testing.T) {
