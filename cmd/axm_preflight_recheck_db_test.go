@@ -282,6 +282,33 @@ func TestScheduledEditChecksAndSavesTheNewRecentRuleAtomically(t *testing.T) {
 	}
 }
 
+func TestScheduledEditRejectsEnablingRuleThatExcludesEveryone(t *testing.T) {
+	e := scheduledEnv(t)
+	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2`, prior, e.aList)
+	var sendAt time.Time
+	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
+	before, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// This starts from a disabled rule. The campaign edit must test the new rule before it
+	// commits either the campaign fields or the rule because every recipient has recent history.
+	if code, data := e.saveWithRecentRule("Must remain unchanged", []int{e.aList}, &sendAt, "regular", rule); code != http.StatusBadRequest {
+		t.Fatalf("enable all-excluding rule: %d %s", code, data)
+	}
+	after, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil || after.Subject != before.Subject || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("failed save changed the campaign: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || enabled {
+		t.Fatalf("failed save changed the rule: enabled=%t err=%v", enabled, err)
+	}
+}
+
 func TestScheduledSaveFindsAnEligibleDynamicRecipient(t *testing.T) {
 	e := scheduledEnv(t)
 	dynamic := e.pfList("single", dynFilter(e.aList))

@@ -441,6 +441,50 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-cancel]').click();
   });
 
+  it('rejects enabling an all-excluding rule while editing a scheduled campaign', () => {
+    let sourceID;
+    cy.then(() => create('edit-zero-source', { lists: [listY] }))
+      .then(({ id }) => {
+        sourceID = id;
+        return create('edit-zero-target', {
+          lists: [listY], send_at: new Date(Date.now() + 86400000).toISOString(),
+        });
+      })
+      .then(({ id }) => {
+        camp['edit-zero-target'] = id;
+        return cy.request('PUT', `/api/campaigns/${id}/status`, { status: 'scheduled' });
+      })
+      .then(() => cy.request('PUT', `/api/campaigns/${sourceID}/status`, { status: 'running' }))
+      .then(() => sourceFinished())
+      .its('status').should('eq', 'finished')
+      .then(() => {
+        cy.visit(`/admin/campaigns/${camp['edit-zero-target']}`);
+      })
+      .then(() => {
+        cy.get('[data-cy=recent-enabled] .check').click();
+        cy.intercept('PUT', `/api/campaigns/${camp['edit-zero-target']}`).as('editZero');
+        cy.get('[data-cy=btn-save]').click();
+        cy.wait('@editZero').then(({ request, response }) => {
+          expect(request.body.recent_rule).to.include({ enabled: true, days: 14, scope: 'all' });
+          expect(response.statusCode).to.equal(400);
+        });
+        cy.get('.toast.is-danger').should('contain', '0 recipients');
+        cy.request(`/api/campaigns/${camp['edit-zero-target']}`).its('body.data.status').should('eq', 'scheduled');
+        cy.request(`/api/campaigns/${camp['edit-zero-target']}/recent-exclude`)
+          .its('body.data.enabled').should('eq', false);
+      });
+
+    function sourceFinished(tries = 30) {
+      return cy.request(`/api/campaigns/${sourceID}`).then(({ body: { data } }) => {
+        if (data.status !== 'finished' && tries > 0) {
+          cy.wait(1000);
+          return sourceFinished(tries - 1);
+        }
+        return data;
+      });
+    }
+  });
+
   it('blocks the start when the recent rule excludes every eligible recipient', () => {
     cy.visit('/admin/campaigns');
     cy.intercept('GET', preflight, (req) => {

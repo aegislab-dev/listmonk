@@ -940,7 +940,10 @@ export default Vue.extend({
       // A scheduled campaign must validate the audience against the rule being saved, in the
       // same server transaction. Sending the rule separately can validate stale settings and can
       // make the follow-up preflight look like somebody else's edit.
-      const recentRuleInCampaignSave = this.data.status === 'scheduled' && this.recentRuleDirty;
+      // Always send the rule with a scheduled edit. The server must judge even an unchanged rule
+      // against the exact lists and rule shown in this editor; making inclusion depend on the
+      // dirty comparison can split rule and audience saves when the editor's baseline is stale.
+      const recentRuleInCampaignSave = this.data.status === 'scheduled' && this.recentRuleLoaded;
       if (recentRuleInCampaignSave) data.recent_rule = recentRulePayload(this.recentRule);
 
       let typMsg = 'globals.messages.updated';

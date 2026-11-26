@@ -1796,11 +1796,18 @@ $$;
 -- AXM completed recent-send counts (LST-65). Keep this block identical to V6_2_1_axm_22.
 ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS finished_held_count INTEGER;
 
--- Existing finished campaigns can only be backfilled from their remaining holds.
+-- AXM-22 AUTOCOMMIT BOUNDARY
+
+-- Existing campaigns can be backfilled from their remaining holds. The value is used only for
+-- finished campaigns; active campaigns keep reading the live holds count, and the finish trigger
+-- below replaces this value when they finish.
 UPDATE axm_campaign_recent_rules r
 SET finished_held_count = (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id)
-FROM campaigns c
-WHERE c.id = r.campaign_id AND c.status = 'finished' AND r.finished_held_count IS NULL;
+WHERE r.finished_held_count IS NULL AND EXISTS (
+    SELECT 1 FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id
+);
+
+-- AXM-22 AUTOCOMMIT BOUNDARY
 
 -- Save the aggregate with the status change. The subscriber-specific holds can still cascade.
 CREATE OR REPLACE FUNCTION axm_snapshot_recent_holds()

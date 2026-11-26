@@ -664,15 +664,15 @@ func TestRecentHoldsFinishedCountMigration(t *testing.T) {
 	assertHeld(active, 1)
 }
 
-func TestRecentHoldsFinishedCountMigrationReleasesRuleLockBeforeCampaignBackfill(t *testing.T) {
+func TestRecentHoldsFinishedCountMigrationDoesNotHoldRuleLockWhileWaitingForCampaignDDL(t *testing.T) {
 	e := newSendsEnv(t, 2)
 	e.db.MustExec(`DROP TRIGGER axm_recent_holds_finished ON campaigns;
 		DROP FUNCTION axm_snapshot_recent_holds();
 		ALTER TABLE axm_campaign_recent_rules DROP COLUMN finished_held_count`)
 
-	// Hold ACCESS EXCLUSIVE on campaigns so the migration's cross-table backfill
-	// waits after adding its column. The old combined Exec retained ACCESS EXCLUSIVE
-	// on the recent-rule table there; the second session then checks it in sender order.
+	// Hold ACCESS EXCLUSIVE on campaigns so trigger installation waits. Migration steps before
+	// it must not retain a lock on the rule table: a sender locks its campaign before scanning
+	// that table, which would otherwise form a cycle.
 	sender, err := e.db.Beginx()
 	if err != nil {
 		t.Fatal(err)
@@ -690,7 +690,7 @@ func TestRecentHoldsFinishedCountMigrationReleasesRuleLockBeforeCampaignBackfill
 		err := e.db.Get(&waiting, `SELECT EXISTS (
 			SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid AND NOT l.granted
 			WHERE a.datname=current_database() AND a.wait_event_type='Lock'
-			AND a.query ILIKE '%UPDATE axm_campaign_recent_rules%')`)
+			AND a.query ILIKE '%CREATE TRIGGER axm_recent_holds_finished%')`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -698,7 +698,7 @@ func TestRecentHoldsFinishedCountMigrationReleasesRuleLockBeforeCampaignBackfill
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("migration did not reach the campaign backfill lock")
+			t.Fatal("migration did not reach trigger installation")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -707,7 +707,7 @@ func TestRecentHoldsFinishedCountMigrationReleasesRuleLockBeforeCampaignBackfill
 	defer cancel()
 	var rules int
 	if err := sender.GetContext(ctx, &rules, `SELECT COUNT(*) FROM axm_campaign_recent_rules`); err != nil {
-		t.Fatalf("sender could not read the rule table while migration waited for campaigns: %v", err)
+		t.Fatalf("sender could not read the rule table while migration waited for campaign DDL: %v", err)
 	}
 	if err := sender.Commit(); err != nil {
 		t.Fatal(err)

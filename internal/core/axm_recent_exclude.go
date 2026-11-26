@@ -172,6 +172,12 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if err != nil {
 		return out, err
 	}
+	// Dedicated rule edits do not also update the campaign row, so invalidate an open send
+	// confirmation here. Scheduled campaign edits already update updated_at in their campaign
+	// UPDATE; touching it again there would make the save's own preflight look stale.
+	if _, err := tx.Stmtx(c.q.AxmTouchRecentCampaign).ExecContext(ctx, campaignID); err != nil {
+		return out, c.recentError(err)
+	}
 	if err := tx.Commit(); err != nil {
 		return out, c.recentError(err)
 	}
@@ -220,11 +226,6 @@ func (c *Core) saveRecentRuleTx(ctx context.Context, tx *sqlx.Tx, campaignID int
 		if _, err := tx.Stmtx(c.q.AxmDeleteRecentRule).ExecContext(ctx, campaignID); err != nil {
 			return out, c.recentError(err)
 		}
-	}
-	// AXM (LST-65): the rule decides who a send reaches, so a send window opened before the change
-	// must be told the campaign changed (the status change refuses a stale updated_at).
-	if _, err := tx.Stmtx(c.q.AxmTouchRecentCampaign).ExecContext(ctx, campaignID); err != nil {
-		return out, c.recentError(err)
 	}
 	return out, nil
 }

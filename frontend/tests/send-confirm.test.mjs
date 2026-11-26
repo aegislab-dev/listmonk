@@ -202,6 +202,9 @@ test('the recent rule line is information that says who is left out; the unsubsc
   assert.equal(line('resume', { days: 7, excluded: 15, held: 12, fresh: 3 }).key, 'campaigns.sendConfirm.check.recent.applied.resumeBoth');
   assert.equal(line('resume', { days: 7, excluded: 0, held: 0, fresh: 0 }).key, 'campaigns.sendConfirm.check.recent.applied.resumeNone');
   assert.equal(line('scheduled', { excluded: 2, held: 2, scope: '' }).key, 'campaigns.sendConfirm.check.recent.applied.resumeHeld');
+  assert.equal(checkLines(pf({ mode: 'scheduled', resumed: true, checks: [{ key: 'recent.applied', level: 'info', params: { excluded: 2, held: 2, scope: '' } }] }))
+    .find((l) => l.name === 'recent.applied').key,
+    'campaigns.sendConfirm.check.recent.applied.resumeHeld');
   assert.equal(line('scheduled', { excluded: 2, held: 0, scope: '' }).key, 'campaigns.sendConfirm.check.recent.applied.scopeUnavailable');
   const c = checkLines(pf({ checks: [{ key: 'unsubscribe.missing', level: 'warn' }] }))[0];
   assert.equal(c.params.tag, '{{ UnsubscribeURL }}');

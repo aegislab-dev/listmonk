@@ -87,7 +87,7 @@ const checkLine = (c, pf) => {
   // The recent-send rule is applied by the sender (LST-65): who it leaves out, who it left out
   // already when resuming, and the rule on with nobody to leave out.
   if (c.key === 'recent.applied') {
-    if (pf.mode === 'resume') {
+    if (pf.mode === 'resume' || pf.resumed) {
       // Who it left out already stays out; who is newly caught is left out when it goes on.
       const kind = (p.held > 0 ? 'held' : '') + (p.fresh > 0 ? 'Fresh' : '');
       key = `${K}.check.recent.applied.resume${{ held: 'Held', Fresh: 'Fresh', heldFresh: 'Both' }[kind] || 'None'}`;
