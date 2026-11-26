@@ -108,7 +108,7 @@ describe('Recent-send exclusion settings', () => {
         });
       });
     });
-    cy.intercept('GET', { pathname: rulePath(), query: { include_coverage: 'true' } }, (req) => {
+    cy.intercept({ method: 'GET', pathname: rulePath(), query: { include_coverage: 'true' } }, (req) => {
       req.continue((res) => {
         res.body.data.held = 12;
         res.body.data.records_from = startedAt;
@@ -134,7 +134,7 @@ describe('Recent-send exclusion settings', () => {
         Object.assign(res.body.data, { status: 'finished', to_send: 39, sent: 28 });
       });
     });
-    cy.intercept('GET', { pathname: rulePath(), query: { include_coverage: 'true' } }, (req) => {
+    cy.intercept({ method: 'GET', pathname: rulePath(), query: { include_coverage: 'true' } }, (req) => {
       req.continue((res) => { res.body.data.held = 12; });
     });
     openCampaign(campaignId);

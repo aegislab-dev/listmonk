@@ -243,17 +243,17 @@ counts AS (
     GROUP BY campaign_id
 ),
 u AS (
-    -- Count the eligible, excluded and already sent IDs once, plus exclusions whose IDs were deleted.
+    -- Count each eligible, excluded or sent ID once, plus the aggregate for deleted subscribers.
     -- The send cursor still uses only currently eligible subscribers.
     UPDATE campaigns AS ca
-    SET to_send = COALESCE(co.to_send, 0) + COALESCE(r.removed_held_count, 0),
+    SET to_send = COALESCE(co.to_send, 0) + COALESCE(r.removed_held_count + r.removed_sent_count, 0),
         status = (CASE WHEN ca.status != 'running' THEN 'running' ELSE ca.status END),
         max_subscriber_id = COALESCE(co.max_subscriber_id, 0),
         started_at = (CASE WHEN ca.started_at IS NULL THEN NOW() ELSE ca.started_at END)
     FROM camps
     LEFT JOIN counts co ON co.campaign_id = camps.id
     LEFT JOIN axm_campaign_recent_rules r ON r.campaign_id = camps.id
-    WHERE ca.id = camps.id AND (co.campaign_id IS NOT NULL OR r.removed_held_count > 0)
+    WHERE ca.id = camps.id AND (co.campaign_id IS NOT NULL OR r.removed_held_count + r.removed_sent_count > 0)
 )
 SELECT camps.*, campMedia.media_id FROM camps LEFT JOIN campMedia ON (campMedia.campaign_id = camps.id);
 
