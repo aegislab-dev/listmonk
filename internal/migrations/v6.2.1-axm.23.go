@@ -8,9 +8,7 @@ import (
 	"github.com/knadh/stuffbin"
 )
 
-// V6_2_1_axm_23 retains aggregate exclusions when a subscriber is deleted before the campaign ends.
-func V6_2_1_axm_23(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger) error {
-	_, err := db.Exec(`-- AXM recent-send counts after subscriber deletion (LST-65). Keep this block identical to V6_2_1_axm_23.
+const axm23SQL = `-- AXM recent-send counts after subscriber deletion (LST-65). Keep the DDL identical to V6_2_1_axm_23.
 -- Take the exclusive holds lock before acquiring any rule-table DDL lock. The campaign scan
 -- reads holds before rules, and DROP TRIGGER itself needs AccessExclusive on holds; taking this
 -- first keeps scans from holding AccessShare on holds while queued behind the rules DDL.
@@ -55,6 +53,17 @@ BEGIN
     RETURN NEW;
 END;
 $$;
--- End of AXM recent-send counts after subscriber deletion.`)
-	return err
+-- End of AXM recent-send counts after subscriber deletion.`
+
+// V6_2_1_axm_23 retains aggregate exclusions when a subscriber is deleted before the campaign ends.
+func V6_2_1_axm_23(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger) error {
+	tx, err := db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(axm23SQL); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

@@ -620,6 +620,48 @@ func TestRecentHoldsMigration(t *testing.T) {
 	}
 }
 
+func TestRecentSendMigrationsMatchFreshSchema(t *testing.T) {
+	root := repoRoot(t)
+	schema, err := os.ReadFile(filepath.Join(root, "schema.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		version string
+		start   string
+		end     string
+	}{
+		{"21", "-- AXM recent-send exclusion at send time (LST-65). Keep this block identical to V6_2_1_axm_21.", "-- End of AXM recent-send exclusion at send time."},
+		{"22", "-- AXM completed recent-send counts (LST-65). Keep this block identical to V6_2_1_axm_22.", "-- End of AXM completed recent-send counts."},
+		{"23", "-- AXM recent-send counts after subscriber deletion (LST-65). Keep the DDL identical to V6_2_1_axm_23.", "-- End of AXM recent-send counts after subscriber deletion."},
+		{"24", "-- AXM recent-send audience on resume (LST-65). Keep this block identical to V6_2_1_axm_24.", "-- End of AXM recent-send audience on resume."},
+		{"25", "-- AXM delivered audience after subscriber deletion (LST-65). Keep this block identical to V6_2_1_axm_25.", "-- End of AXM delivered audience after subscriber deletion."},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			migration, err := os.ReadFile(filepath.Join(root, "internal/migrations/v6.2.1-axm."+tc.version+".go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, tail, ok := strings.Cut(string(schema), tc.start)
+			block, _, endOK := strings.Cut(tail, tc.end)
+			if !ok || !endOK {
+				t.Fatalf("schema.sql is missing migration .%s", tc.version)
+			}
+			if tc.version == "23" {
+				// Fresh installs execute the schema as standalone statements; this transaction
+				// is needed for LOCK TABLE but is supplied by the migration wrapper on upgrades.
+				block = strings.Replace(block, "\nBEGIN;\n", "\n", 1)
+				block = strings.TrimSuffix(block, "\nCOMMIT;\n")
+				block += "\n"
+			}
+			expected := tc.start + block + tc.end
+			if !strings.Contains(string(migration), "`"+expected+"`") {
+				t.Fatalf("schema.sql and migration .%s differ", tc.version)
+			}
+		})
+	}
+}
+
 // The holds go with the campaign and with the person.
 func TestRecentHoldsGoWithCampaignAndSubscriber(t *testing.T) {
 	e := newSendsEnv(t, 3)

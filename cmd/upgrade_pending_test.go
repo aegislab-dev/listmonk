@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
+
+	"github.com/knadh/listmonk/models"
 )
 
 func names(list []migFunc) []string {
@@ -103,5 +107,55 @@ func TestCampaignCountUpgradeSmoke(t *testing.T) {
 		if err != nil || last != recorded || len(pending) != 0 {
 			t.Fatalf("upgrade %d: %s, %+v, %v", i+1, last, names(pending), err)
 		}
+	}
+}
+
+func TestRecentSendMigrationsUpgradeFromV20(t *testing.T) {
+	e := newSendsEnv(t, 3)
+	prior := e.rsPrior("regular", e.listID, map[int]time.Duration{e.eligible[0]: time.Hour})
+	e.rsRule(models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll})
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id) VALUES($1,$2)`, e.campID, e.eligible[1])
+
+	// Recreate an existing v6.2.1-axm.20 database: keep its campaigns, rule and send ledger,
+	// while removing the objects introduced by .21-.25.
+	e.db.MustExec(`DROP TRIGGER IF EXISTS axm_recent_sends_removed ON axm_campaign_sends;
+		DROP FUNCTION IF EXISTS axm_count_removed_recent_sends();
+		DROP TRIGGER IF EXISTS axm_recent_holds_removed ON axm_campaign_recent_holds;
+		DROP TRIGGER IF EXISTS axm_recent_holds_finished ON campaigns;
+		DROP FUNCTION IF EXISTS axm_count_removed_recent_holds();
+		DROP FUNCTION IF EXISTS axm_snapshot_recent_holds();
+		ALTER TABLE axm_campaign_recent_rules DROP COLUMN IF EXISTS removed_sent_count,
+			DROP COLUMN IF EXISTS removed_held_count, DROP COLUMN IF EXISTS finished_held_count;
+		DROP FUNCTION IF EXISTS axm_recent_campaign_sent_ids(INT);
+		DROP FUNCTION IF EXISTS axm_recent_received(INT, INT[]);
+		DROP FUNCTION IF EXISTS axm_recent_rule_on(INT);
+		DROP TABLE IF EXISTS axm_campaign_recent_holds`)
+	e.db.MustExec(`INSERT INTO settings (key, value) VALUES ('migrations', '["v6.2.1-axm.20"]')
+		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`)
+
+	upgrade(e.db, nil, false, true)
+	last, pending, err := getPendingMigrations(e.db)
+	if err != nil || last != "v6.2.1-axm.25" || len(pending) != 0 {
+		t.Fatalf("upgrade result: last=%s pending=%v err=%v", last, names(pending), err)
+	}
+	var recorded string
+	e.get(&recorded, `SELECT value->>-1 FROM settings WHERE key='migrations'`)
+	if recorded != "v6.2.1-axm.25" {
+		t.Fatalf("last migration record = %s", recorded)
+	}
+	if got := e.ids(`SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1 ORDER BY subscriber_id`, prior); len(got) != 1 || got[0] != e.eligible[0] {
+		t.Fatalf("upgrade changed old send ledger: %v", got)
+	}
+	left, err := e.core.HoldRecentBatch(context.Background(), e.campID, []int{e.eligible[0], e.eligible[1]})
+	if err != nil || !left[e.eligible[0]] || left[e.eligible[1]] {
+		t.Fatalf("upgraded recent rule left out %v: %v", left, err)
+	}
+	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[0])
+	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[1])
+	var removedHeld, removedSent int
+	e.get(&removedHeld, `SELECT removed_held_count FROM axm_campaign_recent_rules WHERE campaign_id=$1`, e.campID)
+	e.get(&removedSent, `SELECT removed_sent_count FROM axm_campaign_recent_rules WHERE campaign_id=$1`, e.campID)
+	if removedHeld != 1 || removedSent != 1 {
+		t.Fatalf("post-upgrade deletion counts: held=%d sent=%d, want 1 and 1", removedHeld, removedSent)
 	}
 }

@@ -751,7 +751,7 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM expired send totals (LST-67). Keep this block identical to V6_2_1_axm_19.", "-- End of AXM expired send totals.", "v6.2.1-axm.19.go"},
 		{"-- AXM preserve removed send totals (LST-67). Keep this block identical to V6_2_1_axm_20.", "-- End of AXM preserve removed send totals.", "v6.2.1-axm.20.go"},
 		{"-- AXM completed recent-send counts (LST-65). Keep this block identical to V6_2_1_axm_22.", "-- End of AXM completed recent-send counts.", "v6.2.1-axm.22.go"},
-		{"-- AXM recent-send counts after subscriber deletion (LST-65). Keep this block identical to V6_2_1_axm_23.", "-- End of AXM recent-send counts after subscriber deletion.", "v6.2.1-axm.23.go"},
+		{"-- AXM recent-send counts after subscriber deletion (LST-65). Keep the DDL identical to V6_2_1_axm_23.", "-- End of AXM recent-send counts after subscriber deletion.", "v6.2.1-axm.23.go"},
 		{"-- AXM recent-send audience on resume (LST-65). Keep this block identical to V6_2_1_axm_24.", "-- End of AXM recent-send audience on resume.", "v6.2.1-axm.24.go"},
 		{"-- AXM delivered audience after subscriber deletion (LST-65). Keep this block identical to V6_2_1_axm_25.", "-- End of AXM delivered audience after subscriber deletion.", "v6.2.1-axm.25.go"},
 	} {
@@ -769,6 +769,13 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		}
 		// The block's own marker line names the migration; compare what follows it.
 		block := strings.TrimSpace(strings.TrimPrefix(schema[start:start+end], b.start))
+		if strings.HasSuffix(b.migration, "v6.2.1-axm.23.go") {
+			// Fresh schema wraps .23's table lock in a transaction for psql; the migration
+			// function supplies the transaction around the same DDL itself.
+			block = strings.TrimPrefix(block, "BEGIN;")
+			block = strings.TrimSuffix(block, "COMMIT;")
+			block = strings.TrimSpace(block)
+		}
 		if block == "" || !strings.Contains(string(raw), block) {
 			t.Fatal("schema and migration SQL differ: " + b.start)
 		}

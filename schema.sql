@@ -1835,7 +1835,8 @@ WHERE r.finished_held_count IS NULL AND (
 );
 -- End of AXM completed recent-send counts.
 
--- AXM recent-send counts after subscriber deletion (LST-65). Keep this block identical to V6_2_1_axm_23.
+-- AXM recent-send counts after subscriber deletion (LST-65). Keep the DDL identical to V6_2_1_axm_23.
+BEGIN;
 -- Take the exclusive holds lock before acquiring any rule-table DDL lock. The campaign scan
 -- reads holds before rules, and DROP TRIGGER itself needs AccessExclusive on holds; taking this
 -- first keeps scans from holding AccessShare on holds while queued behind the rules DDL.
@@ -1880,6 +1881,7 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+COMMIT;
 -- End of AXM recent-send counts after subscriber deletion.
 
 -- AXM recent-send audience on resume (LST-65). Keep this block identical to V6_2_1_axm_24.
