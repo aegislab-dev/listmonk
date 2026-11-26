@@ -20,6 +20,7 @@ import (
 
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/i18n"
+	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
@@ -316,7 +317,13 @@ func TestPreflightRemainingWithCheckpointZero(t *testing.T) {
 
 // preflightApp is the app of a handler test: the team users of newTeamsEnv with a real
 // manager and the Korean texts.
-func newPreflightApp(t *testing.T) *teamsEnv {
+func newPreflightApp(t *testing.T) *teamsEnv { return newPreflightAppScan(t, true) }
+
+// newPreflightAppScan is newPreflightApp whose manager scans for campaigns to send only when scan
+// is true. A test that makes a campaign running (or due) itself and then reads it back as the
+// sender does needs scan false: a manager that scans took the campaign up in the meantime, sent it
+// and finished it under the test (LST-74: "campaign is not running" when a slow runner let a scan win).
+func newPreflightAppScan(t *testing.T, scan bool) *teamsEnv {
 	e := newTeamsEnv(t)
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "i18n", "ko.json"))
 	if err != nil {
@@ -329,7 +336,7 @@ func newPreflightApp(t *testing.T) *teamsEnv {
 	e.a.i18n = lang
 	e.a.log = log.New(io.Discard, "", 0)
 	e.a.cfg = &Config{}
-	e.a.manager = e.startManager(e.store, &bodyMessenger{}, io.Discard)
+	e.a.manager = e.startManagerWith(e.store, &bodyMessenger{}, io.Discard, func(c *manager.Config) { c.ScanCampaigns = scan })
 	// A real From: the status change refuses a placeholder (LST-45).
 	e.db.MustExec(`UPDATE campaigns SET status='draft', from_email='Team <team@crevasse.ai>', content_type='richtext', body='<p>Hi <a href="{{ UnsubscribeURL }}">x</a></p>' WHERE id=$1`, e.campID)
 	e.db.MustExec(`UPDATE campaign_lists SET list_id=$2 WHERE campaign_id=$1`, e.campID, e.aList)
