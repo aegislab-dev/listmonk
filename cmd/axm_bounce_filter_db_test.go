@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/knadh/listmonk/internal/auth"
 	"github.com/labstack/echo/v4"
 )
 
@@ -36,6 +37,7 @@ func TestDeleteAllBouncesStaysInsideFilter(t *testing.T) {
 	delRaw := func(raw string) int {
 		req := httptest.NewRequest(http.MethodDelete, "/api/bounces?"+raw, nil)
 		c := echo.New().NewContext(req, httptest.NewRecorder())
+		c.Set(auth.UserHTTPCtxKey, e.as(e.superAdmin)) // the route always has a user (LST-73)
 		if err := e.a.DeleteBounces(c); err != nil {
 			he, ok := err.(*echo.HTTPError)
 			if !ok {

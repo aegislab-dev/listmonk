@@ -73,7 +73,8 @@
     "frontend/src/views/Bounces.vue",
     "cmd/bounce.go",
     "queries/bounces.sql",
-    "cmd/axm_bounce_*.go"
+    "cmd/axm_bounce_*.go",
+    "internal/core/axm_bounce_*.go"
    ],
    "specs": [
     "bounce-filter-delete.cy.js"
@@ -562,6 +563,7 @@
     "frontend/src/components/Stats*.vue",
     "frontend/src/components/CampaignResultSummary.vue",
     "cmd/axm_stats*.go",
+    "cmd/axm_dashboard*.go",
     "internal/core/axm_stats*.go",
     "models/axm_stats.go",
     "queries/axm_stats.sql"
