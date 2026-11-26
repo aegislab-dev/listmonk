@@ -178,7 +178,9 @@ SELECT COUNT(*) FILTER (WHERE j.reason = -1) AS reacted,
         AND CASE WHEN j.optin = 'double' THEN j.sub_status = 'confirmed' ELSE j.sub_status != 'unsubscribed' END) AS reachable,
     COUNT(*) FILTER (WHERE j.reason NOT IN (0, 1)
         AND CASE WHEN j.optin = 'double' THEN j.sub_status = 'confirmed' ELSE j.sub_status != 'unsubscribed' END
-        AND j.subscriber_id > (SELECT last_subscriber_id FROM campaigns WHERE id = $1)) AS reachable_after
+        AND j.subscriber_id > (SELECT last_subscriber_id FROM campaigns WHERE id = $1)
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k
+            WHERE k.campaign_id = $1 AND k.subscriber_id = j.subscriber_id AND k.sent)) AS reachable_after
 FROM axm_followup_judge($1, NULL, $2) j;
 
 -- name: axm-followup-members

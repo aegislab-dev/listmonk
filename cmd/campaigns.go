@@ -414,6 +414,12 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	}
 	o.ListIDs = listIDs
 
+	// AXM (LST-67): the last list taken off a scheduled campaign is not "invalid list IDs": say what
+	// is wrong and how to go on (the check of the people on the lists is made when it is saved).
+	if cm.Status == models.CampaignStatusScheduled && cm.Type == models.CampaignTypeRegular && o.SendAt.Valid && len(o.ListIDs) == 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.recheck.noLists"))
+	}
+
 	if c, err := a.validateCampaignFields(o, user); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	} else {
@@ -427,7 +433,15 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 			return err
 		}
 	}
-	out, err := a.core.UpdateCampaign(id, o.Campaign, o.ListIDs, o.MediaIDs)
+	var out models.Campaign
+	if cm.Status == models.CampaignStatusScheduled {
+		// AXM (LST-67): a scheduled campaign goes out at its time with nothing between, so what
+		// it would reach is judged again when it is saved, and a save that leaves nobody to send
+		// to is refused (the schedule stays as it was).
+		out, err = a.core.UpdateScheduledCampaign(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs, a.scheduledSaveCheck)
+	} else {
+		out, err = a.core.UpdateCampaign(id, o.Campaign, o.ListIDs, o.MediaIDs)
+	}
 	if err != nil {
 		return err
 	}
@@ -1171,4 +1185,22 @@ func (a *App) campaignSenderMode(c campReq, user auth.User, strict bool) (campRe
 		}
 	}
 	return c, nil
+}
+
+// scheduledSaveCheck refuses the save of a scheduled regular campaign that would reach nobody
+// (LST-67): no list left to send to, or no one on them. It asks audienceBlock, as the
+// pre-send window does, so the two cannot disagree on what is blocked. Warnings are not judged
+// here: the page reads them from the preflight and shows them.
+//
+// The check follows the sender, including deliveries recorded before its progress.
+func (a *App) scheduledSaveCheck(hasLists, hasRecipients bool) error {
+	key, level := audienceBlock(models.CampaignTypeRegular, models.PreflightModeScheduled, hasLists, hasRecipients)
+	if level != models.PreflightBlock {
+		return nil
+	}
+	msg := "campaigns.recheck.zero"
+	if key == "lists.none" {
+		msg = "campaigns.recheck.noLists"
+	}
+	return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T(msg))
 }

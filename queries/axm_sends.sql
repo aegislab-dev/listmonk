@@ -47,11 +47,20 @@ SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscrib
 SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1;
 
 -- name: axm-delete-campaign-sends
--- Deletes up to $2 send records sent before $1 and returns how many were deleted.
--- The caller repeats it until it returns 0, so no single statement holds many rows.
-WITH d AS (
-    DELETE FROM axm_campaign_sends WHERE ctid = ANY(ARRAY(
-        SELECT ctid FROM axm_campaign_sends WHERE sent_at < $1 LIMIT $2
-    )) RETURNING 1
+-- Delete a batch. The ledger's delete trigger carries its count forward.
+WITH due AS MATERIALIZED (
+    -- Lock the parent before its send records. Deleting a campaign takes the same
+    -- locks in that order. Apply the limit to rows whose parent can be locked so a
+    -- busy campaign does not use up the batch before other campaigns are reached.
+    SELECT s.ctid, s.campaign_id
+    FROM axm_campaign_sends s JOIN campaigns c ON c.id = s.campaign_id
+    WHERE s.sent_at < $1
+    LIMIT $2
+    FOR KEY SHARE OF c SKIP LOCKED
+),
+d AS (
+    DELETE FROM axm_campaign_sends s USING due
+    WHERE s.ctid = due.ctid AND s.campaign_id = due.campaign_id
+    RETURNING 1
 )
-SELECT COUNT(*) FROM d;
+SELECT (SELECT COUNT(*) FROM due) AS selected, (SELECT COUNT(*) FROM d) AS deleted;

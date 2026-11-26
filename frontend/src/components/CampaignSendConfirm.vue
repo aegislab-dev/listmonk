@@ -47,7 +47,7 @@
             </b-button>
           </div>
         </div>
-        <p class="help">{{ $t('campaigns.sendConfirm.blindHelp') }}</p>
+        <p v-if="!review" class="help">{{ $t('campaigns.sendConfirm.blindHelp') }}</p>
       </div>
 
       <template v-else-if="model">
@@ -122,7 +122,7 @@
           <div v-if="isResume" class="send-row" data-cy="send-progress">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.progress') }}</div>
             <div class="send-v">
-              <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(pf.toSend, pf.sent, 1)" />
+              <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(progress.total, 1)" />
               <div class="has-text-grey" data-cy="send-progress-text">{{ progressText }}</div>
               <div class="send-sum" data-cy="send-recipients">
                 {{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}
@@ -156,14 +156,27 @@
     </section>
 
     <footer class="modal-card-foot has-text-right">
-      <b-button data-cy="send-cancel" :disabled="busy" @click="$parent.close()">{{ $t('globals.buttons.cancel') }}</b-button>
-      <b-button v-if="state === 'error'" type="is-warning" data-cy="send-ok" :loading="busy" @click="confirm(true)">
-        {{ $t('campaigns.sendConfirm.confirmBlind') }}
-      </b-button>
-      <b-button v-else type="is-primary" data-cy="send-ok" :class="{ 'send-ok-warn': model && model.warnings }"
-        :disabled="state !== 'ready' || !model || model.disabled" :loading="busy" @click="confirm(false)">
-        {{ okText }}
-      </b-button>
+      <!-- The window of a scheduled campaign that was just saved (LST-67): the schedule stays, or
+           is taken off to edit. Nothing is sent or started from here. -->
+      <template v-if="review">
+        <b-button v-if="canUnschedule" data-cy="send-unschedule" :disabled="!hasReviewVersion" :loading="busy" @click="unschedule">
+          {{ $t('campaigns.sendConfirm.review.unschedule') }}
+        </b-button>
+        <b-button type="is-primary" data-cy="send-ok" :class="{ 'send-ok-warn': model && model.warnings }" :disabled="busy"
+          @click="$parent.close()">
+          {{ model ? okText : $t('campaigns.sendConfirm.review.keep') }}
+        </b-button>
+      </template>
+      <template v-else>
+        <b-button data-cy="send-cancel" :disabled="busy" @click="$parent.close()">{{ $t('globals.buttons.cancel') }}</b-button>
+        <b-button v-if="state === 'error'" type="is-warning" data-cy="send-ok" :loading="busy" @click="confirm(true)">
+          {{ $t('campaigns.sendConfirm.confirmBlind') }}
+        </b-button>
+        <b-button v-else type="is-primary" data-cy="send-ok" :class="{ 'send-ok-warn': model && model.warnings }"
+          :disabled="state !== 'ready' || !model || model.disabled" :loading="busy" @click="confirm(false)">
+          {{ okText }}
+        </b-button>
+      </template>
     </footer>
   </div>
 </template>
@@ -171,7 +184,9 @@
 <script>
 import Vue from 'vue';
 import dayjs from 'dayjs';
-import { richParts, sendConfirmModel, untilKey } from '../send-confirm';
+import {
+  richParts, sendConfirmModel, sendProgress, untilKey,
+} from '../send-confirm';
 import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 
 // What a reading of the checks shows, to tell whether a new reading differs from the one on
@@ -184,12 +199,14 @@ import { splitAttribs, TZ_ATTRIB } from '../schedule-time';
 const fingerprint = (pf) => {
   const v = new Set(pf.varies || []);
   const keep = (part, value) => (v.has(part) ? null : value);
+  const progress = pf.mode === 'resume' ? [pf.sent, pf.sentIsMinimum, pf.toSend] : null;
   return JSON.stringify([
     pf.mode, pf.sendAt, pf.sendTz, pf.subjectNote, [...v].sort(), pf.senderPerSubscriber,
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
     // Each header's own list: the merged list drops an address of the Bcc that the Cc also has.
     keep('cc', (pf.copyLists || {}).cc), keep('bcc', (pf.copyLists || {}).bcc),
-    pf.recipients, pf.remaining, (pf.lists || []).map((l) => [l.id, l.name, l.count, l.deleted]),
+    pf.recipients, pf.remaining, progress,
+    (pf.lists || []).map((l) => [l.id, l.name, l.count, l.deleted]),
     (pf.checks || []).filter((c) => c.key !== 'schedule.past')
       .map((c) => {
         // The addresses are compared above, kind by kind; the line itself by its count.
@@ -218,6 +235,12 @@ export default Vue.extend({
     status: { type: String, required: true },
     // What the window says while it has not read the campaign, or cannot: which campaign it is.
     campaignName: { type: String, default: '' },
+    // LST-67: the campaign is scheduled and was just saved; the window shows what the send will be
+    // (the answer the page already read, in initial) and does not start anything.
+    review: { type: Boolean, default: false },
+    // The version saved by the editor, even when the first check failed to load.
+    reviewVersion: { type: String, default: '' },
+    initial: { type: Object, default: null },
   },
 
   data() {
@@ -245,7 +268,12 @@ export default Vue.extend({
   },
 
   computed: {
-    isResume() { return this.pf && this.pf.mode === 'resume'; },
+    isResume() { return this.pf?.mode === 'resume'; },
+
+    // Taking the schedule off is a status change that needs the right to send (LST-67 review).
+    canUnschedule() { return this.$can('campaigns:send'); },
+
+    hasReviewVersion() { return this.state === 'ready' && !!this.reviewVersion && this.pf?.updatedAt === this.reviewVersion; },
 
     // The time zone the scheduled time is shown in: the one it was chosen in on the campaign
     // page (LST-50, attribs.axm_send_tz), Korean time when none is stored, as the picker does.
@@ -273,8 +301,10 @@ export default Vue.extend({
       return out;
     },
 
+    progress() { return sendProgress(this.pf); },
+
     progressText() {
-      const p = { sent: this.pf.sent, total: Math.max(this.pf.toSend, this.pf.sent) };
+      const p = this.progress;
       if (!this.pf.pausedAt) return this.$t('campaigns.sendConfirm.progress', p);
       return this.$t('campaigns.sendConfirm.progressPaused', { ...p, time: dayjs(this.pf.pausedAt).format('YYYY-MM-DD HH:mm') });
     },
@@ -351,7 +381,7 @@ export default Vue.extend({
 
     headSub() {
       if (this.state === 'loading') return this.$t('campaigns.sendConfirm.sub.loading');
-      if (this.state === 'error') return this.$t('campaigns.sendConfirm.sub.error');
+      if (this.state === 'error') return this.$t(this.review ? 'campaigns.sendConfirm.review.loadFailed' : 'campaigns.sendConfirm.sub.error');
       if (this.stale) return this.$t(this.staleWhy === 'checks' ? 'campaigns.sendConfirm.sub.staleChecks' : 'campaigns.sendConfirm.sub.stale');
       return this.$t(this.model.sub.key, this.model.sub.params);
     },
@@ -377,14 +407,6 @@ export default Vue.extend({
       if (!this.prev || this.isResume) return null;
       const was = this.prev.lists[`${l.id}`];
       return was === undefined || was === l.count ? null : was;
-    },
-
-    // The status to ask for. What was read decides: a campaign that was changed under the window
-    // (a schedule taken off, or put on) is started or scheduled as it is now, not as it was
-    // when the window was opened. Without a reading, the one the caller asked for.
-    statusToAsk(blind) {
-      if (blind || !this.pf) return this.status;
-      return this.pf.mode === 'schedule' ? 'scheduled' : 'running';
     },
 
     // The send time passed while the window is open: the status change now sends at once.
@@ -414,6 +436,12 @@ export default Vue.extend({
       return richParts(this.$t(c.key, c.params));
     },
 
+    closeChanged() {
+      this.$utils.toast(this.$t('campaigns.sendConfirm.changed'), 'is-danger');
+      this.$emit('gone');
+      this.$parent.close();
+    },
+
     async load() {
       if (this.ctl) this.ctl.abort();
       this.ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -423,15 +451,44 @@ export default Vue.extend({
         const pf = await this.$api.getCampaignPreflight(this.campaignId, this.ctl ? { signal: this.ctl.signal } : {});
         this.skew = pf.now ? new Date(pf.now).getTime() - Date.now() : 0;
         if (!Number.isFinite(this.skew)) this.skew = 0;
+        // A retry still checks the saved version. A newer version leaves the form stale.
+        if (this.review && (pf.status !== 'scheduled' || pf.updatedAt !== this.reviewVersion)) {
+          this.closeChanged();
+          return;
+        }
         this.pf = pf;
         this.lastSubject = pf.subject || '';
         this.now = this.serverNow();
         this.state = 'ready';
       } catch (err) {
         if (err && (err.code === 'ERR_CANCELED' || err.name === 'CanceledError')) return;
+        if (err.response?.status === 409) {
+          this.closeChanged();
+          return;
+        }
         this.pf = null;
         this.state = 'error';
         this.error = (err.response && err.response.data && err.response.data.message) || '';
+      }
+    },
+
+    // Takes the schedule off (the campaign becomes a draft again) so that it can be edited
+    // (LST-67). The page shows the campaign as a draft.
+    async unschedule() {
+      if (this.busy || !this.hasReviewVersion) return;
+      this.busy = true;
+      try {
+        const out = await this.$api.changeCampaignStatus(this.campaignId, 'draft', this.reviewVersion, { disableToast: true });
+        this.$emit('unscheduled', out);
+        this.$parent.close();
+      } catch (err) {
+        this.$utils.toast((err.response && err.response.data && err.response.data.message) || err.message, 'is-danger');
+        if (err.response && err.response.status === 409) {
+          this.$emit('gone');
+          this.$parent.close();
+        }
+      } finally {
+        this.busy = false;
       }
     },
 
@@ -463,6 +520,13 @@ export default Vue.extend({
     // changed-since check (there is nothing that was shown).
     async confirm(blind) {
       if (this.busy) return;
+      // A different session may have scheduled it before this window read the campaign.
+      const targetStatus = blind || !this.model ? this.status : this.model.targetStatus;
+      if (targetStatus === null) {
+        this.$emit('kept');
+        this.$parent.close();
+        return;
+      }
       // The send time may have passed since the last tick: show that first, do not send.
       this.now = this.serverNow();
       if (!blind && this.markPast()) return;
@@ -476,6 +540,10 @@ export default Vue.extend({
           try {
             fresh = await this.$api.getCampaignPreflight(this.campaignId);
           } catch (err) {
+            if (err.response?.status === 409) {
+              this.closeChanged();
+              return;
+            }
             // It could not be read again: what the window shows may be out of date. Say so, as
             // when the checks cannot be loaded (approved design A6): try again, or go on
             // knowingly without the checks (LST-48 review: it sent on the old reading).
@@ -493,7 +561,7 @@ export default Vue.extend({
         }
         const out = await this.$api.changeCampaignStatus(
           this.campaignId,
-          this.statusToAsk(blind),
+          targetStatus,
           blind ? undefined : this.pf.updatedAt,
           { disableToast: true },
           // The server refuses a passed send time that the window did not show (412).
@@ -533,7 +601,17 @@ export default Vue.extend({
   },
 
   mounted() {
-    this.load();
+    if (this.initial) {
+      // The page read it a moment ago, to decide whether to show the window at all.
+      this.skew = this.initial.now ? new Date(this.initial.now).getTime() - Date.now() : 0;
+      if (!Number.isFinite(this.skew)) this.skew = 0;
+      this.pf = this.initial;
+      this.lastSubject = this.initial.subject || '';
+      this.now = this.serverNow();
+      this.state = 'ready';
+    } else {
+      this.load();
+    }
     // The time left and the passing of the send time are kept up to date while it is open.
     this.ticker = setInterval(this.tick, 1000);
   },

@@ -26,72 +26,119 @@
 --              already has a send record is skipped by the sender (internal/manager/pipe.go,
 --              axm-get-campaign-sent-ids, and for a follow-up its decisions marked sent), also
 --              when the checkpoint is 0. Otherwise total.
--- The (list, person) pairs are built once and every count reads them: counting each list
--- and the total with separate queries doubled the time on a 400k list.
+-- A list contributes at most one row per subscriber: subscriber_lists has a primary key
+-- on (subscriber_id, list_id), and dynamic lists select subscribers by primary key.
+-- Group the same stream by list and by subscriber so per-list counts, overlap and exclusions
+-- do not need separate DISTINCT passes or a join between eligible and excluded members.
 WITH c AS (
     SELECT id, type FROM campaigns WHERE id = $1
 ),
 campLists AS (
-    SELECT cl.list_id, COALESCE(l.name, cl.list_name) AS name, COALESCE(l.optin::TEXT, '') AS optin,
+    SELECT cl.list_id, COALESCE(l.name, cl.list_name) AS name, l.optin,
         COALESCE(l.axm_filter IS NOT NULL, false) AS is_dynamic, l.id IS NOT NULL AS live
     FROM c JOIN campaign_lists cl ON cl.campaign_id = c.id
     LEFT JOIN lists l ON l.id = cl.list_id
 ),
-memb AS (
-    SELECT cl.list_id, s.id, s.status = 'blocklisted' AS blocked, sl.status AS sub_status, cl.optin
-    FROM campLists cl
+members AS (
+    SELECT cl.list_id, s.id, s.status != 'blocklisted' AND CASE
+        WHEN c.type = 'optin' THEN sl.status = 'unconfirmed' AND cl.optin = 'double'
+        WHEN cl.optin = 'double' THEN sl.status = 'confirmed'
+        ELSE sl.status != 'unsubscribed'
+    END AS eligible
+    FROM c, campLists cl
     JOIN subscriber_lists sl ON sl.list_id = cl.list_id
     JOIN subscribers s ON s.id = sl.subscriber_id
     WHERE cl.live AND NOT cl.is_dynamic
-),
-pairs AS (
-    SELECT m.list_id, m.id FROM c, memb m
-    WHERE NOT m.blocked
-        AND CASE
-            WHEN c.type = 'optin' THEN m.sub_status = 'unconfirmed' AND m.optin = 'double'
-            WHEN m.optin = 'double' THEN m.sub_status = 'confirmed'
-            ELSE m.sub_status != 'unsubscribed'
-        END
     UNION ALL
-    SELECT cl.list_id, m.subscriber_id FROM c, campLists cl
+    SELECT cl.list_id, m.subscriber_id, TRUE FROM c, campLists cl
     CROSS JOIN LATERAL axm_dynamic_list_members(cl.list_id) m
     WHERE cl.live AND cl.is_dynamic AND c.type != 'optin'
 ),
-per AS (
-    SELECT list_id, COUNT(DISTINCT id) AS n FROM pairs GROUP BY list_id
+counts AS (
+    SELECT list_id, id, COUNT(*) FILTER (WHERE eligible) AS n
+    FROM members
+    GROUP BY GROUPING SETS ((list_id), (id))
 ),
-eligible AS (
-    SELECT id, COUNT(DISTINCT list_id) AS lists FROM pairs GROUP BY id
-),
-total AS (
-    SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE lists > 1) AS multi FROM eligible
+totals AS (
+    SELECT COUNT(*) FILTER (WHERE n > 0) AS n,
+        COUNT(*) FILTER (WHERE n > 1) AS multi,
+        COUNT(*) FILTER (WHERE n = 0) AS excluded,
+        COUNT(*) FILTER (WHERE n > 0 AND id > $2) AS after_checkpoint
+    FROM counts WHERE id IS NOT NULL
 )
-SELECT cl.list_id AS id, cl.name, cl.optin, cl.is_dynamic AS dynamic, NOT cl.live AS deleted,
+SELECT cl.list_id AS id, cl.name, COALESCE(cl.optin::TEXT, '') AS optin, cl.is_dynamic AS dynamic, NOT cl.live AS deleted,
     COALESCE(per.n, 0) AS count,
-    (SELECT n FROM total) AS total,
-    (SELECT multi FROM total) AS multi,
-    (CASE WHEN (SELECT type FROM c) = 'regular' THEN (
-        SELECT COUNT(*) FROM (SELECT DISTINCT id FROM memb) x
-        WHERE NOT EXISTS (SELECT 1 FROM eligible e WHERE e.id = x.id)
-    ) ELSE 0 END) AS excluded,
-    (CASE WHEN $3::BOOLEAN THEN (
-        SELECT COUNT(*) FROM eligible e
-        WHERE e.id > $2
-            AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = e.id)
-            -- AXM (LST-47) a follow-up also skips whom its decisions say it was sent to (kept
-            -- when the send record expired), as the sender does (axm-followup-sent-ids).
-            AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k WHERE k.campaign_id = $1 AND k.subscriber_id = e.id AND k.sent)
-    ) ELSE (SELECT n FROM total) END) AS remaining,
+    totals.n AS total,
+    totals.multi,
+    CASE WHEN c.type = 'regular' THEN totals.excluded ELSE 0 END AS excluded,
+    CASE
+        WHEN $3::BOOLEAN IS NOT TRUE THEN totals.n
+        -- Most scheduled campaigns have no prior deliveries. The same statement's snapshot
+        -- gives both the ledger check and the counts, including when the checkpoint is zero.
+        WHEN NOT EXISTS (
+            SELECT 1 FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2
+            UNION ALL
+            SELECT 1 FROM axm_campaign_followup_claims WHERE campaign_id = $1 AND subscriber_id > $2 AND sent
+        ) THEN totals.after_checkpoint
+        ELSE totals.after_checkpoint - (
+            -- Subtract deliveries that still match a list. A delivery recorded in both
+            -- places counts once, and the join can process the ledgers in bulk.
+            SELECT COUNT(*)
+            FROM (
+                SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2
+                UNION
+                SELECT subscriber_id FROM axm_campaign_followup_claims WHERE campaign_id = $1 AND subscriber_id > $2 AND sent
+            ) sent
+            JOIN counts e ON e.id = sent.subscriber_id
+            WHERE e.id > $2 AND e.n > 0
+        )
+    END AS remaining,
     NOW() AS as_of
-FROM campLists cl
-LEFT JOIN per ON per.list_id = cl.list_id
+FROM c CROSS JOIN totals CROSS JOIN campLists cl
+LEFT JOIN counts per ON per.list_id = cl.list_id
 ORDER BY cl.name, cl.list_id;
+
+-- name: axm-preflight-has-recipient
+-- For a regular campaign during a scheduled save, only ask if the edited lists
+-- include anyone it can still send to. $2 is its checkpoint, $3 its active
+-- follow-up list (0 otherwise), and $4 is individual tracking.
+-- Use the same eligibility and exclusions as the remaining count above and
+-- axm-followup-pending. Duplicates across lists do not change EXISTS.
+WITH live_lists AS MATERIALIZED (
+    SELECT l.id, l.optin, l.axm_filter IS NOT NULL AS dynamic
+    FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+    WHERE cl.campaign_id = $1
+),
+candidates AS (
+    SELECT l.id AS list_id, s.id AS subscriber_id
+    FROM live_lists l
+    JOIN subscriber_lists sl ON sl.list_id = l.id AND sl.subscriber_id > $2
+    JOIN subscribers s ON s.id = sl.subscriber_id
+    WHERE NOT l.dynamic AND s.status != 'blocklisted'
+        AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END
+    UNION ALL
+    SELECT l.id, m.subscriber_id
+    FROM (SELECT id FROM live_lists WHERE dynamic) l
+    CROSS JOIN LATERAL axm_dynamic_list_members(l.id, $2) m
+),
+held AS MATERIALIZED (
+    SELECT j.subscriber_id FROM axm_followup_judge($1, NULL, $4) j
+    WHERE $3::INT > 0 AND j.reason NOT IN (0, 1)
+)
+SELECT EXISTS (SELECT 1 FROM live_lists) AS has_lists,
+    EXISTS (
+        SELECT 1 FROM candidates e
+        WHERE NOT EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = $1 AND s.subscriber_id = e.subscriber_id)
+          AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k
+              WHERE k.campaign_id = $1 AND k.subscriber_id = e.subscriber_id AND k.sent)
+          AND (e.list_id <> $3 OR NOT EXISTS (SELECT 1 FROM held h WHERE h.subscriber_id = e.subscriber_id))
+    ) AS has_recipients;
 
 -- name: axm-preflight-sample
 -- Up to $2 of the people campaign $1 would reach, the lowest IDs first, by the same rule as
 -- axm-preflight-audience (keep the two the same). The pre-send check renders the mail for them.
 -- With $4 (resume) true, only those still to be sent: after the checkpoint $3 and without a send
--- record of this campaign, as the remaining count of axm-preflight-audience.
+-- record or a sent follow-up decision, as in the remaining count of axm-preflight-audience.
 WITH c AS (
     SELECT id, type FROM campaigns WHERE id = $1
 ),
@@ -123,5 +170,6 @@ eligible AS (
 )
 SELECT s.* FROM subscribers s WHERE s.id IN (SELECT id FROM eligible)
     AND (NOT $4::BOOLEAN OR (s.id > $3
-        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = s.id)))
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = s.id)
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k WHERE k.campaign_id = $1 AND k.subscriber_id = s.id AND k.sent)))
 ORDER BY s.id LIMIT $2;

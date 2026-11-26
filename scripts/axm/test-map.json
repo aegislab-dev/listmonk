@@ -23,6 +23,7 @@
   "campaign-send-confirm.cy.js",
   "campaign-delete-guard.cy.js",
   "campaign-clone-lists.cy.js",
+  "campaign-scheduled-edit.cy.js",
   "import-campaign-flow.cy.js",
   "stats-dashboard.cy.js"
  ],
@@ -159,6 +160,7 @@
     "schedule-time.cy.js",
     "from-addresses.cy.js",
     "campaign-send-confirm.cy.js",
+    "campaign-scheduled-edit.cy.js",
     "import-campaign-flow.cy.js",
     "stats-dashboard.cy.js"
    ]
@@ -216,6 +218,7 @@
     "campaign-delete-guard.cy.js",
     "campaign-send-confirm.cy.js",
     "campaign-clone-lists.cy.js",
+    "campaign-scheduled-edit.cy.js",
     "import-campaign-flow.cy.js",
     "list-teams.cy.js",
     "stats-dashboard.cy.js"
@@ -522,7 +525,8 @@
     "campaign-send-confirm.cy.js",
     "campaign-tracking-check.cy.js",
     "schedule-time.cy.js",
-    "campaign-recent-exclude.cy.js"
+    "campaign-recent-exclude.cy.js",
+    "campaign-scheduled-edit.cy.js"
    ]
   },
   {

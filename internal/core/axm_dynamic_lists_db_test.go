@@ -551,6 +551,54 @@ func TestDynamicDBMembershipAndQueries(t *testing.T) {
 	wantIDs(t, dbIDs(t, db, `SELECT * FROM axm_dynamic_list_members($1)`, dynamic), []int{})
 }
 
+func TestDynamicDBUnlimitedMembersMatchBounded(t *testing.T) {
+	db, _, _ := dynamicTestDB(t)
+
+	single := testList(db, nil, "single")
+	double := testList(db, nil, "double")
+	exclude := testList(db, nil, "single")
+	var ids []int
+	for _, attrs := range []string{
+		`{"value":42}`, `{"value":"42"}`, `{"value":true}`, `{"value":"true"}`,
+		`{"value":[42]}`, `{"value":{"number":42}}`, `{"value":null}`, `{"value":"pro"}`, `{}`,
+	} {
+		id := testSub(db, attrs, "enabled")
+		ids = append(ids, id)
+		db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'confirmed'),($1,$3,'confirmed')`, id, single, double)
+	}
+	db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'unsubscribed')`, ids[0], exclude)
+	// A full range can use the attribute scan; the small ranges below use the scoped query.
+	db.MustExec(`WITH filler AS (
+		INSERT INTO subscribers(uuid,email,name,status)
+		SELECT gen_random_uuid(), 'comparison-'||n||'@example.invalid', 'Comparison', 'enabled'
+		FROM generate_series(1, 4096) n RETURNING id
+	) INSERT INTO subscriber_lists(subscriber_id,list_id,status)
+	SELECT id,$1,'confirmed' FROM filler`, single)
+
+	base := fmt.Sprintf(`"base":{"type":"lists","lists":[%d,%d]}`, single, double)
+	rules := map[string]string{
+		"text equality":             v2Filter("lists", []int{single}, []int{exclude}, eq("value", "pro")),
+		"numeric and text equality": `{"version":1,` + base + `,"match":"all","conditions":[{"key":"value","op":"eq","value":"42"}]}`,
+		"boolean and text equality": `{"version":1,"base":{"type":"all"},"match":"any","conditions":[{"key":"value","op":"eq","value":"true"}]}`,
+		"multiple conditions":       `{"version":1,` + base + `,"match":"all","conditions":[{"key":"value","op":"gte","value":"40"},{"key":"value","op":"lte","value":"45"}]}`,
+		"contains":                  `{"version":1,` + base + `,"match":"all","conditions":[{"key":"value","op":"contains","value":"ro"}]}`,
+		"v2 with equality":          v2Filter("lists", []int{single}, []int{exclude}, eq("value", "42")),
+		"v2 without conditions":     v2Filter("all", nil, []int{exclude}),
+		"malformed condition":       `{"version":1,` + base + `,"match":"all","conditions":[{"key":42,"op":"eq","value":"42"}]}`,
+	}
+	for name, filter := range rules {
+		t.Run(name, func(t *testing.T) {
+			list := testList(db, filter, "single")
+			db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'unsubscribed')`, ids[5], list)
+			for _, bounds := range [][2]int{{0, 2147483647}, {0, ids[len(ids)-1]}, {ids[0], ids[3]}} {
+				got := dbIDs(t, db, `SELECT * FROM axm_dynamic_list_members($1, $2, $3) ORDER BY 1`, list, bounds[0], bounds[1])
+				want := dbIDs(t, db, `SELECT * FROM axm_filter_members($1, $2, $3, $4, 2147483647) ORDER BY 1`, filter, list, bounds[0], bounds[1])
+				wantIDs(t, got, want)
+			}
+		})
+	}
+}
+
 func TestDynamicDBTriggerPaths(t *testing.T) {
 	db, q, _ := dynamicTestDB(t)
 	normal := testList(db, nil, "single")
@@ -699,6 +747,8 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM column presets. Keep this block identical to V6_2_1_axm_12.", "-- End of AXM column presets.", "v6.2.1-axm.12.go"},
 		{"-- AXM recent-send exclusion. Keep this block identical to V6_2_1_axm_13.", "-- End of AXM recent-send exclusion.", "v6.2.1-axm.13.go"},
 		{"-- AXM bounced addresses (LST-56). Keep this block identical to V6_2_1_axm_16.", "-- End of AXM bounced addresses.", "v6.2.1-axm.16.go"},
+		{"-- AXM unbounded dynamic list membership (LST-67). Keep this block identical to V6_2_1_axm_18.", "-- End of AXM unbounded dynamic list membership.", "v6.2.1-axm.18.go"},
+		{"-- AXM preserve removed send totals (LST-67). Keep this block identical to V6_2_1_axm_20.", "-- End of AXM preserve removed send totals.", "v6.2.1-axm.20.go"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
 		if err != nil {
@@ -729,10 +779,15 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 	before := defs()
 	// 32: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
 	// axm_followup_reaction, axm_followup_recipients, axm_followup_to_send and axm_followup_recount
-	// (LST-47, .17; their parity is in TestFollowupSchemaAndMigration).
-	if len(before) != 32 {
-		t.Fatalf("expected 32 axm functions, got %d", len(before))
+	// (LST-47, .17; their parity is in TestFollowupSchemaAndMigration). LST-67 adds
+	// axm_filter_members_unlimited and two functions for preserving removed send totals.
+	if len(before) != 35 {
+		t.Fatalf("expected 35 axm functions, got %d", len(before))
 	}
+	db.MustExec(`DROP TRIGGER axm_count_removed_campaign_sends ON axm_campaign_sends;
+		DROP TRIGGER axm_lock_send_campaigns_on_subscriber_delete ON subscribers;
+		DROP FUNCTION axm_count_removed_campaign_sends();
+		DROP FUNCTION axm_lock_send_campaigns_on_subscriber_delete()`)
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.
 	db.MustExec(`DROP FUNCTION axm_recent_exclusion(INT[], INT, TEXT, INT[], INT);
@@ -751,7 +806,8 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		DROP FUNCTION axm_propagate_draw_unsub(); DROP FUNCTION axm_keep_draw_campaigns(); DROP FUNCTION axm_guard_exclude_list_delete();
 		DROP FUNCTION axm_draw_candidates(INT, TEXT, INT); DROP FUNCTION axm_list_target(INT)`)
 	db.MustExec(`DROP TRIGGER axm_guard_dynamic_subscription ON subscriber_lists; ALTER TABLE lists DROP COLUMN axm_filter CASCADE;
-		DROP FUNCTION axm_dynamic_list_members(INT, INT, INT, INT); DROP FUNCTION axm_filter_members(JSONB, INT, INT, INT, INT);
+		DROP FUNCTION axm_dynamic_list_members(INT, INT, INT, INT); DROP FUNCTION axm_filter_members_unlimited(JSONB, INT, INT, INT);
+		DROP FUNCTION axm_filter_members(JSONB, INT, INT, INT, INT);
 		DROP FUNCTION axm_filter_match(JSONB, JSONB); DROP FUNCTION axm_to_number(JSONB); DROP FUNCTION axm_guard_dynamic_subscription()`)
 	for i := 0; i < 2; i++ {
 		if err := migrations.V6_2_1_axm_3(db, nil, nil, nil); err != nil {
@@ -776,6 +832,12 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := migrations.V6_2_1_axm_13(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_18(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_20(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

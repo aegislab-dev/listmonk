@@ -28,6 +28,10 @@ type preflightResponse struct {
 	Name      string    `json:"name"`
 	Messenger string    `json:"messenger"`
 	Mode      string    `json:"mode"`
+	// Resumed (LST-67): a scheduled campaign that was sent from before (a checkpoint or sent
+	// mails), as after a pause and a new schedule. Its people are the Remaining ones, as when it is
+	// resumed: the sender goes on after the checkpoint and skips who was sent to.
+	Resumed bool `json:"resumed"`
 
 	// What the recipients will really see: the stored values, replaced by what the custom
 	// headers of an e-mail campaign set, which the mail goes out with (see sendEnvelope).
@@ -67,10 +71,11 @@ type preflightResponse struct {
 	Overlap  int `json:"overlap"`
 	Excluded int `json:"excluded"`
 	// Resume: the people still to be sent, the number sent so far and the total counted at the start.
-	Remaining int       `json:"remaining"`
-	Sent      int       `json:"sent"`
-	ToSend    int       `json:"to_send"`
-	AsOf      time.Time `json:"as_of"`
+	Remaining     int       `json:"remaining"`
+	Sent          int       `json:"sent"`
+	SentIsMinimum bool      `json:"sent_is_minimum,omitempty"`
+	ToSend        int       `json:"to_send"`
+	AsOf          time.Time `json:"as_of"`
 	// Now is the server's clock when the answer leaves: the window keeps time by it, not by a
 	// browser clock that may be behind (LST-48 review).
 	Now time.Time `json:"now"`
@@ -152,6 +157,28 @@ func stockFrom(from string) bool {
 	return rePlaceholderLocal.MatchString(addr) || placeholderHosts[addr[i+1:]]
 }
 
+// audienceBlock is the line of "checks before sending" about who the campaign reaches, and
+// its level: lists.none when no list is left to send to, recipients.zero when the lists hold
+// nobody the send would mail, else no line. For a resumed or scheduled campaign, hasRecipients
+// refers to people still left to send to. A regular campaign with nobody to reach is blocked
+// (approved design v1, decision 1 and A5). Resume and opt-in preflight modes only warn.
+//
+// The window and the save of a scheduled campaign (LST-67) both judge by this function, so a
+// rule added here applies to both.
+func audienceBlock(campType, mode string, hasLists, hasRecipients bool) (key, level string) {
+	level = models.PreflightBlock
+	if mode == models.PreflightModeResume || campType == models.CampaignTypeOptin {
+		level = models.PreflightWarn
+	}
+	switch {
+	case !hasLists:
+		return "lists.none", level
+	case !hasRecipients:
+		return "recipients.zero", level
+	}
+	return "", ""
+}
+
 // preflightChecks decides the lines of "checks before sending", in the order the screen
 // shows them. The tracking lines come from the tracking check and are not here. Only
 // "block" stops the confirmation, and only for a regular campaign that would reach nobody.
@@ -161,30 +188,12 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		out = append(out, models.PreflightCheck{Key: key, Level: level, Params: params})
 	}
 
-	switch {
-	case f.LiveLists == 0:
-		// A resumed campaign with nothing left only warns, like one with nobody left, and so
-		// does an opt-in campaign (approved design v1, decision 1 and A5: only a regular
-		// campaign that reaches nobody is stopped).
-		level := models.PreflightBlock
-		if f.Mode == models.PreflightModeResume || f.CampType == models.CampaignTypeOptin {
-			level = models.PreflightWarn
-		}
-		add("lists.none", level, nil)
-	default:
-		count := f.Total
-		if f.Mode == models.PreflightModeResume {
-			count = f.Remaining
-		}
-		if count == 0 {
-			// Opt-in campaigns and resumed ones: the number is an estimate or follows other
-			// rules, so it only warns.
-			level := models.PreflightBlock
-			if f.CampType == models.CampaignTypeOptin || f.Mode == models.PreflightModeResume {
-				level = models.PreflightWarn
-			}
-			add("recipients.zero", level, nil)
-		}
+	count := f.Total
+	if f.Mode == models.PreflightModeResume || f.Mode == models.PreflightModeScheduled {
+		count = f.Remaining
+	}
+	if key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists > 0, count > 0); key != "" {
+		add(key, level, nil)
 	}
 
 	// A campaign with a send time is scheduled by the status change, whether it is a draft or
@@ -221,10 +230,6 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 	// Every mail also goes to the Cc and Bcc addresses: they get one copy per recipient, and
 	// the count of people in the title does not hold them (LST-48 review).
 	if len(f.Copies) > 0 {
-		count := f.Total
-		if f.Mode == models.PreflightModeResume {
-			count = f.Remaining
-		}
 		add("mail.copies", models.PreflightWarn, map[string]any{
 			"addresses": strings.Join(f.Copies, ", "), "n": len(f.Copies), "mails": count * len(f.Copies),
 		})
@@ -308,6 +313,8 @@ func preflightMode(status string, sendAt null.Time) string {
 	switch {
 	case status == models.CampaignStatusPaused:
 		return models.PreflightModeResume
+	case status == models.CampaignStatusScheduled:
+		return models.PreflightModeScheduled
 	case sendAt.Valid:
 		return models.PreflightModeSchedule
 	default:
@@ -333,20 +340,28 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	if camp.Status != models.CampaignStatusDraft && camp.Status != models.CampaignStatusPaused {
+	if camp.Status != models.CampaignStatusDraft && camp.Status != models.CampaignStatusPaused && camp.Status != models.CampaignStatusScheduled {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("campaigns.onlyPausedDraft"))
 	}
 	mode := preflightMode(camp.Status, camp.SendAt)
 
 	ctx := c.Request().Context()
-	afterID := 0
-	if mode == models.PreflightModeResume {
-		afterID = camp.LastSubscriberID
-	}
-	lists, aud, err := a.core.GetPreflightAudience(ctx, id, afterID, mode == models.PreflightModeResume)
+	// Pending deliveries of a paused or scheduled campaign follow the same rules as the
+	// sender, even if deliveries were recorded before it could save a checkpoint.
+	countRemaining := mode == models.PreflightModeResume || mode == models.PreflightModeScheduled
+	lists, aud, err := a.core.GetPreflightAudience(ctx, id, camp.LastSubscriberID, countRemaining)
 	if err != nil {
 		return err
 	}
+	sent := camp.Sent
+	if countRemaining {
+		sent, err = a.core.CampaignSendProgress(ctx, camp)
+		if err != nil {
+			return err
+		}
+	}
+	sentIsMinimum := countRemaining && camp.LegacySendHistory
+	rescheduled := mode == models.PreflightModeScheduled && (aud.Remaining != aud.Total || sent > 0 || camp.LastSubscriberID > 0 || sentIsMinimum)
 
 	// A draft started under the sender policy is sent from the starting user's address.
 	from := camp.FromEmail
@@ -406,7 +421,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	subject, from, replyTo := sendEnvelope(env.Subject, from, camp.ReplyTo, camp.Messenger, server, env.Headers, policy)
 	// Headers taken from each subscriber: their example values are not the ones every mail
 	// gets. Cc and Bcc addresses of that kind are not listed (the fixed ones are).
-	sample := a.core.GetPreflightSample(ctx, id, 10, afterID, mode == models.PreflightModeResume)
+	sample := a.core.GetPreflightSample(ctx, id, 10, camp.LastSubscriberID, countRemaining)
 	perSub := perSubscriberHeaders(a, sendCamp, statuses[0], env, server, sample)
 	copies := envelopeCopies(camp.Messenger, server, env.Headers, perSub)
 	perSubscriber := perSub["Cc"] || perSub["Bcc"]
@@ -487,10 +502,10 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode,
+		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode, Resumed: rescheduled,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
-		Sent: camp.Sent, ToSend: camp.ToSend, AsOf: aud.AsOf,
+		Sent: sent, SentIsMinimum: sentIsMinimum, ToSend: camp.ToSend, AsOf: aud.AsOf,
 		Checks: preflightChecks(facts),
 	}
 	if tz, ok := camp.Attribs["axm_send_tz"].(string); ok {
@@ -517,6 +532,9 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		out.Tracking = &rep
 	}
 
+	if err := a.core.CheckPreflightVersion(ctx, camp); err != nil {
+		return err
+	}
 	out.Now = time.Now()
 	return c.JSON(http.StatusOK, okResp{out})
 }
