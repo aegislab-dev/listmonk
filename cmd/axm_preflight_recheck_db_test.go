@@ -25,9 +25,12 @@ import (
 
 // scheduledEnv is the preflight app with its campaign scheduled for tomorrow with three people on
 // its list.
-func scheduledEnv(t *testing.T) *teamsEnv {
+func scheduledEnv(t *testing.T) *teamsEnv { return scheduledEnvScan(t, true) }
+
+// scheduledEnvScan is scheduledEnv whose manager scans for campaigns to send only when scan is true.
+func scheduledEnvScan(t *testing.T, scan bool) *teamsEnv {
 	t.Helper()
-	e := newPreflightApp(t)
+	e := newPreflightAppScan(t, scan)
 	t.Cleanup(e.a.manager.Close)
 	for i := 0; i < 3; i++ {
 		e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
@@ -400,7 +403,9 @@ func TestScheduledSaveReturnsItsOwnVersion(t *testing.T) {
 // The preflight answers for a scheduled campaign: its mode, the warnings the save did not refuse,
 // and a count that is who the send reaches.
 func TestPreflightOfScheduledCampaign(t *testing.T) {
-	e := scheduledEnv(t)
+	// reach makes the campaign running and reads it as the sender does; a scanning manager would
+	// send it and finish it first (LST-74).
+	e := scheduledEnvScan(t, false)
 	member := e.as(e.ua)
 	target := fmt.Sprintf("/api/campaigns/%d/preflight", e.campID)
 	id := strconv.Itoa(e.campID)
