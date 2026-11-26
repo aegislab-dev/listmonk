@@ -11,6 +11,10 @@ import (
 // V6_2_1_axm_23 retains aggregate exclusions when a subscriber is deleted before the campaign ends.
 func V6_2_1_axm_23(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger) error {
 	_, err := db.Exec(`-- AXM recent-send counts after subscriber deletion (LST-65). Keep this block identical to V6_2_1_axm_23.
+-- Take the holds writer lock first. The sender reads holds before rules, so this prevents DDL
+-- from retaining a rules lock while waiting to replace the holds trigger.
+LOCK TABLE axm_campaign_recent_holds IN SHARE ROW EXCLUSIVE MODE;
+
 ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS removed_held_count INTEGER NOT NULL DEFAULT 0;
 
 -- Keep only the count when subscriber deletion cascades to the holds.

@@ -943,8 +943,12 @@ export default Vue.extend({
       // Send only a rule the person changed in this editor. A second tab may have saved a newer
       // rule after this page loaded; resending this tab's unchanged baseline would overwrite it.
       // The server checks an omitted rule against the current saved rule in its transaction.
-      const recentRuleInCampaignSave = this.data.status === 'scheduled' && this.recentRuleDirty;
-      if (recentRuleInCampaignSave) data.recent_rule = recentRulePayload(this.recentRule);
+      // The campaign status can change in another editor after this page loaded. Always include
+      // this editor's dirty rule so a draft -> scheduled race validates and saves it atomically.
+      // If the server now sees a draft, it ignores this field; saveRecentRule below then persists
+      // it through the dedicated endpoint instead.
+      const recentRuleWasDirty = this.recentRuleDirty;
+      if (recentRuleWasDirty) data.recent_rule = recentRulePayload(this.recentRule);
 
       let typMsg = 'globals.messages.updated';
       if (typ === 'start') {
@@ -968,10 +972,11 @@ export default Vue.extend({
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
-        if (recentRuleInCampaignSave) {
+        const recentRuleSavedWithCampaign = recentRuleWasDirty && d.status === 'scheduled';
+        if (recentRuleSavedWithCampaign) {
           this.savedRecentRule = this.recentRuleKey;
           this.recentRuleError = '';
-        } else if (d.status === 'scheduled') {
+        } else if (d.status === 'scheduled' && !recentRuleWasDirty) {
           // Another editor may have changed the rule since this page loaded. Keep the panel in
           // sync with the rule the server just used to check this save.
           try {
@@ -987,7 +992,7 @@ export default Vue.extend({
         // The rule failing must not hide what the saved campaign now has: the campaign is saved, and
         // the check below reads it (LST-67 review). The rule's error goes on after it.
         let ruleError = null;
-        if (!recentRuleInCampaignSave) {
+        if (!recentRuleSavedWithCampaign) {
           try {
             await this.saveRecentRule(d.id);
           } catch (err) {

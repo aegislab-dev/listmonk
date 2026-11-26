@@ -334,27 +334,53 @@ func TestRecentRulePauseResumeAndRestart(t *testing.T) {
 	}
 
 	t.Run("pause during first read and resume twice", func(t *testing.T) {
-		e, out, want := setup(t, 24)
+		e := newSendsEnv(t, 24)
+		ago := make(map[int]time.Duration, len(e.eligible))
+		for _, id := range e.eligible {
+			ago[id] = hours(2)
+		}
+		prior := e.rsPrior(models.CampaignTypeRegular, e.listID, ago)
+		e.rsRule(models.RecentRule{Enabled: true, Days: 7, Scope: models.RecentScopeCampaigns,
+			CampaignIDs: pq.Int64Array{int64(prior)}})
+		out, want := slices.Clone(e.eligible), []int{}
+		// Gate the actual INSERT in HoldRecentBatch. A lock on the holds table is not enough:
+		// next-campaigns also reads that table before the sender has read a subscriber batch.
+		e.db.MustExec(`CREATE FUNCTION axm_test_gate_recent_hold_batch() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+		BEGIN
+			PERFORM pg_advisory_lock(65165, 987);
+			PERFORM pg_advisory_unlock(65165, 987);
+			RETURN NEW;
+		END;
+		$$;
+		CREATE TRIGGER axm_test_gate_recent_hold_batch BEFORE INSERT ON axm_campaign_recent_holds
+		FOR EACH ROW EXECUTE FUNCTION axm_test_gate_recent_hold_batch();`)
+		t.Cleanup(func() { e.db.Exec(`DROP TRIGGER IF EXISTS axm_test_gate_recent_hold_batch ON axm_campaign_recent_holds;
+			DROP FUNCTION IF EXISTS axm_test_gate_recent_hold_batch()`) })
+		gate, err := e.db.Connx(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer gate.Close()
 		msgr := &gateMessenger{}
-		// Block the recent exclusion query after the sender has read eligible subscribers but before
-		// the first batch is passed to the workers.
 		e.setStatus(models.CampaignStatusPaused)
 		m := e.startManager(e.store, msgr, io.Discard)
 		t.Cleanup(m.Close)
 		for i := 0; i < 2; i++ {
-			readLock := e.db.MustBegin()
-			defer readLock.Rollback()
-			readLock.MustExec(`LOCK TABLE axm_campaign_recent_holds IN ACCESS EXCLUSIVE MODE`)
+			if _, err := gate.ExecContext(context.Background(), `SELECT pg_advisory_lock(65165, 987)`); err != nil {
+				t.Fatal(err)
+			}
 			e.setStatus(models.CampaignStatusRunning)
-			waitFor(t, "first batch waiting for holds table", func() bool {
+			waitFor(t, "first subscriber batch waiting in the holds insert", func() bool {
 				var waiting bool
-				e.get(&waiting, `SELECT EXISTS (SELECT 1 FROM pg_locks
-					WHERE relation='axm_campaign_recent_holds'::regclass AND NOT granted)`)
+				e.get(&waiting, `SELECT EXISTS (
+					SELECT 1 FROM pg_stat_activity
+					WHERE datname=current_database() AND wait_event_type='Lock' AND wait_event='advisory'
+					AND query ILIKE '%INSERT INTO axm_campaign_recent_holds%')`)
 				return waiting
 			})
 			e.setStatus(models.CampaignStatusPaused)
 			m.StopCampaign(e.campID)
-			if err := readLock.Rollback(); err != nil {
+			if _, err := gate.ExecContext(context.Background(), `SELECT pg_advisory_unlock(65165, 987)`); err != nil {
 				t.Fatal(err)
 			}
 			waitFor(t, "the pause to take effect", func() bool { return !m.HasRunningCampaigns() })
@@ -675,6 +701,9 @@ func TestRecentHoldsFinishedCountMigrationCapturesAConcurrentFinalBatch(t *testi
 	e.rsRule(models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns,
 		CampaignIDs: pq.Int64Array{int64(prior)}})
 	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id,subscriber_id) VALUES($1,$2)`, e.campID, e.eligible[0])
+	// Keep one prior decision only in removed_held_count. Replaying .22 during the final batch
+	// must preserve it in both the backfill and the finish snapshot.
+	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[0])
 
 	// Pause the .22 backfill after its statement snapshot and rule-row lock. The campaign finish
 	// trigger must already be committed by then, so a final sender batch can still be snapshotted.
@@ -829,6 +858,53 @@ func TestRecentHoldsFinishedCountMigrationDoesNotHoldRuleLockWhileWaitingForCamp
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("migration did not finish after sender released campaigns")
+	}
+}
+
+func TestRecentHoldsDeletionMigrationUsesSenderLockOrder(t *testing.T) {
+	e := newSendsEnv(t, 2)
+	e.rsRule(models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll})
+	readRules := e.db.MustBegin()
+	defer readRules.Rollback()
+	readRules.MustExec(`LOCK TABLE axm_campaign_recent_rules IN ACCESS SHARE MODE`)
+
+	migrated := make(chan error, 1)
+	go func() { migrated <- migrations.V6_2_1_axm_23(e.db, nil, nil, nil) }()
+	waitFor(t, ".23 waiting to alter recent rules", func() bool {
+		var waiting bool
+		e.get(&waiting, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid AND NOT l.granted
+			WHERE a.datname=current_database() AND l.relation='axm_campaign_recent_rules'::regclass
+			AND a.query ILIKE '%ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS removed_held_count%')`)
+		return waiting
+	})
+
+	batch := make(chan error, 1)
+	go func() {
+		_, err := e.core.HoldRecentBatch(context.Background(), e.campID, e.eligible)
+		batch <- err
+	}()
+	waitFor(t, "the sender's real exclusion batch to wait on a migration lock", func() bool {
+		var waiting bool
+		e.get(&waiting, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname=current_database() AND wait_event_type='Lock'
+			AND query ILIKE '%INSERT INTO axm_campaign_recent_holds%')`)
+		return waiting
+	})
+
+	if err := readRules.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for name, result := range map[string]<-chan error{".23 migration": migrated, "sender batch": batch} {
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s did not complete after the rule lock was released", name)
+		}
 	}
 }
 

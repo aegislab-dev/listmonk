@@ -17,10 +17,17 @@ ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS finished_held_cou
 -- Save the aggregate with the status change. The subscriber-specific holds can still cascade.
 CREATE OR REPLACE FUNCTION axm_snapshot_recent_holds()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    held_count INTEGER;
 BEGIN
-    UPDATE axm_campaign_recent_rules r
-    SET finished_held_count = (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = NEW.id)
-    WHERE r.campaign_id = NEW.id;
+    -- removed_held_count was added by .23. Read it through the row JSON so this function also
+    -- works while an existing database reruns .22 before .23 is replayed.
+    SELECT COALESCE((to_jsonb(r)->>'removed_held_count')::INTEGER, 0)
+        + (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = NEW.id)
+    INTO held_count FROM axm_campaign_recent_rules r WHERE r.campaign_id = NEW.id;
+    IF FOUND THEN
+        UPDATE axm_campaign_recent_rules SET finished_held_count = held_count WHERE campaign_id = NEW.id;
+    END IF;
     RETURN NEW;
 END;
 $$;
@@ -35,9 +42,12 @@ CREATE TRIGGER axm_recent_holds_finished AFTER UPDATE OF status ON campaigns
 -- because the trigger is already live, a completion after this statement's snapshot overwrites
 -- this initial value with the final batch count.
 UPDATE axm_campaign_recent_rules r
-SET finished_held_count = (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id)
-WHERE r.finished_held_count IS NULL AND EXISTS (
-    SELECT 1 FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id
+SET finished_held_count = COALESCE((to_jsonb(r)->>'removed_held_count')::INTEGER, 0)
+    + (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id)
+WHERE r.finished_held_count IS NULL AND (
+    COALESCE((to_jsonb(r)->>'removed_held_count')::INTEGER, 0) > 0 OR EXISTS (
+        SELECT 1 FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id
+    )
 );
 -- End of AXM completed recent-send counts.`
 

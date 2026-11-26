@@ -340,6 +340,89 @@ describe('Pre-send confirmation window', () => {
       .its('body.data.enabled').should('equal', false);
   });
 
+  it('keeps a dirty recent rule when another editor schedules or unschedules the campaign', () => {
+    let sourceList;
+    let targetList;
+    let sourceID;
+    let draftTargetID;
+    let scheduledTargetID;
+    const path = (id, suffix = '') => `/api/campaigns/${id}${suffix}`;
+    const sourceFinished = (id, tries = 30) => cy.request(path(id)).then(({ body: { data } }) => {
+      if (data.status !== 'finished' && tries > 0) {
+        cy.wait(1000);
+        return sourceFinished(id, tries - 1);
+      }
+      return data;
+    });
+
+    cy.request('POST', '/api/lists', {
+      name: `Rule race source ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { sourceList = body.data.id; });
+    cy.request('POST', '/api/lists', {
+      name: `Rule race target ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { targetList = body.data.id; });
+    cy.then(() => {
+      person(`rule-race-shared-${stamp}`, [sourceList, targetList]);
+      person(`rule-race-target-a-${stamp}`, [targetList]);
+      person(`rule-race-target-b-${stamp}`, [targetList]);
+      return create('rule-race-source', { lists: [sourceList] });
+    }).then(({ id }) => {
+      sourceID = id;
+      return cy.request('PUT', path(sourceID, '/status'), { status: 'running' });
+    }).then(() => sourceFinished(sourceID)).its('status').should('equal', 'finished')
+      .then(() => create('rule-race-draft-target', {
+        lists: [targetList], send_at: new Date(Date.now() + 86400000).toISOString(),
+      }))
+      .then(({ id }) => {
+        draftTargetID = id;
+        return cy.visit(`/admin/campaigns/${id}`);
+      })
+      .then(() => {
+        cy.get('[data-cy=recent-enabled] .check').click();
+        cy.get('[name=subject]').clear().type(`Draft race saved ${stamp}`);
+        // A second editor schedules after this editor loaded the draft.
+        cy.request('PUT', path(draftTargetID, '/status'), { status: 'scheduled' });
+        cy.intercept('PUT', path(draftTargetID)).as('draftRaceSave');
+        cy.get('[data-cy=btn-save]').click();
+        cy.wait('@draftRaceSave').then(({ request, response }) => {
+          expect(request.body.recent_rule).to.include({ enabled: true });
+          expect(response.statusCode).to.equal(200);
+          expect(response.body.data.status).to.equal('scheduled');
+        });
+        cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+        cy.get('[data-cy=send-ok]').click();
+        cy.get(win).should('not.exist');
+        cy.request(path(draftTargetID, '/recent-exclude')).its('body.data.enabled').should('equal', true);
+        cy.request(path(draftTargetID, '/preflight')).its('body.data.will_send').should('equal', 2);
+      })
+      .then(() => create('rule-race-scheduled-target', {
+        lists: [targetList], send_at: new Date(Date.now() + 86400000).toISOString(),
+      }))
+      .then(({ id }) => {
+        scheduledTargetID = id;
+        return cy.request('PUT', path(id, '/status'), { status: 'scheduled' })
+          .then(() => cy.visit(`/admin/campaigns/${id}`));
+      })
+      .then(() => {
+        cy.get('[data-cy=recent-enabled] .check').click();
+        // A second editor unschedules after this editor loaded the scheduled campaign.
+        cy.request('PUT', path(scheduledTargetID, '/status'), { status: 'draft' });
+        cy.intercept('PUT', path(scheduledTargetID)).as('scheduledRaceSave');
+        cy.intercept('PUT', path(scheduledTargetID, '/recent-exclude')).as('scheduledRaceRuleSave');
+        cy.get('[data-cy=btn-save]').click();
+        cy.wait('@scheduledRaceSave').then(({ request, response }) => {
+          expect(request.body.recent_rule).to.include({ enabled: true });
+          expect(response.statusCode).to.equal(200);
+          expect(response.body.data.status).to.equal('draft');
+        });
+        cy.wait('@scheduledRaceRuleSave').its('response.statusCode').should('equal', 200);
+        cy.get('[data-cy=recent-enabled] input').should('be.checked');
+        cy.request(path(scheduledTargetID, '/recent-exclude')).its('body.data.enabled').should('equal', true);
+        cy.request('PUT', path(scheduledTargetID, '/status'), { status: 'scheduled' });
+        cy.request(path(scheduledTargetID, '/preflight')).its('body.data.will_send').should('equal', 2);
+      });
+  });
+
   it('says in the window that a saved exclusion rule is applied and what goes out, from the list too', () => {
     cy.visit('/admin/campaigns');
     row('rule').find('[data-cy=btn-start]').click();
