@@ -29,6 +29,9 @@ import (
 type campReq struct {
 	models.Campaign
 	ReplyToInput *string `json:"reply_to"`
+	// RecentRule is included only when a scheduled edit changes the rule, so the
+	// campaign update, rule change, and recipient check commit as one operation.
+	RecentRule *models.RecentRule `json:"recent_rule"`
 
 	// This overrides Campaign.Lists to receive and
 	// write a list of int IDs during creation and updation.
@@ -408,6 +411,19 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
+	if cm.Status == models.CampaignStatusScheduled && o.RecentRule != nil {
+		if err := a.core.ValidateRecentRule(o.RecentRule); err != nil {
+			return err
+		}
+		if err := a.resolveRecentSources(o.RecentRule, id, c); err != nil {
+			return err
+		}
+		// Match the dedicated rule endpoint: if every selected source was deleted,
+		// there is no new rule to save (existing holds remain in the campaign ledger).
+		if o.RecentRule.Scope == models.RecentScopeCampaigns && len(o.RecentRule.CampaignIDs) == 0 {
+			*o.RecentRule = models.RecentRule{}
+		}
+	}
 	listIDs, err := campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
 	if err != nil {
 		return err
@@ -438,12 +454,21 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 		// AXM (LST-67): a scheduled campaign goes out at its time with nothing between, so what
 		// it would reach is judged again when it is saved, and a save that leaves nobody to send
 		// to is refused (the schedule stays as it was).
-		out, err = a.core.UpdateScheduledCampaign(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs, a.scheduledSaveCheck)
+		if o.RecentRule != nil {
+			out, err = a.core.UpdateScheduledCampaignWithRecentRule(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs, *o.RecentRule, user.ID, a.scheduledSaveCheck)
+		} else {
+			out, err = a.core.UpdateScheduledCampaign(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs, a.scheduledSaveCheck)
+		}
 	} else {
 		out, err = a.core.UpdateCampaign(id, o.Campaign, o.ListIDs, o.MediaIDs)
 	}
 	if err != nil {
 		return err
+	}
+	if cm.Status == models.CampaignStatusScheduled && o.RecentRule != nil {
+		a.audit(c, auditCampaignRecentRule, auditTarget{auditTargetCampaign, id, cm.Name}, auditNoCount, map[string]any{
+			"days": o.RecentRule.Days, "scope": o.RecentRule.Scope, "campaign_ids": o.RecentRule.CampaignIDs, "enabled": o.RecentRule.Enabled,
+		})
 	}
 
 	if err := a.campaignReplyVerified(&out); err != nil {

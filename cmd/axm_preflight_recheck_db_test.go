@@ -39,10 +39,20 @@ func scheduledEnv(t *testing.T) *teamsEnv {
 // save puts the campaign as the page does and returns the status and the answer's message.
 func (e *teamsEnv) save(subject string, lists []int, sendAt *time.Time, typ string) (int, string) {
 	e.t.Helper()
-	return e.saveAs(e.as(e.superAdmin), subject, lists, sendAt, typ)
+	return e.saveAsRule(e.as(e.superAdmin), subject, lists, sendAt, typ, nil)
+}
+
+func (e *teamsEnv) saveWithRecentRule(subject string, lists []int, sendAt *time.Time, typ string, rule models.RecentRule) (int, string) {
+	e.t.Helper()
+	return e.saveAsRule(e.as(e.superAdmin), subject, lists, sendAt, typ, &rule)
 }
 
 func (e *teamsEnv) saveAs(user auth.User, subject string, lists []int, sendAt *time.Time, typ string) (int, string) {
+	e.t.Helper()
+	return e.saveAsRule(user, subject, lists, sendAt, typ, nil)
+}
+
+func (e *teamsEnv) saveAsRule(user auth.User, subject string, lists []int, sendAt *time.Time, typ string, rule *models.RecentRule) (int, string) {
 	e.t.Helper()
 	body := map[string]any{
 		"name": "Renamed", "subject": subject, "lists": lists, "type": typ, "content_type": "richtext",
@@ -53,6 +63,9 @@ func (e *teamsEnv) saveAs(user auth.User, subject string, lists []int, sendAt *t
 	body["send_at"] = nil
 	if sendAt != nil {
 		body["send_at"] = sendAt.Format(time.RFC3339)
+	}
+	if rule != nil {
+		body["recent_rule"] = rule
 	}
 	b, _ := json.Marshal(body)
 	code, data := e.call(e.a.UpdateCampaign, user, http.MethodPut,
@@ -203,6 +216,70 @@ func TestScheduledSaveAgreesWithRecentExclusionPreflight(t *testing.T) {
 		t.Fatalf("save with one recipient left: %d %s", code, data)
 	}
 	check(1)
+}
+
+func TestScheduledEditChecksAndSavesTheNewRecentRuleAtomically(t *testing.T) {
+	e := scheduledEnv(t)
+	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, rule, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2`, prior, e.aList)
+	var sendAt time.Time
+	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
+
+	// Turning the rule off restores all three recipients. The old saved rule would have
+	// rejected the zero-person schedule if the campaign and rule were saved separately.
+	if code, data := e.saveWithRecentRule("Rule disabled", []int{e.aList}, &sendAt, "regular", models.RecentRule{}); code != http.StatusOK {
+		t.Fatalf("disable old rule: %d %s", code, data)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || enabled {
+		t.Fatalf("rule after disable: enabled=%t err=%v", enabled, err)
+	}
+	_, aud, err := e.core.GetPreflightAudience(context.Background(), e.campID, 0, true)
+	if err != nil || aud.Remaining != 3 {
+		t.Fatalf("disabled-rule audience: %+v err=%v", aud, err)
+	}
+
+	// Turning the rule on would leave no recipients. It must reject both the campaign
+	// edit and rule update, preserving the preceding saved version.
+	before, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, data := e.saveWithRecentRule("Must roll back", []int{e.aList}, &sendAt, "regular", rule); code != http.StatusBadRequest {
+		t.Fatalf("enable all-excluding rule: %d %s", code, data)
+	}
+	after, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil || after.Subject != before.Subject || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("failed rule save changed the campaign: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || enabled {
+		t.Fatalf("failed save changed the rule: enabled=%t err=%v", enabled, err)
+	}
+
+	// With only one recent recipient, both the edit response and its immediate preflight
+	// describe the same version and the newly saved rule.
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id=$1 AND subscriber_id IN (
+		SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1 ORDER BY subscriber_id DESC LIMIT 2)`, prior)
+	if code, data := e.saveWithRecentRule("One excluded", []int{e.aList}, &sendAt, "regular", rule); code != http.StatusOK {
+		t.Fatalf("enable partly excluding rule: %d %s", code, data)
+	}
+	after, err = e.core.GetCampaign(e.campID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := pfRead(t, e, e.as(e.superAdmin), fmt.Sprintf("/api/campaigns/%d/preflight", e.campID), strconv.Itoa(e.campID))
+	var pf preflightResponse
+	if err := json.Unmarshal(data, &pf); err != nil {
+		t.Fatal(err)
+	}
+	if !pf.UpdatedAt.Time.Equal(after.UpdatedAt.Time) || pf.WillSend != 2 || !pf.Recent.Enabled ||
+		!slices.ContainsFunc(pf.Checks, func(c models.PreflightCheck) bool { return c.Key == "recent.applied" }) {
+		t.Fatalf("save and preflight differ: saved=%v preflight=%s", after.UpdatedAt, data)
+	}
 }
 
 func TestScheduledSaveFindsAnEligibleDynamicRecipient(t *testing.T) {

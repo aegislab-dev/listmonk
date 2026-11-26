@@ -380,6 +380,7 @@
    ],
    "specs": [
     "campaign-recent-exclude.cy.js",
+    "campaign-send-confirm.cy.js",
     "address-check.cy.js"
    ]
   },

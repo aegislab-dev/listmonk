@@ -889,6 +889,7 @@
     "campaigns.sendConfirm.check.recent.applied.resumeBoth": "**이 발송에서 이미 뺀 {held}명은 계속 빼고, 새로 {fresh}명을 더 뺍니다.** 일시정지 동안 기간이 지나도 이미 뺀 사람은 달라지지 않습니다.",
     "campaigns.sendConfirm.confirm.blocked": "보낼 수 없음",
     "campaigns.sendConfirm.check.recent.applied.resumeNone": "최근 {days}일 안에 메일을 받은 사람은 이어서 보내는 시각에 다시 세어 뺍니다.",
+    "campaigns.sendConfirm.check.recent.applied.scopeUnavailable": "이 발송에서 이미 뺀 {excluded}명은 계속 뺍니다. 원본 캠페인이 없어 제외 범위를 표시할 수 없습니다.",
     "campaigns.sendConfirm.check.recent.all.block": "**받는 사람이 모두 최근 {days}일 안에 메일을 받아 보낼 사람이 없습니다.** 제외 규칙을 끄거나 기간·범위를 바꾸세요.",
     "campaigns.sendConfirm.zeroSummary": "받을 수 있는 사람이 0명입니다.",
     "campaigns.sendConfirm.progressPaused": "보낸 수 {sent} / 전체 {total} · 일시정지 {time}",

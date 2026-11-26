@@ -664,6 +664,64 @@ func TestRecentHoldsFinishedCountMigration(t *testing.T) {
 	assertHeld(active, 1)
 }
 
+func TestRecentHoldsFinishedCountMigrationReleasesRuleLockBeforeCampaignBackfill(t *testing.T) {
+	e := newSendsEnv(t, 2)
+	e.db.MustExec(`DROP TRIGGER axm_recent_holds_finished ON campaigns;
+		DROP FUNCTION axm_snapshot_recent_holds();
+		ALTER TABLE axm_campaign_recent_rules DROP COLUMN finished_held_count`)
+
+	// Hold ACCESS EXCLUSIVE on campaigns so the migration's cross-table backfill
+	// waits after adding its column. The old combined Exec retained ACCESS EXCLUSIVE
+	// on the recent-rule table there; the second session then checks it in sender order.
+	sender, err := e.db.Beginx()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Rollback()
+	if _, err := sender.Exec(`LOCK TABLE campaigns IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated := make(chan error, 1)
+	go func() { migrated <- migrations.V6_2_1_axm_22(e.db, nil, nil, nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		err := e.db.Get(&waiting, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid AND NOT l.granted
+			WHERE a.datname=current_database() AND a.wait_event_type='Lock'
+			AND a.query ILIKE '%UPDATE axm_campaign_recent_rules%')`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("migration did not reach the campaign backfill lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var rules int
+	if err := sender.GetContext(ctx, &rules, `SELECT COUNT(*) FROM axm_campaign_recent_rules`); err != nil {
+		t.Fatalf("sender could not read the rule table while migration waited for campaigns: %v", err)
+	}
+	if err := sender.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-migrated:
+		if err != nil {
+			t.Fatalf("migration after sender released campaigns: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("migration did not finish after sender released campaigns")
+	}
+}
+
 // The rule is "on" the same way for the sender, the people it left out, the page and the window: a
 // rule on chosen campaigns that were all deleted has no new matches. Previously held people stay
 // out, and a follow-up has no rule whatever its row says.

@@ -937,6 +937,12 @@ export default Vue.extend({
         media: this.form.media.map((m) => m.id),
       };
 
+      // A scheduled campaign must validate the audience against the rule being saved, in the
+      // same server transaction. Sending the rule separately can validate stale settings and can
+      // make the follow-up preflight look like somebody else's edit.
+      const recentRuleInCampaignSave = this.data.status === 'scheduled' && this.recentRuleDirty;
+      if (recentRuleInCampaignSave) data.recent_rule = recentRulePayload(this.recentRule);
+
       let typMsg = 'globals.messages.updated';
       if (typ === 'start') {
         typMsg = 'campaigns.started';
@@ -959,15 +965,21 @@ export default Vue.extend({
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
+        if (recentRuleInCampaignSave) {
+          this.savedRecentRule = this.recentRuleKey;
+          this.recentRuleError = '';
+        }
         // The target is saved now, whatever happens to the rule below.
         if (this.madeList && this.sentMadeList(data.lists)) this.madeList = { ...this.madeList, error: '' };
         // The rule failing must not hide what the saved campaign now has: the campaign is saved, and
         // the check below reads it (LST-67 review). The rule's error goes on after it.
         let ruleError = null;
-        try {
-          await this.saveRecentRule(d.id);
-        } catch (err) {
-          ruleError = err;
+        if (!recentRuleInCampaignSave) {
+          try {
+            await this.saveRecentRule(d.id);
+          } catch (err) {
+            ruleError = err;
+          }
         }
         // A scheduled campaign goes out at its time with nothing between: what the save left is
         // checked again and shown (LST-67). The start and schedule buttons save a draft or a

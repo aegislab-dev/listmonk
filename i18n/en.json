@@ -885,6 +885,7 @@
     "campaigns.sendConfirm.check.recent.applied.resumeBoth": "**The {held} people already left out of this send stay out, and {fresh} more are left out now.** The days passing while it is paused changes nothing for those already left out.",
     "campaigns.sendConfirm.confirm.blocked": "Cannot be sent",
     "campaigns.sendConfirm.check.recent.applied.resumeNone": "People who got mail in the last {days} days are counted again and left out when it goes on.",
+    "campaigns.sendConfirm.check.recent.applied.scopeUnavailable": "The {excluded} people already left out of this send stay out. The source campaign is gone, so its exclusion scope cannot be shown.",
     "campaigns.sendConfirm.check.recent.all.block": "**Everybody on the lists got mail in the last {days} days, so there is nobody to send to.** Turn the rule off or change its period or scope.",
     "campaigns.sendConfirm.zeroSummary": "Nobody can receive it.",
     "campaigns.sendConfirm.progressPaused": "{sent} sent of {total} · paused {time}",

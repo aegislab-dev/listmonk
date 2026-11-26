@@ -168,6 +168,24 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if !models.CanEditRecentRule(campaign.Status, campaign.Started) {
 		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
 	}
+	out, err = c.saveRecentRuleTx(ctx, tx, campaignID, rule, userID)
+	if err != nil {
+		return out, err
+	}
+	if err := tx.Commit(); err != nil {
+		return out, c.recentError(err)
+	}
+	return out, nil
+}
+
+// saveRecentRuleTx updates a campaign's rule within the caller's transaction. The caller must
+// hold the campaign row lock; scheduled campaign edits use this to validate the new audience and
+// rule together before committing either.
+func (c *Core) saveRecentRuleTx(ctx context.Context, tx *sqlx.Tx, campaignID int, rule models.RecentRule, userID int) (models.RecentRule, error) {
+	var out models.RecentRule
+	if err := c.ValidateRecentRule(&rule); err != nil {
+		return out, err
+	}
 	// AXM (LST-65): a follow-up campaign goes to the people who got the original, so the rule would
 	// leave out all of them (or race the follow-up's own judgement of each batch): it takes none.
 	if rule.Enabled {
@@ -194,20 +212,18 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	}
 
 	if rule.Enabled {
-		err = tx.Stmtx(c.q.AxmUpsertRecentRule).GetContext(ctx, &out,
-			campaignID, rule.Days, rule.Scope, rule.CampaignIDs, userID)
+		if err := tx.Stmtx(c.q.AxmUpsertRecentRule).GetContext(ctx, &out,
+			campaignID, rule.Days, rule.Scope, rule.CampaignIDs, userID); err != nil {
+			return out, c.recentError(err)
+		}
 	} else {
-		_, err = tx.Stmtx(c.q.AxmDeleteRecentRule).ExecContext(ctx, campaignID)
-	}
-	if err != nil {
-		return out, c.recentError(err)
+		if _, err := tx.Stmtx(c.q.AxmDeleteRecentRule).ExecContext(ctx, campaignID); err != nil {
+			return out, c.recentError(err)
+		}
 	}
 	// AXM (LST-65): the rule decides who a send reaches, so a send window opened before the change
 	// must be told the campaign changed (the status change refuses a stale updated_at).
 	if _, err := tx.Stmtx(c.q.AxmTouchRecentCampaign).ExecContext(ctx, campaignID); err != nil {
-		return out, c.recentError(err)
-	}
-	if err := tx.Commit(); err != nil {
 		return out, c.recentError(err)
 	}
 	return out, nil

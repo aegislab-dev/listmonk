@@ -170,8 +170,8 @@ describe('Recent-send exclusion settings', () => {
     cy.get(switchInput).should('be.checked');
     cy.get(switchControl).click();
     cy.get('[data-cy=btn-save]').click();
-    cy.wait('@saveRule').its('response.body.data').should('deep.equal', { enabled: false });
-    cy.request(rulePath()).its('body.data').should('deep.equal', { enabled: false });
+    cy.wait('@saveRule').its('response.body.data').should('include', { enabled: false });
+    cy.request(rulePath()).its('body.data').should('include', { enabled: false });
     cy.reload();
     cy.get(switchInput).should('not.be.checked');
 

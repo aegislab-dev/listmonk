@@ -23,7 +23,10 @@ const create = (key, data) => cy.request('POST', '/api/campaigns', {
   content_type: 'richtext',
   body: '<p>Hello <a href="{{ UnsubscribeURL }}">leave</a></p>',
   ...data,
-}).then(({ body }) => { camp[key] = body.data.id; });
+}).then(({ body }) => {
+  camp[key] = body.data.id;
+  return body.data;
+});
 
 const row = (key) => cy.contains('tbody tr', `Send ${key} ${stamp}`);
 
@@ -202,33 +205,36 @@ describe('Pre-send confirmation window', () => {
   });
 
   it('agrees with scheduled editing when sending history leaves zero recipients', () => {
-    cy.then(() => {
-      create('scheduled-zero-source', { lists: [listY] });
-      create('scheduled-zero', {
-        lists: [listY], send_at: new Date(Date.now() + 86400000).toISOString(),
-      });
-    });
-    const path = () => `/api/campaigns/${camp['scheduled-zero']}`;
-    cy.then(() => {
-      cy.request('PUT', `${path()}/recent-exclude`, {
-        enabled: true, days: 14, scope: 'campaigns', campaign_ids: [camp['scheduled-zero-source']],
-      });
-      cy.request('PUT', `/api/campaigns/${camp['scheduled-zero-source']}/status`, { status: 'running' });
-    });
-    const withHistory = (tries = 30) => cy.request(`${path()}/preflight`).then(({ body: { data } }) => {
+    let scheduledSourceID;
+    cy.then(() => create('scheduled-zero-source', { lists: [listY] }))
+      .then(({ id }) => {
+        scheduledSourceID = id;
+        return create('scheduled-zero', {
+          lists: [listY], send_at: new Date(Date.now() + 86400000).toISOString(),
+        });
+      })
+      .then(({ id }) => cy.wrap(id).as('scheduledZeroID'));
+    const path = (id, suffix = '') => `/api/campaigns/${id}${suffix}`;
+    const withHistory = (id, tries = 30) => cy.request(path(id, '/preflight')).then(({ body: { data } }) => {
       if (data.will_send > 0 && tries > 0) {
         cy.wait(1000);
-        return withHistory(tries - 1);
+        return withHistory(id, tries - 1);
       }
       return data;
     });
-    cy.then(() => withHistory()).its('will_send').should('equal', 0);
+    cy.get('@scheduledZeroID').then((id) => {
+      cy.request('PUT', path(id, '/recent-exclude'), {
+        enabled: true, days: 14, scope: 'campaigns', campaign_ids: [scheduledSourceID],
+      });
+      cy.request('PUT', `/api/campaigns/${scheduledSourceID}/status`, { status: 'running' });
+      return withHistory(id);
+    }).its('will_send').should('equal', 0);
 
     cy.visit('/admin/campaigns');
     row('scheduled-zero').find('[data-cy=btn-schedule]').should('exist');
-    cy.then(() => {
-      cy.intercept('GET', `${path()}/preflight`).as('scheduledZeroCheck');
-      cy.request('PUT', `${path()}/status`, { status: 'scheduled' });
+    cy.get('@scheduledZeroID').then((id) => {
+      cy.intercept('GET', path(id, '/preflight')).as('scheduledZeroCheck');
+      cy.request('PUT', path(id, '/status'), { status: 'scheduled' });
     });
     row('scheduled-zero').find('[data-cy=btn-schedule]').click();
     cy.wait('@scheduledZeroCheck').its('response.body.data').should((data) => {
@@ -242,14 +248,38 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-ok]').should('contain', 'keep the schedule').click();
     cy.get(win).should('not.exist');
 
-    cy.then(() => {
-      cy.intercept('PUT', path()).as('zeroSave');
-      cy.visit(`/admin/campaigns/${camp['scheduled-zero']}`);
-    });
+    cy.get('@scheduledZeroID').then((id) => cy.visit(`/admin/campaigns/${id}`));
+    // Turn the already-saved rule off while editing the scheduled campaign. The new rule
+    // restores both recipients, so the campaign edit and rule change must be checked together.
+    cy.intercept('PUT', '**/api/campaigns/*').as('restoreRecipients');
+    cy.get('[data-cy=recent-enabled] .check').click();
     cy.get('[data-cy=btn-save]').click();
-    cy.wait('@zeroSave').its('response.statusCode').should('equal', 400);
+    cy.wait('@restoreRecipients').then(({ request, response }) => {
+      expect(request.body.recent_rule).to.deep.equal({ enabled: false });
+      expect(response.statusCode).to.equal(200);
+    });
+    ready();
+    cy.get('[data-cy=send-ok]').click();
+    cy.get(win).should('not.exist');
+    cy.get('@scheduledZeroID').then((id) => cy.request(path(id, '/recent-exclude')))
+      .its('body.data.enabled').should('equal', false);
+    cy.get('@scheduledZeroID').then((id) => cy.request(path(id, '/preflight')))
+      .its('body.data.will_send').should('equal', 2);
+
+    // Turn it back on: the same history now excludes everyone. Neither the campaign edit nor
+    // the newly enabled rule may be saved, and the prior scheduled version stays in place.
+    cy.intercept('PUT', '**/api/campaigns/*').as('zeroSave');
+    cy.get('[data-cy=recent-enabled] .check').click();
+    cy.get('[data-cy=btn-save]').click();
+    cy.wait('@zeroSave').then(({ request, response }) => {
+      expect(request.body.recent_rule).to.include({ enabled: true, days: 14, scope: 'campaigns' });
+      expect(response.statusCode).to.equal(400);
+    });
     cy.get('.toast.is-danger').should('contain', 'Not saved').and('contain', '0 recipients');
-    cy.then(() => cy.request(path())).its('body.data.status').should('equal', 'scheduled');
+    cy.get('@scheduledZeroID').then((id) => cy.request(path(id)))
+      .its('body.data.status').should('equal', 'scheduled');
+    cy.get('@scheduledZeroID').then((id) => cy.request(path(id, '/recent-exclude')))
+      .its('body.data.enabled').should('equal', false);
   });
 
   it('says in the window that a saved exclusion rule is applied and what goes out, from the list too', () => {
@@ -389,6 +419,25 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-title]').should('contain', 'Resume sending to about 12 remaining people');
     cy.get('[data-cy=send-progress]').should('contain', '180 sent of 300');
     cy.get('[data-cy=send-ok]').should('contain', 'Resume for about 12 people');
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
+  it('explains held recipients when their source campaign no longer exists', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('GET', preflight, (req) => {
+      req.continue((res) => {
+        const d = res.body.data;
+        Object.assign(d, {
+          mode: 'scheduled', status: 'scheduled', resumed: true,
+          recent: { enabled: false, days: 0, scope: '', excluded: 2, held: 2 },
+        });
+        d.checks = [{ key: 'recent.applied', level: 'info', params: { days: 0, scope: '', excluded: 2, held: 2 } }];
+      });
+    }).as('missingRecentSource');
+    row('later').find('[data-cy=btn-schedule]').click();
+    cy.wait('@missingRecentSource');
+    ready();
+    cy.get('[data-cy="send-check-recent.applied"]').should('contain', '2 people already left out').and('not.contain', 'campaigns.sendConfirm');
     cy.get('[data-cy=send-cancel]').click();
   });
 
