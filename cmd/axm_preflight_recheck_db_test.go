@@ -160,11 +160,11 @@ func TestScheduledSaveIsChecked(t *testing.T) {
 
 func TestScheduledSaveAgreesWithRecentExclusionPreflight(t *testing.T) {
 	e := scheduledEnv(t)
+	var sendAt time.Time
 	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
 		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}, e.superAdmin); err != nil {
 		t.Fatal(err)
 	}
-	var sendAt time.Time
 	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
 	prior := e.pfCampaign("regular", "finished", e.aList)
 	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
@@ -309,7 +309,7 @@ func TestScheduledEditRejectsEnablingRuleThatExcludesEveryone(t *testing.T) {
 	}
 }
 
-func TestScheduledSaveRejectsCheckpointPastEveryRecipient(t *testing.T) {
+func TestScheduledSaveReviewRegressions(t *testing.T) {
 	e := scheduledEnv(t)
 	var checkpoint int
 	e.get(&checkpoint, `SELECT MAX(subscriber_id) FROM subscriber_lists WHERE list_id=$1`, e.aList)
@@ -328,10 +328,7 @@ func TestScheduledSaveRejectsCheckpointPastEveryRecipient(t *testing.T) {
 	if err != nil || after.Subject != before.Subject || after.UpdatedAt != before.UpdatedAt {
 		t.Fatalf("save after checkpoint changed the campaign: before=%+v after=%+v err=%v", before, after, err)
 	}
-}
-
-func TestScheduledRecentRuleEndpointRejectsZeroRecipients(t *testing.T) {
-	e := scheduledEnv(t)
+	e.db.MustExec(`UPDATE campaigns SET last_subscriber_id=0 WHERE id=$1`, e.campID)
 	prior := e.pfCampaign("regular", "finished", e.aList)
 	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
 		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2`, prior, e.aList)
@@ -349,27 +346,22 @@ func TestScheduledRecentRuleEndpointRejectsZeroRecipients(t *testing.T) {
 	if subject != "Subject" {
 		t.Fatalf("rejected API save changed the campaign subject: %q", subject)
 	}
-}
 
-func TestStartedScheduledTitleSaveKeepsItsRecentRule(t *testing.T) {
-	e := scheduledEnv(t)
+	e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
 	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
 		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}, e.superAdmin); err != nil {
 		t.Fatal(err)
 	}
-	e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
 	ids := e.ids(`SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 ORDER BY subscriber_id`, e.aList)
 	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id,subscriber_id) VALUES($1,$2),($1,$3)`, e.campID, ids[0], ids[1])
 	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, e.campID, ids[2])
 	e.db.MustExec(`UPDATE campaigns SET status='scheduled', started_at=NOW()-INTERVAL '1 hour',
 		last_subscriber_id=$2, sent=1, to_send=4 WHERE id=$1`, e.campID, ids[2])
-	var sendAt time.Time
 	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
 
 	if code, data := e.save("Title after resume", []int{e.aList}, &sendAt, "regular"); code != http.StatusOK {
 		t.Fatalf("save started schedule without changing its read-only rule: %d %s", code, data)
 	}
-	var subject string
 	e.get(&subject, `SELECT subject FROM campaigns WHERE id=$1`, e.campID)
 	if subject != "Title after resume" {
 		t.Fatalf("title was not saved: %q", subject)

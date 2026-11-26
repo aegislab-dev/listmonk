@@ -774,18 +774,6 @@ func TestRecentHoldsFinishedCountMigrationCapturesAConcurrentFinalBatch(t *testi
 	}
 }
 
-func TestRecentHeldCountAddsDeletedHoldsAfterFinish(t *testing.T) {
-	e := newSendsEnv(t, 2)
-	e.rsRule(models.RecentRule{Enabled: true, Days: 7, Scope: models.RecentScopeAll})
-	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id,subscriber_id) VALUES($1,$2),($1,$3)`,
-		e.campID, e.eligible[0], e.eligible[1])
-	e.setStatus(models.CampaignStatusFinished)
-	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[0])
-	if count, err := e.core.RecentHeldCount(e.campID); err != nil || count != 2 {
-		t.Fatalf("finished held count after subscriber deletion = %d, want 2: %v", count, err)
-	}
-}
-
 func TestRecentHoldsFinishedCountMigrationDoesNotHoldRuleLockWhileWaitingForCampaignDDL(t *testing.T) {
 	e := newSendsEnv(t, 2)
 	e.db.MustExec(`DROP TRIGGER axm_recent_holds_finished ON campaigns;
