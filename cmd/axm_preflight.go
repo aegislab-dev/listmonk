@@ -159,23 +159,21 @@ func stockFrom(from string) bool {
 
 // audienceBlock is the line of "checks before sending" about who the campaign reaches, and
 // its level: lists.none when no list is left to send to, recipients.zero when the lists hold
-// nobody the send would mail, else no line ("" ). count is the people to send to (the people
-// left, for a resumed campaign). Only a regular campaign that reaches nobody is blocked
-// (approved design v1, decision 1 and A5): a resumed campaign with nothing left only warns,
-// like one with nobody left, and so does an opt-in campaign, whose number is an estimate or
-// follows other rules.
+// nobody the send would mail, else no line. For a resumed or scheduled campaign, hasRecipients
+// refers to people still left to send to. A regular campaign with nobody to reach is blocked
+// (approved design v1, decision 1 and A5). Resume and opt-in preflight modes only warn.
 //
 // The window and the save of a scheduled campaign (LST-67) both judge by this function, so a
 // rule added here applies to both.
-func audienceBlock(campType, mode string, liveLists, count int) (key, level string) {
+func audienceBlock(campType, mode string, hasLists, hasRecipients bool) (key, level string) {
 	level = models.PreflightBlock
 	if mode == models.PreflightModeResume || campType == models.CampaignTypeOptin {
 		level = models.PreflightWarn
 	}
 	switch {
-	case liveLists == 0:
+	case !hasLists:
 		return "lists.none", level
-	case count == 0:
+	case !hasRecipients:
 		return "recipients.zero", level
 	}
 	return "", ""
@@ -194,7 +192,7 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 	if f.Mode == models.PreflightModeResume || f.Mode == models.PreflightModeScheduled {
 		count = f.Remaining
 	}
-	if key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists, count); key != "" {
+	if key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists > 0, count > 0); key != "" {
 		add(key, level, nil)
 	}
 

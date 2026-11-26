@@ -1192,15 +1192,9 @@ func (a *App) campaignSenderMode(c campReq, user auth.User, strict bool) (campRe
 // pre-send window does, so the two cannot disagree on what is blocked. Warnings are not judged
 // here: the page reads them from the preflight and shows them.
 //
-// The remaining count follows the sender, including deliveries recorded before its progress.
-func (a *App) scheduledSaveCheck(lists []models.PreflightList, aud models.PreflightAudience) error {
-	live := 0
-	for _, l := range lists {
-		if !l.Deleted {
-			live++
-		}
-	}
-	key, level := audienceBlock(models.CampaignTypeRegular, models.PreflightModeScheduled, live, aud.Remaining)
+// The check follows the sender, including deliveries recorded before its progress.
+func (a *App) scheduledSaveCheck(hasLists, hasRecipients bool) error {
+	key, level := audienceBlock(models.CampaignTypeRegular, models.PreflightModeScheduled, hasLists, hasRecipients)
 	if level != models.PreflightBlock {
 		return nil
 	}

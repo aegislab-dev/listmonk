@@ -98,6 +98,42 @@ FROM c CROSS JOIN totals CROSS JOIN campLists cl
 LEFT JOIN counts per ON per.list_id = cl.list_id
 ORDER BY cl.name, cl.list_id;
 
+-- name: axm-preflight-has-recipient
+-- For a regular campaign during a scheduled save, only ask if the edited lists
+-- include anyone it can still send to. $2 is its checkpoint, $3 its active
+-- follow-up list (0 otherwise), and $4 is individual tracking.
+-- Use the same eligibility and exclusions as the remaining count above and
+-- axm-followup-pending. Duplicates across lists do not change EXISTS.
+WITH live_lists AS MATERIALIZED (
+    SELECT l.id, l.optin, l.axm_filter IS NOT NULL AS dynamic
+    FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+    WHERE cl.campaign_id = $1
+),
+candidates AS (
+    SELECT l.id AS list_id, s.id AS subscriber_id
+    FROM live_lists l
+    JOIN subscriber_lists sl ON sl.list_id = l.id AND sl.subscriber_id > $2
+    JOIN subscribers s ON s.id = sl.subscriber_id
+    WHERE NOT l.dynamic AND s.status != 'blocklisted'
+        AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END
+    UNION ALL
+    SELECT l.id, m.subscriber_id
+    FROM (SELECT id FROM live_lists WHERE dynamic) l
+    CROSS JOIN LATERAL axm_dynamic_list_members(l.id, $2) m
+),
+held AS MATERIALIZED (
+    SELECT j.subscriber_id FROM axm_followup_judge($1, NULL, $4) j
+    WHERE $3::INT > 0 AND j.reason NOT IN (0, 1)
+)
+SELECT EXISTS (SELECT 1 FROM live_lists) AS has_lists,
+    EXISTS (
+        SELECT 1 FROM candidates e
+        WHERE NOT EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = $1 AND s.subscriber_id = e.subscriber_id)
+          AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k
+              WHERE k.campaign_id = $1 AND k.subscriber_id = e.subscriber_id AND k.sent)
+          AND (e.list_id <> $3 OR NOT EXISTS (SELECT 1 FROM held h WHERE h.subscriber_id = e.subscriber_id))
+    ) AS has_recipients;
+
 -- name: axm-preflight-sample
 -- Up to $2 of the people campaign $1 would reach, the lowest IDs first, by the same rule as
 -- axm-preflight-audience (keep the two the same). The pre-send check renders the mail for them.

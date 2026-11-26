@@ -95,6 +95,10 @@ func TestScheduledSaveIsChecked(t *testing.T) {
 	// A list whose only member left: nobody to send to as well.
 	left := e.pfList("single", "")
 	e.pfSub("enabled", "", map[int]string{left: "unsubscribed"})
+	before, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Nobody on the new list: refused, and nothing is saved.
 	for _, l := range []int{empty, left} {
@@ -105,6 +109,10 @@ func TestScheduledSaveIsChecked(t *testing.T) {
 		subject, status, lists := e.saved()
 		if subject != "Subject" || status != "scheduled" || len(lists) != 1 || lists[0] != e.aList {
 			t.Fatalf("the refused save changed the campaign: %q %s %v", subject, status, lists)
+		}
+		after, err := e.core.GetCampaign(e.campID, "", "")
+		if err != nil || after.Name != before.Name || after.Body != before.Body || after.SendAt != before.SendAt || after.UpdatedAt != before.UpdatedAt {
+			t.Fatalf("the refused save changed the saved fields: %+v %v", after, err)
 		}
 	}
 
@@ -134,6 +142,38 @@ func TestScheduledSaveIsChecked(t *testing.T) {
 	}
 	if subject, _, _ := e.saved(); subject == "No list" {
 		t.Fatal("saved without a list")
+	}
+}
+
+func TestScheduledSaveFindsAnEligibleDynamicRecipient(t *testing.T) {
+	e := scheduledEnv(t)
+	dynamic := e.pfList("single", dynFilter(e.aList))
+	checkpoint := e.pfSub("enabled", "pro", map[int]string{e.aList: "confirmed"})
+	sent := e.pfSub("enabled", "pro", map[int]string{e.aList: "confirmed"})
+	claimed := e.pfSub("enabled", "pro", map[int]string{e.aList: "confirmed"})
+	remaining := e.pfSub("enabled", "pro", map[int]string{e.aList: "confirmed"})
+	e.db.MustExec(`UPDATE campaigns SET last_subscriber_id=$2 WHERE id=$1`, e.campID, checkpoint)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, e.campID, sent)
+	e.db.MustExec(`INSERT INTO axm_campaign_followup_claims(campaign_id,subscriber_id,sent) VALUES($1,$2,TRUE)`, e.campID, claimed)
+	tomorrow := time.Now().Add(24 * time.Hour)
+	if code, data := e.save("One left", []int{dynamic}, &tomorrow, "regular"); code != http.StatusOK {
+		t.Fatalf("one dynamic recipient was left: %d %s", code, data)
+	}
+	checkCount := func(want int) {
+		t.Helper()
+		_, aud, err := e.core.GetPreflightAudience(context.Background(), e.campID, checkpoint, true)
+		if err != nil || aud.Remaining != want {
+			t.Fatalf("exact remaining: %d, want %d: %v", aud.Remaining, want, err)
+		}
+	}
+	checkCount(1)
+	e.db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'unsubscribed')`, remaining, dynamic)
+	checkCount(0)
+	if code, data := e.save("Nobody left", []int{dynamic}, &tomorrow, "regular"); code != http.StatusBadRequest {
+		t.Fatalf("no dynamic recipient was left: %d %s", code, data)
+	}
+	if subject, status, lists := e.saved(); subject != "One left" || status != "scheduled" || !slices.Equal(lists, []int{dynamic}) {
+		t.Fatalf("refusal changed the campaign: %q %s %v", subject, status, lists)
 	}
 }
 
@@ -236,7 +276,13 @@ func TestScheduledSaveOneConnection(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		out, err := e.core.UpdateScheduledCampaign(context.Background(), camp, o, []int{e.listID}, nil,
-			func(lists []models.PreflightList, aud models.PreflightAudience) error { asked++; return nil })
+			func(hasLists, hasRecipients bool) error {
+				asked++
+				if !hasLists || !hasRecipients {
+					return fmt.Errorf("expected a live list and a recipient, got %t and %t", hasLists, hasRecipients)
+				}
+				return nil
+			})
 		if err == nil && out.Subject != "One connection" {
 			err = fmt.Errorf("subject %q", out.Subject)
 		}

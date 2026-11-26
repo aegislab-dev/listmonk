@@ -8,6 +8,8 @@ const camp = {};
 const oldOffer = 'Original offer: 5 percent';
 const newOffer = 'Approved offer: 20 percent';
 const oldFooter = 'Original footer';
+const passAt = new Date(stamp + 86400000 * 60);
+passAt.setUTCHours(0, 15, 0, 0);
 let listOk;
 let listEmpty;
 let tplBare;
@@ -71,6 +73,8 @@ describe('Saving a scheduled campaign', () => {
       create('visualConflict', visualContent(oldOffer));
       create('draftDuringCheck', {});
       create('pass', {
+        send_at: passAt.toISOString(),
+        attribs: { axm_send_tz: 'Asia/Seoul' },
         body: '<p>Hi <a href="https://example.invalid/x@TrackLink">x</a> <a href="{{ UnsubscribeURL }}">leave</a></p>{{ TrackView }}',
       });
       create('refuse', {});
@@ -253,9 +257,21 @@ describe('Saving a scheduled campaign', () => {
   });
 
   it('says that all is well in one line, with no window', () => {
+    cy.intercept('PUT', `/api/campaigns/${camp.pass}`).as('save');
+    cy.intercept('GET', `/api/campaigns/${camp.pass}/preflight`).as('preflight');
     cy.visit(`/admin/campaigns/${camp.pass}`);
     cy.get('[data-cy=btn-save]').click();
-    cy.get('.toast').should('contain', 'checks passed').and('contain', '2 people');
+    cy.wait('@save').its('response').then(({ statusCode, body }) => {
+      expect(statusCode).to.equal(200);
+      expect(body.data.status).to.equal('scheduled');
+      expect(new Date(body.data.send_at).getTime()).to.equal(passAt.getTime());
+    });
+    cy.wait('@preflight').its('response.body.data').then((data) => {
+      expect(data.recipients).to.equal(2);
+      expect(data.lists[0]).to.include({ id: listOk, count: 2 });
+    });
+    cy.get('.toast').should('contain', 'checks passed · 2 people')
+      .and('contain', `sends ${passAt.getUTCMonth() + 1}/${passAt.getUTCDate()} at 09:15`);
     cy.get(win).should('not.exist');
     status('pass').its('status').should('equal', 'scheduled');
   });
@@ -278,12 +294,14 @@ describe('Saving a scheduled campaign', () => {
   });
 
   it('refuses a save that leaves nobody to send to, and keeps what was saved', () => {
+    cy.intercept('PUT', `/api/campaigns/${camp.refuse}`).as('save');
     cy.visit(`/admin/campaigns/${camp.refuse}`);
     cy.get('.list-selector .tag[data-id=' + listOk + '] .delete').click();
     cy.get('.list-selector input').click().type(`Resched Empty ${stamp}`);
     cy.get('.list-selector .autocomplete a').contains(`Resched Empty ${stamp}`).click();
     cy.get('[data-cy=btn-save]').click();
 
+    cy.wait('@save').its('response.statusCode').should('equal', 400);
     cy.get('.toast.is-danger').should('contain', 'Not saved').and('contain', '0 recipients');
     cy.get(win).should('not.exist');
     status('refuse').then((c) => {

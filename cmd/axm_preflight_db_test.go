@@ -1045,12 +1045,11 @@ func TestPreflightSpeed(t *testing.T) {
 		e.db.MustExec(`UPDATE campaigns SET status='scheduled', send_at=$2 WHERE id=$1`, c.id, edit.SendAt)
 		for i := 1; i <= runs; i++ {
 			start := time.Now()
-			saved, err := e.core.UpdateScheduledCampaign(ctx, c.id, edit, c.listIDs, nil, func(lists []models.PreflightList, aud models.PreflightAudience) error {
-				if base := want[c.id]; aud.Total != base.Total || aud.Remaining != base.Remaining ||
-					aud.Multi != base.Multi || aud.Excluded != base.Excluded {
-					return fmt.Errorf("save counted %+v, preflight counted %+v", aud, base)
+			saved, err := e.core.UpdateScheduledCampaign(ctx, c.id, edit, c.listIDs, nil, func(hasLists, hasRecipients bool) error {
+				if !hasLists || hasRecipients != (want[c.id].Remaining > 0) {
+					return fmt.Errorf("save found lists=%t, recipients=%t, preflight counted %+v", hasLists, hasRecipients, want[c.id])
 				}
-				return app.scheduledSaveCheck(lists, aud)
+				return app.scheduledSaveCheck(hasLists, hasRecipients)
 			})
 			elapsed := time.Since(start)
 			if err != nil || saved.Status != models.CampaignStatusScheduled || saved.Subject != edit.Subject {

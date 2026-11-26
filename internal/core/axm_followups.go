@@ -356,26 +356,34 @@ func (c *Core) FollowupHeldNow(ctx context.Context, id int) (*models.FollowupPen
 	return c.followupHeldNow(ctx, onPool, id)
 }
 
-// followupHeldNow is FollowupHeldNow on the connection that run says (LST-67: the check made when
-// a scheduled campaign is saved reads on the transaction that holds the campaign's row).
+// followupHeldNow reads the hold counts on the pool or the preflight transaction.
 func (c *Core) followupHeldNow(ctx context.Context, run stmtOn, id int) (*models.FollowupPending, int, error) {
-	var rows []followupDue
-	if err := run(c.q.AxmFollowupByIDs).SelectContext(ctx, &rows, pq.Array([]int{id})); err != nil {
+	listID, err := c.preflightFollowupList(ctx, run, id)
+	if err != nil || listID == 0 {
 		return nil, 0, err
 	}
+	var p models.FollowupPending
+	if err := run(c.q.AxmFollowupPending).GetContext(ctx, &p, id, c.tracking()); err != nil {
+		return nil, 0, err
+	}
+	return &p, listID, nil
+}
+
+// preflightFollowupList finds the attached follow-up list and validates its condition.
+func (c *Core) preflightFollowupList(ctx context.Context, run stmtOn, id int) (int, error) {
+	var rows []followupDue
+	if err := run(c.q.AxmFollowupByIDs).SelectContext(ctx, &rows, pq.Array([]int{id})); err != nil {
+		return 0, err
+	}
 	if len(rows) == 0 || len(rows[0].ListIDs) == 0 {
-		return nil, 0, nil
+		return 0, nil
 	}
 	f := rows[0]
 	var s models.ReactionSettings
 	if err := json.Unmarshal(f.Condition, &s); err != nil || s.Validate() != nil {
-		return nil, 0, errors.New("follow-up campaign " + strconv.Itoa(id) + " has no valid condition")
+		return 0, errors.New("follow-up campaign " + strconv.Itoa(id) + " has no valid condition")
 	}
-	var p models.FollowupPending
-	if err := run(c.q.AxmFollowupPending).GetContext(ctx, &p, f.CampaignID, c.tracking()); err != nil {
-		return nil, 0, err
-	}
-	return &p, int(f.ListIDs[0]), nil
+	return int(f.ListIDs[0]), nil
 }
 
 // SetIndividualTracking gives the core the live setting of individual tracking.

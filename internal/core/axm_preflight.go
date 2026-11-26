@@ -212,8 +212,9 @@ func (c *Core) CampaignSendProgress(ctx context.Context, camp models.Campaign) (
 	return max(camp.Sent, history.Recorded+history.Removed), nil
 }
 
-// ScheduledCheck judges the saved lists and remaining recipients. An error refuses the save.
-type ScheduledCheck func(lists []models.PreflightList, aud models.PreflightAudience) error
+// ScheduledCheck judges whether the edited campaign has lists and can still reach anyone.
+// An error refuses the save.
+type ScheduledCheck func(hasLists, hasRecipients bool) error
 
 // UpdateScheduledCampaign saves and checks a scheduled campaign in one transaction. Lock the
 // campaign before touching its lists so each editor checks its own replacement, and a sender
@@ -248,11 +249,23 @@ func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Cam
 
 	// Clearing the send time makes the campaign a draft. Opt-in campaigns only warn.
 	if o.SendAt.Valid && before.Type == models.CampaignTypeRegular && check != nil {
-		lists, aud, err := c.preflightAudience(ctx, tx, id, before.LastSubscriberID, true)
+		run := func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }
+		followupListID, err := c.preflightFollowupList(ctx, run, id)
 		if err != nil {
-			return models.Campaign{}, err
+			c.log.Printf("error finding the follow-up list for campaign %d: %v", id, err)
+			return models.Campaign{}, echo.NewHTTPError(http.StatusInternalServerError,
+				c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
 		}
-		if err := check(lists, aud); err != nil {
+		var audience struct {
+			HasLists      bool `db:"has_lists"`
+			HasRecipients bool `db:"has_recipients"`
+		}
+		if err := run(c.q.AxmPreflightHasRecipient).GetContext(ctx, &audience, id, before.LastSubscriberID, followupListID, c.tracking()); err != nil {
+			c.log.Printf("error checking the recipients of campaign %d: %v", id, err)
+			return models.Campaign{}, echo.NewHTTPError(http.StatusInternalServerError,
+				c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
+		}
+		if err := check(audience.HasLists, audience.HasRecipients); err != nil {
 			return models.Campaign{}, err
 		}
 	}

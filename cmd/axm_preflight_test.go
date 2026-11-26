@@ -319,7 +319,7 @@ func TestAudienceBlock(t *testing.T) {
 		{"a resumed campaign without a list only warns", "regular", "resume", 0, 0, "lists.none", "warn"},
 		{"a draft that is started", "regular", "start", 1, 0, "recipients.zero", "block"},
 	} {
-		key, lv := audienceBlock(c.typ, c.mode, c.lists, c.count)
+		key, lv := audienceBlock(c.typ, c.mode, c.lists > 0, c.count > 0)
 		if key != c.wantKey || lv != c.wantLv {
 			t.Errorf("%s: %q %q", c.name, key, lv)
 		}
