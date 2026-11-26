@@ -188,9 +188,11 @@ WHERE subscriber_id = ANY($1::INT[])
         OR ($2 = TRUE AND ($4::INT = 0 OR campaign_id = $4::INT) AND ($5::TEXT = '' OR source = $5::TEXT)));
 
 -- name: axm-bounced-among
--- Of the subscribers $1, those who still have a bounce record. Read inside the transaction that
--- holds their row locks, so a bounce that was cleared after the candidates were read is seen.
-SELECT DISTINCT subscriber_id FROM bounces WHERE subscriber_id = ANY($1::INT[]);
+-- Of the subscribers $1, those who still have a bounce record (a subscriber comes once per
+-- bounce). The bounce rows are locked FOR UPDATE until the end of the transaction: clearing a
+-- bounce does not lock the subscriber, so without this an administrator could delete the last
+-- bounce between this look and the blocklist, and the person would be blocked with none.
+SELECT subscriber_id FROM bounces WHERE subscriber_id = ANY($1::INT[]) ORDER BY id FOR UPDATE;
 
 -- name: axm-bounced-subscribers
 -- Everybody who has a bounce record (what "block everyone who bounced" reaches).

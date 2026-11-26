@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/lib/pq"
@@ -272,5 +273,42 @@ func TestBounceBlocklistAllLooksAgainUnderTheLocks(t *testing.T) {
 		if e.row(id).Status != "blocklisted" {
 			t.Fatalf("subscriber %d: %s, want blocklisted", id, e.row(id).Status)
 		}
+	}
+}
+
+// Clearing a bounce does not lock the subscriber, so the re-check also locks the bounce rows:
+// an administrator's delete in the gap before the blocklist waits until it is done, instead of
+// leaving a person with no bounce blocked.
+func TestBounceBlocklistAllHoldsTheBouncesUntilItIsDone(t *testing.T) {
+	e := newBounceEnv(t)
+	ua := e.as(e.ua)
+	done := make(chan struct{})
+	core.AfterBouncedRecheck = func() {
+		go func() {
+			e.db.MustExec(`DELETE FROM bounces WHERE subscriber_id = $1`, e.s1)
+			close(done)
+		}()
+		select {
+		case <-done:
+			t.Error("a bounce was deleted while the blocklist held its rows")
+		case <-time.After(700 * time.Millisecond):
+		}
+	}
+	defer func() { core.AfterBouncedRecheck = nil }()
+
+	if code, _ := e.call(e.a.BlocklistBouncedSubscribers, ua, "PUT", "/x", "", ""); code != 200 {
+		t.Fatalf("block all: %d", code)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the delete never went through after the blocklist finished")
+	}
+	// The delete came after the blocklist: s1 was blocked while it still had its bounces.
+	if got := e.row(e.s1).Status; got != "blocklisted" {
+		t.Fatalf("s1: %s, want blocklisted (it had bounces when it was blocked)", got)
+	}
+	if e.left(e.s1) != 0 {
+		t.Fatalf("the delete did not run: %d bounces left", e.left(e.s1))
 	}
 }

@@ -91,6 +91,10 @@ func (c *Core) DeleteBouncesBounded(ids []int, all bool, campID int, source stri
 // bounces and before it takes the locks. Tests use it to change the data in that gap.
 var AfterBouncedRead func()
 
+// AfterBouncedRecheck is called inside the transaction after the bounce rows were re-read and
+// locked, before anybody is blocklisted. Tests use it to try a delete in that gap.
+var AfterBouncedRecheck func()
+
 // BlocklistBouncedSubscribersBounded blocklists everybody who has a bounce record and is not
 // locked for a user who may not manage all lists. It returns how many people were blocklisted
 // and how many were left out because they are on other lists too.
@@ -108,7 +112,8 @@ func (c *Core) BlocklistBouncedSubscribersBounded(manageListIDs []int) (int, int
 	done, skipped := 0, 0
 	_, err := c.boundedTxPresent(subIDs, manageListIDs, func(tx *sqlx.Tx, locked, open []int) (bool, error) {
 		// The candidates were read before the locks: somebody whose last bounce was cleared in
-		// the meantime is not "everybody who bounced" any more. Look again, under the locks.
+		// the meantime is not "everybody who bounced" any more. Look again, under the locks, and
+		// lock the bounce rows too: deleting a bounce does not lock its subscriber.
 		var still []int
 		if err := tx.Stmtx(c.q.AxmBouncedAmong).Select(&still, pq.Array(subIDs)); err != nil {
 			return false, c.teamFail(err)
@@ -127,6 +132,9 @@ func (c *Core) BlocklistBouncedSubscribersBounded(manageListIDs []int) (int, int
 			return out
 		}
 		locked, open = keep(locked), keep(open)
+		if AfterBouncedRecheck != nil {
+			AfterBouncedRecheck()
+		}
 		if len(open) > 0 {
 			if _, err := tx.Stmtx(c.q.BlocklistSubscribers).Exec(pq.Array(open)); err != nil {
 				c.log.Printf("error blocklisting bounced subscribers: %v", err)
