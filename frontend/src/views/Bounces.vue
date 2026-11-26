@@ -175,14 +175,16 @@ export default Vue.extend({
       if (!this.bulk.all && this.bulk.checked.length > 0) {
         params.id = this.bulk.checked.map((s) => s.id);
       } else if (this.bulk.all) {
-        // Only what the screen shows: the campaign / source filter goes along.
+        // Only what the screen shows: the campaign / source filter of the address goes along,
+        // as written. A value that cannot be read (campaign_id=abc, or empty) is refused by the
+        // server instead of being dropped, which would delete every bounce.
         params.all = true;
-        if (this.queryParams.campaign_id) {
-          params.campaign_id = this.queryParams.campaign_id;
-        }
-        if (this.queryParams.source) {
-          params.source = this.queryParams.source;
-        }
+        const q = this.$route.query;
+        ['campaign_id', 'source'].forEach((k) => {
+          if (k in q) {
+            params[k] = q[k] === null ? '' : q[k];
+          }
+        });
       }
 
       this.$api.deleteBounces(params).then(() => {

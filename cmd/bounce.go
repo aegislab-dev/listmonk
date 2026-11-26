@@ -79,18 +79,28 @@ func (a *App) DeleteBounces(c echo.Context) error {
 	all, _ := strconv.ParseBool(c.QueryParam("all"))
 
 	// "all" deletes what the bounces screen shows: the same campaign_id and source filters as
-	// GET /api/bounces. A filter that is given but unreadable must not turn into "no filter",
-	// or one typo deletes every bounce.
+	// GET /api/bounces. They are only read when "all" is set (deleting by id ignores them), and
+	// a filter that is present but empty or unreadable is refused, never read as "no filter":
+	// one typo must not delete every bounce.
 	var (
 		campID int
-		source = c.QueryParam("source")
+		source string
 	)
-	if v := c.QueryParam("campaign_id"); v != "" {
-		id, err := strconv.Atoi(v)
-		if err != nil || id < 1 {
-			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidID", "error", "campaign_id"))
+	if all {
+		q := c.QueryParams()
+		if v, ok := q["campaign_id"]; ok {
+			id, err := strconv.Atoi(c.QueryParam("campaign_id"))
+			if len(v) != 1 || err != nil || id < 1 {
+				return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidID", "error", "campaign_id"))
+			}
+			campID = id
 		}
-		campID = id
+		if v, ok := q["source"]; ok {
+			if len(v) != 1 || v[0] == "" {
+				return echo.NewHTTPError(http.StatusBadRequest, a.i18n.Ts("globals.messages.invalidFields", "name", "source"))
+			}
+			source = v[0]
+		}
 	}
 
 	var ids []int

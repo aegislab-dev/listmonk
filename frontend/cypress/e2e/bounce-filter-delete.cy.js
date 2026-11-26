@@ -48,6 +48,20 @@ describe('Bounces: delete all inside the filter', () => {
     cy.wait('@del').its('request.query').should('deep.equal', { all: 'true', source: 'ses' });
   });
 
+  // The address is read as written: a value the screen cannot read is not dropped (that would
+  // delete every campaign's bounces), it goes to the server, which refuses it.
+  [['campaign_id=abc', { all: 'true', campaign_id: 'abc' }],
+    ['campaign_id=', { all: 'true', campaign_id: '' }],
+    ['campaign_id=abc&source=ses', { all: 'true', campaign_id: 'abc', source: 'ses' }],
+  ].forEach(([qs, want]) => {
+    it(`passes an unreadable filter on: ?${qs}`, () => {
+      stubList();
+      cy.loginAndVisit(encodeURIComponent(`/admin/subscribers/bounces?${qs}`));
+      selectAllAndDelete();
+      cy.wait('@del').its('request.query').should('deep.equal', want);
+    });
+  });
+
   it('sends no filter when the screen is not filtered', () => {
     stubList();
     cy.loginAndVisit('/admin/subscribers/bounces');

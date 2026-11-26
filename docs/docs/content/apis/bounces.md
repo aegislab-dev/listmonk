@@ -90,8 +90,10 @@ To delete all bounces.
 | Name    | Type      | Required | Description                          |
 |:--------|:----------|:---------|:-------------------------------------|
 | all         | bool   | Yes      | Bool to confirm deleting all bounces |
-| campaign_id | number | No       | With `all`, delete only the bounces of this campaign. |
-| source      | string | No       | With `all`, delete only the bounces from this source. |
+| campaign_id | number | No       | With `all`, delete only the bounces of this campaign. An empty or non-numeric value is refused with 400. |
+| source      | string | No       | With `all`, delete only the bounces from this source. An empty value is refused with 400. |
+
+`campaign_id` and `source` are ignored when deleting by `id`.
 
 ##### Example Request
 

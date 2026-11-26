@@ -61,6 +61,9 @@ func TestDeleteAllBouncesStaysInsideFilter(t *testing.T) {
 		{"unknown campaign deletes nothing", camp(campB + 1000), 200, 5},
 		{"unreadable campaign is refused, nothing deleted", url.Values{"all": {"true"}, "campaign_id": {"abc"}}, 400, 5},
 		{"zero campaign is refused, nothing deleted", url.Values{"all": {"true"}, "campaign_id": {"0"}}, 400, 5},
+		{"empty campaign is refused, nothing deleted", url.Values{"all": {"true"}, "campaign_id": {""}}, 400, 5},
+		{"empty source is refused, nothing deleted", url.Values{"all": {"true"}, "source": {""}}, 400, 5},
+		{"two campaigns are refused, nothing deleted", url.Values{"all": {"true"}, "campaign_id": {itoa(campA), itoa(campB)}}, 400, 5},
 		{"filter without all deletes nothing and wants ids", url.Values{"campaign_id": {itoa(campA)}}, 400, 5},
 	} {
 		seed()
@@ -77,5 +80,20 @@ func TestDeleteAllBouncesStaysInsideFilter(t *testing.T) {
 	}
 	if code := del(url.Values{"id": {itoa(ids[0])}, "campaign_id": {itoa(campA)}}); code != 200 || total() != 4 {
 		t.Errorf("by id: code %d, %d left (want 4)", code, total())
+	}
+	// Without "all" the filters are not read at all, so what worked before still works.
+	for _, f := range []url.Values{{"campaign_id": {"0"}}, {"campaign_id": {""}}, {"campaign_id": {"abc"}}, {"source": {""}}} {
+		seed()
+		ids = nil
+		if err := e.db.Select(&ids, `SELECT id FROM bounces ORDER BY id LIMIT 1`); err != nil {
+			t.Fatal(err)
+		}
+		q := url.Values{"id": {itoa(ids[0])}}
+		for k, v := range f {
+			q[k] = v
+		}
+		if code := del(q); code != 200 || total() != 4 {
+			t.Errorf("by id with %v: code %d, %d left (want 4)", f, code, total())
+		}
 	}
 }
