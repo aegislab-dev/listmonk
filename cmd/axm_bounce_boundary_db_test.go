@@ -276,6 +276,53 @@ func TestBounceBlocklistAllLooksAgainUnderTheLocks(t *testing.T) {
 	}
 }
 
+// Somebody else (an administrator) clears bounces after the owners were read: what is gone is
+// neither counted as left out nor does it refuse a delete by ID, and "done" is what was deleted.
+func TestBounceDeleteCountsOnlyWhatIsStillThere(t *testing.T) {
+	e := newBounceEnv(t)
+	ua := e.as(e.ua)
+	defer func() { core.AfterBounceOwnersRead = nil }()
+
+	// "Select all": the locked people s2 and s3 and the own person s1 are cleared by the
+	// administrator first. Left: s4 (2, locked) is left out; s5, s6, none (6) are deleted.
+	core.AfterBounceOwnersRead = func() {
+		e.db.MustExec(`DELETE FROM bounces WHERE subscriber_id = ANY($1)`, pq.Array([]int{e.s1, e.s2, e.s3}))
+	}
+	code, data := e.call(e.a.DeleteBounces, ua, "DELETE", "/x?all=true", "", "")
+	r, ok := parseResp(t, data)
+	if code != 200 || !ok || r.Done != 6 || r.Skipped != 2 {
+		t.Fatalf("all: %d %s, want done 6 skipped 2", code, data)
+	}
+
+	// Everything the request reached is gone already: nothing was deleted, nothing was left out.
+	e.seed()
+	core.AfterBounceOwnersRead = func() { e.db.MustExec(`DELETE FROM bounces`) }
+	code, data = e.call(e.a.DeleteBounces, ua, "DELETE", "/x?all=true", "", "")
+	r, ok = parseResp(t, data)
+	if code != 200 || !ok || r.Done != 0 || r.Skipped != 0 {
+		t.Fatalf("all, already gone: %d %s, want done 0 skipped 0", code, data)
+	}
+
+	// By ID: the locked person's bounces were cleared by the administrator, so nothing refuses
+	// the request any more and the own person's are deleted.
+	e.seed()
+	mixed := e.bounceIDs(e.s1, e.s2)
+	core.AfterBounceOwnersRead = func() { e.db.MustExec(`DELETE FROM bounces WHERE subscriber_id = $1`, e.s2) }
+	code, data = e.call(e.a.DeleteBounces, ua, "DELETE", idQuery("/x?", mixed), "", "")
+	r, ok = parseResp(t, data)
+	if code != 200 || !ok || r.Done != 2 || r.Skipped != 0 {
+		t.Fatalf("by id, locked ones gone: %d %s, want done 2 skipped 0", code, data)
+	}
+
+	// By ID, the locked person's bounces are still there: refused, nothing deleted.
+	e.seed()
+	core.AfterBounceOwnersRead = nil
+	mixed = e.bounceIDs(e.s1, e.s2)
+	if code, _ := e.call(e.a.DeleteBounces, ua, "DELETE", idQuery("/x?", mixed), "", ""); code != http.StatusForbidden {
+		t.Fatalf("by id, locked ones there: %d, want 403", code)
+	}
+}
+
 // Clearing a bounce does not lock the subscriber, so the re-check also locks the bounce rows:
 // an administrator's delete in the gap before the blocklist waits until it is done, instead of
 // leaving a person with no bounce blocked.

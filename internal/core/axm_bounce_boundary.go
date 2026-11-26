@@ -40,13 +40,19 @@ func (c *Core) bounceDeleteFail(err error) error {
 		c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.bounces}", "error", pqErrMsg(err)))
 }
 
+// AfterBounceOwnersRead is called by DeleteBouncesBounded after it has read whose bounces a
+// delete reaches and before it takes the locks. Tests use it to change the data in that gap.
+var AfterBounceOwnersRead func()
+
 // DeleteBouncesBounded deletes bounce records for a user who may not manage all lists.
 //
 // By ID (all = false) the delete is all or nothing: if one of the bounces is of a locked
 // subscriber, nothing is deleted and the IDs of the locked subscribers come back. With all = true
 // (the bounces that match campID and source) the bounces of locked subscribers are left out.
-// The owners are read, locked and looked at again in one transaction (boundedTx). It returns
-// how many bounces were deleted and how many were left out.
+// The owners are read, locked and looked at again in one transaction (boundedTx); the left-out
+// count is read again under the locks, because somebody else may have cleared those bounces
+// in the meantime (an administrator's delete does not wait for the locks of the people). It
+// returns how many bounces were deleted and how many were left out.
 func (c *Core) DeleteBouncesBounded(ids []int, all bool, campID int, source string, manageListIDs []int) (int, int, []int, error) {
 	owners, err := c.bounceOwners(ids, all, campID, source)
 	if err != nil {
@@ -59,16 +65,39 @@ func (c *Core) DeleteBouncesBounded(ids []int, all bool, campID int, source stri
 	for id := range owners {
 		subIDs = append(subIDs, id)
 	}
+	if AfterBounceOwnersRead != nil {
+		AfterBounceOwnersRead()
+	}
 
 	done, skipped := 0, 0
 	refused, err := c.boundedTxPresent(subIDs, manageListIDs, func(tx *sqlx.Tx, locked, open []int) (bool, error) {
-		if !all && len(locked) > 0 {
+		// Look again under the locks: only the bounces that are still there count, so a locked
+		// person whose bounces somebody else already cleared neither refuses a delete by ID nor
+		// shows up in the left-out count.
+		var now []struct {
+			SubID int `db:"subscriber_id"`
+			Num   int `db:"num"`
+		}
+		if ids == nil {
+			ids = []int{}
+		}
+		if err := tx.Stmtx(c.q.AxmBounceSubscribers).Select(&now, pq.Array(ids), all, campID, source); err != nil {
+			return false, c.teamFail(err)
+		}
+		left := make(map[int]int, len(now))
+		for _, r := range now {
+			left[r.SubID] = r.Num
+		}
+		stillLocked := []int{}
+		for _, id := range locked {
+			if left[id] > 0 {
+				stillLocked = append(stillLocked, id)
+			}
+		}
+		if !all && len(stillLocked) > 0 {
 			return false, nil
 		}
 		if len(open) > 0 {
-			if ids == nil {
-				ids = []int{}
-			}
 			res, err := tx.Stmtx(c.q.AxmDeleteBouncesOf).Exec(pq.Array(open), all, pq.Array(ids), campID, source)
 			if err != nil {
 				return false, c.bounceDeleteFail(err)
@@ -76,8 +105,8 @@ func (c *Core) DeleteBouncesBounded(ids []int, all bool, campID int, source stri
 			n, _ := res.RowsAffected()
 			done = int(n)
 		}
-		for _, id := range locked {
-			skipped += owners[id]
+		for _, id := range stillLocked {
+			skipped += left[id]
 		}
 		return true, nil
 	})
