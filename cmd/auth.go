@@ -430,7 +430,10 @@ func (a *App) createOIDCUser(claims auth.OIDCclaim, c echo.Context) (auth.User, 
 		listRoleID = &a.cfg.Security.OIDC.DefaultListRoleID
 	}
 
-	user, err := a.core.CreateUser(auth.User{
+	// AXM (LST-73): the same team check as the admin user API (a team member must not hold a role
+	// that changes other teams' lists or campaigns). The default roles come from the settings, so
+	// a bad pair is refused here and nobody is created or let in.
+	user, err := a.core.CreateUserWithTeamRole(auth.User{
 		Type:          auth.UserTypeUser,
 		HasPassword:   false,
 		PasswordLogin: false,

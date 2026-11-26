@@ -503,7 +503,7 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
   - 사용자 만들기·수정(`CreateUser`·`UpdateUser` → `guardTeamMemberRole`): **저장될 조합**을 본다(`update-user` 쿼리처럼: 사용자 역할 0 = 지금 역할 유지, 리스트 역할 없음 = 해제, 리스트 역할 0 = 지금 것 유지). 저장 뒤 팀원(리스트 역할이 팀 역할)이면서 사용자 역할이 쓰기 전사 권한을 가졌거나 Super Admin이면 거절(`teams.memberWideRole`). 두 역할 모두 지금 값과 같은 저장(이름·비밀번호만)은 통과.
 - **이미 어긋난 구성은 코드가 고치지 않는다.** 배포해도 누구의 접근도 줄지 않는다. `GET /api/teams`가 팀마다 `wide`(기본 역할이 가진 쓰기 전사 권한)와 `wide_members`(그 권한이나 Super Admin 역할을 가진 팀원 수)를 주고, 팀 화면이 경고(「다른 팀 것을 고칠 수 있음」, 역할 이름·권한·인원, 역할 화면 링크)를 띄운다. 팀 수정 창은 어긋난 기본 역할을 「(다른 팀 것을 고칠 수 있는 권한 있음)」 표시로 남기고 저장을 막는다. 사람이 역할 화면에서 권한을 뺀다.
 - 세션 사용자는 요청마다 DB에서 읽으므로(`auth.validateSession`) 역할을 고친 뒤 다음 요청부터 적용되고, API 사용자는 `UpdateUserRole`이 캐시를 다시 읽는다. 화면의 `$can`은 프로필을 다시 읽거나 새로고침해야 바뀐다.
-- 반송은 건드리지 않았다. 반송 화면·API(`bounces:get`/`bounces:manage`)는 upstream 그대로 전사이고, 삭제·「모두 차단」도 그대로다(아래 「팀 경계」 절 「남긴 것」).
+- 반송 **읽기**는 건드리지 않았다. 반송 화면·API(`bounces:get`)는 전사 보기다. 반송 **삭제·「모두 차단」**은 LST-73에서 `lists:manage_all`이 없는 사용자에게 잠긴 구독자 규칙을 적용한다(아래 「반송·대시보드·OIDC 가입 경계 (LST-73)」 절).
 
 ### 수신거부·차단·삭제는 전사 (`.9`)
 - **메일의 수신거부(링크, 페이지 버튼, 원클릭 `List-Unsubscribe-Post`)는 항상 전체 차단이다**: `SubscriptionPrefs`가 `unsubscribe-by-campaign`을 `blocklist=true`로 부른다(SQL은 그대로). 모든 리스트의 구독이 `unsubscribed`가 되고 상태가 `blocklisted`라 어느 팀도 다시 보낼 수 없다. 「구독 설정 관리」(리스트별 선택) 화면은 그대로 리스트별이다.
@@ -585,11 +585,24 @@ API는 `POST /api/campaigns/:id/reaction-list/preview`와 `POST /api/campaigns/:
 이름 검색은 upstream과 같은 정규식 전체 훑기라 느리다(이번 변경과 무관). 운영 수치(Q1~Q3)는 코디네이터가 Railway Query 복구 뒤 실행한다.
 
 ### 남긴 것
-- 반송 화면의 「모두 차단」(`PUT /api/bounces/blocklist`, `bounces:manage`)은 팀과 무관하게 반송된 사람 전원을 차단한다(전사 차단, upstream 그대로). 선택 차단은 구독자 ID로 보내므로 잠긴 사람이 섞이면 403이다.
+- ~~반송 화면의 「모두 차단」은 팀과 무관하게 전원을 차단한다~~ → LST-73에서 `lists:manage_all`이 없는 사용자는 잠긴 사람을 건너뛴다(아래 「반송·대시보드·OIDC 가입 경계 (LST-73)」 절). 선택 차단은 구독자 ID로 보내므로 잠긴 사람이 섞이면 403이다.
 - 팀원이 리스트를 고르지 않고 「전체 선택」 일괄 작업이나 CSV 내보내기를 하면 아무것도 처리되지 않는다(upstream의 `query-subscribers-template`·`query-subscribers-for-export`가 `list_id = ALL(리스트들)`이라 리스트가 2개 이상이면 거짓). 쿼리는 upstream 그대로 두고, 화면이 리스트를 고르게 한다(위 「구독자 목록」, LST-69). 리스트가 1개뿐인 사용자는 막지 않는다.
 - 옵트인 메일 재발송은 읽기 규칙을 따른다(구독자를 바꾸지 않는다).
 
+### 반송·대시보드·OIDC 가입 경계 (LST-73)
+
+LST-64·LST-68에서 따로 적어 둔 세 구멍을 막았다. 마이그레이션은 없다. 읽기 범위는 그대로다(팀원은 전사로 읽는다).
+
+- **반송 삭제·「모두 차단」** (`cmd/axm_bounce_boundary.go`, `internal/core/axm_bounce_boundary.go`, 쿼리 `axm-bounce-subscribers`·`axm-delete-bounces-of`·`axm-bounced-subscribers`): 대상은 `lists:manage_all`·Super Admin이 아닌 사용자다. 반송 기록은 구독자의 것이고, 지우면 hard 반송으로 막아 둔 주소가 풀리며(LST-56), 「모두 차단」은 사람을 차단한다. 그래서 **잠긴 구독자**(구독 행이 내가 `list:manage`를 가진 리스트 밖에 하나라도 있는 사람. 위 「규칙」과 같은 판정, `axm-subscriber-locked`)의 반송은 건드리지 못한다. 구독 행이 하나도 없는 사람은 잠기지 않는다.
+  - 반송 삭제 `DELETE /api/bounces/:id`, `DELETE /api/bounces?id=…`: **하나라도 잠긴 사람의 것이면 요청 전체가 403**(`teams.bounceLocked`, 구독자 ID)이고 아무것도 지워지지 않는다.
+  - 「전체 선택」 삭제 `DELETE /api/bounces?all=true(&campaign_id&source)`와 「모두 차단」 `PUT /api/bounces/blocklist`: 잠긴 사람을 **건너뛴다**(오류 없음). 후보(반송이 있는 사람)를 먼저 읽고, `boundedTxPresent` 한 트랜잭션에서 잠그고 → 잠김 다시 읽기 → **아직 반송 기록이 남은 사람만 다시 확인**(후보를 읽은 뒤 마지막 반송이 정리된 사람은 차단하지 않는다, `axm-bounced-among`. 반송 삭제는 구독자 행을 잠그지 않으므로 이 확인이 그 반송 행을 `FOR UPDATE` 로 트랜잭션 끝까지 잡는다: 그 사이 관리자의 삭제는 차단이 끝날 때까지 기다린다) → 변경한다. 그 사이 다른 팀이 넣은 구독도 막는다. 전체 삭제는 후보 읽기 뒤에도 삭제 문장이 필터를 다시 읽는다.
+  - 응답: 이 사용자에게는 `data: {done, skipped}`(`done` = 지운 반송 기록 수 또는 차단한 사람 수, `skipped` = 건너뛴 반송 기록 수 또는 사람 수. 삭제의 `skipped`는 잠금을 쥔 뒤 **다시 읽은**(반송 행도 `FOR UPDATE`로 잠가 아직 커밋 안 된 관리자 삭제를 기다린다) 값이라, 관리자가 그 사이 먼저 지운 기록은 세지 않고 ID 삭제를 거절하는 근거도 되지 않는다), `lists:manage_all`이면 upstream처럼 `data: true`. 화면(`Bounces.vue`)은 `skipped`가 있으면 「일부 반송 기록이 제외됐습니다」 안내를 띄운다. 「모두 차단」 감사 기록(`subscriber.blocklist`, `via: bounces`)의 건수는 실제 차단한 수이고 `detail.skipped_shared`·`counted: "done"`이 붙는다. 관리자는 예전 문장 그대로다.
+  - 이 사용자의 선택 차단(`PUT /api/subscribers/blocklist`)과 구독자 화면의 반송 기록 삭제는 LST-42에서 이미 같은 규칙이다.
+- **대시보드 숫자** (`cmd/axm_dashboard.go` `dashboardPerms`): `/api/dashboard/charts`(일별 열람·클릭 추이)는 `campaigns:get_analytics`가 있어야 하고(분석 라우트와 같다), `/api/dashboard/counts`는 전사 건수라서 `lists:get_all`, `lists:manage_all`, `subscribers:get_all`, `campaigns:get_all`, `campaigns:manage_all`, `campaigns:get_analytics` 중 하나가 있어야 한다(Super Admin 역할은 늘 통과). 내 리스트만 읽는 역할(`list:get`·`campaigns:get`·`subscribers:get`)은 403이다. 프론트(`Dashboard.vue`의 `DASHBOARD_PERMS`, 같은 목록)는 그 역할에게 건수 요청도 카드도 내지 않고 「통계를 보려면…」 안내만 둔다. 이전에는 로그인한 누구에게나 전사 건수가 나왔다(upstream 설계). **운영에서 팀원 역할에 위 여섯 중 하나도 없으면 홈의 건수 카드가 사라진다**(캠페인 분석 권한이 있으면 그대로).
+- **OIDC 자동 가입** (`cmd/auth.go` `createOIDCUser`): 첫 로그인에 사용자를 만들 때 `CreateUserWithTeamRole`(관리자 사용자 API와 같은 `guardTeamMemberRole`)을 쓴다. 설정의 기본 사용자 역할이 쓰기 전사 권한(`lists:manage_all`, `campaigns:manage_all`)이나 Super Admin이고 기본 리스트 역할이 팀 역할이면 사용자를 만들지 않고 로그인 화면에 `teams.memberWideRole` 오류를 띄운다(로그인도 안 된다). 팀이 없는 리스트 역할이면 전과 같다. 이미 있는 사용자의 OIDC 로그인은 역할을 바꾸지 않는다.
+
 ### upstream을 따라갈 때
+- (LST-73) `cmd/bounce.go`의 `DeleteBounces`·`DeleteBounce`·`BlocklistBouncedSubscribers`(`a.deleteBounces`와 「모두 차단」 앞의 `GetPermittedLists` 분기), `cmd/handlers.go`의 대시보드 라우트 2줄(`pm(…, dashboardPerms...)`), `cmd/auth.go`의 `createOIDCUser`(`CreateUserWithTeamRole`).
 - (LST-68) `cmd/campaigns.go`: 캠페인 만들기·수정의 `campaignWriteListIDs` 두 곳, `DeleteCampaigns`의 `campaignWriteLists` 한 줄, `checkCampaignPerm`의 관리 쪽 분기(`CampaignListsWithin`)(upstream의 `GetPermittedLists(Get|Manage)` 줄은 그대로 두고 그 아래에서 덮어쓴다). upstream이 캠페인 접근 판정을 바꾸면 이 네 곳을 다시 본다. `cmd/roles.go` `UpdateUserRole`의 `guardTeamUserRole`, `cmd/users.go` `CreateUser`·`UpdateUser`의 `guardTeamMemberRole`(본문은 `cmd/axm_teams.go`). 새 권한이 생기면 쓰기 전사 권한 목록(`core.TeamWidePerms`, `teams.js`)을 다시 본다.
 - `cmd/subscribers.go`: `GetSubscriber`·`QuerySubscribers`의 `attachLocked`, `UpdateSubscriber`·`PatchSubscriber`의 `updateSub`, 차단·삭제·반송 삭제 5곳의 `blocklistSubs`·`deleteSubs`·`deleteSubBounces`(upstream의 `hasSubPerm` 줄은 그대로), 조건 일괄 2곳의 `guardBulkQuery`·`bulkByQuery`. upstream이 `update-subscriber-with-lists`의 구독 부분을 바꾸면 `axm-update-subscriber-lists`에도 넣는다. `cmd/import.go`의 `restrictImportOverwrite` 한 줄. `internal/core/subscribers.go`의 `QuerySubscribers`·`getSubscriberCount`에 「리스트 2개 이상이면 multi 문장」 두 블록(upstream의 `stmt` 줄은 그대로 두고 그 아래에 덧붙였다 — CodeQL이 그 줄의 변경을 새 경고로 본다).
 - upstream이 `query-subscribers`의 조인·조건을 바꾸면 `axm-query-subscribers-multi`(-count)에도 같은 변경을 넣는다.

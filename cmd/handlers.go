@@ -103,8 +103,9 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.GET("/api/health", a.HealthCheck)
 		g.GET("/api/config", a.GetServerConfig)
 		g.GET("/api/lang/:lang", a.GetI18nLang)
-		g.GET("/api/dashboard/charts", a.GetDashboardCharts)
-		g.GET("/api/dashboard/counts", a.GetDashboardCounts)
+		// AXM (LST-73): the dashboard numbers are company-wide, so they are for roles that read
+		// across lists, subscribers or campaigns (see dashboardPerms), not for every login.
+		a.dashboardRoutes(g, pm)
 
 		g.GET("/api/stats/campaigns", pm(a.GetStatsCampaigns, "campaigns:get_analytics"))
 		g.GET("/api/stats/recipients", pm(a.GetStatsRecipients, "campaigns:get_analytics"))

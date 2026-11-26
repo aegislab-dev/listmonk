@@ -85,4 +85,41 @@ describe('Bounces: delete all inside the filter', () => {
     selectAllAndDelete();
     cy.wait('@del').its('request.query').should('deep.equal', { all: 'true' });
   });
+
+  // LST-73: without lists:manage_all the server leaves out the bounces of people who are on
+  // other teams' lists too and answers { done, skipped }: the screen says so instead of
+  // "deleted".
+  it('says how many bounce records were left out as other teams\'', () => {
+    cy.intercept('DELETE', /\/api\/bounces/, { data: { done: 2, skipped: 3 } }).as('del');
+    stubList();
+    cy.loginAndVisit('/admin/subscribers/bounces?source=ses');
+    selectAllAndDelete();
+    cy.wait('@del');
+    cy.get('.modal.is-active').should('contain', 'Some bounce records were left out')
+      .and('contain', '3 bounce records belong to people who are also on other teams');
+  });
+
+  it('keeps the plain "deleted" message when the server answers true', () => {
+    stubList();
+    cy.loginAndVisit('/admin/subscribers/bounces?source=ses');
+    selectAllAndDelete();
+    cy.wait('@del');
+    cy.get('.modal.is-active').should('not.exist');
+    cy.get('.toast').should('contain', 'Bounces (25) deleted');
+  });
+
+  it('says the people left out of "block all" are people, not records', () => {
+    cy.intercept('PUT', '/api/subscribers/blocklist', { data: { done: 1, skipped: 2 } }).as('block');
+    cy.intercept('PUT', '/api/bounces/blocklist', { data: { done: 1, skipped: 2 } }).as('blockAll');
+    stubList();
+    cy.loginAndVisit('/admin/subscribers/bounces');
+    cy.wait('@list');
+    cy.get('thead .b-checkbox').first().click();
+    cy.get('.actions a').contains('25').click();
+    cy.get('a[data-cy=btn-manage-blocklist]').click();
+    cy.get('.modal.is-active button.is-primary').last().click();
+    cy.wait('@blockAll');
+    cy.get('.modal.is-active').should('contain', 'Some people were left out')
+      .and('contain', '2 people who are also on other teams');
+  });
 });
