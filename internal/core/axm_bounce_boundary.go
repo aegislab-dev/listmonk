@@ -44,6 +44,10 @@ func (c *Core) bounceDeleteFail(err error) error {
 // delete reaches and before it takes the locks. Tests use it to change the data in that gap.
 var AfterBounceOwnersRead func()
 
+// AfterBounceRecount is called inside the transaction after the bounce rows were read again and
+// locked, before anything is deleted. Tests use it to try a delete in that gap.
+var AfterBounceRecount func()
+
 // DeleteBouncesBounded deletes bounce records for a user who may not manage all lists.
 //
 // By ID (all = false) the delete is all or nothing: if one of the bounces is of a locked
@@ -73,20 +77,22 @@ func (c *Core) DeleteBouncesBounded(ids []int, all bool, campID int, source stri
 	refused, err := c.boundedTxPresent(subIDs, manageListIDs, func(tx *sqlx.Tx, locked, open []int) (bool, error) {
 		// Look again under the locks: only the bounces that are still there count, so a locked
 		// person whose bounces somebody else already cleared neither refuses a delete by ID nor
-		// shows up in the left-out count.
-		var now []struct {
-			SubID int `db:"subscriber_id"`
-			Num   int `db:"num"`
-		}
+		// shows up in the left-out count. The bounce rows are locked too (FOR UPDATE, waits for
+		// a delete that is not committed yet): deleting a bounce does not lock its subscriber, so
+		// otherwise a delete could commit between this count and ours.
+		var now []int
 		if ids == nil {
 			ids = []int{}
 		}
-		if err := tx.Stmtx(c.q.AxmBounceSubscribers).Select(&now, pq.Array(ids), all, campID, source); err != nil {
+		if err := tx.Stmtx(c.q.AxmBounceRowsLock).Select(&now, pq.Array(ids), all, campID, source); err != nil {
 			return false, c.teamFail(err)
 		}
+		if AfterBounceRecount != nil {
+			AfterBounceRecount()
+		}
 		left := make(map[int]int, len(now))
-		for _, r := range now {
-			left[r.SubID] = r.Num
+		for _, id := range now {
+			left[id]++
 		}
 		stillLocked := []int{}
 		for _, id := range locked {

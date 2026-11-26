@@ -111,6 +111,7 @@ type Queries struct {
 	AxmBounceSubscribers           *sqlx.Stmt `query:"axm-bounce-subscribers"`
 	AxmDeleteBouncesOf             *sqlx.Stmt `query:"axm-delete-bounces-of"`
 	AxmBouncedSubscribers          *sqlx.Stmt `query:"axm-bounced-subscribers"`
+	AxmBounceRowsLock              *sqlx.Stmt `query:"axm-bounce-rows-lock"`
 	AxmBouncedAmong                *sqlx.Stmt `query:"axm-bounced-among"`
 	AxmUpdateSubscriberLists       *sqlx.Stmt `query:"axm-update-subscriber-lists"`
 	AxmQuerySubscribersMulti       string     `query:"axm-query-subscribers-multi"`

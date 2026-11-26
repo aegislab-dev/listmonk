@@ -179,6 +179,15 @@ WHERE ($2 = FALSE AND id = ANY($1::INT[]))
     OR ($2 = TRUE AND ($3::INT = 0 OR campaign_id = $3::INT) AND ($4::TEXT = '' OR source = $4::TEXT))
 GROUP BY subscriber_id;
 
+-- name: axm-bounce-rows-lock
+-- Same bounces as axm-bounce-subscribers, one row each, locked FOR UPDATE until the transaction
+-- ends: deleting a bounce does not lock its subscriber, so without these locks another delete
+-- could commit between the count and our delete (LST-73).
+SELECT subscriber_id FROM bounces
+WHERE ($2 = FALSE AND id = ANY($1::INT[]))
+    OR ($2 = TRUE AND ($3::INT = 0 OR campaign_id = $3::INT) AND ($4::TEXT = '' OR source = $4::TEXT))
+ORDER BY id FOR UPDATE;
+
 -- name: axm-delete-bounces-of
 -- delete-bounces restricted to the bounces of the subscribers $1 (the ones that are not locked
 -- for the user). $2..$5 are the arguments of delete-bounces.

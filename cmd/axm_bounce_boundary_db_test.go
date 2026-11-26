@@ -323,6 +323,69 @@ func TestBounceDeleteCountsOnlyWhatIsStillThere(t *testing.T) {
 	}
 }
 
+// An administrator's delete that is not committed yet when the re-count runs: the count waits
+// for it and then does not see the bounces it deleted.
+func TestBounceDeleteWaitsForAnUncommittedDelete(t *testing.T) {
+	e := newBounceEnv(t)
+	ua := e.as(e.ua)
+	tx, err := e.db.Beginx()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM bounces WHERE subscriber_id = ANY($1)`, pq.Array([]int{e.s1, e.s2})); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		tx.Commit()
+	}()
+	start := time.Now()
+	// s1 (own) and s2 (locked) are cleared by the administrator: left out are s3, s4 (4 records),
+	// deleted are s5, s6, none (6).
+	code, data := e.call(e.a.DeleteBounces, ua, "DELETE", "/x?all=true", "", "")
+	r, ok := parseResp(t, data)
+	if code != 200 || !ok || r.Done != 6 || r.Skipped != 4 {
+		t.Fatalf("all: %d %s, want done 6 skipped 4", code, data)
+	}
+	if time.Since(start) < 600*time.Millisecond {
+		t.Fatalf("the delete did not wait for the uncommitted delete (%v)", time.Since(start))
+	}
+}
+
+// An administrator's delete that comes after the re-count waits for the transaction (the bounce
+// rows are locked), so the counts of the answer are what was there when they were taken.
+func TestBounceDeleteHoldsTheBouncesUntilItIsDone(t *testing.T) {
+	e := newBounceEnv(t)
+	ua := e.as(e.ua)
+	done := make(chan struct{})
+	core.AfterBounceRecount = func() {
+		go func() {
+			e.db.MustExec(`DELETE FROM bounces WHERE subscriber_id = ANY($1)`, pq.Array([]int{e.s1, e.s2}))
+			close(done)
+		}()
+		select {
+		case <-done:
+			t.Error("a bounce was deleted while the delete held its rows")
+		case <-time.After(700 * time.Millisecond):
+		}
+	}
+	defer func() { core.AfterBounceRecount = nil }()
+
+	code, data := e.call(e.a.DeleteBounces, ua, "DELETE", "/x?all=true", "", "")
+	r, ok := parseResp(t, data)
+	if code != 200 || !ok || r.Done != 8 || r.Skipped != 6 {
+		t.Fatalf("all: %d %s, want done 8 skipped 6", code, data)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the administrator's delete never went through")
+	}
+	if e.left(e.s2) != 0 {
+		t.Fatalf("the administrator's delete did not run: %d bounces of s2 left", e.left(e.s2))
+	}
+}
+
 // Clearing a bounce does not lock the subscriber, so the re-check also locks the bounce rows:
 // an administrator's delete in the gap before the blocklist waits until it is done, instead of
 // leaving a person with no bounce blocked.
