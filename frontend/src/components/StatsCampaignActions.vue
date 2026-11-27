@@ -36,11 +36,13 @@ export default {
     async openClone() {
       this.original = await this.$api.getCampaign(this.campaign.id).catch(() => null);
     },
-    async copy({ name, listIds }) {
+    async copy(selection) {
       const { id } = this.original;
       this.original = null;
-      const result = await cloneCampaign(this.$api, this.$utils.getDate(), id, name, listIds).catch(() => null);
-      if (result) this.$router.push({ name: 'campaign', params: { id: result.id } });
+      const result = await cloneCampaign(this.$api, this.$utils.getDate(), id, selection).catch(() => null);
+      if (!result) return;
+      if (result.ruleSaveFailed) this.$utils.toast(this.$t('campaigns.recent.saveError'), 'is-danger');
+      this.$router.push({ name: 'campaign', params: { id: result.campaign.id } });
     },
   },
 };

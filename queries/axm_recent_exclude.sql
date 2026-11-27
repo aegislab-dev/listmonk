@@ -1,6 +1,12 @@
 -- name: axm-recent-exclude-counts
-SELECT COUNT(*) AS target, COUNT(*) FILTER (WHERE excluded) AS excluded, NOW() AS as_of
-FROM axm_recent_exclusion($1, $2, $3, $4, $5);
+-- Count the same set that axm-recent-add-members uses: existing holds and recent recipients
+-- who have not already received this campaign.
+SELECT COUNT(*) AS target,
+    COUNT(*) FILTER (WHERE h.subscriber_id IS NOT NULL OR (e.excluded AND own.subscriber_id IS NULL)) AS excluded,
+    NOW() AS as_of
+FROM axm_recent_exclusion($1, $2, $3, $4, $5) e
+LEFT JOIN axm_campaign_recent_holds h ON h.campaign_id = $5 AND h.subscriber_id = e.subscriber_id
+LEFT JOIN axm_campaign_sends own ON own.campaign_id = $5 AND own.subscriber_id = e.subscriber_id;
 
 -- name: axm-recent-sends-coverage
 SELECT MIN(sent_at) FROM axm_campaign_sends;
@@ -35,13 +41,14 @@ WHERE l.id = ANY($1) AND tag LIKE '팀:_%'
 ORDER BY tag;
 
 -- name: axm-get-recent-campaign
-SELECT name, status, type FROM campaigns WHERE id = $1;
+SELECT name, status, type, started_at FROM campaigns WHERE id = $1;
 
 -- name: axm-recent-source-campaigns
 SELECT id, type FROM campaigns WHERE id = ANY($1::INT[]) ORDER BY id;
 
 -- name: axm-lock-recent-campaign
-SELECT status, type FROM campaigns WHERE id = $1 FOR UPDATE;
+SELECT status, type, started_at IS NOT NULL AS started, last_subscriber_id
+FROM campaigns WHERE id = $1 FOR UPDATE;
 
 -- name: axm-recent-campaign-lists
 SELECT list_id FROM campaign_lists WHERE campaign_id = $1 AND list_id IS NOT NULL;
@@ -53,10 +60,13 @@ JOIN lists l ON l.id = wanted.id
 ORDER BY wanted.position;
 
 -- name: axm-recent-add-members
+-- Insert the same retained audience that axm-recent-exclude-counts counts.
 INSERT INTO subscriber_lists (subscriber_id, list_id, status)
-SELECT kept.subscriber_id, $6::INT, 'confirmed'
-FROM (SELECT subscriber_id, excluded FROM axm_recent_exclusion($1, $2, $3, $4, $5) OFFSET 0) kept
-WHERE NOT kept.excluded;
+SELECT e.subscriber_id, $6::INT, 'confirmed'
+FROM (SELECT subscriber_id, excluded FROM axm_recent_exclusion($1, $2, $3, $4, $5) OFFSET 0) e
+LEFT JOIN axm_campaign_recent_holds h ON h.campaign_id = $5 AND h.subscriber_id = e.subscriber_id
+LEFT JOIN axm_campaign_sends own ON own.campaign_id = $5 AND own.subscriber_id = e.subscriber_id
+WHERE h.subscriber_id IS NULL AND (NOT e.excluded OR own.subscriber_id IS NOT NULL);
 
 -- name: axm-recent-readable-lists
 -- The lists of $2 that user $1 may read now, by the role tables (the same rule as the session's
@@ -74,4 +84,47 @@ WHERE u.id = $1 AND (
         WHERE r.parent_id = u.list_role_id AND r.type = 'list' AND r.list_id = l.id
             AND r.permissions && ARRAY['list:get', 'list:manage']
     )
+);
+
+-- name: axm-touch-recent-campaign
+-- A rule change is a change of the campaign: a send window opened before it is stale (409).
+UPDATE campaigns SET updated_at = NOW() WHERE id = $1;
+
+-- name: axm-recent-evaluate-batch
+-- Decide existing and new exclusions for the whole candidate batch in one snapshot.
+WITH held AS MATERIALIZED (
+    SELECT subscriber_id FROM axm_campaign_recent_holds
+    WHERE campaign_id = $1 AND subscriber_id = ANY($2::INT[]) AND axm_recent_rule_on($1)
+)
+SELECT subscriber_id, TRUE AS held FROM held
+UNION ALL
+SELECT DISTINCT r.subscriber_id, FALSE FROM axm_recent_received($1, ARRAY(
+    SELECT c.id FROM unnest($2::INT[]) AS c(id)
+    WHERE NOT EXISTS (SELECT 1 FROM held h WHERE h.subscriber_id = c.id)
+)) r
+ORDER BY subscriber_id;
+
+-- name: axm-recent-hold-batch
+-- Record a set of new decisions. On a concurrent insert, the caller retries
+-- this statement, which then skips the committed holds.
+INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id, lane)
+SELECT $1, batch.id, $3 FROM unnest($2::INT[]) AS batch(id)
+WHERE NOT EXISTS (
+    SELECT 1 FROM axm_campaign_recent_holds h WHERE h.campaign_id = $1 AND h.subscriber_id = batch.id
+)
+ORDER BY batch.id;
+
+-- name: axm-recent-has-rule
+SELECT axm_recent_rule_on($1);
+
+-- name: axm-recent-held-count
+-- Count the decisions already made, including those whose subscriber records were deleted.
+SELECT COALESCE(
+    (SELECT COALESCE(r.finished_held_count,
+             (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id)
+             + r.removed_held_count)
+     FROM axm_campaign_recent_rules r JOIN campaigns c ON c.id = r.campaign_id AND c.status = 'finished'
+     WHERE r.campaign_id = $1),
+    (SELECT COUNT(*) FROM axm_campaign_recent_holds WHERE campaign_id = $1)
+    + COALESCE((SELECT removed_held_count FROM axm_campaign_recent_rules WHERE campaign_id = $1), 0)
 );

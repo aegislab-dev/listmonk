@@ -23,6 +23,11 @@ type Queries struct {
 	AxmRecentSourceLists   *sqlx.Stmt `query:"axm-recent-source-lists"`
 	AxmRecentAddMembers    *sqlx.Stmt `query:"axm-recent-add-members"`
 	AxmRecentReadableLists *sqlx.Stmt `query:"axm-recent-readable-lists"`
+	AxmTouchRecentCampaign *sqlx.Stmt `query:"axm-touch-recent-campaign"`
+	AxmRecentEvaluateBatch *sqlx.Stmt `query:"axm-recent-evaluate-batch"`
+	AxmRecentHoldBatch     *sqlx.Stmt `query:"axm-recent-hold-batch"`
+	AxmRecentHasRule       *sqlx.Stmt `query:"axm-recent-has-rule"`
+	AxmRecentHeldCount     *sqlx.Stmt `query:"axm-recent-held-count"`
 
 	AxmAddressCheckCount         *sqlx.Stmt `query:"axm-address-check-count"`
 	AxmAddressCheckAudience      *sqlx.Stmt `query:"axm-address-check-audience"`

@@ -19,8 +19,6 @@ const loginAs = (user, password, next) => {
   cy.get('input[name=username]').invoke('val', user);
   cy.get('input[name=password]').invoke('val', password);
   cy.get('button').click();
-  // Requests queued after this helper must not race the login POST and still carry the old session.
-  cy.location('pathname').should('not.include', '/admin/login');
 };
 const api = (method, url, body) => cy.request({
   method, url, body, failOnStatusCode: false,

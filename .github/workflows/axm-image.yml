@@ -227,7 +227,7 @@ jobs:
           for tz in Asia/Seoul America/New_York Pacific/Auckland; do TZ=$tz node --test tests/schedule-time.test.mjs; done
           # Keep literal, one-spec Cypress commands so local selection tools can also
           # reconcile the complete CI browser set. Each fresh process avoids Chrome's
-          # `*` URL parsing failure during Cypress spec handoff (same as work/65, LST-77).
+          # `*` URL parsing failure during Cypress spec handoff.
           npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js'
           npx cypress run --browser chrome --spec 'cypress/e2e/sender-addresses.cy.js'
           npx cypress run --browser chrome --spec 'cypress/e2e/from-addresses.cy.js'
@@ -283,7 +283,7 @@ jobs:
           count=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT count(*) FROM settings WHERE key = 'axm.business_footer' AND value->'enabled' = 'false'::jsonb")
           test "$count" = 1
           migration=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value->>-1 FROM settings WHERE key = 'migrations'")
-          test "$migration" = v6.2.1-axm.20
+          test "$migration" = v6.2.1-axm.25
           test_domains=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT value::text FROM settings WHERE key = 'axm.test_domains'")
           test "$test_domains" = '[]'
           test_addr=$(docker exec ${{ job.services.postgres.id }} psql -U listmonk -d listmonk_upgrade -Atc "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'axm_test_addresses')::text || ':' || (SELECT count(*) FROM pg_indexes WHERE tablename = 'axm_test_addresses')::text")

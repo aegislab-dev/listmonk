@@ -93,6 +93,10 @@
                 {{ sumParts.length ? sumParts.join(' · ') : $t('campaigns.sendConfirm.total', { n: pf.recipients }) }}
                 <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
               </div>
+              <div v-if="isResume" class="send-sum" data-cy="send-recipients">
+                {{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}
+                <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
+              </div>
               <div v-if="model.zero" class="send-sum lv-block-text" data-cy="send-zero">{{ $t('campaigns.sendConfirm.zeroSummary') }}</div>
             </div>
           </div>
@@ -119,15 +123,11 @@
               <div v-if="stale" class="send-was" data-cy="send-when-was">{{ $t('campaigns.sendConfirm.wasText', { text: prev.when }) }}</div>
             </div>
           </div>
-          <div v-if="isResume" class="send-row" data-cy="send-progress">
+          <div v-if="isResume && !(pf.recent && (pf.recent.enabled || pf.recent.held))" class="send-row" data-cy="send-progress">
             <div class="send-k">{{ $t('campaigns.sendConfirm.row.progress') }}</div>
             <div class="send-v">
               <progress class="progress is-small is-info mb-1" :value="pf.sent" :max="Math.max(progress.total, 1)" />
               <div class="has-text-grey" data-cy="send-progress-text">{{ progressText }}</div>
-              <div class="send-sum" data-cy="send-recipients">
-                {{ $t('campaigns.sendConfirm.remaining', { n: pf.remaining }) }}
-                <span v-if="totalWas !== null" class="send-was" data-cy="send-recipients-was">{{ $t('campaigns.sendConfirm.was', { n: totalWas }) }}</span>
-              </div>
             </div>
           </div>
         </div>
@@ -205,7 +205,7 @@ const fingerprint = (pf) => {
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
     // Each header's own list: the merged list drops an address of the Bcc that the Cc also has.
     keep('cc', (pf.copyLists || {}).cc), keep('bcc', (pf.copyLists || {}).bcc),
-    pf.recipients, pf.remaining, progress,
+    pf.recipients, pf.remaining, pf.willSend, pf.recent, progress,
     (pf.lists || []).map((l) => [l.id, l.name, l.count, l.deleted]),
     (pf.checks || []).filter((c) => c.key !== 'schedule.past')
       .map((c) => {
@@ -287,7 +287,8 @@ export default Vue.extend({
 
     until() { return this.model && this.model.until ? untilKey(this.model.until) : null; },
 
-    // The summary under the lists: people on several lists, and people already left out.
+    // The summary under the lists: people on several lists, people already left out, and the
+    // people the campaign's recent-send rule leaves out of the send (LST-65).
     sumParts() {
       const m = this.model;
       const out = [];
@@ -298,6 +299,22 @@ export default Vue.extend({
           : this.$t('campaigns.sendConfirm.total', { n: this.pf.recipients }));
       }
       if (m.excluded > 0) out.push(this.$t('campaigns.sendConfirm.excluded', { excluded: m.excluded }));
+      if (m.recent) {
+        const held = m.recent.heldInAudience || 0;
+        if (held > 0) {
+          const { fresh } = m.recent;
+          if (!out.length) out.push(this.$t('campaigns.sendConfirm.total', { n: this.pf.recipients }));
+          out.push(this.$t('campaigns.sendConfirm.recentHeldCount', { n: held }));
+          if (fresh > 0) {
+            out.push(this.$t('campaigns.sendConfirm.recentFreshCount', { n: fresh, days: m.recent.days }));
+          }
+          out.push(this.$t('campaigns.sendConfirm.recentSendCount', { n: m.count }));
+        } else {
+          out.push(this.$t(out.length ? 'campaigns.sendConfirm.recentCut' : 'campaigns.sendConfirm.recentSum', {
+            n: this.pf.recipients, days: m.recent.days, x: m.recent.excluded, m: m.count,
+          }));
+        }
+      }
       return out;
     },
 
@@ -359,13 +376,12 @@ export default Vue.extend({
       };
     },
 
-    // The count before the change, shown next to the total. With one list that kept its
-    // place, the list's own "before" already says it.
+    // A single list's comparison replaces the total only when both counts match.
     totalWas() {
       const ch = this.countChange;
       if (!ch) return null;
       const lists = this.pf.lists || [];
-      if (!this.isResume && lists.length === 1 && this.wasCount(lists[0]) !== null) return null;
+      if (!this.isResume && lists.length === 1 && lists[0].count === ch.after && this.wasCount(lists[0]) === ch.before) return null;
       return ch.before;
     },
 
