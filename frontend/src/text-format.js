@@ -59,7 +59,7 @@ const codeRanges = (src) => {
         fence = null;
       }
     } else if (m) {
-      fence = m[1];
+      [, fence] = m;
       start = pos;
     }
     pos += line.length + 1;
