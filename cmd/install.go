@@ -161,7 +161,30 @@ func isInstallationComplete(db *sqlx.DB) (bool, error) {
 	if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "42P01" {
 		return false, nil
 	}
-	return complete, err
+	if err != nil || complete {
+		return complete, err
+	}
+
+	// Databases created before migration tracking have no `migrations` setting. Also,
+	// preserve a populated legacy install if that setting was removed manually. The
+	// fresh schema contains default settings rows but no rows in the other tables, so
+	// those defaults do not make an interrupted schema-only install look complete.
+	var tables []string
+	if err := db.Select(&tables, `SELECT tablename FROM pg_tables
+		WHERE schemaname = current_schema() AND tablename <> 'settings'`); err != nil {
+		return false, err
+	}
+	for _, table := range tables {
+		var populated bool
+		query := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s LIMIT 1)", pq.QuoteIdentifier(table))
+		if err := db.Get(&populated, query); err != nil {
+			return false, err
+		}
+		if populated {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func installLists(q *models.Queries) (int, int) {

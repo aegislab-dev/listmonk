@@ -677,10 +677,25 @@ func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := fmt.Sprintf("axm_install_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
+	admin.MustExec(`CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public`)
+	var hadPublicLinks bool
+	if err := admin.Get(&hadPublicLinks, `SELECT to_regclass('public.links') IS NOT NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if hadPublicLinks {
+		admin.Close()
+		t.Skip("public.links already exists; refusing to alter shared test data")
+	}
+	admin.MustExec(`CREATE TABLE public.links (id INTEGER NOT NULL)`)
+	admin.MustExec(`INSERT INTO public.links VALUES (65)`)
+	t.Cleanup(func() {
+		admin.Exec(`DROP TABLE public.links`)
+		admin.Close()
+	})
 	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(name))
-	admin.Close()
 
-	db, err := sqlx.Connect("postgres", withSearchPath(t, dsn, name+",public"))
+	// Do not include public: schema.sql contains unqualified DROP TABLE statements.
+	db, err := sqlx.Connect("postgres", withSearchPath(t, dsn, name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -720,6 +735,16 @@ func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
 	if err := installSchema(db, fs); err != nil {
 		t.Fatalf("schema retry with one DB connection: %v", err)
 	}
+	// Query preparation needs pgcrypto's public.gen_salt; widen the search path only
+	// after the unqualified DROP statements in schema.sql have finished.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = sqlx.Connect("postgres", withSearchPath(t, dsn, name+",public"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
 	q := prepareQueries(readQueries(queryFilePath, fs), db, ko)
 	defaultListID, optinListID := installLists(q)
 	installSubs(defaultListID, optinListID, q)
@@ -748,6 +773,19 @@ func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
 	db.Get(&campaigns, `SELECT COUNT(*) FROM campaigns WHERE name = 'Test campaign'`)
 	if lists != 2 || templates != 4 || campaigns != 1 {
 		t.Fatalf("retry seeded lists=%d templates=%d campaigns=%d, want 2, 4, 1", lists, templates, campaigns)
+	}
+	var publicLink int
+	if err := admin.Get(&publicLink, `SELECT id FROM public.links`); err != nil || publicLink != 65 {
+		t.Fatalf("install changed public.links sentinel: value=%d, err=%v", publicLink, err)
+	}
+	// Both a populated legacy database with no migration row and a current install whose
+	// row was removed must be recognized as installed rather than destructively reset.
+	if _, err := db.Exec(`DELETE FROM settings WHERE key = 'migrations'`); err != nil {
+		t.Fatal(err)
+	}
+	installed, err = isInstallationComplete(db)
+	if err != nil || !installed {
+		t.Fatalf("populated install without migration record was not recognized: installed=%t, err=%v", installed, err)
 	}
 }
 
