@@ -52,7 +52,6 @@ const answer = (campaigns) => ({
 });
 
 const stub = ({ cur = [...mine, ...other], prev = [], recipientTracked = true, overlapTotals = [{ id: 0, team: '', recipients: 200, overlap30: 200, overlap7: 200 }] } = {}) => {
-  cy.clock(NOW, ['Date']);
   cy.intercept('GET', '/api/stats/campaigns*', (req) => {
     const from = new Date(req.query.from).getTime();
     // The first call is the period, the second the period before it.
@@ -81,10 +80,19 @@ const stub = ({ cur = [...mine, ...other], prev = [], recipientTracked = true, o
   });
 };
 
+// The login form redirects through a new document. Install the clock on the
+// authenticated visit so the page creates its first requests with the fixed date.
+const visitWithFixedClock = (url = '/admin') => {
+  cy.loginAndVisit('/admin/lists');
+  cy.clock(NOW, ['Date']);
+  cy.visit(url);
+  cy.window().then((win) => expect(win.Date.now()).to.equal(NOW));
+};
+
 describe('Statistics dashboard (fixed answers)', () => {
   it('shows the team table first, with the baselines, small samples and teams that sent nothing', () => {
     stub();
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.wait('@stats');
 
     cy.get('[data-cy=stats-teams]').should('contain', 'Team comparison');
@@ -106,7 +114,7 @@ describe('Statistics dashboard (fixed answers)', () => {
 
   it('explains the figures with a "?" and folds the definitions', () => {
     stub();
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.wait('@stats');
     cy.get('[data-cy=help-click]').first().trigger('mouseenter', { force: true });
     cy.contains('Share of recipients who clicked a link at least once').should('exist');
@@ -121,7 +129,7 @@ describe('Statistics dashboard (fixed answers)', () => {
 
   it('filters the campaigns by the team row and keeps other teams closed', () => {
     stub();
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.wait('@stats');
     cy.get('[data-cy=camp-more]').click(); // six rows are shown at first
     // Other teams: name and numbers only, no button to open; own campaigns have the buttons.
@@ -202,7 +210,7 @@ describe('Statistics dashboard (fixed answers)', () => {
 
   it('next-send cards say why a group is too small and hide other teams\' lists', () => {
     stub();
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.wait('@stats');
     cy.get('[data-cy=card-list]').should('contain', '내 리스트').and('contain', 'Lists outside your access').and('contain', 'Bounce 2.0%');
     cy.get('[data-cy=card-weekday] [data-cy=concl-weekday]').should('contain', '3 campaigns');
@@ -240,7 +248,7 @@ describe('Statistics dashboard (fixed answers)', () => {
       }),
     ];
     stub({ cur: camps });
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     [
       ['weekday', ['Wed', 'Thu']],
       ['hour', ['06', '18']],
@@ -257,8 +265,8 @@ describe('Statistics dashboard (fixed answers)', () => {
       followup_condition: { open: 'any', click: 'any' }, combined_clickers: 120, combined_viewers: 550,
     });
     stub({ cur: [...mine, followup] });
-    cy.loginAndVisit('/');
-    cy.get('[data-cy=team-row-__none__]').click();
+    visitWithFixedClock();
+    cy.get('[data-cy=team-row-__none__] button[aria-pressed=false]').click();
     cy.get('[data-cy=team-filter]').should('contain', 'No team');
     cy.get('[data-cy=camp-row-80]').within(() => {
       cy.get('[data-cy=result-clone]').should('exist');
@@ -279,7 +287,7 @@ describe('Statistics dashboard (fixed answers)', () => {
       ...other.slice(0, 3).map((c) => ({ ...c, started_at: day(105), clickers: 170 })),
     ];
     stub({ prev });
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.get('[data-cy=stats-summary]').should('contain', 'Previous period for the same team 1.0% (+8.0%p)');
     cy.get('[data-cy="team-row-팀:가"]').should('contain', '+8.0%p')
       .find('[data-cy=help-click]').trigger('mouseenter', { force: true });
@@ -291,7 +299,7 @@ describe('Statistics dashboard (fixed answers)', () => {
     const cur = mine.slice(0, 3).map((c) => ({ ...c, clickers: 9 }));
     const prev = cur.map((c) => ({ ...c, started_at: day(105), clickers: 4 }));
     stub({ cur, prev });
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     const row = '[data-cy="team-row-팀:가"]';
     cy.get(row).should('contain', 'vs prev. ▲ +0.5%p');
     cy.get(`${row} [data-cy=help-click] button`).focus();
@@ -301,7 +309,7 @@ describe('Statistics dashboard (fixed answers)', () => {
 
   it('distinguishes an unreadable previous period from absent sends and requests all time', () => {
     stub({ prev: null });
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.get('[data-cy=stats-summary]').should('contain', 'Previous period results could not be loaded').and('not.contain', 'No sends');
     cy.intercept('GET', '/api/stats/campaigns*', (req) => {
       if (req.query.from === 'all' && req.query.overlap !== 'true') {
@@ -320,7 +328,7 @@ describe('Statistics dashboard (fixed answers)', () => {
   it('shows the comparison requirement and distinguishes not tracked from zero percent', () => {
     const untracked = camp({ id: 30, team_tags: ['팀:라'], viewers: 0, clickers: 0 });
     stub({ cur: [...mine, untracked] });
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.get('[data-cy=team-comparison-start]').should('contain', '3 eligible campaigns and 1,000 sends');
     cy.get('[data-cy="team-row-팀:라"]').should('contain', 'Not tracked').and('not.contain', '0.0%');
     cy.get('[data-cy=camp-row-30]').should('contain', 'Not tracked');
@@ -328,7 +336,7 @@ describe('Statistics dashboard (fixed answers)', () => {
 
   it('shows tracking gaps in recipient cards while retaining bounce rates', () => {
     stub({ recipientTracked: false });
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.get('[data-cy=card-country]').should('contain', 'Not tracked').and('contain', 'Bounce 1.3%').and('not.contain', 'Click 0.0%');
     cy.get('[data-cy=card-age]').should('contain', 'Not tracked').and('contain', 'Bounce 4.0%').and('not.contain', 'Open 0.0%');
   });
@@ -343,7 +351,7 @@ describe('Statistics dashboard (fixed answers)', () => {
           { ...enough, key: '(none)', clicked: 30 }]
         : [{ ...sparse, key: 'older' }],
     }));
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     const smallRows = [
       ['[data-cy=card-country] .st-br', 'KR'],
       ['[data-cy=card-age] .st-br', '30 days or older'],
@@ -370,7 +378,7 @@ describe('Statistics dashboard (fixed answers)', () => {
       ...c, sent: 200, ledger_rows: 200, overlap30: index ? 200 : 0,
     }));
     stub({ cur: [...repeated, camp({ id: 200, team_tags: ['팀:나'], sent: 100, ledger_rows: 100, overlap30: 0 })], overlapTotals: teams });
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.get('[data-cy=concl-overlap]').should('contain', '66.7% (200 of 300 unique recipients)');
     cy.get('[data-cy="team-row-팀:가"]').click();
     cy.get('[data-cy=concl-overlap]').should('contain', '100.0% (200 of 200 unique recipients)').and('not.contain', '400');
@@ -378,7 +386,7 @@ describe('Statistics dashboard (fixed answers)', () => {
 
   it('keeps company warnings muted below three campaigns', () => {
     stub({ cur: [camp({ hard: 30, soft: 0, complaint: 2 })] });
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.get('[data-cy=team-row-all]').should('contain', '3.0%').and('contain', '0.20%').find('.st-over').should('not.exist');
     cy.get('[data-cy="team-row-팀:가"] .st-over').should('not.exist');
   });
@@ -389,7 +397,7 @@ describe('Statistics dashboard (fixed answers)', () => {
       delay: 1500,
       body: { data: [] },
     }).as('overlap');
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.get('[data-cy=stats-teams]').should('be.visible');
     cy.get('[data-cy=card-overlap]').should('contain', 'Calculating send overlap');
     cy.wait('@overlap');
@@ -398,7 +406,7 @@ describe('Statistics dashboard (fixed answers)', () => {
 
   it('shows the empty "no sends" rows when no campaign was sent', () => {
     stub({ cur: [] });
-    cy.loginAndVisit('/');
+    visitWithFixedClock();
     cy.wait('@stats');
     cy.get('[data-cy="team-row-팀:가"]').should('contain', 'No sends');
     cy.get('[data-cy=stats-campaigns]').should('exist');
@@ -415,7 +423,7 @@ describe('Result summary on the campaign and analytics screens (fixed answers)',
 
   it('shows the result of a finished campaign on top of its screen', () => {
     stub();
-    cy.loginAndVisit('/admin/campaigns');
+    visitWithFixedClock('/admin/campaigns');
     cy.request('/api/campaigns?per_page=1').then((r) => {
       const real = r.body.data.results[0].id;
       // The campaign of the server stands in for #12 of the answer: finished 900 days ago.
@@ -451,7 +459,7 @@ describe('Result summary on the campaign and analytics screens (fixed answers)',
     cy.intercept('GET', '/api/campaigns/analytics/clicks*', { data: [] });
     cy.intercept('GET', '/api/campaigns/analytics/bounces*', { data: [{ campaign_id: 52, count: 4, timestamp: day(9) }] });
     cy.intercept('GET', '/api/campaigns/analytics/links*', { data: [] });
-    cy.loginAndVisit('/admin/campaigns/analytics?id=52');
+    visitWithFixedClock('/admin/campaigns/analytics?id=52');
     cy.get('[data-cy=result-click]').should('contain', 'Not tracked');
     cy.get('[data-cy=btn-proof-summary]').click();
     cy.get('[data-cy=proof-summary-text]').invoke('val')
@@ -462,7 +470,7 @@ describe('Result summary on the campaign and analytics screens (fixed answers)',
     const tracked = camp({ id: 91, name: 'Tracked', viewers: 431, clickers: 89, hard: 10, soft: 5 });
     const untracked = camp({ id: 92, name: 'Untracked', viewers: 0, clickers: 0 });
     stub({ cur: [tracked, untracked] });
-    cy.loginAndVisit('/admin/campaigns/analytics');
+    visitWithFixedClock('/admin/campaigns/analytics');
     cy.get('[data-cy=analytics-empty]').should('be.visible');
     cy.get('.charts').should('not.exist');
     cy.contains('[data-cy=analytics-empty] .st-card > div', 'Tracked')
@@ -494,7 +502,7 @@ describe('Result summary on the campaign and analytics screens (fixed answers)',
     cy.intercept('GET', '/api/stats/campaigns*', answer(choices));
     cy.intercept({ method: 'GET', pathname: '/api/campaigns' }, { data: { results: choices } });
     cy.intercept('GET', '/api/campaigns/analytics/views?*', { data: [] }).as('autocompleteViews');
-    cy.loginAndVisit('/admin/campaigns/analytics');
+    visitWithFixedClock('/admin/campaigns/analytics');
     choices.forEach((choice, index) => {
       cy.intercept('GET', `/api/campaigns/${choice.id}`, { data: choice });
       if (index) cy.visit('/admin/campaigns/analytics');
@@ -520,7 +528,7 @@ describe('Result summary on the campaign and analytics screens (fixed answers)',
     stub({ cur: [recent] });
     cy.intercept('GET', '/api/campaigns/91', { data: { ...recent, created_at: day(3) } });
     cy.intercept('GET', '/api/campaigns/analytics/views?*', { data: [] }).as('explicitViews');
-    cy.loginAndVisit('/admin/campaigns/analytics');
+    visitWithFixedClock('/admin/campaigns/analytics');
     cy.get('[data-cy=from] input').should('have.attr', 'placeholder', 'Blank = campaign start');
     cy.get('[data-cy=to] input').should('have.attr', 'placeholder', 'Blank = now');
     cy.get('[data-cy=proof-summary]').should('not.exist');
