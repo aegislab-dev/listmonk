@@ -568,15 +568,21 @@ describe('Pre-send confirmation window', () => {
         const d = res.body.data;
         Object.assign(d, {
           mode: 'scheduled', status: 'scheduled', resumed: true,
+          recipients: 2, remaining: 0, will_send: 0,
           recent: { enabled: false, days: 0, scope: '', excluded: 2, held: 2 },
         });
-        d.checks = [{ key: 'recent.applied', level: 'info', params: { days: 0, scope: '', excluded: 2, held: 2 } }];
+        d.checks = [{ key: 'recent.heldAll', level: 'block', params: { held: 2 } }];
       });
     }).as('missingRecentSource');
     row('later').find('[data-cy=btn-schedule]').click();
     cy.wait('@missingRecentSource');
     ready();
-    cy.get('[data-cy="send-check-recent.applied"]').should('contain', '2 people already left out').and('not.contain', 'campaigns.sendConfirm');
+    cy.get('[data-cy="send-check-recent.heldAll"]').should('have.attr', 'data-level', 'block')
+      .and('contain', '2 people already left out')
+      .and('contain', 'cannot be changed after sending starts')
+      .and('contain', 'Create a new campaign')
+      .and('not.contain', 'last 0 days')
+      .and('not.contain', 'Turn the rule off');
     cy.get('[data-cy=send-cancel]').click();
   });
 

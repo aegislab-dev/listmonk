@@ -143,9 +143,17 @@ func TestPreflightChecks(t *testing.T) {
 		}),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.applied": "info"}},
 		{"recent rule that leaves out everybody blocks", with(func(f *preflightFacts) {
-			f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 300
+			f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded, f.RecentFresh = true, 14, "all", 300, 300
 		}),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.all": "block"}},
+		{"old holds alone block with an accurate explanation", with(func(f *preflightFacts) {
+			f.Mode, f.Remaining, f.RecentExcluded, f.RecentHeld = "schedule", 0, 300, 300
+		}),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.heldAll": "block"}},
+		{"fresh and previously held exclusions are distinguished", with(func(f *preflightFacts) {
+			f.Mode, f.Remaining, f.RecentExcluded, f.RecentHeld, f.RecentFresh = "schedule", 0, 300, 300, 125
+		}),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.mixedAll": "block"}},
 		{"recent rule that leaves out all but some does not block", with(func(f *preflightFacts) {
 			f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded = true, 14, "all", 299
 		}),

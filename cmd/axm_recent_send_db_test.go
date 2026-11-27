@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -750,6 +751,16 @@ func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
 	installSubs(defaultListID, optinListID, q)
 	campaignTemplateID, archiveTemplateID := installTemplates(q, fs)
 	installCampaign(campaignTemplateID, archiveTemplateID, q)
+	// An interrupted first install may retry install and then run every unrecorded migration.
+	// The v2.2 and v5 seed migrations must not add a second copy of samples already seeded by
+	// installTemplates.
+	migrationLog := log.New(io.Discard, "", 0)
+	if err := migrations.V2_2_0(db, fs, ko, migrationLog); err != nil {
+		t.Fatalf("replay transactional-template migration after install seeds: %v", err)
+	}
+	if err := migrations.V5_0_0(db, fs, ko, migrationLog); err != nil {
+		t.Fatalf("replay visual-template migration after install seeds: %v", err)
+	}
 	if err := recordMigrationVersion("v6.2.1-axm.25", db); err != nil {
 		t.Fatalf("record installed version with one DB connection: %v", err)
 	}
@@ -786,6 +797,50 @@ func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
 	installed, err = isInstallationComplete(db)
 	if err != nil || !installed {
 		t.Fatalf("populated install without migration record was not recognized: installed=%t, err=%v", installed, err)
+	}
+}
+
+func TestInstallationCompleteChecksEveryEffectiveSearchSchema(t *testing.T) {
+	dsn := os.Getenv("AXM_TEST_DB_URL")
+	if dsn == "" {
+		t.Skip("AXM_TEST_DB_URL not set")
+	}
+	admin, err := sqlx.Connect("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := fmt.Sprintf("axm_install_empty_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
+	legacy := fmt.Sprintf("axm_install_legacy_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
+	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(first))
+	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(legacy))
+	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.settings (key TEXT NOT NULL UNIQUE, value JSONB NOT NULL)`)
+	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.subscribers (id INTEGER PRIMARY KEY)`)
+	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(legacy) + `.subscribers VALUES (65)`)
+	defer func() {
+		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(first) + " CASCADE")
+		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(legacy) + " CASCADE")
+		admin.Close()
+	}()
+
+	db, err := sqlx.Connect("postgres", withSearchPath(t, dsn, first+","+legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var current string
+	if err := db.Get(&current, `SELECT current_schema()`); err != nil {
+		t.Fatal(err)
+	}
+	if current != first {
+		t.Fatalf("current_schema()=%q, want first empty schema %q", current, first)
+	}
+	complete, err := isInstallationComplete(db)
+	if err != nil || !complete {
+		t.Fatalf("populated lower-priority legacy schema was not recognized: complete=%t err=%v", complete, err)
+	}
+	var preserved int
+	if err := db.Get(&preserved, `SELECT id FROM subscribers`); err != nil || preserved != 65 {
+		t.Fatalf("search-path subscriber data changed: id=%d err=%v", preserved, err)
 	}
 }
 

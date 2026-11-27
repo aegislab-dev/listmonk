@@ -56,6 +56,14 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 		}
 	}
 
+	user := os.Getenv("LISTMONK_ADMIN_USER")
+	password := os.Getenv("LISTMONK_ADMIN_PASSWORD")
+	apiUser := os.Getenv("LISTMONK_ADMIN_API_USER")
+	hasUser, err := validateInstallUsers(user, password, apiUser)
+	if err != nil {
+		lo.Fatal(err)
+	}
+
 	// Migrate the tables.
 	if err := installSchema(db, fs); err != nil {
 		lo.Fatalf("error migrating DB schema: %v", err)
@@ -77,36 +85,15 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 	installCampaign(campTplID, archiveTplID, q)
 
 	// Setup admin user optionally.
-	var (
-		user     = os.Getenv("LISTMONK_ADMIN_USER")
-		password = os.Getenv("LISTMONK_ADMIN_PASSWORD")
-		apiUser  = os.Getenv("LISTMONK_ADMIN_API_USER")
-
-		hasUser = false
-	)
-
 	// Admin user.
 	if user != "" && password != "" {
-		if len(user) < 3 || len(password) < 8 {
-			lo.Fatal("LISTMONK_ADMIN_USER should be min 3 chars and LISTMONK_ADMIN_PASSWORD should be min 8 chars")
-		}
-
 		lo.Printf("creating superadmin user '%s'", user)
-		hasUser = true
 	} else {
 		lo.Printf("no superadmin user created. Visit webpage to create user.")
 	}
 
 	// API User.
 	if apiUser != "" {
-		if !hasUser {
-			lo.Fatal("LISTMONK_ADMIN_API_USER requires LISTMONK_ADMIN_USER and LISTMONK_ADMIN_PASSWORD to be set")
-		}
-
-		if len(apiUser) < 3 {
-			lo.Fatal("LISTMONK_ADMIN_API_USER should be min 3 chars")
-		}
-
 		lo.Printf("creating superadmin API user '%s'", apiUser)
 	}
 
@@ -122,6 +109,25 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 
 	lo.Printf("setup complete")
 	lo.Printf(`run the program and access the dashboard at %s`, ko.MustString("app.address"))
+}
+
+// validateInstallUsers checks configuration that would otherwise fail after the schema and
+// default data have already been written. Keep it before any installation side effects so an
+// operator can correct the environment and retry safely.
+func validateInstallUsers(user, password, apiUser string) (bool, error) {
+	hasUser := user != "" && password != ""
+	if hasUser && (len(user) < 3 || len(password) < 8) {
+		return false, fmt.Errorf("LISTMONK_ADMIN_USER should be min 3 chars and LISTMONK_ADMIN_PASSWORD should be min 8 chars")
+	}
+	if apiUser != "" {
+		if !hasUser {
+			return false, fmt.Errorf("LISTMONK_ADMIN_API_USER requires LISTMONK_ADMIN_USER and LISTMONK_ADMIN_PASSWORD to be set")
+		}
+		if len(apiUser) < 3 {
+			return false, fmt.Errorf("LISTMONK_ADMIN_API_USER should be min 3 chars")
+		}
+	}
+	return hasUser, nil
 }
 
 // installSchema executes the SQL schema and creates the necessary tables and types.
@@ -169,14 +175,21 @@ func isInstallationComplete(db *sqlx.DB) (bool, error) {
 	// preserve a populated legacy install if that setting was removed manually. The
 	// fresh schema contains default settings rows but no rows in the other tables, so
 	// those defaults do not make an interrupted schema-only install look complete.
-	var tables []string
-	if err := db.Select(&tables, `SELECT tablename FROM pg_tables
-		WHERE schemaname = current_schema() AND tablename <> 'settings'`); err != nil {
+	type tableInPath struct {
+		Schema string `db:"schemaname"`
+		Name   string `db:"tablename"`
+	}
+	var tables []tableInPath
+	if err := db.Select(&tables, `SELECT schemaname, tablename FROM pg_tables
+		WHERE schemaname = ANY(current_schemas(false))
+		AND tablename IN ('subscribers', 'lists', 'campaigns', 'templates')
+		ORDER BY array_position(current_schemas(false), schemaname), tablename`); err != nil {
 		return false, err
 	}
 	for _, table := range tables {
 		var populated bool
-		query := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s LIMIT 1)", pq.QuoteIdentifier(table))
+		query := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s.%s LIMIT 1)",
+			pq.QuoteIdentifier(table.Schema), pq.QuoteIdentifier(table.Name))
 		if err := db.Get(&populated, query); err != nil {
 			return false, err
 		}

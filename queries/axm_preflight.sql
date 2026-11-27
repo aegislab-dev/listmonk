@@ -104,7 +104,7 @@ SELECT cl.list_id AS id, cl.name, COALESCE(cl.optin::TEXT, '') AS optin, cl.is_d
     totals.n AS total,
     totals.multi,
     (SELECT COUNT(*) FROM recent_out) AS recent,
-    (CASE WHEN $3::BOOLEAN THEN (SELECT COUNT(*) FROM fresh WHERE id > $2) ELSE 0 END) AS recent_fresh,
+    (CASE WHEN $3::BOOLEAN THEN (SELECT COUNT(*) FROM fresh WHERE id > $2) ELSE (SELECT COUNT(*) FROM fresh) END) AS recent_fresh,
     CASE WHEN c.type = 'regular' THEN totals.excluded ELSE 0 END AS excluded,
     CASE WHEN $3::BOOLEAN THEN totals.after_checkpoint - (
         -- Count a past delivery or a recent exclusion only once, even if several records match.

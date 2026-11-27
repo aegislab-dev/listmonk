@@ -213,9 +213,15 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		count = f.Remaining
 	}
 	key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists > 0, count > 0)
-	recentAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentExcluded > 0 && f.RecentExcluded == f.Total
+	recentAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentFresh > 0 && f.RecentFresh == f.Total
+	recentHeldAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentExcluded > 0 && f.RecentExcluded == f.Total && f.RecentFresh == 0 && f.RecentHeld > 0
+	recentMixedAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentExcluded > 0 && f.RecentExcluded == f.Total && f.RecentFresh > 0 && f.RecentFresh < f.Total && f.RecentHeld > 0
 	if recentAll {
 		add("recent.all", level, map[string]any{"days": f.RecentDays})
+	} else if recentHeldAll {
+		add("recent.heldAll", level, map[string]any{"held": f.RecentExcluded})
+	} else if recentMixedAll {
+		add("recent.mixedAll", level, map[string]any{"fresh": f.RecentFresh, "held": f.RecentExcluded - f.RecentFresh})
 	} else if key != "" {
 		add(key, level, nil)
 	}
@@ -272,7 +278,7 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 
 	// The rule is applied by the sender: an information line says who it leaves out (not a warning:
 	// it is what the person asked for). Resuming says who it left out already.
-	if !recentAll && f.CampType == models.CampaignTypeRegular && (f.RecentEnabled || f.RecentHeld > 0) {
+	if !recentAll && !recentHeldAll && !recentMixedAll && f.CampType == models.CampaignTypeRegular && (f.RecentEnabled || f.RecentHeld > 0) {
 		add("recent.applied", models.PreflightInfo, map[string]any{
 			"days": f.RecentDays, "scope": f.RecentScope, "excluded": f.RecentExcluded, "held": f.RecentHeld,
 			"fresh": f.RecentFresh,

@@ -210,6 +210,19 @@ test('the recent rule line is information that says who is left out; the unsubsc
   assert.equal(c.params.tag, '{{ UnsubscribeURL }}');
 });
 
+test('all-held and mixed recent exclusions keep their own blocking reason', () => {
+  for (const [key, params] of [
+    ['recent.heldAll', { held: 12 }],
+    ['recent.mixedAll', { fresh: 4, held: 8 }],
+  ]) {
+    const line = checkLines(pf({ checks: [{ key, level: 'block', params }] }))
+      .find((item) => item.name === key);
+    assert.equal(line.level, 'block');
+    assert.equal(line.key, `campaigns.sendConfirm.check.${key}.block`);
+    assert.deepEqual(line.params, params);
+  }
+});
+
 test('a rule that leaves out everybody blocks, keeps the other lines and says the button cannot send (LST-65)', () => {
   const m = model({
     recipients: 40, willSend: 0,
