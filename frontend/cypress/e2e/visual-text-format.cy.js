@@ -21,8 +21,10 @@ const editorDoc = () => cy.get('#visual-editor').its('0.contentDocument');
 const ready = () => cy.waitUntil(() => cy.get('#visual-editor').then(($f) => Boolean($f[0].contentWindow.EmailBuilder
   && $f[0].contentWindow.EmailBuilder.isRendered('visual-editor-container')
   && $f[0].contentDocument.querySelector('#visual-editor-container h2'))), { timeout: 20000 });
-const openText = () => {
-  cy.visit(`/admin/campaigns/${campaignId}#content`);
+const openText = (reload = false) => {
+  // A visit that only changes the hash does not load the page again.
+  if (reload) cy.reload();
+  else cy.visit(`/admin/campaigns/${campaignId}#content`);
   ready();
   editorDoc().then((d) => {
     [...d.querySelectorAll('#visual-editor-container div')].reverse()
@@ -93,13 +95,15 @@ describe('Visual editor inline formatting', () => {
     select('12월 3일까지');
     box().type('{ctrl}b');
 
-    canvasText().then((el) => {
+    canvasText().then(($el) => {
+      const el = $el[0];
       const span = [...el.querySelectorAll('span')].find((s) => s.style.fontSize === '20px');
       expect(span, 'canvas 20px span').to.exist;
       expect(span.querySelector('strong u').textContent).to.equal('수수료가 0원입니다');
       expect([...el.querySelectorAll('strong')].map((s) => s.textContent)).to.include('12월 3일까지');
       // The personalization chip stays a chip, not a raw tag (LST-3).
-      expect(el.textContent).to.contain('이름').and.not.contain('{{');
+      expect(el.textContent).to.not.contain('{{');
+      expect([...el.querySelectorAll('span')].some((s) => s.style.backgroundColor === 'rgb(232, 242, 255)'), 'chip').to.equal(true);
     });
     // The block now holds formatted HTML; Markdown would print the tags, so it is gone.
     editorDoc().find('label:contains("Markdown")').should('not.exist');
@@ -118,7 +122,7 @@ describe('Visual editor inline formatting', () => {
     });
 
     // Reopened, the box shows the same formatting and the chip.
-    openText();
+    openText(true);
     box().find('[data-token="{{ .Subscriber.Name }}"]').should('exist');
     box().find('span[data-axm-size="20"]').should('have.text', '수수료가 0원입니다')
       .find('strong u').should('have.text', '수수료가 0원입니다');
@@ -129,7 +133,8 @@ describe('Visual editor inline formatting', () => {
     // Clear formatting takes all three off the selection.
     select('수수료가 0원입니다');
     editorDoc().find('[data-format=clear]').click();
-    canvasText().then((el) => {
+    canvasText().then(($el) => {
+      const el = $el[0];
       expect([...el.querySelectorAll('u')]).to.have.length(0);
       expect([...el.querySelectorAll('span')].filter((s) => s.style.fontSize === '20px')).to.have.length(0);
       expect([...el.querySelectorAll('strong')].map((s) => s.textContent)).to.deep.equal(['12월 3일까지']);
