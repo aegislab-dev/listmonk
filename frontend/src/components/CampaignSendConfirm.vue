@@ -205,7 +205,7 @@ const fingerprint = (pf) => {
     keep('subject', pf.subject), keep('from', pf.fromEmail), keep('reply_to', pf.replyTo),
     // Each header's own list: the merged list drops an address of the Bcc that the Cc also has.
     keep('cc', (pf.copyLists || {}).cc), keep('bcc', (pf.copyLists || {}).bcc),
-    pf.recipients, pf.remaining, pf.willSend, progress,
+    pf.recipients, pf.remaining, pf.willSend, pf.recent, progress,
     (pf.lists || []).map((l) => [l.id, l.name, l.count, l.deleted]),
     (pf.checks || []).filter((c) => c.key !== 'schedule.past')
       .map((c) => {
@@ -300,9 +300,20 @@ export default Vue.extend({
       }
       if (m.excluded > 0) out.push(this.$t('campaigns.sendConfirm.excluded', { excluded: m.excluded }));
       if (m.recent) {
-        out.push(this.$t(out.length ? 'campaigns.sendConfirm.recentCut' : 'campaigns.sendConfirm.recentSum', {
-          n: this.pf.recipients, days: m.recent.days, x: m.recent.excluded, m: this.pf.willSend,
-        }));
+        const held = m.recent.heldInAudience || 0;
+        if (held > 0) {
+          const fresh = m.recent.excluded - held;
+          if (!out.length) out.push(this.$t('campaigns.sendConfirm.total', { n: this.pf.recipients }));
+          out.push(this.$t('campaigns.sendConfirm.recentHeldCount', { n: held }));
+          if (fresh > 0) {
+            out.push(this.$t('campaigns.sendConfirm.recentFreshCount', { n: fresh, days: m.recent.days }));
+          }
+          out.push(this.$t('campaigns.sendConfirm.recentSendCount', { n: m.count }));
+        } else {
+          out.push(this.$t(out.length ? 'campaigns.sendConfirm.recentCut' : 'campaigns.sendConfirm.recentSum', {
+            n: this.pf.recipients, days: m.recent.days, x: m.recent.excluded, m: m.count,
+          }));
+        }
       }
       return out;
     },

@@ -165,7 +165,8 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   const n = left ? pf.remaining : (pf.willSend ?? pf.recipients);
   // Keep the count visible on an unscheduled continuation too: its immediate-start
   // preflight still reports people excluded by the locked recent-send rule.
-  const recent = pf.recent && pf.recent.enabled && pf.recent.excluded > 0 ? pf.recent : null;
+  const recent = pf.recent && pf.recent.excluded > 0
+    && (pf.recent.enabled || pf.recent.heldInAudience > 0) ? pf.recent : null;
   const all = checkLines(pf);
   const blocked = all.some((c) => c.level === 'block');
   // Nobody to send to (approved design A5): the reason is the only line. Otherwise (a From the

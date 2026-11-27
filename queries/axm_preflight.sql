@@ -88,9 +88,9 @@ fresh AS (
         AND NOT EXISTS (SELECT 1 FROM held h WHERE h.id = r.subscriber_id)
 ),
 recent_out AS (
-    SELECT id FROM fresh
+    SELECT id, FALSE AS held FROM fresh
     UNION ALL
-    SELECT h.id FROM held h JOIN counts e ON e.id = h.id WHERE e.n > 0
+    SELECT h.id, TRUE AS held FROM held h JOIN counts e ON e.id = h.id WHERE e.n > 0
 ),
 pending_exclusions AS (
     SELECT subscriber_id AS id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2
@@ -104,6 +104,7 @@ SELECT cl.list_id AS id, cl.name, COALESCE(cl.optin::TEXT, '') AS optin, cl.is_d
     totals.n AS total,
     totals.multi,
     (SELECT COUNT(*) FROM recent_out) AS recent,
+    (SELECT COUNT(*) FROM recent_out WHERE held) AS recent_held_in_audience,
     (CASE WHEN $3::BOOLEAN THEN (SELECT COUNT(*) FROM fresh WHERE id > $2) ELSE (SELECT COUNT(*) FROM fresh) END) AS recent_fresh,
     CASE WHEN c.type = 'regular' THEN totals.excluded ELSE 0 END AS excluded,
     CASE WHEN $3::BOOLEAN THEN totals.after_checkpoint - (

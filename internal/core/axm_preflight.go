@@ -139,8 +139,8 @@ func (c *Core) lockCampaignState(tx *sqlx.Tx, id int) (models.Campaign, bool, er
 		cm  models.Campaign
 		due bool
 	)
-	err := tx.QueryRowx(`SELECT id, status, send_at FROM campaigns WHERE id = $1 FOR UPDATE`, id).
-		Scan(&cm.ID, &cm.Status, &cm.SendAt)
+	err := tx.Get(&cm, `SELECT id, status, send_at, type, started_at, last_subscriber_id, sent, axm_legacy_send_history
+		FROM campaigns WHERE id = $1 FOR UPDATE`, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return cm, false, echo.NewHTTPError(http.StatusBadRequest,
 			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
@@ -155,6 +155,42 @@ func (c *Core) lockCampaignState(tx *sqlx.Tx, id int) (models.Campaign, bool, er
 		err = tx.QueryRowx(`SELECT clock_timestamp() >= $1::TIMESTAMPTZ`, cm.SendAt.Time).Scan(&due)
 	}
 	return cm, due, err
+}
+
+// checkStatusAudience runs after the confirmation version check, under the same campaign lock
+// used by edits to the campaign or its exclusion rule. A paused resume may finish with no mail.
+func (c *Core) checkStatusAudience(tx *sqlx.Tx, cm models.Campaign, status string) error {
+	if cm.Type != models.CampaignTypeRegular ||
+		!(status == models.CampaignStatusScheduled || status == models.CampaignStatusRunning && cm.Status == models.CampaignStatusDraft) {
+		return nil
+	}
+	hasHistory := cm.StartedAt.Valid || cm.LastSubscriberID > 0 || cm.Sent > 0 || cm.LegacySendHistory
+	if !hasHistory {
+		// An ordinary draft may still start when the operator cannot load the confirmation.
+		// Identify exclusions without reading the send ledger, which may be unavailable.
+		var usesExclusions bool
+		if err := tx.Get(&usesExclusions, `SELECT axm_recent_rule_on($1) OR EXISTS (
+			SELECT 1 FROM axm_campaign_recent_holds WHERE campaign_id = $1)`, cm.ID); err != nil {
+			return c.recentError(err)
+		}
+		if !usesExclusions {
+			return nil
+		}
+	}
+
+	lists, aud, err := c.preflightAudience(context.Background(), tx, cm.ID, cm.LastSubscriberID, hasHistory)
+	if err != nil {
+		return err
+	}
+	if hasHistory && aud.Remaining > 0 || !hasHistory && (aud.Recent == 0 || aud.Total > aud.Recent) {
+		return nil
+	}
+	for _, list := range lists {
+		if !list.Deleted {
+			return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recheck.zero"))
+		}
+	}
+	return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recheck.noLists"))
 }
 
 // checkSendTimeShown refuses a status change from the pre-send confirmation (seenAt given)

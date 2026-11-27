@@ -44,6 +44,8 @@ type PreflightAudience struct {
 	Remaining int `db:"remaining" json:"remaining"`
 	// Recent (LST-65) is how many of Total the campaign's recent-send rule leaves out of the send.
 	Recent int `db:"recent" json:"-"`
+	// RecentHeldInAudience is how many of those exclusions were already recorded.
+	RecentHeldInAudience int `db:"recent_held_in_audience" json:"-"`
 	// RecentFresh counts new exclusions in the remaining audience when resuming.
 	RecentFresh int       `db:"recent_fresh" json:"-"`
 	AsOf        time.Time `db:"as_of" json:"as_of"`

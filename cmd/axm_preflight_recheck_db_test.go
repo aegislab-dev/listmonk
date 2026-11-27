@@ -288,7 +288,7 @@ func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(
 		t.Fatal(err)
 	}
 	if out.Mode != models.PreflightModeSchedule || out.WillSend != 0 || out.Remaining != 0 ||
-		out.Recent.Held != 2 || out.Recent.Excluded != 2 || !out.Resumed {
+		out.Recent.Held != 2 || out.Recent.HeldInAudience != 2 || out.Recent.Excluded != 2 || !out.Resumed {
 		t.Fatalf("cancelled started schedule lost send history: %s", data)
 	}
 	blocked := false
@@ -315,7 +315,8 @@ func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Mode != models.PreflightModeStart || !out.Resumed || out.WillSend != 0 || out.Remaining != 0 {
+	if out.Mode != models.PreflightModeStart || !out.Resumed || out.WillSend != 0 || out.Remaining != 0 ||
+		out.Recent.HeldInAudience != 2 {
 		t.Fatalf("immediate-start confirmation counted sent recipients: %s", data)
 	}
 	if code, body := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
@@ -345,6 +346,71 @@ func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(
 	held, err := e.core.RecentHeldCount(e.campID)
 	if err != nil || held != 2 || len(e.recorded()) != 1 {
 		t.Fatalf("empty resume changed delivery or exclusion history: sent IDs %v, held %d, err %v", e.recorded(), held, err)
+	}
+}
+
+func TestStatusWithUnavailableSendLedger(t *testing.T) {
+	for _, ruleOn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rule enabled %t", ruleOn), func(t *testing.T) {
+			e := newPreflightApp(t)
+			t.Cleanup(e.a.manager.Close)
+			e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+			if ruleOn {
+				_, err := e.core.SaveRecentRule(context.Background(), e.campID,
+					models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}, e.superAdmin)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.db.MustExec(`ALTER TABLE axm_campaign_sends RENAME TO unavailable_sends`)
+			path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+			code, _ := e.call(e.a.GetCampaignPreflight, e.as(e.superAdmin), http.MethodGet, path+"/preflight", id, "")
+			if code != http.StatusInternalServerError {
+				t.Fatalf("preflight with unavailable ledger: HTTP %d", code)
+			}
+			code, body := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id, `{"status":"running"}`)
+			if ruleOn {
+				if code != http.StatusInternalServerError {
+					t.Fatalf("start with active exclusion and unavailable ledger: HTTP %d %s", code, body)
+				}
+				e.waitCampaign(models.CampaignStatusDraft, 0)
+				return
+			}
+			if code != http.StatusOK {
+				t.Fatalf("ordinary start with unavailable ledger: HTTP %d %s", code, body)
+			}
+			e.waitCampaign(models.CampaignStatusFinished, 1)
+		})
+	}
+}
+
+func TestStatusChecksConfirmationVersionBeforeRecentExclusion(t *testing.T) {
+	e := newPreflightAppScan(t, false)
+	t.Cleanup(e.a.manager.Close)
+	sub := e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, prior, sub)
+	path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+	version := func() string {
+		var seen string
+		e.get(&seen, `SELECT updated_at::TEXT FROM campaigns WHERE id=$1`, e.campID)
+		return seen
+	}
+	old := version()
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
+		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		seen string
+		code int
+	}{{old, http.StatusConflict}, {version(), http.StatusBadRequest}} {
+		body, _ := json.Marshal(map[string]string{"status": "running", "updated_at": tc.seen})
+		code, data := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id, string(body))
+		if code != tc.code {
+			t.Fatalf("start with version %s: got HTTP %d, want %d %s", tc.seen, code, tc.code, data)
+		}
+		e.waitCampaign(models.CampaignStatusDraft, 0)
 	}
 }
 

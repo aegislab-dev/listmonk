@@ -95,12 +95,13 @@ type preflightResponse struct {
 // recentFacts is what the window says about the campaign's recent-send rule: whether it is on, its
 // days and scope, how many of the recipients it leaves out and how many it has left out so far.
 type recentFacts struct {
-	Enabled  bool   `json:"enabled"`
-	Locked   bool   `json:"locked"`
-	Days     int    `json:"days,omitempty"`
-	Scope    string `json:"scope,omitempty"`
-	Excluded int    `json:"excluded"`
-	Held     int    `json:"held"`
+	Enabled        bool   `json:"enabled"`
+	Locked         bool   `json:"locked"`
+	Days           int    `json:"days,omitempty"`
+	Scope          string `json:"scope,omitempty"`
+	Excluded       int    `json:"excluded"`
+	Held           int    `json:"held"`
+	HeldInAudience int    `json:"held_in_audience"`
 }
 
 // preflightFacts is everything the checks are decided from.
@@ -542,12 +543,13 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		if on || countRemaining {
+		if on || countRemaining || aud.RecentHeldInAudience > 0 {
 			held, err := a.core.RecentHeldCount(id)
 			if err != nil {
 				return err
 			}
-			recent = recentFacts{Enabled: rule.Enabled, Locked: camp.StartedAt.Valid, Days: rule.Days, Scope: rule.Scope, Excluded: aud.Recent, Held: held}
+			recent = recentFacts{Enabled: rule.Enabled, Locked: camp.StartedAt.Valid, Days: rule.Days, Scope: rule.Scope,
+				Excluded: aud.Recent, Held: held, HeldInAudience: aud.RecentHeldInAudience}
 			facts.RecentEnabled, facts.RecentLocked, facts.RecentDays, facts.RecentScope = rule.Enabled, camp.StartedAt.Valid, rule.Days, rule.Scope
 			facts.RecentExcluded, facts.RecentHeld, facts.RecentFresh = aud.Recent, held, aud.RecentFresh
 		}
