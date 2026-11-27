@@ -611,7 +611,7 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 		lo.Println("running in passive mode. won't process campaigns.")
 	}
 
-	footerHTML, footerText := manager.BuildBusinessFooter(businessFooterSettings(ko), businessFooterLabels(i))
+	footerHTML, footerText := manager.BuildBusinessFooter(businessFooterSettings(ko), businessFooterLabels(businessFooterI18n(i)))
 
 	mgr := manager.New(manager.Config{
 		SenderPolicyEnabled:   len(ko.Strings("axm.sender_domains")) > 0,
@@ -663,7 +663,22 @@ func businessFooterSettings(ko *koanf.Koanf) models.BusinessFooter {
 	}
 }
 
-// businessFooterLabels are the labels of the business details in the instance language.
+// businessFooterI18n is the language of the business details' labels: English, whatever
+// the instance language (LST-76: the values are entered in English too, for recipients
+// abroad). It falls back to the instance language if the English file cannot be read.
+func businessFooterI18n(i *i18n.I18n) *i18n.I18n {
+	if fs == nil {
+		return i
+	}
+	en, _, err := getI18nLang("en", fs)
+	if err != nil || en == nil {
+		lo.Printf("business footer labels: using the instance language: %v", err)
+		return i
+	}
+	return en
+}
+
+// businessFooterLabels are the labels of the business details in the given language.
 func businessFooterLabels(i *i18n.I18n) manager.BusinessFooterLabels {
 	return manager.BusinessFooterLabels{
 		Representative: i.T("email.businessFooter.representative"),
@@ -1003,7 +1018,7 @@ func initHTTPServer(cfg *Config, urlCfg *UrlConfig, i *i18n.I18n, fs stuffbin.Fi
 		EnablePublicSubPage: cfg.EnablePublicSubPage,
 		EnablePublicArchive: cfg.EnablePublicArchive,
 		IndividualTracking:  cfg.Privacy.IndividualTracking,
-		BusinessFooter:      manager.NewBusinessFooterBlock(businessFooterSettings(ko), businessFooterLabels(i)),
+		BusinessFooter:      manager.NewBusinessFooterBlock(businessFooterSettings(ko), businessFooterLabels(businessFooterI18n(i))),
 	}
 
 	// Initialize the static file server.
