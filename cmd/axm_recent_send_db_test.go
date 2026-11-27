@@ -333,6 +333,53 @@ func TestRecentBatchRetriesConcurrentHold(t *testing.T) {
 	wantSame(t, "durable exclusions", e.held(), []int{first, second})
 }
 
+func TestRecentBatchWaitsForBothHoldWrites(t *testing.T) {
+	e := newSendsEnv(t, 260)
+	const heldCount = 256
+	held := e.eligible[:heldCount]
+	prior := e.pfCampaign(models.CampaignTypeRegular, models.CampaignStatusFinished, e.listID)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id)
+		SELECT $1, unnest($2::int[])`, prior, pq.Array(held))
+	e.rsRule(models.RecentRule{Enabled: true, Days: 7, Scope: models.RecentScopeAll})
+	if _, err := e.store.NextCampaigns([]int64{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// One half fails and rolls back. No candidate can be released to the sender.
+	e.db.MustExec(fmt.Sprintf(`CREATE FUNCTION reject_half() RETURNS trigger LANGUAGE plpgsql AS $$
+	BEGIN
+		IF NEW.subscriber_id = %d THEN
+			RAISE EXCEPTION 'failed hold write';
+		END IF;
+		RETURN NEW;
+	END
+	$$;
+	CREATE TRIGGER reject_half BEFORE INSERT ON axm_campaign_recent_holds
+	FOR EACH ROW EXECUTE FUNCTION reject_half();`, held[heldCount/2]))
+	batch, err := e.store.NextSubscribers(e.campID, 0, 500)
+	if err == nil || !strings.Contains(err.Error(), "failed hold write") || len(batch) != 0 {
+		t.Fatalf("incomplete hold writes: got %d candidates, error %v", len(batch), err)
+	}
+	wantSame(t, "committed half", e.held(), held[:heldCount/2])
+
+	// The first half stays excluded after its source records expire. The next
+	// attempt records the other half and releases only the intended recipients.
+	e.db.MustExec(`DROP TRIGGER reject_half ON axm_campaign_recent_holds;
+		DROP FUNCTION reject_half()`)
+	e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at = NOW() - INTERVAL '8 days'
+		WHERE campaign_id = $1 AND subscriber_id < $2`, prior, held[heldCount/2])
+	batch, err = e.store.NextSubscribers(e.campID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int
+	for _, sub := range batch {
+		ids = append(ids, sub.ID)
+	}
+	wantSame(t, "released candidates", ids, e.eligible[heldCount:])
+	wantSame(t, "durable exclusions after retry", e.held(), held)
+}
+
 // The rule is decided before a batch is sent: if it cannot be decided, nothing of the batch is
 // sent, and the campaign goes on once it can.
 func TestRecentRuleFailureSendsNothing(t *testing.T) {

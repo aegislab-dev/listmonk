@@ -272,22 +272,51 @@ func (c *Core) HoldRecentBatch(ctx context.Context, campID int, ids []int) (map[
 	for i, id := range ids {
 		arr[i] = int64(id)
 	}
-	var held []int64
-	err := c.q.AxmRecentHoldBatch.SelectContext(ctx, &held, campID, arr)
-	var dbErr *pq.Error
-	if errors.As(err, &dbErr) && dbErr.Code == pgUniqueViolation && dbErr.Constraint == "axm_campaign_recent_holds_pkey" {
-		// A concurrent writer won the insert. Read its committed hold on the next statement.
-		held = nil
-		err = c.q.AxmRecentHoldBatch.SelectContext(ctx, &held, campID, arr)
+	var decisions []struct {
+		ID   int64 `db:"subscriber_id"`
+		Held bool  `db:"held"`
 	}
-	if err != nil {
+	if err := c.q.AxmRecentEvaluateBatch.SelectContext(ctx, &decisions, campID, arr); err != nil {
 		return nil, err
 	}
-	out := make(map[int]bool, len(held))
-	for _, id := range held {
-		out[int(id)] = true
+	out := make(map[int]bool, len(decisions))
+	fresh := make(pq.Int64Array, 0, len(decisions))
+	for _, decision := range decisions {
+		out[int(decision.ID)] = true
+		if !decision.Held {
+			fresh = append(fresh, decision.ID)
+		}
+	}
+	if len(fresh) == 0 {
+		return out, nil
+	}
+	if len(fresh) < 256 || c.db.Stats().MaxOpenConnections == 1 {
+		if err := c.recordRecentHolds(ctx, campID, fresh); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+
+	// Both writers use decisions from the same snapshot. The two foreign key checks
+	// per row dominate large writes. Wait for both halves before releasing recipients.
+	// If one fails, decisions committed by the other still apply on the next attempt.
+	mid := len(fresh) / 2
+	first := make(chan error, 1)
+	go func() { first <- c.recordRecentHolds(ctx, campID, fresh[:mid]) }()
+	second := c.recordRecentHolds(ctx, campID, fresh[mid:])
+	if err := errors.Join(<-first, second); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+func (c *Core) recordRecentHolds(ctx context.Context, campID int, ids pq.Int64Array) error {
+	_, err := c.q.AxmRecentHoldBatch.ExecContext(ctx, campID, ids)
+	var dbErr *pq.Error
+	if errors.As(err, &dbErr) && dbErr.Code == pgUniqueViolation && dbErr.Constraint == "axm_campaign_recent_holds_pkey" {
+		_, err = c.q.AxmRecentHoldBatch.ExecContext(ctx, campID, ids)
+	}
+	return err
 }
 
 // RecentRuleOn checks whether a regular campaign has a saved rule that the sender must honor.

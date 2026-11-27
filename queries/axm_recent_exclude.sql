@@ -90,27 +90,29 @@ WHERE u.id = $1 AND (
 -- A rule change is a change of the campaign: a send window opened before it is stale (409).
 UPDATE campaigns SET updated_at = NOW() WHERE id = $1;
 
--- name: axm-recent-hold-batch
--- (LST-65) Who of the batch $2 the recent-send rule of campaign $1 leaves out: the people it leaves
--- out now (and keeps from now on in axm_campaign_recent_holds) and the people it left out before,
--- while the rule is on. Nothing for a campaign without a rule.
--- Check existing holds first. A concurrent insert of the same key is retried
--- by the caller against a new snapshot.
+-- name: axm-recent-evaluate-batch
+-- Decide existing and new exclusions for the whole candidate batch in one snapshot.
 WITH held AS MATERIALIZED (
     SELECT subscriber_id FROM axm_campaign_recent_holds
     WHERE campaign_id = $1 AND subscriber_id = ANY($2::INT[]) AND axm_recent_rule_on($1)
-), keep AS (
-    INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id)
-    SELECT DISTINCT $1, r.subscriber_id FROM axm_recent_received($1, ARRAY(
-        SELECT c.id FROM unnest($2::INT[]) AS c(id)
-        WHERE NOT EXISTS (SELECT 1 FROM held h WHERE h.subscriber_id = c.id)
-    )) r
-    ORDER BY r.subscriber_id
-    RETURNING subscriber_id
 )
-SELECT subscriber_id FROM held
+SELECT subscriber_id, TRUE AS held FROM held
 UNION ALL
-SELECT subscriber_id FROM keep;
+SELECT DISTINCT r.subscriber_id, FALSE FROM axm_recent_received($1, ARRAY(
+    SELECT c.id FROM unnest($2::INT[]) AS c(id)
+    WHERE NOT EXISTS (SELECT 1 FROM held h WHERE h.subscriber_id = c.id)
+)) r
+ORDER BY subscriber_id;
+
+-- name: axm-recent-hold-batch
+-- Record a set of new decisions. On a concurrent insert, the caller retries
+-- this statement, which then skips the committed holds.
+INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id)
+SELECT $1, batch.id FROM unnest($2::INT[]) AS batch(id)
+WHERE NOT EXISTS (
+    SELECT 1 FROM axm_campaign_recent_holds h WHERE h.campaign_id = $1 AND h.subscriber_id = batch.id
+)
+ORDER BY batch.id;
 
 -- name: axm-recent-has-rule
 SELECT axm_recent_rule_on($1);
