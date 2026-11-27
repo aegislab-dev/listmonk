@@ -62,7 +62,11 @@ test('Markdown blocks keep their source and get inline tags', () => {
 });
 
 test('hand-written and broken tags', () => {
-  assert.deepEqual(parseFormatted('<b>a</b><span style="font-size: 18px;">b</span>', 'markdown'), [
+  // Only the exact tags this editor writes are formatting; the rest stays source.
+  const other = '<b>a</b><span style="font-size: 18px;">b</span>';
+  assert.deepEqual(parseFormatted(other, 'markdown'), [{ value: other, bold: false, underline: false, size: null }]);
+  assert.deepEqual(roundTrip(other, true), { text: other, markdown: true });
+  assert.deepEqual(parseFormatted('<strong>a</strong><span style="font-size:18px">b</span>', 'markdown'), [
     { value: 'a', bold: true, underline: false, size: null },
     { value: 'b', bold: false, underline: false, size: 18 },
   ]);
@@ -89,4 +93,32 @@ test('formatting with nothing in it is no formatting', () => {
 test('entities in the HTML block are read back as characters', () => {
   const segs = parseFormatted(`${OPEN}&amp;lt; &quot;q&quot; &#39;s&#39; a&nbsp;b</div>`, 'html');
   assert.equal(segs[0].value, '&lt; "q" \'s\' a\u00a0b');
+});
+
+test('Markdown code keeps its tags as text and is written back unchanged', () => {
+  const text = '예: `<b>예시</b>`, ``a `<strong>q</strong>` b`` <strong>진짜</strong>\n```html\n<u>코드</u>\n<strong>x</strong>\n```\n<u>밖</u> \\`<u>이스케이프</u>\\`';
+  const segs = parseFormatted(text, 'markdown');
+  assert.deepEqual(segs.filter((s) => s.bold || s.underline).map((s) => s.value), ['진짜', '밖', '이스케이프']);
+  assert.ok(segs[0].value.includes('`<b>예시</b>`') && segs[0].value.includes('`<strong>q</strong>`'));
+  assert.deepEqual(roundTrip(text, true), { text, markdown: true });
+  // Editing elsewhere (one more character at the end) leaves the code as it was.
+  const runs = runsOf(segs);
+  runs.push(run('!'));
+  assert.equal(serializeFormatted(runs, 'markdown').text, `${text}!`);
+  // An unclosed fence runs to the end.
+  assert.equal(hasFormatting('```\n<strong>x</strong>', 'markdown'), false);
+});
+
+test('list, quote and heading markers stay in front of the tags', () => {
+  assert.deepEqual(serializeFormatted([run('- 여름 상품\n- 겨울 상품', { bold: true })], 'markdown'),
+    { text: '- <strong>여름 상품</strong>\n- <strong>겨울 상품</strong>', markdown: true });
+  assert.deepEqual(serializeFormatted([run('1. 하나\n  2) 둘\n> 인용\n## 제목', { underline: true })], 'markdown'),
+    { text: '1. <u>하나</u>\n  2) <u>둘</u>\n> <u>인용</u>\n## <u>제목</u>', markdown: true });
+  // In the middle of a line they are just text.
+  assert.deepEqual(serializeFormatted([run('앞 '), run('- 하이픈', { bold: true })], 'markdown'),
+    { text: '앞 <strong>- 하이픈</strong>', markdown: true });
+  // A line that is only a marker gets no empty tags.
+  assert.deepEqual(serializeFormatted([run('- ', { bold: true }), run('x')], 'markdown'), { text: '- x', markdown: true });
+  // The HTML block has no Markdown: nothing moves.
+  assert.equal(serializeFormatted([run('- a', { bold: true })], 'plain').text, '<div class="axm-text"><strong>- a</strong></div>');
 });

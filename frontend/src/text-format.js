@@ -38,8 +38,51 @@ const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/
 const NONE = { bold: false, underline: false, size: null };
 const validSize = (n) => Number.isInteger(n) && n >= MIN_SIZE && n <= MAX_SIZE;
 
-// The tags this editor writes, plus the obvious hand-written equivalents.
-const TAG = /<(\/?)(strong|b|u)>|<span style="font-size:\s*(\d+)px;?">|<(\/)span>|<br\s*\/?>/gi;
+// Exactly the tags this editor writes, so text it reads back is written back the
+// same. Other HTML (<b>, other spans) stays source text in the box.
+const TAG = /<(\/?)(strong|u)>|<span style="font-size:(\d+)px">|<(\/)span>|<br>/g;
+
+// Markdown code (fenced blocks and `code spans`) shows tags as text: the ranges of
+// the source where a tag is not formatting. Indented code is not told apart from a
+// list item's continuation and is not covered.
+const codeRanges = (src) => {
+  const ranges = [];
+  let pos = 0;
+  const lines = src.split('\n');
+  let fence = null;
+  let start = 0;
+  lines.forEach((line) => {
+    const m = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !line.slice(m[0].length).trim()) {
+        ranges.push([start, pos + line.length]);
+        fence = null;
+      }
+    } else if (m) {
+      fence = m[1];
+      start = pos;
+    }
+    pos += line.length + 1;
+  });
+  if (fence) ranges.push([start, src.length]);
+  // Code spans: a run of n backticks up to the next run of exactly n, within a paragraph.
+  const outside = (i) => !ranges.some(([a, b]) => i >= a && i < b);
+  const ticks = /`+/g;
+  for (let m = ticks.exec(src); m; m = ticks.exec(src)) {
+    let escaped = 0;
+    for (let i = m.index - 1; i >= 0 && src[i] === '\\'; i -= 1) escaped += 1;
+    if (escaped % 2 === 0 && outside(m.index)) {
+      const close = new RegExp(`(?<!\`)\`{${m[0].length}}(?!\`)`, 'g');
+      close.lastIndex = m.index + m[0].length;
+      const end = close.exec(src);
+      if (end && !src.slice(m.index, end.index).includes('\n\n') && outside(end.index)) {
+        ranges.push([m.index, end.index + end[0].length]);
+        ticks.lastIndex = end.index + end[0].length;
+      }
+    }
+  }
+  return ranges;
+};
 
 // Splits stored text into formatted segments: [{ value, bold, underline, size }].
 // Tags that do not open or close one of ours stay as literal source text.
@@ -71,14 +114,19 @@ export const parseFormatted = (text, mode) => {
     return false;
   };
 
+  const code = html ? [] : codeRanges(src);
   let pos = 0;
   TAG.lastIndex = 0;
+  const tags = [];
   for (let m = TAG.exec(src); m; m = TAG.exec(src)) {
+    if (!code.some(([a, b]) => m.index >= a && m.index < b)) tags.push(m);
+  }
+  tags.forEach((m) => {
     push(src.slice(pos, m.index));
     pos = m.index + m[0].length;
     const [raw, slash, name, size, spanClose] = m;
     if (name) {
-      const kind = name.toLowerCase() === 'u' ? 'underline' : 'bold';
+      const kind = name === 'u' ? 'underline' : 'bold';
       if (!slash) stack.push({ kind });
       else if (!close(kind)) push(raw);
     } else if (size !== undefined) {
@@ -92,7 +140,7 @@ export const parseFormatted = (text, mode) => {
     } else {
       push(raw);
     }
-  }
+  });
   push(src.slice(pos));
   return out;
 };
@@ -128,6 +176,9 @@ export const serializeFormatted = (runs, mode) => {
     }
   });
 
+  // A Markdown line starts with its block markers (list, quote, heading, indent):
+  // they stay in front of the tags, or the list or heading would be lost.
+  const MARKERS = /^(?:[ \t]*(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+|>[ \t]?|#{1,6}[ \t]+))*[ \t]*/;
   let text = '';
   groups.forEach((g) => {
     const open = (g.size ? `<span style="font-size:${g.size}px">` : '') + (g.bold ? '<strong>' : '') + (g.underline ? '<u>' : '');
@@ -141,7 +192,12 @@ export const serializeFormatted = (runs, mode) => {
         lines[lines.length - 1] += esc(part);
       });
     });
-    text += lines.map((l) => (l && (open || end) ? open + l + end : l)).join(nl);
+    text += lines.map((l, i) => {
+      if (!l || !(open || end)) return l;
+      const lineStart = i > 0 || text === '' || text.endsWith('\n');
+      const lead = !html && lineStart ? MARKERS.exec(l)[0] : '';
+      return l.length > lead.length ? lead + open + l.slice(lead.length) + end : l;
+    }).join(nl);
   });
   return { text: html ? HTML_OPEN + text + HTML_CLOSE : text, markdown: true };
 };

@@ -65,11 +65,57 @@ function sizeSpan(size: number | null) {
   return s;
 }
 
+type Attr = 'bold' | 'underline' | 'size';
+
+// Moves node out of its ancestor anc: anc keeps what was before it, a copy of anc
+// takes what was after it, and node (with the elements between them) sits between.
+function isolate(node: Node, anc: HTMLElement) {
+  const after = document.createRange();
+  after.setStartAfter(node);
+  after.setEndAfter(anc.lastChild!);
+  const tail = anc.cloneNode(false) as HTMLElement;
+  tail.append(after.extractContents());
+  const mid = document.createRange();
+  mid.setStartBefore(node);
+  mid.setEndAfter(anc.lastChild!);
+  const middle = mid.extractContents();
+  anc.after(middle, tail);
+  if (!tail.textContent && !tail.querySelector('[data-token]')) tail.remove();
+  if (!anc.textContent && !anc.querySelector('[data-token]')) anc.remove();
+}
+
+// Gives a personalization chip one formatting value. Chromium's commands skip
+// non-editable chips, so a selection that holds one formats the text around it only.
+function setChipFmt(chip: HTMLElement, root: HTMLElement, attr: Attr, value: boolean | number | null) {
+  const gives = (el: HTMLElement) => (attr === 'size' ? el.dataset.axmSize !== undefined && el.dataset.axmSize !== ''
+    : elementFmt(el, NO_FMT)[attr] === true);
+  for (let guard = 0; guard < 20 && fmtAt(chip, root)[attr] !== value; guard += 1) {
+    let anc: HTMLElement | null = null;
+    for (let n = chip.parentElement; n && n !== root; n = n.parentElement) if (gives(n)) { anc = n; break; }
+    if (!value) {
+      if (!anc) break;
+      isolate(chip, anc);
+      continue;
+    }
+    const wrapper = attr === 'size' ? sizeSpan(value as number) : document.createElement(attr === 'bold' ? 'strong' : 'u');
+    chip.replaceWith(wrapper);
+    wrapper.append(chip);
+  }
+}
+
+// Whether a range really covers part of a text node (not just touches its edge).
+function covers(range: Range, node: Text) {
+  if (!range.intersectsNode(node)) return false;
+  const start = node === range.startContainer ? range.startOffset : 0;
+  const end = node === range.endContainer ? range.endOffset : node.length;
+  return node.data.slice(start, end).replace(/\u200b/g, '') !== '';
+}
+
 // This DOM is owned by the browser while editing so React never resets an IME
 // composition, selection or native undo transaction on a document update.
 function collect(node: Node, f: Fmt, out: FormatRun[]) {
   const text = (value: string, g: Fmt = f) => { if (value) out.push({ type: 'text', value, ...g }); };
-  if (node.nodeType === Node.TEXT_NODE) { text(node.textContent || ''); return; }
+  if (node.nodeType === Node.TEXT_NODE) { text((node.textContent || '').replace(/\u200b/g, '')); return; }
   if (node instanceof HTMLElement) {
     if (node.dataset.token !== undefined) { out.push({ type: 'token', raw: node.dataset.token, ...f }); return; }
     if (node.tagName === 'BR') { text('\n', NO_FMT); return; }
@@ -191,22 +237,50 @@ export default function PersonalizationTextInput({
   const applyFormat = (command: 'bold' | 'underline' | 'size' | 'clear', size: number | null = null) => {
     const el = editor.current!;
     restore();
+    const selection = window.getSelection()!;
+    const range = selection.rangeCount ? selection.getRangeAt(0) : null;
+    const chipsIn = (r: Range) => Array.from(el.querySelectorAll<HTMLElement>('[data-token]')).filter((c) => r.intersectsNode(c));
+    const chips = range && !range.collapsed ? chipsIn(range) : [];
+    // The first selected text tells what the command made of the selection.
+    const firstText = () => {
+      const r = selection.getRangeAt(0);
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (!(n.parentElement?.closest('[data-token]')) && covers(r, n as Text)) return n;
+      }
+      return null;
+    };
     document.execCommand('styleWithCSS', false, 'false');
     if (command === 'bold' || command === 'underline') {
       document.execCommand(command);
+      const ref = firstText();
+      const value = ref ? fmtAt(ref, el)[command] : !(chips[0] && fmtAt(chips[0], el)[command]);
+      chips.forEach((c) => setChipFmt(c, el, command, value));
+    } else if (command === 'size' && range?.collapsed) {
+      // Nothing selected: what is typed next goes into an empty size span. A
+      // zero-width space holds the caret there and is never stored.
+      const span = sizeSpan(size);
+      const holder = document.createTextNode('\u200b');
+      span.append(holder);
+      range.insertNode(span);
+      selection.setBaseAndExtent(holder, 1, holder, 1);
     } else if (command === 'size') {
       // Chromium marks the selection with <font size=7> and splits enclosing sizes;
-      // swap the marker for this editor's size span. With nothing selected the
-      // marker appears with the next typed text.
+      // swap the marker for this editor's size span.
       pendingSize.current = size;
       document.execCommand('fontSize', false, '7');
       convertFonts();
+      chips.forEach((c) => setChipFmt(c, el, 'size', size));
     } else {
       document.execCommand('removeFormat');
+      chips.forEach((c) => {
+        setChipFmt(c, el, 'size', null);
+        setChipFmt(c, el, 'bold', false);
+        setChipFmt(c, el, 'underline', false);
+      });
     }
     el.normalize();
-    const selection = window.getSelection();
-    if (selection?.rangeCount) {
+    if (selection.rangeCount) {
       lastRange.current = selection.getRangeAt(0).cloneRange();
       setActive(fmtAt(selection.getRangeAt(0).startContainer, el));
     }
@@ -352,7 +426,7 @@ export default function PersonalizationTextInput({
         sx={{ minWidth: 104, fontSize: 13, '& .MuiSelect-select': { py: 0.6 } }}
         renderValue={(v) => (v === '' ? format.strings.size : `${v}px`)}
         onChange={(ev) => applyFormat('size', ev.target.value === '' ? null : Number(ev.target.value))}
-        MenuProps={{ disablePortal: false }}>
+        MenuProps={{ disableRestoreFocus: true, TransitionProps: { onExited: () => restore() } }}>
         <MenuItem value="">{format.strings.sizeDefault}</MenuItem>
         {format.sizes.map((s) => <MenuItem key={s} value={s} sx={{ fontSize: Math.min(s, 24) }}>{s}px</MenuItem>)}
       </Select>
