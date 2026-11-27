@@ -16,6 +16,7 @@ import (
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 	"gopkg.in/volatiletech/null.v6"
 )
 
@@ -346,6 +347,61 @@ func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(
 	held, err := e.core.RecentHeldCount(e.campID)
 	if err != nil || held != 2 || len(e.recorded()) != 1 {
 		t.Fatalf("empty resume changed delivery or exclusion history: sent IDs %v, held %d, err %v", e.recorded(), held, err)
+	}
+}
+
+func TestPreflightContinuesAfterPauseBeforeFirstDelivery(t *testing.T) {
+	e := scheduledEnv(t)
+	for i := 0; i < 9; i++ {
+		e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	}
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
+		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns,
+			CampaignIDs: []int64{int64(prior)}}, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	ids := e.ids(`SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 ORDER BY subscriber_id`, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at)
+		SELECT $1, unnest($2::int[]), NOW()-INTERVAL '25 days'`, prior, pq.Array(ids[:9]))
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id, held_at)
+		SELECT $1, unnest($2::int[]), NOW()-INTERVAL '20 days'`, e.campID, pq.Array(ids[:9]))
+	e.db.MustExec(`UPDATE campaigns SET status='paused', started_at=NOW()-INTERVAL '20 days',
+		sent=0, last_subscriber_id=0, to_send=12 WHERE id=$1`, e.campID)
+
+	path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+	changeStatus := func(status string) {
+		t.Helper()
+		code, data := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+			fmt.Sprintf(`{"status":%q}`, status))
+		if code != http.StatusOK {
+			t.Fatalf("change to %s: HTTP %d %s", status, code, data)
+		}
+	}
+	changeStatus("scheduled")
+	changeStatus("draft")
+	if code, data := e.save("Send now", []int{e.aList}, nil, "regular"); code != http.StatusOK {
+		t.Fatalf("clear send time: HTTP %d %s", code, data)
+	}
+	data := pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+	var out preflightResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Mode != models.PreflightModeStart || !out.Resumed || out.Sent != 0 || out.Remaining != 3 ||
+		out.WillSend != 3 || out.Recent.HeldInAudience != 9 {
+		t.Fatalf("continuation before the first successful send: %s", data)
+	}
+	if !slices.ContainsFunc(out.Checks, func(c models.PreflightCheck) bool {
+		return c.Key == "recent.applied" && c.Params["held"] == float64(9) && c.Params["fresh"] == float64(0)
+	}) {
+		t.Fatalf("expected 9 existing and 0 fresh exclusions: %s", data)
+	}
+	changeStatus("running")
+	e.waitCampaign(models.CampaignStatusFinished, 3)
+	waitFor(t, "three delivery records", func() bool { return len(e.recorded()) == 3 })
+	if got := e.recorded(); !slices.Equal(got, ids[9:]) {
+		t.Fatalf("delivered to %v, want %v", got, ids[9:])
 	}
 }
 

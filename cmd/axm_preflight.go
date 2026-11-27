@@ -28,9 +28,8 @@ type preflightResponse struct {
 	Name      string    `json:"name"`
 	Messenger string    `json:"messenger"`
 	Mode      string    `json:"mode"`
-	// Resumed (LST-67): a scheduled campaign that was sent from before (a checkpoint or sent
-	// mails), as after a pause and a new schedule. Its people are the Remaining ones, as when it is
-	// resumed: the sender goes on after the checkpoint and skips who was sent to.
+	// Resumed indicates that a send is continuing. The sender uses Remaining, which accounts
+	// for prior exclusions and deliveries even if it paused before the first successful send.
 	Resumed bool `json:"resumed"`
 
 	// What the recipients will really see: the stored values, replaced by what the custom
@@ -405,7 +404,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		}
 	}
 	sentIsMinimum := countRemaining && camp.LegacySendHistory
-	rescheduled := (mode == models.PreflightModeScheduled || hasSendHistory) &&
+	resumed := hasSendHistory || mode == models.PreflightModeScheduled &&
 		(aud.Remaining != aud.Total-aud.Recent || sent > 0 || camp.LastSubscriberID > 0 || sentIsMinimum)
 
 	// A draft started under the sender policy is sent from the starting user's address.
@@ -561,7 +560,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	}
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode, Resumed: rescheduled,
+		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode, Resumed: resumed,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
 		Lists: lists, Recipients: aud.Total, WillSend: willSend, Recent: recent, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: sent, SentIsMinimum: sentIsMinimum, ToSend: camp.ToSend, AsOf: aud.AsOf,

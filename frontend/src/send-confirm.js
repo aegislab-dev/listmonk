@@ -87,16 +87,12 @@ const checkLine = (c, pf) => {
   // The recent-send rule is applied by the sender (LST-65): who it leaves out, who it left out
   // already when resuming, and the rule on with nobody to leave out.
   if (c.key === 'recent.applied') {
-    if (pf.mode === 'resume' || pf.resumed) {
+    if (p.held > 0 || pf.mode === 'resume' || pf.resumed) {
       // Who it left out already stays out; who is newly caught is left out when it goes on.
       const kind = (p.held > 0 ? 'held' : '') + (p.fresh > 0 ? 'Fresh' : '');
       key = `${K}.check.recent.applied.resume${{ held: 'Held', Fresh: 'Fresh', heldFresh: 'Both' }[kind] || 'None'}`;
     } else if (p.excluded > 0 && !['all', 'team', 'campaigns'].includes(p.scope)) {
-      // A resumed campaign can outlive its source campaign. Its held recipients still stay
-      // excluded, even though the deleted source means the old scope cannot be named.
-      key = p.held > 0
-        ? `${K}.check.recent.applied.resumeHeld`
-        : `${K}.check.recent.applied.scopeUnavailable`;
+      key = `${K}.check.recent.applied.scopeUnavailable`;
     } else {
       key = `${K}.check.recent.applied.${p.excluded > 0 ? p.scope : 'none'}`;
     }
