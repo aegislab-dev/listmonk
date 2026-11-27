@@ -260,7 +260,7 @@ func TestScheduledPreflightExplainsExpiredHoldsAfterSourceDeletion(t *testing.T)
 }
 
 func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(t *testing.T) {
-	e := scheduledEnvScan(t, false)
+	e := scheduledEnv(t)
 	prior := e.pfCampaign("regular", "finished", e.aList)
 	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns, CampaignIDs: []int64{int64(prior)}}
 	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, rule, e.superAdmin); err != nil {
@@ -341,9 +341,10 @@ func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(
 		`{"status":"running"}`); code != http.StatusOK {
 		t.Fatalf("zero-recipient paused resume: HTTP %d %s", code, body)
 	}
-	e.get(&status, `SELECT status::TEXT FROM campaigns WHERE id=$1`, e.campID)
-	if status != models.CampaignStatusRunning {
-		t.Fatalf("allowed empty resume left campaign in %q", status)
+	e.waitCampaign(models.CampaignStatusFinished, 1)
+	held, err := e.core.RecentHeldCount(e.campID)
+	if err != nil || held != 2 || len(e.recorded()) != 1 {
+		t.Fatalf("empty resume changed delivery or exclusion history: sent IDs %v, held %d, err %v", e.recorded(), held, err)
 	}
 }
 
