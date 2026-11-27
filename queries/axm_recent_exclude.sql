@@ -94,19 +94,23 @@ UPDATE campaigns SET updated_at = NOW() WHERE id = $1;
 -- (LST-65) Who of the batch $2 the recent-send rule of campaign $1 leaves out: the people it leaves
 -- out now (and keeps from now on in axm_campaign_recent_holds) and the people it left out before,
 -- while the rule is on. Nothing for a campaign without a rule.
-WITH on_rule AS (
-    SELECT 1 WHERE axm_recent_rule_on($1)
-), fresh AS (
-    SELECT subscriber_id FROM axm_recent_received($1, $2::INT[])
+-- Check existing holds first. A concurrent insert of the same key is retried
+-- by the caller against a new snapshot.
+WITH held AS MATERIALIZED (
+    SELECT subscriber_id FROM axm_campaign_recent_holds
+    WHERE campaign_id = $1 AND subscriber_id = ANY($2::INT[]) AND axm_recent_rule_on($1)
 ), keep AS (
     INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id)
-    SELECT $1, subscriber_id FROM fresh
-    ON CONFLICT DO NOTHING
+    SELECT DISTINCT $1, r.subscriber_id FROM axm_recent_received($1, ARRAY(
+        SELECT c.id FROM unnest($2::INT[]) AS c(id)
+        WHERE NOT EXISTS (SELECT 1 FROM held h WHERE h.subscriber_id = c.id)
+    )) r
+    ORDER BY r.subscriber_id
+    RETURNING subscriber_id
 )
-SELECT subscriber_id FROM fresh
-UNION
-SELECT h.subscriber_id FROM axm_campaign_recent_holds h
-WHERE h.campaign_id = $1 AND h.subscriber_id = ANY($2::INT[]) AND EXISTS (SELECT 1 FROM on_rule);
+SELECT subscriber_id FROM held
+UNION ALL
+SELECT subscriber_id FROM keep;
 
 -- name: axm-recent-has-rule
 SELECT axm_recent_rule_on($1);

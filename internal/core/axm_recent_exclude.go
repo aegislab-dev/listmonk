@@ -273,7 +273,14 @@ func (c *Core) HoldRecentBatch(ctx context.Context, campID int, ids []int) (map[
 		arr[i] = int64(id)
 	}
 	var held []int64
-	if err := c.q.AxmRecentHoldBatch.SelectContext(ctx, &held, campID, arr); err != nil {
+	err := c.q.AxmRecentHoldBatch.SelectContext(ctx, &held, campID, arr)
+	var dbErr *pq.Error
+	if errors.As(err, &dbErr) && dbErr.Code == pgUniqueViolation && dbErr.Constraint == "axm_campaign_recent_holds_pkey" {
+		// A concurrent writer won the insert. Read its committed hold on the next statement.
+		held = nil
+		err = c.q.AxmRecentHoldBatch.SelectContext(ctx, &held, campID, arr)
+	}
+	if err != nil {
 		return nil, err
 	}
 	out := make(map[int]bool, len(held))

@@ -291,6 +291,48 @@ func TestRecentRuleDoesNotCountOwnSends(t *testing.T) {
 	_ = other
 }
 
+func TestRecentBatchRetriesConcurrentHold(t *testing.T) {
+	e := newSendsEnv(t, 3)
+	first, second := e.eligible[0], e.eligible[1]
+	e.rsPrior(models.CampaignTypeRegular, e.listID, map[int]time.Duration{first: time.Hour, second: time.Hour})
+	e.rsRule(models.RecentRule{Enabled: true, Days: 7, Scope: models.RecentScopeAll})
+
+	tx := e.db.MustBegin()
+	defer tx.Rollback()
+	var blocker int
+	if err := tx.Get(&blocker, `SELECT pg_backend_pid()`); err != nil {
+		t.Fatal(err)
+	}
+	tx.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, first)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		held, err := e.core.HoldRecentBatch(ctx, e.campID, []int{first, first, second, second, e.eligible[2]})
+		if err == nil && (len(held) != 2 || !held[first] || !held[second]) {
+			err = fmt.Errorf("expected exactly the two recent holds, got %v", held)
+		}
+		done <- err
+	}()
+	waitFor(t, "the batch insert blocked by the concurrent hold", func() bool {
+		var waiting bool
+		e.get(&waiting, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))
+				AND query LIKE '%INSERT INTO axm_campaign_recent_holds%'
+		)`, blocker)
+		return waiting
+	})
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	wantSame(t, "durable exclusions", e.held(), []int{first, second})
+}
+
 // The rule is decided before a batch is sent: if it cannot be decided, nothing of the batch is
 // sent, and the campaign goes on once it can.
 func TestRecentRuleFailureSendsNothing(t *testing.T) {
@@ -613,6 +655,10 @@ func TestRecentHoldsMigration(t *testing.T) {
 	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, e.eligible[0])
 	if n := e.count(`SELECT COUNT(*) FROM pg_constraint WHERE conrelid = 'axm_campaign_recent_holds'::regclass AND contype = 'f'`); n != 2 {
 		t.Fatalf("%d foreign keys, want 2", n)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'axm_campaign_recent_holds'
+		AND indexname = 'idx_axm_recent_holds_subscriber' AND indexdef LIKE '%(subscriber_id)'`); n != 1 {
+		t.Fatalf("%d holds indexes led by subscriber_id, want 1", n)
 	}
 	e.reinstall()
 	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_recent_holds`); n != 0 {

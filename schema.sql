@@ -1731,6 +1731,8 @@ CREATE TABLE IF NOT EXISTS axm_campaign_recent_holds (
     held_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (campaign_id, subscriber_id)
 );
+-- Subscriber deletion cascades by subscriber_id without a campaign filter.
+CREATE INDEX IF NOT EXISTS idx_axm_recent_holds_subscriber ON axm_campaign_recent_holds(subscriber_id);
 -- Whether the sender must apply the saved rule and preserve its holds. A rule whose chosen
 -- campaigns were all deleted has no new matches, but any existing holds still apply.
 CREATE OR REPLACE FUNCTION axm_recent_rule_on(p_campaign INT)
