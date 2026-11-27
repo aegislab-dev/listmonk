@@ -82,7 +82,7 @@ describe('Visual editor inline formatting', () => {
   it('formats part of a Text block and keeps it after saving and reopening', () => {
     openText();
     // A plain block: the Markdown switch is there until the first formatting.
-    editorDoc().contains('label', 'Markdown').should('exist');
+    editorDoc().find('label:contains("Markdown")').should('have.length', 1);
 
     select('수수료가 0원입니다');
     editorDoc().find('[data-format=bold]').click();
@@ -102,7 +102,7 @@ describe('Visual editor inline formatting', () => {
       expect(el.textContent).to.contain('이름').and.not.contain('{{');
     });
     // The block now holds formatted HTML; Markdown would print the tags, so it is gone.
-    editorDoc().contains('label', 'Markdown').should('not.exist');
+    editorDoc().find('label:contains("Markdown")').should('not.exist');
     // Italic is not something this box stores: Ctrl+I leaves no trace.
     select('놓치지');
     box().type('{ctrl}i');

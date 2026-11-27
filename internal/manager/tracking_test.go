@@ -283,7 +283,8 @@ func TestVisualTrackingKeepsInlineFormatting(t *testing.T) {
 	body := `<html><body>` + text + `<a href="https://example.test/promo">자세히 보기</a></body></html>`
 	m, store := trackingManager()
 	c := models.Campaign{UUID: "campaign", ContentType: "visual", Messenger: "email", Body: body}
-	out := string(renderTrackingCampaign(t, m, &c, "subscriber").Body())
+	msg := renderTrackingCampaign(t, m, &c, "subscriber")
+	out := string(msg.Body())
 	if strings.Join(store.urls, "|") != "https://example.test/terms|https://example.test/promo" {
 		t.Fatalf("Wrong registered URLs: %v", store.urls)
 	}
