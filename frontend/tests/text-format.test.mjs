@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { marked } from 'marked';
 import {
   FONT_SIZES, textMode, parseFormatted, isMarkdownSyntaxAt, preserveMarkdownSyntax, serializeFormatted, hasFormatting,
 } from '../src/text-format.js';
@@ -87,6 +88,61 @@ test('formatting selections keeps Markdown links and literal code intact', () =>
   assert.equal(isMarkdownSyntaxAt(source, source.indexOf('example')), true);
   assert.equal(isMarkdownSyntaxAt(source, source.indexOf('WELCOME')), true);
   assert.equal(isMarkdownSyntaxAt(source, source.indexOf('here')), false);
+});
+
+test('formatting preserves complete GFM automatic links, including their queries and fragments', () => {
+  const urls = [
+    'https://intranet/event', 'https://example.test?event=summer', 'https://example.test#register',
+    'https://example.test/event(q)?filter=[on]', 'https://intranet:8443/edit?event=summer#register',
+    'www.example.test?event=summer', 'help+summer@example.test',
+  ];
+  const source = `신규 회원 ${urls.map((url) => `(${url}).`).join(' ')} 혜택`;
+  const before = runsOf(parseFormatted(source, 'markdown'));
+  const expectedHrefs = marked.parse(source).match(/href="[^"]+"/g);
+  assert.equal(expectedHrefs.length, urls.length);
+  const output = serializeFormatted(preserveMarkdownSyntax(before, [run(source, { bold: true })]), 'markdown').text;
+  assert.deepEqual(marked.parse(output).match(/href="[^"]+"/g), expectedHrefs);
+  assert.match(output, /^<strong>신규 회원 /);
+  const host = source.indexOf('intranet');
+  const after = [run(source.slice(0, host)), run('intranet', { bold: true }), run(source.slice(host + 8))];
+  assert.equal(serializeFormatted(preserveMarkdownSyntax(before, after), 'markdown').text, source);
+});
+
+test('Markdown brackets and explicit links allow formatting their visible label', () => {
+  const label = '오늘 마감';
+  for (const [prefix, suffix] of [
+    ['신규 회원 [', '] 혜택을 확인하세요.'],
+    ['[', '](https://example.test/event?date=today#register "설명")'],
+    ['\\![', '](/join)'],
+    ['[라벨 [', '] 더][ref]\n\n[ref]: https://example.test/event'],
+  ]) {
+    const source = prefix + label + suffix;
+    const before = runsOf(parseFormatted(source, 'markdown'));
+    const after = [run(prefix), run(label, { bold: true }), run(suffix)];
+    const output = serializeFormatted(preserveMarkdownSyntax(before, after), 'markdown').text;
+    assert.equal(output, `${prefix}<strong>${label}</strong>${suffix}`);
+    assert.equal(isMarkdownSyntaxAt(source, prefix.length + 1), false);
+    assert.deepEqual(marked.parse(output).match(/href="[^"]+"/g), marked.parse(source).match(/href="[^"]+"/g));
+    assert.match(marked.parse(output), /<strong>오늘 마감<\/strong>/);
+  }
+});
+
+test('formatting keeps reference keys and explicit link destinations intact', () => {
+  const source = '[라벨] [라벨][] [지금 신청](/join "설명")\n\n[라벨]: https://intranet/a?event=summer';
+  const before = runsOf(parseFormatted(source, 'markdown'));
+  const safe = preserveMarkdownSyntax(before, [run(source, { bold: true })]);
+  const output = serializeFormatted(safe, 'markdown').text;
+  const hrefs = (text) => marked.parse(text).match(/href="[^"]+"/g);
+  assert.equal(hrefs(source).length, 3);
+  assert.deepEqual(hrefs(output), hrefs(source));
+  assert.match(output, /\[<strong>지금 신청<\/strong>\]\(\/join "설명"\)/);
+});
+
+test('bare links in Markdown cells stop at the cell boundary', () => {
+  const source = '주소|장소\n---|---\nhttps://intranet/event?x=1|서울';
+  const before = runsOf(parseFormatted(source, 'markdown'));
+  const output = serializeFormatted(preserveMarkdownSyntax(before, [run(source, { bold: true })]), 'markdown').text;
+  assert.equal(output, '<strong>주소</strong>|<strong>장소</strong>\n---|---\nhttps://intranet/event?x=1|<strong>서울</strong>');
 });
 
 test('formatting a whole Markdown table wraps cell content and preserves the table syntax', () => {

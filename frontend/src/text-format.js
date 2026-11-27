@@ -17,6 +17,7 @@
 //             untouched.
 
 import { markdownLanguage } from '@codemirror/lang-markdown';
+import { Lexer } from 'marked';
 
 export const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32];
 const MIN_SIZE = 8;
@@ -51,13 +52,77 @@ const OURS = /<\/?(?:strong|u)>|<span style="font-size:\d+px">|<\/span>/;
 const MARKERS = /^(?:[ \t]*(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+|>[ \t]?|#{1,6}[ \t]+))*[ \t]*/;
 
 const CODE = new Set(['CodeBlock', 'FencedCode', 'InlineCode']);
-const LINKS = new Set(['URL', 'Autolink', 'Link', 'LinkReference', 'Image']);
+const LINK_STRUCTURE = new Set(['Autolink', 'LinkReference', 'Image']);
+
+const { link, reflink } = Lexer.rules.inline.breaks;
+const isEscaped = (source, start) => {
+  let escapeStart = start;
+  while (source[escapeStart - 1] === '\\') escapeStart -= 1;
+  return (start - escapeStart) % 2 === 1;
+};
+
+const bracketLinkRanges = (source, start, tail, tokenizer, references) => {
+  if (isEscaped(source, start)) return [];
+  const direct = tokenizer.link(tail);
+  const token = direct || tokenizer.reflink(tail, references);
+  if (token?.type !== 'link' && token?.type !== 'image') return [];
+  const end = start + token.raw.length;
+  const label = direct ? link.exec(token.raw) : reflink.exec(token.raw);
+  // The display label can contain HTML. Keep its brackets and destination
+  // intact. Shortcut and collapsed references use the label as the key.
+  if (token.type === 'link' && label && (direct || label[2])) {
+    return [[start, start + 1], [start + 1 + label[1].length, end]];
+  }
+  return [[start, end]];
+};
+
+// Text blocks render with Marked in GFM breaks mode. Its URL tokenizer includes
+// single-label hosts, queries and fragments that the editor grammar can miss.
+// Its link tokenizer also distinguishes a bracketed phrase from a reference link.
+const linkRanges = (source, protectedRanges, cells) => {
+  const lexer = new Lexer({ gfm: true, breaks: true });
+  const { tokenizer } = lexer;
+  const references = source.includes(']:') ? lexer.lex(source).links : lexer.tokens.links;
+  const starts = /!?\[|(?:ftp|https?):\/\/|www\.|@/gi;
+  const ranges = [];
+  let protectedIndex = 0;
+  let cellIndex = 0;
+  for (let match = starts.exec(source); match; match = starts.exec(source)) {
+    let start = match.index;
+    // An escaped exclamation point can still be followed by a valid link.
+    if (match[0] === '![' && isEscaped(source, start)) start += 1;
+    if (match[0] === '@') {
+      while (start > 0 && /[A-Za-z0-9._+-]/.test(source[start - 1])) start -= 1;
+    }
+    while (protectedRanges[protectedIndex]?.[1] <= start) protectedIndex += 1;
+    const protectedRange = protectedRanges[protectedIndex];
+    if (!protectedRange || start < protectedRange[0]) {
+      while (cells[cellIndex]?.[1] <= start) cellIndex += 1;
+      const cell = cells[cellIndex];
+      const tail = source.slice(start, cell?.[0] <= start ? cell[1] : undefined);
+      let found;
+      if (match[0].endsWith('[')) {
+        found = bracketLinkRanges(source, start, tail, tokenizer, references);
+      } else {
+        const url = tokenizer.url(tail);
+        found = url ? [[start, start + url.raw.length]] : [];
+      }
+      if (found.length) {
+        const [, end] = found[found.length - 1];
+        starts.lastIndex = end;
+        ranges.push(...found);
+      }
+    }
+  }
+  return ranges;
+};
 
 const markdownRanges = (source, formatting) => {
   const ranges = [];
+  const cells = [];
   markdownLanguage.parser.parse(source).iterate({
     enter(node) {
-      if (CODE.has(node.name) || (formatting && LINKS.has(node.name))) {
+      if (CODE.has(node.name) || (formatting && LINK_STRUCTURE.has(node.name))) {
         ranges.push([node.from, node.to]);
         return false;
       }
@@ -68,6 +133,7 @@ const markdownRanges = (source, formatting) => {
         const rows = [...node.node.getChildren('TableHeader'), ...node.node.getChildren('TableRow')];
         rows.forEach((row) => row.getChildren('TableCell').forEach((cell) => {
           if (cell.from > gap) ranges.push([gap, cell.from]);
+          cells.push([cell.from, cell.to]);
           gap = cell.to;
         }));
         if (gap < node.to) ranges.push([gap, node.to]);
@@ -75,7 +141,16 @@ const markdownRanges = (source, formatting) => {
       return undefined;
     },
   });
-  return ranges.sort(([a], [b]) => a - b);
+  ranges.sort(([a], [b]) => a - b);
+  if (!formatting) return ranges;
+  const combined = [...ranges, ...linkRanges(source, ranges, cells)].sort(([a], [b]) => a - b);
+  const disjoint = [];
+  combined.forEach(([from, to]) => {
+    const previous = disjoint[disjoint.length - 1];
+    if (previous && from < previous[1]) previous[1] = Math.max(previous[1], to);
+    else disjoint.push([from, to]);
+  });
+  return disjoint;
 };
 
 export const isMarkdownSyntaxAt = (source, offset) => (
