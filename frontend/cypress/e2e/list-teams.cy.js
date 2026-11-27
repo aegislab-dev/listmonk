@@ -22,6 +22,9 @@ const loginAs = (user, pass, next) => {
   cy.get('input[name=username]').invoke('val', user);
   cy.get('input[name=password]').invoke('val', pass);
   cy.get('button').click();
+  // The previous session may still be the admin until the login redirect finishes.
+  cy.location('pathname', { timeout: 15000 }).should('eq', next);
+  cy.request('/api/profile').its('body.data.username').should('eq', user);
 };
 
 describe('teams', () => {
