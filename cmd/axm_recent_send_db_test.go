@@ -333,9 +333,9 @@ func TestRecentBatchRetriesConcurrentHold(t *testing.T) {
 	wantSame(t, "durable exclusions", e.held(), []int{first, second})
 }
 
-func TestRecentBatchWaitsForBothHoldWrites(t *testing.T) {
-	e := newSendsEnv(t, 260)
-	const heldCount = 256
+func TestRecentBatchWaitsForEveryHoldWrite(t *testing.T) {
+	e := newSendsEnv(t, 388)
+	const heldCount, laneSize = 384, 128
 	held := e.eligible[:heldCount]
 	prior := e.pfCampaign(models.CampaignTypeRegular, models.CampaignStatusFinished, e.listID)
 	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id)
@@ -345,7 +345,7 @@ func TestRecentBatchWaitsForBothHoldWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// One half fails and rolls back. No candidate can be released to the sender.
+	// The middle write fails and rolls back. No candidate can be released to the sender.
 	e.db.MustExec(fmt.Sprintf(`CREATE FUNCTION reject_half() RETURNS trigger LANGUAGE plpgsql AS $$
 	BEGIN
 		IF NEW.subscriber_id = %d THEN
@@ -355,22 +355,23 @@ func TestRecentBatchWaitsForBothHoldWrites(t *testing.T) {
 	END
 	$$;
 	CREATE TRIGGER reject_half BEFORE INSERT ON axm_campaign_recent_holds
-	FOR EACH ROW EXECUTE FUNCTION reject_half();`, held[heldCount/2]))
+	FOR EACH ROW EXECUTE FUNCTION reject_half();`, held[laneSize]))
 	batch, err := e.store.NextSubscribers(e.campID, 0, 500)
 	if err == nil || !strings.Contains(err.Error(), "failed hold write") || len(batch) != 0 {
 		t.Fatalf("incomplete hold writes: got %d candidates, error %v", len(batch), err)
 	}
-	wantSame(t, "committed half", e.held(), held[:heldCount/2])
+	committed := append(slices.Clone(held[:laneSize]), held[2*laneSize:]...)
+	wantSame(t, "committed lanes", e.held(), committed)
 	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_recent_holds WHERE campaign_id = $1 AND lane = 1`, e.campID); n != 0 {
 		t.Fatalf("failed hold write left %d rows in its lane", n)
 	}
 
-	// The first half stays excluded after its source records expire. The next
-	// attempt records the other half and releases only the intended recipients.
+	// The committed lanes stay excluded after their source records expire. The next
+	// attempt records the missing decisions and releases only the intended recipients.
 	e.db.MustExec(`DROP TRIGGER reject_half ON axm_campaign_recent_holds;
 		DROP FUNCTION reject_half()`)
 	e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at = NOW() - INTERVAL '8 days'
-		WHERE campaign_id = $1 AND subscriber_id < $2`, prior, held[heldCount/2])
+		WHERE campaign_id = $1 AND subscriber_id = ANY($2::int[])`, prior, pq.Array(committed))
 	batch, err = e.store.NextSubscribers(e.campID, 0, 500)
 	if err != nil {
 		t.Fatal(err)

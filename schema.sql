@@ -1730,7 +1730,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION axm_count_removed_campaign_sends();
 -- MultiXact locks on the campaign row for every subscriber in the batch.
 CREATE TABLE IF NOT EXISTS axm_campaign_recent_hold_lanes (
     campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    lane SMALLINT NOT NULL CHECK (lane IN (0, 1)),
+    lane SMALLINT NOT NULL CHECK (lane IN (0, 1, 2)),
     PRIMARY KEY (campaign_id, lane)
 );
 CREATE OR REPLACE FUNCTION axm_seed_recent_hold_lanes()
@@ -1738,7 +1738,7 @@ RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
     INSERT INTO axm_campaign_recent_hold_lanes (campaign_id, lane)
     SELECT c.id, lanes.lane
-    FROM inserted_campaigns c CROSS JOIN (VALUES (0), (1)) lanes(lane);
+    FROM inserted_campaigns c CROSS JOIN (VALUES (0), (1), (2)) lanes(lane);
     RETURN NULL;
 END;
 $$;
@@ -1748,7 +1748,7 @@ CREATE TRIGGER axm_seed_recent_hold_lanes AFTER INSERT ON campaigns
     FOR EACH STATEMENT EXECUTE FUNCTION axm_seed_recent_hold_lanes();
 INSERT INTO axm_campaign_recent_hold_lanes (campaign_id, lane)
 SELECT c.id, lanes.lane
-FROM campaigns c CROSS JOIN (VALUES (0), (1)) lanes(lane)
+FROM campaigns c CROSS JOIN (VALUES (0), (1), (2)) lanes(lane)
 ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS axm_campaign_recent_holds (
     campaign_id   INTEGER NOT NULL,

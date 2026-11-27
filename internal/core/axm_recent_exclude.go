@@ -287,31 +287,39 @@ func (c *Core) HoldRecentBatch(ctx context.Context, campID int, ids []int) (map[
 			fresh = append(fresh, decision.ID)
 		}
 	}
-	if len(fresh) == 0 {
-		return out, nil
-	}
-	if len(fresh) < 256 || c.db.Stats().MaxOpenConnections == 1 {
-		if err := c.recordRecentHolds(ctx, campID, fresh, 0); err != nil {
+	if len(fresh) > 0 {
+		if err := c.recordRecentHolds(ctx, campID, fresh); err != nil {
 			return nil, err
 		}
-		return out, nil
-	}
-
-	// Both writers use decisions from the same snapshot. The two foreign key checks
-	// per row dominate large writes. Distinct gate rows keep those writes independent.
-	// Wait for both halves before releasing recipients.
-	// If one fails, decisions committed by the other still apply on the next attempt.
-	mid := len(fresh) / 2
-	first := make(chan error, 1)
-	go func() { first <- c.recordRecentHolds(ctx, campID, fresh[:mid], 0) }()
-	second := c.recordRecentHolds(ctx, campID, fresh[mid:], 1)
-	if err := errors.Join(<-first, second); err != nil {
-		return nil, err
 	}
 	return out, nil
 }
 
-func (c *Core) recordRecentHolds(ctx context.Context, campID int, ids pq.Int64Array, lane int) error {
+func (c *Core) recordRecentHolds(ctx context.Context, campID int, ids pq.Int64Array) error {
+	const maxLanes, minRowsPerLane = 3, 128
+	lanes := max(1, min(maxLanes, len(ids)/minRowsPerLane))
+	if pool := c.db.Stats(); pool.MaxOpenConnections > 0 {
+		lanes = min(lanes, max(1, pool.MaxOpenConnections-pool.InUse))
+	}
+	if lanes == 1 {
+		return c.recordRecentHoldLane(ctx, campID, ids, 0)
+	}
+
+	// All writers use the same decision snapshot and distinct foreign-key parents.
+	// If a write fails, keep the committed decisions and release no recipients.
+	results := make(chan error, lanes-1)
+	for lane := range lanes - 1 {
+		chunk := ids[lane*len(ids)/lanes : (lane+1)*len(ids)/lanes]
+		go func() { results <- c.recordRecentHoldLane(ctx, campID, chunk, lane) }()
+	}
+	err := c.recordRecentHoldLane(ctx, campID, ids[(lanes-1)*len(ids)/lanes:], lanes-1)
+	for range lanes - 1 {
+		err = errors.Join(err, <-results)
+	}
+	return err
+}
+
+func (c *Core) recordRecentHoldLane(ctx context.Context, campID int, ids pq.Int64Array, lane int) error {
 	_, err := c.q.AxmRecentHoldBatch.ExecContext(ctx, campID, ids, lane)
 	var dbErr *pq.Error
 	if errors.As(err, &dbErr) && dbErr.Code == pgUniqueViolation && dbErr.Constraint == "axm_campaign_recent_holds_pkey" {

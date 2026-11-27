@@ -805,11 +805,11 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
-	// 41: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
+	// 42: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
 	// axm_followup_reaction, axm_followup_recipients, axm_followup_to_send and axm_followup_recount
-	// (LST-47, .17), three functions for LST-67 and six for LST-65.
-	if len(before) != 41 {
-		t.Fatalf("expected 41 axm functions, got %d", len(before))
+	// (LST-47, .17), three functions for LST-67 and seven for LST-65.
+	if len(before) != 42 {
+		t.Fatalf("expected 42 axm functions, got %d", len(before))
 	}
 	db.MustExec(`DROP TRIGGER axm_count_removed_campaign_sends ON axm_campaign_sends;
 		DROP TRIGGER axm_lock_send_campaigns_on_subscriber_delete ON subscribers;
@@ -823,6 +823,8 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		DROP TRIGGER axm_recent_holds_removed ON axm_campaign_recent_holds; DROP FUNCTION axm_count_removed_recent_holds();
 		DROP TRIGGER axm_recent_holds_finished ON campaigns; DROP FUNCTION axm_snapshot_recent_holds();
 		DROP TABLE axm_campaign_recent_holds; DROP FUNCTION axm_recent_received(INT, INT[]); DROP FUNCTION axm_recent_rule_on(INT);
+		DROP TRIGGER axm_seed_recent_hold_lanes ON campaigns; DROP FUNCTION axm_seed_recent_hold_lanes();
+		DROP TABLE axm_campaign_recent_hold_lanes; DROP INDEX idx_axm_subscriber_lists_list_sub;
 		DROP FUNCTION axm_recent_exclusion(INT[], INT, TEXT, INT[], INT);
 		DROP FUNCTION axm_campaign_audience(INT[]); DROP TABLE axm_campaign_recent_rules`)
 	db.MustExec(`DROP TRIGGER axm_unsubscribe_blocked_email ON subscribers; DROP FUNCTION axm_unsubscribe_blocked_email(); DROP TRIGGER axm_suppress_changed_email ON subscribers; DROP FUNCTION axm_suppress_changed_email();

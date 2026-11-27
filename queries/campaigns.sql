@@ -357,12 +357,17 @@ SELECT link_clicks.campaign_id,
 -- running (paused, cancelled, finished). The caller must not treat that as "no subscribers left":
 -- a campaign that was paused while its pipe was reading and was resumed right after would
 -- otherwise be finished with its recipients unsent.
-SELECT campaigns.id AS campaign_id, campaigns.type as campaign_type, last_subscriber_id, max_subscriber_id,
-    COALESCE(lists.id, 0) AS list_id, COALESCE(lists.axm_filter IS NOT NULL, false) AS is_dynamic
-    FROM campaigns
-    LEFT JOIN campaign_lists ON (campaign_lists.campaign_id = campaigns.id)
-    LEFT JOIN lists ON (lists.id = campaign_lists.list_id)
-    WHERE campaigns.id = $1 AND campaigns.status='running';
+WITH running AS MATERIALIZED (
+    SELECT c.id AS campaign_id, c.type AS campaign_type, c.last_subscriber_id, c.max_subscriber_id,
+        EXISTS (SELECT 1 FROM axm_campaign_followups f WHERE f.campaign_id = c.id) AS is_followup,
+        axm_recent_rule_on(c.id) AS has_recent_rule
+    FROM campaigns c
+    WHERE c.id = $1 AND c.status = 'running'
+)
+SELECT running.*, COALESCE(lists.id, 0) AS list_id, (lists.axm_filter IS NOT NULL) AS is_dynamic
+FROM running
+LEFT JOIN campaign_lists ON campaign_lists.campaign_id = running.campaign_id
+LEFT JOIN lists ON lists.id = campaign_lists.list_id;
 
 -- name: next-campaign-subscribers
 -- Returns a batch of subscribers in a given campaign after the subscriber ID $3, the

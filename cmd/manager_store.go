@@ -24,10 +24,6 @@ type store struct {
 	core    *core.Core
 	media   media.Store
 
-	// AXM (LST-47): whether a campaign is a follow-up, asked once per campaign (a campaign only
-	// becomes one when it is made as a draft).
-	followups sync.Map
-
 	// AXM (LST-20): the connection that holds the campaign sending lock.
 	db       *sqlx.DB
 	lockMut  sync.Mutex
@@ -51,6 +47,8 @@ const (
 
 type runningCamp struct {
 	IsDynamic        bool   `db:"is_dynamic"`
+	IsFollowup       bool   `db:"is_followup"`
+	HasRecentRule    bool   `db:"has_recent_rule"`
 	CampaignID       int    `db:"campaign_id"`
 	CampaignType     string `db:"campaign_type"`
 	LastSubscriberID int    `db:"last_subscriber_id"`
@@ -126,27 +124,12 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	// it, are blocked, or whose reactions cannot be seen), and the batch is given back without them.
 	// A batch of only such people is read past, so the position always moves on. Any other campaign
 	// is read as before, except for its recent-send rule (LST-65, below).
-	followup, known := s.followups.Load(campID)
-	if !known {
-		var f bool
-		if err := s.queries.AxmFollowupIsFollowup.Get(&f, campID); err != nil {
-			return nil, err
-		}
-		s.followups.Store(campID, f)
-		followup = f
-	}
-	isFollowup := followup.(bool)
+	isFollowup := camps[0].IsFollowup
 	ctx := context.Background()
-	var hasRecentRule bool
-	if !isFollowup && camps[0].CampaignType == models.CampaignTypeRegular {
-		// The rule is locked while the campaign is running. Look it up before selecting
-		// any candidates, so each recent exclusion decision receives at most 500 IDs.
-		if err := s.queries.AxmRecentHasRule.GetContext(ctx, &hasRecentRule, campID); err != nil {
-			return nil, err
-		}
-		if hasRecentRule {
-			limit = min(limit, recentSendBatchLimit)
-		}
+	hasRecentRule := camps[0].HasRecentRule
+	if hasRecentRule {
+		// The rule is locked while the campaign is running. Cap the batch before reading it.
+		limit = min(limit, recentSendBatchLimit)
 	}
 	after := camps[0].LastSubscriberID
 	for {
