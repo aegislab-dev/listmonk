@@ -361,6 +361,9 @@ func TestRecentBatchWaitsForBothHoldWrites(t *testing.T) {
 		t.Fatalf("incomplete hold writes: got %d candidates, error %v", len(batch), err)
 	}
 	wantSame(t, "committed half", e.held(), held[:heldCount/2])
+	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_recent_holds WHERE campaign_id = $1 AND lane = 1`, e.campID); n != 0 {
+		t.Fatalf("failed hold write left %d rows in its lane", n)
+	}
 
 	// The first half stays excluded after its source records expire. The next
 	// attempt records the other half and releases only the intended recipients.
@@ -758,8 +761,9 @@ func TestRecentHoldsGoWithCampaignAndSubscriber(t *testing.T) {
 	e := newSendsEnv(t, 3)
 	other, _ := e.addCampaign("draft")
 	for _, c := range []int{e.campID, other} {
-		for _, s := range e.eligible {
-			e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id, subscriber_id) VALUES ($1, $2)`, c, s)
+		for i, s := range e.eligible {
+			e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id, subscriber_id, lane)
+				VALUES ($1, $2, $3)`, c, s, i%2)
 		}
 	}
 	e.db.MustExec(`DELETE FROM subscribers WHERE id=$1`, e.eligible[0])
@@ -769,6 +773,9 @@ func TestRecentHoldsGoWithCampaignAndSubscriber(t *testing.T) {
 	e.db.MustExec(`DELETE FROM campaigns WHERE id=$1`, other)
 	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_recent_holds`); n != 2 {
 		t.Fatalf("%d holds after a campaign went", n)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM axm_campaign_recent_hold_lanes WHERE campaign_id=$1`, other); n != 0 {
+		t.Fatalf("%d hold lanes after their campaign went", n)
 	}
 }
 

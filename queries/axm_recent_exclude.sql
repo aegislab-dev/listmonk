@@ -107,8 +107,8 @@ ORDER BY subscriber_id;
 -- name: axm-recent-hold-batch
 -- Record a set of new decisions. On a concurrent insert, the caller retries
 -- this statement, which then skips the committed holds.
-INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id)
-SELECT $1, batch.id FROM unnest($2::INT[]) AS batch(id)
+INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id, lane)
+SELECT $1, batch.id, $3 FROM unnest($2::INT[]) AS batch(id)
 WHERE NOT EXISTS (
     SELECT 1 FROM axm_campaign_recent_holds h WHERE h.campaign_id = $1 AND h.subscriber_id = batch.id
 )

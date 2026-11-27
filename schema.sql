@@ -613,6 +613,7 @@ DROP TABLE IF EXISTS axm_deleted_lists CASCADE;
 DROP TABLE IF EXISTS axm_column_presets CASCADE;
 DROP TABLE IF EXISTS axm_campaign_recent_rules CASCADE;
 DROP TABLE IF EXISTS axm_campaign_recent_holds CASCADE;
+DROP TABLE IF EXISTS axm_campaign_recent_hold_lanes CASCADE;
 DROP TABLE IF EXISTS axm_test_addresses CASCADE;
 DROP TABLE IF EXISTS axm_bounced_emails CASCADE;
 DROP TABLE IF EXISTS axm_email_changes CASCADE;
@@ -1725,14 +1726,43 @@ FOR EACH STATEMENT EXECUTE FUNCTION axm_count_removed_campaign_sends();
 -- Who a campaign with a recent-send rule has left out so far. The sender decides it when it reads a
 -- batch and the person stays out of that campaign afterwards (a pause that outlasts the rule's days,
 -- a restart, or the expiry of a send record does not let them in). The rows go with the campaign.
+-- Each concurrent writer checks a different parent row, avoiding shared
+-- MultiXact locks on the campaign row for every subscriber in the batch.
+CREATE TABLE IF NOT EXISTS axm_campaign_recent_hold_lanes (
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    lane SMALLINT NOT NULL CHECK (lane IN (0, 1)),
+    PRIMARY KEY (campaign_id, lane)
+);
+CREATE OR REPLACE FUNCTION axm_seed_recent_hold_lanes()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO axm_campaign_recent_hold_lanes (campaign_id, lane)
+    SELECT c.id, lanes.lane
+    FROM inserted_campaigns c CROSS JOIN (VALUES (0), (1)) lanes(lane);
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_seed_recent_hold_lanes ON campaigns;
+CREATE TRIGGER axm_seed_recent_hold_lanes AFTER INSERT ON campaigns
+    REFERENCING NEW TABLE AS inserted_campaigns
+    FOR EACH STATEMENT EXECUTE FUNCTION axm_seed_recent_hold_lanes();
+INSERT INTO axm_campaign_recent_hold_lanes (campaign_id, lane)
+SELECT c.id, lanes.lane
+FROM campaigns c CROSS JOIN (VALUES (0), (1)) lanes(lane)
+ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS axm_campaign_recent_holds (
-    campaign_id   INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    campaign_id   INTEGER NOT NULL,
     subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
     held_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (campaign_id, subscriber_id)
+    lane          SMALLINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (campaign_id, subscriber_id),
+    FOREIGN KEY (campaign_id, lane) REFERENCES axm_campaign_recent_hold_lanes(campaign_id, lane)
+        ON DELETE CASCADE ON UPDATE CASCADE
 );
 -- Subscriber deletion cascades by subscriber_id without a campaign filter.
 CREATE INDEX IF NOT EXISTS idx_axm_recent_holds_subscriber ON axm_campaign_recent_holds(subscriber_id);
+-- Bounded keyset reads within each campaign list.
+CREATE INDEX IF NOT EXISTS idx_axm_subscriber_lists_list_sub ON subscriber_lists(list_id, subscriber_id);
 -- Whether the sender must apply the saved rule and preserve its holds. A rule whose chosen
 -- campaigns were all deleted has no new matches, but any existing holds still apply.
 CREATE OR REPLACE FUNCTION axm_recent_rule_on(p_campaign INT)

@@ -129,7 +129,10 @@ func TestRecentSendMigrationsUpgradeFromV20(t *testing.T) {
 		DROP FUNCTION IF EXISTS axm_recent_campaign_sent_ids(INT);
 		DROP FUNCTION IF EXISTS axm_recent_received(INT, INT[]);
 		DROP FUNCTION IF EXISTS axm_recent_rule_on(INT);
-		DROP TABLE IF EXISTS axm_campaign_recent_holds`)
+		DROP TABLE IF EXISTS axm_campaign_recent_holds;
+		DROP TRIGGER IF EXISTS axm_seed_recent_hold_lanes ON campaigns;
+		DROP FUNCTION IF EXISTS axm_seed_recent_hold_lanes();
+		DROP TABLE IF EXISTS axm_campaign_recent_hold_lanes`)
 	e.db.MustExec(`INSERT INTO settings (key, value) VALUES ('migrations', '["v6.2.1-axm.20"]')
 		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`)
 

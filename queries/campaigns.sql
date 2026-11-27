@@ -386,39 +386,29 @@ WITH campLists AS (
     LEFT JOIN campaign_lists ON campaign_lists.list_id = lists.id
     WHERE campaign_lists.campaign_id = $1
 ),
-subs AS (
-    SELECT s.*
-    FROM (
-        SELECT DISTINCT s.id
+subIDs AS (
+    -- Take at most the first $6 eligible IDs from each list before merging.
+    -- Any later ID already has $6 distinct predecessors on that list alone.
+    SELECT DISTINCT member.id
+    FROM campLists cl
+    CROSS JOIN LATERAL (
+        SELECT sl.subscriber_id AS id
         FROM subscriber_lists sl
-        JOIN campLists ON sl.list_id = campLists.list_id
-        JOIN subscribers s ON s.id = sl.subscriber_id
-        WHERE
-            sl.list_id = ANY($5::INT[])
-            -- last_subscriber_id
-            AND s.id > $3
-             -- max_subscriber_id
-            AND s.id <= $4
-             -- Subscriber should not be blacklisted.
+        JOIN LATERAL (
+            SELECT status FROM subscribers WHERE id = sl.subscriber_id OFFSET 0
+        ) s ON TRUE
+        WHERE sl.list_id = cl.list_id
+            AND sl.subscriber_id > $3 AND sl.subscriber_id <= $4
             AND s.status != 'blocklisted'
-            AND (
-                -- If it's an optin campaign and the list is double-optin, only pick unconfirmed subscribers.
-                ($2 = 'optin' AND sl.status = 'unconfirmed' AND campLists.optin = 'double')
-                OR (
-                    -- It is a regular campaign.
-                    $2 != 'optin' AND (
-                        -- It is a double optin list. Only pick confirmed subscribers.
-                        (campLists.optin = 'double' AND sl.status = 'confirmed') OR
-
-                        -- It is a single optin list. Pick all non-unsubscribed subscribers.
-                        (campLists.optin != 'double' AND sl.status != 'unsubscribed')
-                    )
-                )
-            )
-        ORDER BY s.id LIMIT $6
-    ) subIDs JOIN subscribers s ON (s.id = subIDs.id) ORDER BY s.id
+            AND CASE WHEN $2 = 'optin' THEN sl.status = 'unconfirmed' AND cl.optin = 'double'
+                WHEN cl.optin = 'double' THEN sl.status = 'confirmed'
+                ELSE sl.status != 'unsubscribed' END
+        ORDER BY sl.subscriber_id LIMIT $6
+    ) member
+    WHERE cl.list_id = ANY($5::INT[])
+    ORDER BY member.id LIMIT $6
 )
-SELECT * FROM subs ORDER BY id;
+SELECT s.* FROM subIDs JOIN subscribers s ON s.id = subIDs.id ORDER BY s.id;
 
 -- name: delete-campaign-views
 DELETE FROM campaign_views WHERE created_at < $1;

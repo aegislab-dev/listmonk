@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -637,6 +638,7 @@ func TestDynamicDBTriggerPaths(t *testing.T) {
 func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 	db, q, _ := dynamicTestDB(t)
 	normal := testList(db, nil, "single")
+	overlap := testList(db, nil, "single")
 	double := testList(db, nil, "double")
 	dynamic := testList(db, testFilter("lists", []int{normal}), "single")
 	allDynamic := testList(db, testFilter("all", nil), "single")
@@ -652,10 +654,21 @@ func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 	}
 	db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'unconfirmed')`, ids[0], double)
 	db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'unsubscribed')`, ids[4], dynamic)
+	extra := testSub(db, `{}`, "enabled")
+	db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status)
+		VALUES ($1,$3,'confirmed'),($2,$3,'confirmed')`, ids[0], extra, overlap)
+	merged := append(slices.Clone(ids), extra)
 	cases := []struct {
 		name, typ   string
 		lists, want []int
-	}{{"dynamic", "regular", []int{dynamic}, []int{ids[0], ids[1], ids[3]}}, {"mixed", "regular", []int{normal, dynamic}, ids}, {"regular", "regular", []int{normal}, ids}, {"optin", "optin", []int{double, dynamic}, []int{ids[0]}}, {"zero", "regular", []int{testList(db, testFilter("lists", []int{99999}), "single")}, []int{}}}
+	}{
+		{"dynamic", "regular", []int{dynamic}, []int{ids[0], ids[1], ids[3]}},
+		{"mixed", "regular", []int{normal, overlap, dynamic}, merged},
+		{"regular", "regular", []int{normal}, ids},
+		{"regular-overlap", "regular", []int{normal, overlap}, merged},
+		{"optin", "optin", []int{double, dynamic}, []int{ids[0]}},
+		{"zero", "regular", []int{testList(db, testFilter("lists", []int{99999}), "single")}, []int{}},
+	}
 	var dynamicCamp int
 	for _, tc := range cases {
 		for _, batch := range []int{1, 2, 100} {
@@ -684,7 +697,7 @@ func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 				actual := []int{}
 				after := 0
 				query := q["next-campaign-subscribers-dynamic"]
-				if tc.name == "regular" {
+				if tc.name == "regular" || tc.name == "regular-overlap" {
 					query = q["next-campaign-subscribers"]
 				}
 				for i := 0; i < 20; i++ {
@@ -694,6 +707,9 @@ func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 					}
 					if len(out) == 0 {
 						break
+					}
+					if len(out) != min(batch, len(tc.want)-len(actual)) {
+						t.Fatalf("after %d: batch had %d rows, want up to %d distinct recipients", after, len(out), batch)
 					}
 					for _, s := range out {
 						actual = append(actual, s.ID)

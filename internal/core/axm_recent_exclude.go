@@ -291,30 +291,31 @@ func (c *Core) HoldRecentBatch(ctx context.Context, campID int, ids []int) (map[
 		return out, nil
 	}
 	if len(fresh) < 256 || c.db.Stats().MaxOpenConnections == 1 {
-		if err := c.recordRecentHolds(ctx, campID, fresh); err != nil {
+		if err := c.recordRecentHolds(ctx, campID, fresh, 0); err != nil {
 			return nil, err
 		}
 		return out, nil
 	}
 
 	// Both writers use decisions from the same snapshot. The two foreign key checks
-	// per row dominate large writes. Wait for both halves before releasing recipients.
+	// per row dominate large writes. Distinct gate rows keep those writes independent.
+	// Wait for both halves before releasing recipients.
 	// If one fails, decisions committed by the other still apply on the next attempt.
 	mid := len(fresh) / 2
 	first := make(chan error, 1)
-	go func() { first <- c.recordRecentHolds(ctx, campID, fresh[:mid]) }()
-	second := c.recordRecentHolds(ctx, campID, fresh[mid:])
+	go func() { first <- c.recordRecentHolds(ctx, campID, fresh[:mid], 0) }()
+	second := c.recordRecentHolds(ctx, campID, fresh[mid:], 1)
 	if err := errors.Join(<-first, second); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *Core) recordRecentHolds(ctx context.Context, campID int, ids pq.Int64Array) error {
-	_, err := c.q.AxmRecentHoldBatch.ExecContext(ctx, campID, ids)
+func (c *Core) recordRecentHolds(ctx context.Context, campID int, ids pq.Int64Array, lane int) error {
+	_, err := c.q.AxmRecentHoldBatch.ExecContext(ctx, campID, ids, lane)
 	var dbErr *pq.Error
 	if errors.As(err, &dbErr) && dbErr.Code == pgUniqueViolation && dbErr.Constraint == "axm_campaign_recent_holds_pkey" {
-		_, err = c.q.AxmRecentHoldBatch.ExecContext(ctx, campID, ids)
+		_, err = c.q.AxmRecentHoldBatch.ExecContext(ctx, campID, ids, lane)
 	}
 	return err
 }
