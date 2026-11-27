@@ -39,6 +39,8 @@ Cypress.Commands.add('loginAndVisit', (url) => {
 
   // Submit form.
   cy.get('button').click();
+  // API requests queued by the caller must not race the login POST and miss its session cookie.
+  cy.location('pathname').should('not.include', '/admin/login');
 });
 
 Cypress.Commands.add('clickMenu', (...selectors) => {
