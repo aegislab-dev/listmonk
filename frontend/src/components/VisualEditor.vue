@@ -21,7 +21,7 @@ import {
   BASE_ITEMS, buildToken, parseTokens, loadItems,
 } from '../personalization';
 import {
-  FONT_SIZES, textMode, parseFormatted, serializeFormatted,
+  FONT_SIZES, textMode, parseFormatted, isMarkdownSyntaxAt, preserveMarkdownSyntax, serializeFormatted,
 } from '../text-format';
 
 export default {
@@ -66,6 +66,8 @@ export default {
           sizes: FONT_SIZES,
           textMode,
           parseFormatted,
+          isMarkdownSyntaxAt,
+          preserveMarkdownSyntax,
           serializeFormatted,
         },
         strings,

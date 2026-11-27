@@ -18,6 +18,8 @@ export type Formatting = {
   sizes: number[];
   textMode: (text: string, markdown?: boolean | null) => TextMode;
   parseFormatted: (text: string, mode: TextMode) => FormatSegment[];
+  isMarkdownSyntaxAt: (text: string, offset: number) => boolean;
+  preserveMarkdownSyntax: (before: FormatRun[], after: FormatRun[]) => FormatRun[];
   serializeFormatted: (runs: FormatRun[], mode: TextMode) => { text: string; markdown: boolean };
 };
 export type Personalization = {

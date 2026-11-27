@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FONT_SIZES, textMode, parseFormatted, serializeFormatted, hasFormatting,
+  FONT_SIZES, textMode, parseFormatted, isMarkdownSyntaxAt, preserveMarkdownSyntax, serializeFormatted, hasFormatting,
 } from '../src/text-format.js';
 import { parseTokens } from '../src/personalization.js';
 
@@ -68,6 +68,47 @@ test('inline HTML line breaks in Markdown can be formatted and reopened', () => 
   assert.deepEqual(parseFormatted(out.text, 'markdown'), [{ value, ...fmt }]);
   assert.equal(hasFormatting(out.text, 'markdown'), true);
   assert.deepEqual(roundTrip(out.text, true), out);
+});
+
+test('formatting selections keeps Markdown links and literal code intact', () => {
+  const before = runsOf(parseFormatted('Link https://example.test/event and coupon `WELCOME` here', 'markdown'));
+  const after = [
+    run('Link https://'),
+    run('example.test', { bold: true }),
+    run('/event and coupon `'),
+    run('WELCOME', { underline: true, size: 24 }),
+    run('` '),
+    run('here', { bold: true }),
+  ];
+  const safe = preserveMarkdownSyntax(before, after);
+  assert.equal(serializeFormatted(safe, 'markdown').text,
+    'Link https://example.test/event and coupon `WELCOME` <strong>here</strong>');
+  const source = before.map((r) => r.value).join('');
+  assert.equal(isMarkdownSyntaxAt(source, source.indexOf('example')), true);
+  assert.equal(isMarkdownSyntaxAt(source, source.indexOf('WELCOME')), true);
+  assert.equal(isMarkdownSyntaxAt(source, source.indexOf('here')), false);
+});
+
+test('formatting a whole Markdown table wraps cell content and preserves the table syntax', () => {
+  const text = '시간 | 장소\n:--- | ---:\n2시 | `서울`';
+  const before = runsOf(parseFormatted(text, 'markdown'));
+  const safe = preserveMarkdownSyntax(before, [run(text, { bold: true })]);
+  const out = serializeFormatted(safe, 'markdown');
+  assert.equal(out.text, '<strong>시간</strong> | <strong>장소</strong>\n:--- | ---:\n<strong>2시</strong> | `서울`');
+  assert.deepEqual(roundTrip(out.text, true), out);
+});
+
+test('a Markdown format command keeps earlier styling within a protected link', () => {
+  const url = 'https://example.test/event';
+  const before = runsOf(parseFormatted(`<strong>${url}</strong> {{ .Subscriber.Name }}`, 'markdown'));
+  const fmt = { bold: false, underline: false, size: 24 };
+  const after = [
+    run(`${url} `, fmt),
+    tok('{{ .Subscriber.Name }}', fmt),
+  ];
+  const safe = preserveMarkdownSyntax(before, after);
+  assert.equal(serializeFormatted(safe, 'markdown').text,
+    `<strong>${url}</strong><span style="font-size:24px"> {{ .Subscriber.Name }}</span>`);
 });
 
 test('noncanonical font sizes stay verbatim when editing another paragraph', () => {

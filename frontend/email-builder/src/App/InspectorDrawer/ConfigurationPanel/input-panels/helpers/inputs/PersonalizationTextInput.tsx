@@ -212,11 +212,12 @@ export default function PersonalizationTextInput({
   const history = useRef<Snap[]>([]);
   const at = useRef(-1);
   const lastEdit = useRef({ kind: '', time: 0 });
-  const offsetOf = (node: Node, offset: number) => {
+  const offsetOf = (node: Node, offset: number, source = false) => {
     const r = document.createRange();
     r.setStart(editor.current!, 0);
     r.setEnd(node, offset);
-    return runsOf(r.cloneContents()).reduce((n, x) => n + (x.type === 'token' ? 1 : x.value.length), 0);
+    const runs = runsOf(r.cloneContents());
+    return source ? plainText(runs).length : runs.reduce((n, x) => n + (x.type === 'token' ? 1 : x.value.length), 0);
   };
   const pointAt = (root: Node, n: number): [Node, number] | number => {
     let left = n;
@@ -248,6 +249,20 @@ export default function PersonalizationTextInput({
   };
   const selectionOffsetsRef = useRef(selectionOffsets);
   selectionOffsetsRef.current = selectionOffsets;
+  const restoreOffsets = (offsets: SelectionOffsets) => {
+    const el = editor.current!;
+    const point = (n: number): [Node, number] => {
+      const p = pointAt(el, n);
+      return typeof p === 'number' ? [el, el.childNodes.length] : p;
+    };
+    el.focus();
+    const [sn, so] = point(offsets.start);
+    const [en, eo] = point(offsets.end);
+    const selection = window.getSelection()!;
+    selection.setBaseAndExtent(sn, so, en, eo);
+    lastRange.current = selection.getRangeAt(0).cloneRange();
+    setActive(fmtAt(sn, el));
+  };
   const record = (text: string, kind: string) => {
     const now = Date.now();
     const top = history.current[at.current];
@@ -278,20 +293,10 @@ export default function PersonalizationTextInput({
     at.current += step;
     before.current = null;
     lastEdit.current = { kind: '', time: 0 };
-    const el = editor.current!;
     mode.current = snap.mode;
     fill(snap.text, snap.mode);
-    el.focus();
-    const end = (n: number): [Node, number] => {
-      const p = pointAt(el, n);
-      return typeof p === 'number' ? [el, el.childNodes.length] : p;
-    };
-    const [sn, so] = end(caret.start);
-    const [en, eo] = end(caret.end);
-    window.getSelection()!.setBaseAndExtent(sn, so, en, eo);
-    lastRange.current = window.getSelection()!.getRangeAt(0).cloneRange();
-    seen.current = { start: caret.start, end: caret.end };
-    setActive(fmtAt(sn, el));
+    restoreOffsets(caret);
+    seen.current = caret;
     onChangeRef.current(snap.text, snap.mode !== 'plain');
   };
   const travelRef = useRef(travel);
@@ -367,7 +372,7 @@ export default function PersonalizationTextInput({
     }
   }, [markdown]);
 
-  const emit = (kind = 'edit') => {
+  const emit = (kind = 'edit', original?: FormatRun[]) => {
     if (!format) { onChange(serialize(editor.current!)); return; }
     // A size span that has got text loses its caret placeholder (only that one
     // character; pasted or stored zero-width spaces stay).
@@ -377,8 +382,15 @@ export default function PersonalizationTextInput({
       if (first instanceof Text && first.data.startsWith('\u200b')) first.deleteData(0, 1);
       delete span.dataset.axmCaret;
     });
-    const res = format.serializeFormatted(runsOf(editor.current!), mode.current);
+    const runs = runsOf(editor.current!);
+    const safe = original ? format.preserveMarkdownSyntax(original, runs) : runs;
+    const res = format.serializeFormatted(safe, mode.current);
     mode.current = format.textMode(res.text, res.markdown);
+    if (safe !== runs) {
+      const offsets = before.current || selectionOffsets();
+      fill(res.text, mode.current);
+      restoreOffsets(offsets);
+    }
     record(res.text, kind);
     onChange(res.text, res.markdown);
   };
@@ -424,9 +436,12 @@ export default function PersonalizationTextInput({
     } else {
       restore();
     }
-    before.current = selectionOffsets();
     const selection = window.getSelection()!;
     const range = selection.rangeCount ? selection.getRangeAt(0) : null;
+    const original = mode.current === 'markdown' ? runsOf(el) : undefined;
+    if (original && range?.collapsed
+      && format?.isMarkdownSyntaxAt(plainText(original), offsetOf(range.startContainer, range.startOffset, true))) return;
+    before.current = selectionOffsets();
     const chipsIn = (r: Range) => Array.from(el.querySelectorAll<HTMLElement>('[data-token]')).filter((c) => r.intersectsNode(c));
     const chips = range && !range.collapsed ? chipsIn(range) : [];
     // The first selected text tells what the command made of the selection.
@@ -482,7 +497,7 @@ export default function PersonalizationTextInput({
       }
       setActive(f);
     }
-    emit('format');
+    emit('format', original);
   };
   const restore = (chip?: HTMLElement) => {
     const el = editor.current!;
@@ -623,10 +638,11 @@ export default function PersonalizationTextInput({
         inputProps={{ 'aria-label': format.strings.size, 'data-format': 'size' }}
         sx={{ minWidth: 104, fontSize: 13, '& .MuiSelect-select': { py: 0.6 } }}
         renderValue={(v) => (v === '' ? format.strings.size : `${v}px`)}
-        onChange={(ev) => applyFormat('size', ev.target.value === '' ? null : Number(ev.target.value))}
         MenuProps={{ disableRestoreFocus: true, TransitionProps: { onExited: () => restore() } }}>
-        <MenuItem value="">{format.strings.sizeDefault}</MenuItem>
-        {format.sizes.map((s) => <MenuItem key={s} value={s} sx={{ fontSize: Math.min(s, 24) }}>{s}px</MenuItem>)}
+        {/* A menu item applies on every activation, even when its value is already displayed. */}
+        <MenuItem value="" onClick={() => applyFormat('size')}>{format.strings.sizeDefault}</MenuItem>
+        {format.sizes.map((s) => <MenuItem key={s} value={s} sx={{ fontSize: Math.min(s, 24) }}
+          onClick={() => applyFormat('size', s)}>{s}px</MenuItem>)}
       </Select>
       <Tooltip title={format.strings.clear}>
         <span><IconButton size="small" aria-label={format.strings.clear} data-format="clear" disabled={config.disabled}
