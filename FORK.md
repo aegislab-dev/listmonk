@@ -108,6 +108,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON SEQU
 빌더는 **Node 24.22.2 / Go 1.26.1 / Yarn 1.22.22**, 런타임은 **Alpine 3.23.4**로 고정한다.
 두 프론트에서 `yarn install --frozen-lockfile`을 사용한다.
 Cypress 실행 파일은 이미지 빌드에 필요 없어 자동 다운로드를 생략한다.
+Cypress 는 **15.21.2**다(LST-78). CI 러너의 Chrome 이 158 로 오른 뒤(2026-11-27) 15.8.1 에서는 두 번째 spec 시작 때 「`*` is not a valid URL」, `cy.clock` 이 페이지에 먹지 않는 실패가 났다(cypress-io/cypress#35195, 15.21.2 에서 수정).
+로컬 검사 도구(`scripts/axm/axm`)의 `cypress/included` 이미지 태그도 같은 판으로 맞춘다.
 
 ```sh
 docker build --platform linux/amd64 -f Dockerfile.axm \
