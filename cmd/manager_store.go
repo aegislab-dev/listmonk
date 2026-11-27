@@ -198,7 +198,9 @@ func (s *store) GetCampaign(campID int) (*models.Campaign, error) {
 
 // UpdateCampaignStatus updates a campaign's status.
 func (s *store) UpdateCampaignStatus(campID int, status string) error {
-	_, err := s.queries.UpdateCampaignStatus.Exec(campID, status)
+	// AXM (LST-72): the sender moves a campaign it is sending, and never one that was
+	// paused, cancelled or finished meanwhile.
+	_, err := s.queries.AxmSenderCampaignStatus.Exec(campID, status)
 	return err
 }
 

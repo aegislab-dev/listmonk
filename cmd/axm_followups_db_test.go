@@ -1710,7 +1710,10 @@ func TestFollowupResumedAfterTheSendRecordExpiredSendsNobodyTwice(t *testing.T) 
 			// The send record is gone while it is paused. The retention cleanup no longer
 			// deletes the record of a campaign that can still send (LST-72), so this stands for
 			// a record lost any other way: the decision table must be enough by itself.
-			if e.a.core.PurgeOldCampaignSends(); e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1`, camp) != 1 {
+			if _, err := e.a.core.PurgeOldCampaignSends(); err != nil {
+				t.Fatal(err)
+			}
+			if e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1`, camp) != 1 {
 				t.Fatal("the retention cleanup deleted the record of a paused follow-up")
 			}
 			e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, camp)

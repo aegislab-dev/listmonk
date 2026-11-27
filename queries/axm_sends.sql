@@ -43,6 +43,16 @@ WHERE c.uuid = $1::UUID AND s.uuid = $2::UUID
 -- gets it twice (LST-20).
 SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2;
 
+-- name: axm-sender-campaign-status
+-- (LST-72) The sender's own status writes (auto-pause after errors, finish, cancel for an
+-- unknown messenger), as update-campaign-status but only for a campaign that is still being
+-- sent (running or scheduled). An operator who cancelled or paused the campaign while the pipe
+-- wound down keeps that state: the pause after errors used to turn a cancelled campaign into a
+-- paused one, which can be resumed, and a resume after the retention cleanup deleted records of
+-- a cancelled campaign would send to the people it had already reached.
+UPDATE campaigns SET status = $2::campaign_status, updated_at = NOW()
+WHERE id = $1 AND status IN ('running', 'scheduled');
+
 -- name: axm-count-campaign-sends
 SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1;
 

@@ -1381,6 +1381,36 @@ func TestSendRecordRetentionKeepsWhatAResumeNeeds(t *testing.T) {
 	}
 }
 
+// LST-72: the sender's own status writes never undo what an operator did meanwhile. An auto-pause
+// after errors that lands after a cancel used to turn the cancelled campaign into a paused one,
+// which can be resumed after the retention cleanup deleted the records of a cancelled campaign.
+func TestSenderStatusWriteKeepsCancelledAndPaused(t *testing.T) {
+	e := newSendsEnv(t, 0)
+	status := func(id int) string {
+		var s string
+		e.get(&s, `SELECT status FROM campaigns WHERE id = $1`, id)
+		return s
+	}
+	for _, tc := range []struct{ from, write, want string }{
+		{"running", "paused", "paused"},
+		{"running", "finished", "finished"},
+		{"scheduled", "finished", "finished"},
+		{"running", "cancelled", "cancelled"},
+		{"cancelled", "paused", "cancelled"},
+		{"cancelled", "finished", "cancelled"},
+		{"paused", "finished", "paused"},
+		{"finished", "paused", "finished"},
+	} {
+		id, _ := e.addCampaign(tc.from)
+		if err := e.store.UpdateCampaignStatus(id, tc.write); err != nil {
+			t.Fatal(err)
+		}
+		if got := status(id); got != tc.want {
+			t.Fatalf("%s campaign, sender writes %s: %s, want %s", tc.from, tc.write, got, tc.want)
+		}
+	}
+}
+
 // LST-72: the sender, picking a campaign up again after the retention period, still leaves out
 // the people above its checkpoint who already got it. Their records are what says so, and a
 // per-campaign count of deleted records cannot.
