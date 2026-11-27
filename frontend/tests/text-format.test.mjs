@@ -133,8 +133,20 @@ test('indented Markdown code keeps its tags as text, list continuations do not',
   assert.equal(serializeFormatted(runs, 'markdown').text, `${text}!`);
   // An indented line cannot interrupt a paragraph: no blank line, not code.
   assert.equal(hasFormatting('문단\n    <strong>x</strong>', 'markdown'), true);
-  // After a list item an indented paragraph belongs to the item.
+  // After a list item an indented paragraph belongs to the item ...
   assert.equal(hasFormatting('- 항목\n\n    <strong>x</strong>', 'markdown'), true);
+  assert.equal(hasFormatting('1. 항목\n\n     <strong>x</strong>', 'markdown'), true);
+  // ... and four columns past the item's content it is code in the item.
+  assert.equal(hasFormatting('- 항목\n\n      <strong>x</strong>', 'markdown'), false);
+  const inList = '- 항목\n\n        <u><strong>예시</strong></u>\n\n아래 문단';
+  assert.equal(hasFormatting(inList, 'markdown'), false);
+  const runs2 = runsOf(parseFormatted(inList, 'markdown'));
+  runs2.push(run('!'));
+  assert.equal(serializeFormatted(runs2, 'markdown').text, `${inList}!`);
+  // A nested item and its code.
+  assert.equal(hasFormatting('- a\n  - b\n\n        <strong>x</strong>', 'markdown'), false);
+  // After the list ends, a plain paragraph is formatting again.
+  assert.equal(hasFormatting('- a\n\n<strong>x</strong>', 'markdown'), true);
   // A tab indents too.
   assert.equal(hasFormatting('\t<strong>x</strong>', 'markdown'), false);
 });

@@ -53,10 +53,15 @@ const codeRanges = (src) => {
   let start = 0;
   let prevBlank = true;
   let indented = false;
-  let inList = false;
+  // The column where the content of the current list item starts, or -1 outside a
+  // list. Code inside an item needs four columns more than that.
+  let item = -1;
+  const width = (ws) => [...ws].reduce((n, ch) => (ch === '\t' ? n + 4 - (n % 4) : n + 1), 0);
   lines.forEach((line) => {
     const m = /^ {0,3}(`{3,}|~{3,})/.exec(line);
     const blank = !line.trim();
+    const lead = width(/^[ \t]*/.exec(line)[0]);
+    const base = item < 0 ? 0 : item;
     if (fence) {
       if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !line.slice(m[0].length).trim()) {
         ranges.push([start, pos + line.length]);
@@ -66,16 +71,19 @@ const codeRanges = (src) => {
       [, fence] = m;
       start = pos;
       indented = false;
-      inList = false;
-    } else if (!blank && /^( {4}|\t)/.test(line) && (indented || (prevBlank && !inList))) {
+    } else if (!blank && lead >= base + 4 && (indented || prevBlank)) {
       // An indented code block starts after a blank line (it cannot interrupt a
       // paragraph) and runs on over blank lines while its lines stay indented.
       indented = true;
       ranges.push([pos, pos + line.length]);
     } else if (!blank) {
       indented = false;
-      if (/^ {0,3}([-*+]|\d{1,9}[.)])([ \t]|$)/.test(line)) inList = true;
-      else if (!/^[ \t]/.test(line)) inList = false;
+      const li = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+|$)/.exec(line);
+      if (li && width(li[1]) < base + 4) {
+        // Content starts after the marker and its spaces (one when there are five or more).
+        const gap = width(li[3]);
+        item = width(li[1]) + li[2].length + (gap > 4 || gap === 0 ? 1 : gap);
+      } else if (lead < base) item = prevBlank || item < 0 ? -1 : item;
     }
     prevBlank = blank;
     pos += line.length + 1;

@@ -118,8 +118,9 @@ function collect(node: Node, f: Fmt, out: FormatRun[]) {
   if (node.nodeType === Node.TEXT_NODE) {
     // Only the caret holder of an empty size span is not text; a zero-width space
     // that was in the stored text stays.
-    const holder = node.parentElement?.dataset.axmCaret !== undefined;
-    text(holder ? (node.textContent || '').replace(/\u200b/g, '') : node.textContent || '');
+    const value = node.textContent || '';
+    const holder = node.parentElement?.dataset.axmCaret !== undefined && node === node.parentElement.firstChild;
+    text(holder && value.startsWith('\u200b') ? value.slice(1) : value);
     return;
   }
   if (node instanceof HTMLElement) {
@@ -198,7 +199,12 @@ export default function PersonalizationTextInput({
   // commands also move chips and spans by hand, and the browser's undo would replay
   // its records over that changed DOM and delete text. A state is the stored text and
   // the selection as character offsets (a chip counts as one).
-  type Snap = { text: string; mode: TextMode; start: number; end: number };
+  // undo: where the selection was when the edit that led to this state began, so an
+  // undo puts the caret back there.
+  type Snap = { text: string; mode: TextMode; start: number; end: number; undo: { start: number; end: number } };
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const before = useRef<{ start: number; end: number } | null>(null);
   const history = useRef<Snap[]>([]);
   const at = useRef(-1);
   const lastEdit = useRef({ kind: '', time: 0 });
@@ -235,13 +241,17 @@ export default function PersonalizationTextInput({
     const r = sel.getRangeAt(0);
     return { start: offsetOf(r.startContainer, r.startOffset), end: offsetOf(r.endContainer, r.endOffset) };
   };
+  const selectionOffsetsRef = useRef(selectionOffsets);
+  selectionOffsetsRef.current = selectionOffsets;
   const record = (text: string, kind: string) => {
-    const snap = { text, mode: mode.current, ...selectionOffsets() };
     const now = Date.now();
     const top = history.current[at.current];
-    if (top && top.text === text) { history.current[at.current] = snap; return; }
     // A run of typing is one step, as in the browser.
     const merge = kind === 'type' && lastEdit.current.kind === 'type' && now - lastEdit.current.time < 1000 && at.current > 0;
+    const undo = (merge && top ? top.undo : before.current) || selectionOffsets();
+    before.current = null;
+    const snap = { text, mode: mode.current, ...selectionOffsets(), undo };
+    if (top && top.text === text) { history.current[at.current] = { ...snap, undo: top.undo }; return; }
     history.current = history.current.slice(0, merge ? at.current : at.current + 1);
     history.current.push(snap);
     if (history.current.length > 200) history.current.shift();
@@ -251,6 +261,8 @@ export default function PersonalizationTextInput({
   const travel = (step: number) => {
     const snap = history.current[at.current + step];
     if (!snap || !format) return;
+    // Undo puts the caret where the undone edit began; redo where it ended.
+    const caret = step < 0 ? history.current[at.current].undo : snap;
     at.current += step;
     lastEdit.current = { kind: '', time: 0 };
     const el = editor.current!;
@@ -261,13 +273,15 @@ export default function PersonalizationTextInput({
       const p = pointAt(el, n);
       return typeof p === 'number' ? [el, el.childNodes.length] : p;
     };
-    const [sn, so] = end(snap.start);
-    const [en, eo] = end(snap.end);
+    const [sn, so] = end(caret.start);
+    const [en, eo] = end(caret.end);
     window.getSelection()!.setBaseAndExtent(sn, so, en, eo);
     lastRange.current = window.getSelection()!.getRangeAt(0).cloneRange();
     setActive(fmtAt(sn, el));
-    onChange(snap.text, snap.mode !== 'plain');
+    onChangeRef.current(snap.text, snap.mode !== 'plain');
   };
+  const travelRef = useRef(travel);
+  travelRef.current = travel;
 
   useEffect(() => {
     const el = editor.current!;
@@ -276,15 +290,21 @@ export default function PersonalizationTextInput({
       fill(defaultValue, mode.current);
       mounted.current = true;
       if (format) {
-        history.current = [{ text: defaultValue, mode: mode.current, start: 0, end: 0 }];
+        history.current = [{ text: defaultValue, mode: mode.current, start: 0, end: 0, undo: { start: 0, end: 0 } }];
         at.current = 0;
       }
     }
     // Undo/redo from the context menu arrive as beforeinput.
+    // The listener is set once: it goes through refs to this render's handlers.
     const onHistory = (ev: InputEvent) => {
-      if (!format || (ev.inputType !== 'historyUndo' && ev.inputType !== 'historyRedo')) return;
+      if (!format) return;
+      if (ev.inputType !== 'historyUndo' && ev.inputType !== 'historyRedo') {
+        // The selection as the edit begins, for the undo of this edit.
+        if (!before.current) before.current = selectionOffsetsRef.current();
+        return;
+      }
       ev.preventDefault();
-      travel(ev.inputType === 'historyUndo' ? -1 : 1);
+      travelRef.current(ev.inputType === 'historyUndo' ? -1 : 1);
     };
     el.addEventListener('beforeinput', onHistory);
     const remember = () => {
@@ -308,11 +328,25 @@ export default function PersonalizationTextInput({
   useEffect(() => {
     // The Markdown switch can change the mode of an unformatted block. A block
     // written as one HTML block by this editor stays that way.
-    if (format && mode.current !== 'html') mode.current = markdown ? 'markdown' : 'plain';
+    // (After this editor's own change to its HTML block the mode is 'html' and
+    // nothing here applies.)
+    if (!format || mode.current === 'html') return;
+    mode.current = markdown ? 'markdown' : 'plain';
+    // The switch is not an edit of the text: every state that is not this editor's
+    // HTML block now reads with the new setting, so undo does not turn it back.
+    history.current.forEach((h) => { if (h.mode !== 'html') h.mode = mode.current; });
   }, [markdown]);
 
   const emit = (kind = 'edit') => {
     if (!format) { onChange(serialize(editor.current!)); return; }
+    // A size span that has got text loses its caret placeholder (only that one
+    // character; pasted or stored zero-width spaces stay).
+    editor.current!.querySelectorAll<HTMLElement>('[data-axm-caret]').forEach((span) => {
+      const first = span.firstChild;
+      if (span.textContent === '\u200b') return;
+      if (first instanceof Text && first.data.startsWith('\u200b')) first.deleteData(0, 1);
+      delete span.dataset.axmCaret;
+    });
     const res = format.serializeFormatted(runsOf(editor.current!), mode.current);
     mode.current = format.textMode(res.text, res.markdown);
     record(res.text, kind);
@@ -350,6 +384,7 @@ export default function PersonalizationTextInput({
     } else {
       restore();
     }
+    before.current = selectionOffsets();
     const selection = window.getSelection()!;
     const range = selection.rangeCount ? selection.getRangeAt(0) : null;
     const chipsIn = (r: Range) => Array.from(el.querySelectorAll<HTMLElement>('[data-token]')).filter((c) => r.intersectsNode(c));
@@ -401,7 +436,10 @@ export default function PersonalizationTextInput({
       lastRange.current = r.cloneRange();
       const f = { ...fmtAt(r.startContainer, el) };
       // With nothing selected the browser keeps bold/underline for the next typing.
-      if (r.collapsed && (command === 'bold' || command === 'underline')) f[command] = document.queryCommandState(command);
+      if (r.collapsed) {
+        f.bold = document.queryCommandState('bold');
+        f.underline = document.queryCommandState('underline');
+      }
       setActive(f);
     }
     emit('format');

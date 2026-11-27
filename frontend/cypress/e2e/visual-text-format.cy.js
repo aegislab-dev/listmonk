@@ -267,4 +267,35 @@ describe('Visual editor inline formatting', () => {
       stored().its('text').should('eq', `<div class="axm-text"><strong>${greet}</strong></div>`);
     });
   });
+
+  it('puts the caret back where an undone edit was and keeps the Markdown switch', () => {
+    const md = { root: { type: 'EmailLayout', data: { childrenIds: ['t'] } }, t: { type: 'Text', data: { props: { text: '오늘 **마감**' }, style: { textAlign: 'center' } } } };
+    cy.request('POST', '/api/campaigns', {
+      name: `Format caret ${stamp}`, subject: 'caret', lists: [listId], type: 'regular', content_type: 'visual', messenger: 'email',
+      body: '<p>x</p>', body_source: JSON.stringify(md),
+    }).then(({ body: c }) => {
+      openText(false, c.data.id, '오늘');
+      editorDoc().find('label:contains("Markdown")').click();
+      cy.get('button[data-cy=btn-save]').click();
+      cy.wait(800);
+      box().then(($b) => {
+        const el = $b[0];
+        el.focus();
+        const r = el.ownerDocument.createRange();
+        r.selectNodeContents(el);
+        r.collapse(false);
+        el.ownerDocument.getSelection().removeAllRanges();
+        el.ownerDocument.getSelection().addRange(r);
+        el.ownerDocument.execCommand('insertText', false, '!');
+      });
+      box().type('{ctrl}z');
+      // The caret is back at the end: the next text goes there.
+      editorDoc().then((d) => d.execCommand('insertText', false, '?'));
+      cy.get('button[data-cy=btn-save]').click();
+      cy.waitUntil(() => cy.request(`/api/campaigns/${c.data.id}`).then(({ body }) => {
+        const t = JSON.parse(body.data.body_source).t.data;
+        return t.props.text === '오늘 **마감**?' && t.props.markdown === true && t.style.textAlign === 'center';
+      }), { timeout: 10000 });
+    });
+  });
 });
