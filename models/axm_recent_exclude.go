@@ -28,6 +28,11 @@ type RecentRule struct {
 	CampaignIDs pq.Int64Array `db:"campaign_ids" json:"campaign_ids,omitempty"`
 	UpdatedAt   *time.Time    `db:"updated_at" json:"updated_at,omitempty"`
 	UpdatedBy   *int          `db:"updated_by" json:"updated_by,omitempty"`
+	// Held (LST-65) is how many people the rule has left out of the campaign's send so far.
+	Held int `db:"-" json:"held,omitempty"`
+	// RecordsFrom is present when the finished campaign editor asks for ledger coverage.
+	// A nil pointer means coverage was not requested. An invalid time means the ledger is empty.
+	RecordsFrom *null.Time `db:"-" json:"records_from,omitempty"`
 }
 
 type RecentCounts struct {
@@ -42,6 +47,13 @@ type RecentCounts struct {
 // CanEditCampaign reports whether the campaign's settings can be updated.
 func CanEditCampaign(status string) bool {
 	return status == CampaignStatusDraft || status == CampaignStatusPaused || status == CampaignStatusScheduled
+}
+
+// CanEditRecentRule reports whether the recent-send rule of a campaign can be changed (LST-65): only
+// before the campaign starts. Once it has started the rule decides who it leaves out, so a pause does
+// not open it (turning it off would let the people it left out in again).
+func CanEditRecentRule(status string, started bool) bool {
+	return !started && (status == CampaignStatusDraft || status == CampaignStatusScheduled)
 }
 
 // RecentSourceList is one list the exclusion result was made from.

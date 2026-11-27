@@ -63,7 +63,9 @@ describe('Recent-send exclusion settings', () => {
       expect([...$cells].map((cell) => cell.textContent)).to.deep.equal(['1', '−0', '1']);
     });
     cy.get('[data-cy=recent-as-of]').contains(/As of \d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
-    cy.get('[data-cy=recent-notice]').should('contain', 'still be included when you send');
+    cy.get('[data-cy=recent-notice]').should('contain', 'left out when the campaign is sent');
+    // The list of the result is a side action below the notice, not the main one (LST-65).
+    cy.get('[data-cy=recent-same-basis]').should('contain', 'send window');
 
     cy.get('select[data-cy=recent-days]').select('7');
     cy.wait('@recentPreview').its('request.body.days').should('eq', 7);
@@ -81,13 +83,74 @@ describe('Recent-send exclusion settings', () => {
     cy.location('hash').should('eq', '#content');
   });
 
+  it('keeps the rule locked and shows its holds when a started campaign is scheduled again', () => {
+    cy.intercept('GET', `/api/campaigns/${campaignId}`, (req) => {
+      req.continue((res) => {
+        Object.assign(res.body.data, { status: 'scheduled', started_at: new Date().toISOString() });
+      });
+    });
+    cy.intercept('GET', rulePath(), (req) => {
+      req.continue((res) => {
+        res.body.data.held = 1;
+      });
+    });
+    openCampaign(campaignId);
+    cy.get(switchInput).should('be.checked').and('be.disabled');
+    cy.get('[data-cy=recent-held]').should('contain', '1');
+  });
+
+  it('keeps the completed audience when some sends fail and later mail reaches the same list', () => {
+    const startedAt = new Date().toISOString();
+    cy.intercept('GET', `/api/campaigns/${campaignId}`, (req) => {
+      req.continue((res) => {
+        Object.assign(res.body.data, {
+          status: 'finished', to_send: 40, sent: 27, started_at: startedAt,
+        });
+      });
+    });
+    cy.intercept({ method: 'GET', pathname: rulePath(), query: { include_coverage: 'true' } }, (req) => {
+      req.continue((res) => {
+        res.body.data.held = 12;
+        res.body.data.records_from = startedAt;
+      });
+    });
+    cy.intercept('POST', preview, {
+      body: { data: { target: 40, excluded: 40, will_send: 0 } },
+    }).as('laterSendsPreview');
+    openCampaign(campaignId);
+    cy.get('[data-cy=recent-counts] td').should(($cells) => {
+      expect([...$cells].map((cell) => cell.textContent)).to.deep.equal(['40', '−12', '28']);
+    });
+    cy.get('[data-cy=recent-as-of]').should('contain', 'As of');
+    cy.contains('[data-cy=recent-exclude]', 'including addresses that later bounced').should('be.visible');
+    cy.get('[data-cy=recent-coverage]').should('contain', 'The missing part of this period may lower the exclusion count.');
+    cy.get('[data-cy=recent-held]').should('contain', '12');
+    cy.get('@laterSendsPreview.all').should('have.length', 0);
+  });
+
+  it('shows at least the confirmed deliveries when the stored audience has missing history', () => {
+    cy.intercept('GET', `/api/campaigns/${campaignId}`, (req) => {
+      req.continue((res) => {
+        Object.assign(res.body.data, { status: 'finished', to_send: 39, sent: 28 });
+      });
+    });
+    cy.intercept({ method: 'GET', pathname: rulePath(), query: { include_coverage: 'true' } }, (req) => {
+      req.continue((res) => { res.body.data.held = 12; });
+    });
+    openCampaign(campaignId);
+    cy.get('[data-cy=recent-counts] td').should(($cells) => {
+      expect([...$cells].map((cell) => cell.textContent)).to.deep.equal(['40', '−12', '28']);
+    });
+  });
+
   it('loads a saved rule, warns on send and disables editing for a reader', () => {
     openCampaign(campaignId);
     cy.get(switchInput).should('be.checked').and('not.be.disabled');
     cy.get('select[data-cy=recent-days]').should('have.value', '7');
     cy.get('[data-cy=btn-start]').click();
-    // The saved rule is only recorded: the window that every start goes through says so (LST-48).
-    cy.get('[data-cy="send-check-recent.notApplied"]').should('contain', 'does not apply to sending yet').and('contain', 'last 7 days');
+    // The saved rule is applied by the sender (LST-65): the window says so, as information.
+    cy.get('[data-cy="send-check-recent.applied"]').should('have.attr', 'data-level', 'info').and('contain', 'last 7 days');
+    cy.get('[data-cy="send-check-recent.notApplied"]').should('not.exist');
     cy.get('[data-cy=send-cancel]').click();
 
     cy.clearCookies();
@@ -103,12 +166,15 @@ describe('Recent-send exclusion settings', () => {
   });
 
   it('removes a saved rule when turned off and hides it for opt-in campaigns', () => {
-    cy.intercept('PUT', '/api/campaigns/*/recent-exclude').as('saveRule');
+    cy.intercept('PUT', `/api/campaigns/${campaignId}`).as('saveRule');
     cy.get(switchInput).should('be.checked');
     cy.get(switchControl).click();
     cy.get('[data-cy=btn-save]').click();
-    cy.wait('@saveRule').its('response.body.data').should('deep.equal', { enabled: false });
-    cy.request(rulePath()).its('body.data').should('deep.equal', { enabled: false });
+    cy.wait('@saveRule').then(({ request, response }) => {
+      expect(request.body.recent_rule).to.deep.equal({ enabled: false });
+      expect(response.statusCode).to.equal(200);
+    });
+    cy.request(rulePath()).its('body.data').should('include', { enabled: false });
     cy.reload();
     cy.get(switchInput).should('not.be.checked');
 
@@ -277,11 +343,10 @@ describe('Recent-send exclusion settings', () => {
     });
   });
 
-  it('says the target changed when only the rule failed to save', () => {
+  it('saves a made list and its changed rule in one campaign update', () => {
     cy.intercept('POST', preview).as('recentPreview');
     cy.intercept('POST', '/api/campaigns/recent-exclude/list').as('makeList');
     cy.intercept('PUT', `/api/campaigns/${campaignId}`).as('updateCampaign');
-    cy.intercept('PUT', rulePath(), { statusCode: 503, body: { message: 'unavailable' } }).as('ruleRefused');
     openCampaign(campaignId);
     cy.get(switchInput).should('be.checked');
     cy.wait('@recentPreview');
@@ -292,14 +357,16 @@ describe('Recent-send exclusion settings', () => {
     cy.get('select[data-cy=recent-list-team]').select('__none__');
     cy.get('[data-cy=recent-list-create]').click();
     cy.wait('@makeList').its('response.body.data.list').then((list) => {
-      cy.wait('@updateCampaign');
-      cy.wait('@ruleRefused');
-      cy.contains('[role=alert]', 'exclusion rule failed to save').should('be.visible');
-      cy.get('[data-cy=recent-list-save-error]').should('not.exist');
+      cy.wait('@updateCampaign').then(({ request, response }) => {
+        expect(request.body.recent_rule).to.include({ enabled: true, days: 30, scope: 'all' });
+        expect(request.body.lists).to.deep.equal([list.id]);
+        expect(response.statusCode).to.equal(200);
+      });
       cy.get('[data-cy=recent-list-made]').should('contain', 'saved');
       cy.request(`/api/campaigns/${campaignId}`).its('body.data.lists').then((lists) => {
         expect(lists.map(({ id }) => id)).to.deep.equal([list.id]);
       });
+      cy.request(rulePath()).its('body.data').should('include', { enabled: true, days: 30, scope: 'all' });
     });
   });
 

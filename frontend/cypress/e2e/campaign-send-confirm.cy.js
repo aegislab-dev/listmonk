@@ -23,7 +23,10 @@ const create = (key, data) => cy.request('POST', '/api/campaigns', {
   content_type: 'richtext',
   body: '<p>Hello <a href="{{ UnsubscribeURL }}">leave</a></p>',
   ...data,
-}).then(({ body }) => { camp[key] = body.data.id; });
+}).then(({ body }) => {
+  camp[key] = body.data.id;
+  return body.data;
+});
 
 const row = (key) => cy.contains('tbody tr', `Send ${key} ${stamp}`);
 
@@ -51,14 +54,16 @@ describe('Pre-send confirmation window', () => {
       create('list', { lists: [listX, listY] });
       create('empty', { lists: [listEmpty] });
       create('later', { lists: [listX], send_at: new Date(Date.now() + 86400000 * 20).toISOString() });
-      create('rule', { lists: [listX] });
+      create('rule', { lists: [listX], from_email: 'Team <team@crevasse.ai>' });
       create('stale', { lists: [listX] });
       create('unsched', { lists: [listX], send_at: new Date(Date.now() + 86400000 * 25).toISOString() });
       create('resume', { lists: [listX] });
       create('plain', { lists: [listX], content_type: 'plain', body: 'Plain text with no links {{ UnsubscribeURL }}' });
     });
     cy.then(() => {
-      cy.request('PUT', `/api/campaigns/${camp.rule}/recent-exclude`, { enabled: true, days: 14, scope: 'all' });
+      cy.request('PUT', `/api/campaigns/${camp.rule}/recent-exclude`, {
+        enabled: true, days: 14, scope: 'campaigns', campaign_ids: [camp.empty],
+      });
     });
   });
 
@@ -199,14 +204,203 @@ describe('Pre-send confirmation window', () => {
     cy.get('@status.all').should('have.length', 0);
   });
 
-  it('says in the window that a saved exclusion rule is not applied, from the list too', () => {
+  it('keeps a newer exclusion rule when an older editor saves only the title', () => {
+    let sourceID;
+    let targetID;
+    let sourceList;
+    let targetList;
+    const path = (id, suffix = '') => `/api/campaigns/${id}${suffix}`;
+    const sourceFinished = (tries = 30) => cy.request(path(sourceID)).then(({ body: { data } }) => {
+      if (data.status !== 'finished' && tries > 0) {
+        cy.wait(1000);
+        return sourceFinished(tries - 1);
+      }
+      return data;
+    });
+
+    cy.request('POST', '/api/lists', {
+      name: `Send two-tab target ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { targetList = body.data.id; });
+    cy.request('POST', '/api/lists', {
+      name: `Send two-tab source ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { sourceList = body.data.id; });
+    cy.then(() => {
+      person('two-tab-shared', [targetList, sourceList]);
+      person('two-tab-target-a', [targetList]);
+      person('two-tab-target-b', [targetList]);
+      person('two-tab-source-only', [sourceList]);
+    }).then(() => create('two-tab-source', { lists: [sourceList] }))
+      .then(({ id }) => {
+        sourceID = id;
+        return create('two-tab-target', {
+          lists: [targetList], send_at: new Date(Date.now() + 86400000).toISOString(),
+        });
+      })
+      .then(({ id }) => {
+        targetID = id;
+        return cy.request('PUT', path(id, '/status'), { status: 'scheduled' });
+      })
+      .then(() => cy.request('PUT', path(sourceID, '/status'), { status: 'running' }))
+      .then(() => sourceFinished())
+      .its('status').should('eq', 'finished')
+      .then(() => cy.visit(`/admin/campaigns/${targetID}`))
+      // This API write represents the other tab saving after the first editor loaded its rule.
+      .then(() => cy.request('PUT', path(targetID, '/recent-exclude'), {
+        enabled: true, days: 14, scope: 'all',
+      }))
+      .then(() => {
+        cy.get('[name=subject]').clear().type(`Send two-tab changed ${stamp}`);
+        cy.intercept('PUT', path(targetID)).as('staleEditorSave');
+        cy.get('[data-cy=btn-save]').click();
+        cy.wait('@staleEditorSave').then(({ request, response }) => {
+          expect(request.body).not.to.have.property('recent_rule');
+          expect(response.statusCode).to.equal(200);
+        });
+        cy.get('[data-cy=recent-enabled] input').should('be.checked');
+        cy.request(path(targetID, '/recent-exclude')).its('body.data.enabled').should('eq', true);
+        cy.request(path(targetID, '/preflight')).its('body.data.will_send').should('eq', 2);
+      });
+  });
+
+  it('blocks scheduling when recent sends leave nobody and matches the preflight', () => {
+    let scheduledSourceID;
+    cy.then(() => create('scheduled-zero-source', { lists: [listY] }))
+      .then(({ id }) => {
+        scheduledSourceID = id;
+        return create('scheduled-zero', {
+          lists: [listY], send_at: new Date(Date.now() + 86400000).toISOString(),
+        });
+      })
+      .then(({ id }) => cy.wrap(id).as('scheduledZeroID'));
+    const path = (id, suffix = '') => `/api/campaigns/${id}${suffix}`;
+    const withHistory = (id, tries = 30) => cy.request(path(id, '/preflight')).then(({ body: { data } }) => {
+      if (data.will_send > 0 && tries > 0) {
+        cy.wait(1000);
+        return withHistory(id, tries - 1);
+      }
+      return data;
+    });
+    cy.get('@scheduledZeroID').then((id) => {
+      cy.request('PUT', path(id, '/recent-exclude'), {
+        enabled: true, days: 14, scope: 'campaigns', campaign_ids: [scheduledSourceID],
+      });
+      cy.request('PUT', `/api/campaigns/${scheduledSourceID}/status`, { status: 'running' });
+      return withHistory(id);
+    }).its('will_send').should('equal', 0);
+
+    cy.visit('/admin/campaigns');
+    row('scheduled-zero').find('[data-cy=btn-schedule]').should('exist');
+    cy.get('@scheduledZeroID').then((id) => {
+      cy.intercept('GET', path(id, '/preflight')).as('scheduledZeroCheck');
+      cy.request({ method: 'PUT', url: path(id, '/status'), body: { status: 'scheduled' }, failOnStatusCode: false })
+        .its('status').should('equal', 400);
+    });
+    row('scheduled-zero').find('[data-cy=btn-schedule]').click();
+    cy.wait('@scheduledZeroCheck').its('response.body.data').should((data) => {
+      expect(data).to.include({
+        mode: 'schedule', recipients: 2, will_send: 0,
+      });
+      expect(data.recent.excluded).to.equal(2);
+    });
+    cy.get(`${win}[data-state=ready][data-mode=schedule]`).should('exist');
+    cy.get('[data-cy="send-check-recent.all"]').should('have.attr', 'data-level', 'block');
+    cy.get('[data-cy=send-ok]').should('be.disabled');
+    cy.get('[data-cy=send-cancel]').click();
+    cy.get(win).should('not.exist');
+    cy.get('@scheduledZeroID').then((id) => cy.request(path(id)))
+      .its('body.data.status').should('equal', 'draft');
+  });
+
+  it('keeps a dirty recent rule when another editor schedules or unschedules the campaign', () => {
+    let sourceList;
+    let targetList;
+    let sourceID;
+    let draftTargetID;
+    let scheduledTargetID;
+    const path = (id, suffix = '') => `/api/campaigns/${id}${suffix}`;
+    const sourceFinished = (id, tries = 30) => cy.request(path(id)).then(({ body: { data } }) => {
+      if (data.status !== 'finished' && tries > 0) {
+        cy.wait(1000);
+        return sourceFinished(id, tries - 1);
+      }
+      return data;
+    });
+
+    cy.request('POST', '/api/lists', {
+      name: `Rule race source ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { sourceList = body.data.id; });
+    cy.request('POST', '/api/lists', {
+      name: `Rule race target ${stamp}`, type: 'private', optin: 'single', no_team: true,
+    }).then(({ body }) => { targetList = body.data.id; });
+    cy.then(() => {
+      person(`rule-race-shared-${stamp}`, [sourceList, targetList]);
+      person(`rule-race-target-a-${stamp}`, [targetList]);
+      person(`rule-race-target-b-${stamp}`, [targetList]);
+      return create('rule-race-source', { lists: [sourceList] });
+    }).then(({ id }) => {
+      sourceID = id;
+      return cy.request('PUT', path(sourceID, '/status'), { status: 'running' });
+    }).then(() => sourceFinished(sourceID)).its('status').should('equal', 'finished')
+      .then(() => create('rule-race-draft-target', {
+        lists: [targetList], send_at: new Date(Date.now() + 86400000).toISOString(),
+      }))
+      .then(({ id }) => {
+        draftTargetID = id;
+        return cy.visit(`/admin/campaigns/${id}`);
+      })
+      .then(() => {
+        cy.get('[data-cy=recent-enabled] .check').click();
+        cy.get('[name=subject]').clear().type(`Draft race saved ${stamp}`);
+        // A second editor schedules after this editor loaded the draft.
+        cy.request('PUT', path(draftTargetID, '/status'), { status: 'scheduled' });
+        cy.intercept('PUT', path(draftTargetID)).as('draftRaceSave');
+        cy.get('[data-cy=btn-save]').click();
+        cy.wait('@draftRaceSave').then(({ request, response }) => {
+          expect(request.body.recent_rule).to.include({ enabled: true });
+          expect(response.statusCode).to.equal(200);
+          expect(response.body.data.status).to.equal('scheduled');
+        });
+        cy.get(`${win}[data-state=ready][data-mode=scheduled]`);
+        cy.get('[data-cy=send-ok]').click();
+        cy.get(win).should('not.exist');
+        cy.request(path(draftTargetID, '/recent-exclude')).its('body.data.enabled').should('equal', true);
+        cy.request(path(draftTargetID, '/preflight')).its('body.data.will_send').should('equal', 2);
+      })
+      .then(() => create('rule-race-scheduled-target', {
+        lists: [targetList], send_at: new Date(Date.now() + 86400000).toISOString(),
+      }))
+      .then(({ id }) => {
+        scheduledTargetID = id;
+        return cy.request('PUT', path(id, '/status'), { status: 'scheduled' })
+          .then(() => cy.visit(`/admin/campaigns/${id}`));
+      })
+      .then(() => {
+        cy.get('[data-cy=recent-enabled] .check').click();
+        // A second editor unschedules after this editor loaded the scheduled campaign.
+        cy.request('PUT', path(scheduledTargetID, '/status'), { status: 'draft' });
+        cy.intercept('PUT', path(scheduledTargetID)).as('scheduledRaceSave');
+        cy.get('[data-cy=btn-save]').click();
+        cy.wait('@scheduledRaceSave').then(({ request, response }) => {
+          expect(request.body.recent_rule).to.include({ enabled: true });
+          expect(response.statusCode).to.equal(200);
+          expect(response.body.data.status).to.equal('draft');
+        });
+        cy.get('[data-cy=recent-enabled] input').should('be.checked');
+        cy.request(path(scheduledTargetID, '/recent-exclude')).its('body.data.enabled').should('equal', true);
+        cy.request('PUT', path(scheduledTargetID, '/status'), { status: 'scheduled' });
+        cy.request(path(scheduledTargetID, '/preflight')).its('body.data.will_send').should('equal', 2);
+      });
+  });
+
+  it('says in the window that a saved exclusion rule is applied and what goes out, from the list too', () => {
     cy.visit('/admin/campaigns');
     row('rule').find('[data-cy=btn-start]').click();
     ready();
-    cy.get('[data-cy="send-check-recent.notApplied"]').should('have.attr', 'data-level', 'warn')
-      .and('contain', 'does not apply to sending yet').and('contain', 'last 14 days');
-    cy.get('[data-cy=send-sub]').should('contain', 'warning');
-    cy.get('[data-cy=send-ok]').should('contain', 'anyway').and('not.be.disabled');
+    cy.get('[data-cy="send-check-recent.notApplied"]').should('not.exist');
+    cy.get('[data-cy="send-check-recent.applied"]').should('have.attr', 'data-level', 'info').and('contain', 'last 14 days');
+    // Information, not a warning: the button does not turn into "anyway".
+    cy.get('[data-cy=send-sub]').should('not.contain', 'warning');
+    cy.get('[data-cy=send-ok]').should('contain', 'Send to 3 people').and('not.contain', 'anyway').and('not.be.disabled');
     cy.get('[data-cy=send-cancel]').click();
   });
 
@@ -335,6 +529,119 @@ describe('Pre-send confirmation window', () => {
     cy.get('[data-cy=send-title]').should('contain', 'Resume sending to about 12 remaining people');
     cy.get('[data-cy=send-progress]').should('contain', '180 sent of 300');
     cy.get('[data-cy=send-ok]').should('contain', 'Resume for about 12 people');
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
+  it('explains held recipients when their source campaign no longer exists', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('GET', preflight, (req) => {
+      req.continue((res) => {
+        const d = res.body.data;
+        Object.assign(d, {
+          mode: 'scheduled', status: 'scheduled', resumed: true,
+          recipients: 2, remaining: 0, will_send: 0,
+          recent: { enabled: false, days: 0, scope: '', excluded: 2, held: 2 },
+        });
+        d.checks = [{ key: 'recent.heldAll', level: 'block', params: { held: 2 } }];
+      });
+    }).as('missingRecentSource');
+    row('later').find('[data-cy=btn-schedule]').click();
+    cy.wait('@missingRecentSource');
+    ready();
+    cy.get('[data-cy="send-check-recent.heldAll"]').should('have.attr', 'data-level', 'block')
+      .and('contain', '2 people already left out')
+      .and('contain', 'cannot be changed after sending starts')
+      .and('contain', 'Create a new campaign')
+      .and('not.contain', 'last 0 days')
+      .and('not.contain', 'Turn the rule off');
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
+  it('rejects enabling an all-excluding rule while editing a scheduled campaign', () => {
+    let sourceID;
+    cy.then(() => create('edit-zero-source', { lists: [listY] }))
+      .then(({ id }) => {
+        sourceID = id;
+        return create('edit-zero-target', {
+          lists: [listY], send_at: new Date(Date.now() + 86400000).toISOString(),
+        });
+      })
+      .then(({ id }) => {
+        camp['edit-zero-target'] = id;
+        return cy.request('PUT', `/api/campaigns/${id}/status`, { status: 'scheduled' });
+      })
+      .then(() => cy.request('PUT', `/api/campaigns/${sourceID}/status`, { status: 'running' }))
+      .then(() => sourceFinished())
+      .its('status').should('eq', 'finished')
+      .then(() => {
+        cy.visit(`/admin/campaigns/${camp['edit-zero-target']}`);
+      })
+      .then(() => {
+        cy.get('[data-cy=recent-enabled] .check').click();
+        cy.intercept('PUT', `/api/campaigns/${camp['edit-zero-target']}`).as('editZero');
+        cy.get('[data-cy=btn-save]').click();
+        cy.wait('@editZero').then(({ request, response }) => {
+          expect(request.body.recent_rule).to.include({ enabled: true, days: 14, scope: 'all' });
+          expect(response.statusCode).to.equal(400);
+        });
+        cy.get('.toast.is-danger').should('contain', '0 recipients');
+        cy.request(`/api/campaigns/${camp['edit-zero-target']}`).its('body.data.status').should('eq', 'scheduled');
+        cy.request(`/api/campaigns/${camp['edit-zero-target']}/recent-exclude`)
+          .its('body.data.enabled').should('eq', false);
+      });
+
+    function sourceFinished(tries = 30) {
+      return cy.request(`/api/campaigns/${sourceID}`).then(({ body: { data } }) => {
+        if (data.status !== 'finished' && tries > 0) {
+          cy.wait(1000);
+          return sourceFinished(tries - 1);
+        }
+        return data;
+      });
+    }
+  });
+
+  it('blocks the start when the recent rule excludes every eligible recipient', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('GET', preflight, (req) => {
+      req.continue((res) => {
+        const d = res.body.data;
+        d.will_send = 0;
+        d.recent.excluded = d.recipients;
+        d.checks = d.checks.filter((check) => check.key !== 'recent.applied');
+        d.checks.unshift({ key: 'recent.all', level: 'block', params: { days: d.recent.days } });
+      });
+    }).as('pf');
+    row('rule').find('[data-cy=btn-start]').click();
+    cy.wait('@pf');
+    ready();
+    cy.get('[data-cy="send-check-recent.all"]').should('have.attr', 'data-level', 'block');
+    cy.get('[data-cy="send-check-recent.applied"]').should('not.exist');
+    cy.get('[data-cy=send-ok]').should('be.disabled');
+    cy.get('[data-cy=send-cancel]').click();
+  });
+
+  it('shows remaining recipients and the exclusion history when resuming with the rule', () => {
+    cy.visit('/admin/campaigns');
+    cy.intercept('GET', preflight, (req) => {
+      req.continue((res) => {
+        const d = res.body.data;
+        Object.assign(d, {
+          mode: 'resume', status: 'paused', remaining: 12, sent: 180, to_send: 300,
+          recent: { enabled: true, days: 14, scope: 'all', excluded: 7, held: 5 },
+        });
+        d.checks.push({
+          key: 'recent.applied', level: 'info', params: { days: 14, held: 5, fresh: 2 },
+        });
+      });
+    }).as('pf');
+    row('resume').find('[data-cy=btn-start]').click();
+    cy.wait('@pf');
+    ready();
+    cy.get('[data-cy=send-title]').should('contain', 'Resume sending to about 12 remaining people');
+    cy.get('[data-cy=send-recipients]').should('contain', '12');
+    cy.get('[data-cy=send-progress]').should('not.exist');
+    cy.get('[data-cy="send-check-recent.applied"]').should('contain', '5').and('contain', '2');
     cy.get('[data-cy=send-cancel]').click();
   });
 
@@ -755,6 +1062,31 @@ describe('Pre-send confirmation window', () => {
     // The answer arrives: the page goes to the list, as after any start.
     cy.location('pathname').should('eq', '/admin/campaigns');
     cy.then(() => cy.request(`/api/campaigns/${camp.busy}`)).its('body.data.status').should('eq', 'scheduled');
+  });
+
+  it('shows the previous list size and the previous actual send count when both change', () => {
+    let reads = 0;
+    cy.intercept('GET', `/api/campaigns/${camp.rule}/preflight`, (req) => {
+      req.continue((res) => {
+        const data = res.body.data;
+        const count = reads++ === 0 ? 40 : 39;
+        data.lists[0].count = count;
+        data.recipients = count;
+        data.recent.excluded = 12;
+        data.will_send = count - 12;
+      });
+    });
+    cy.visit('/admin/campaigns');
+    cy.get('input[name=query]').clear().type(`Send rule ${stamp}{enter}`);
+    row('rule').find('[data-cy=btn-start]').click();
+    ready();
+    cy.get('[data-cy=send-title]').should('contain', 'Send to 28 people now');
+    cy.get('[data-cy=send-ok]').click();
+    cy.get('[data-cy=send-title]').should('have.text', 'The campaign changed in the meantime');
+    cy.get('[data-cy=send-list-was]').should('contain', 'before: 40');
+    cy.get('[data-cy=send-recipients-was]').should('contain', 'before: 28');
+    cy.get('[data-cy=send-ok]').should('contain', 'Send to 27 people');
+    cy.get('[data-cy=send-cancel]').click();
   });
 
   it('shows only the campaign and its recipients when only the count changed', () => {

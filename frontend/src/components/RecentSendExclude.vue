@@ -43,18 +43,29 @@
       <div aria-live="polite">
         <p v-if="pending" class="recent-help" role="status">{{ $t('campaigns.recent.calculating') }}</p>
         <p v-else-if="error" class="recent-error" role="alert" data-cy="recent-error">{{ error }}</p>
-        <template v-else-if="counts">
+        <template v-else-if="displayCounts">
           <table class="recent-table" :aria-label="$t('campaigns.recent.preview')" data-cy="recent-counts">
             <tbody>
-              <tr><th scope="row">{{ $t('campaigns.recent.target') }}</th><td>{{ people(counts.target) }}</td></tr>
+              <tr><th scope="row">{{ $t('campaigns.recent.target') }}</th><td>{{ people(displayCounts.target) }}</td></tr>
               <tr>
                 <th scope="row">{{ $t('campaigns.recent.excluded', { days: value.days }) }}</th>
-                <td>−{{ people(counts.excluded) }}</td>
+                <td>−{{ people(displayCounts.excluded) }}</td>
               </tr>
-              <tr><th scope="row">{{ $t('campaigns.recent.willSend') }}</th><td>{{ people(counts.willSend) }}</td></tr>
+              <tr>
+                <th scope="row">
+                  <template v-if="started">{{ $t('campaigns.recent.sentTarget') }}</template>
+                  <template v-else>
+                    {{ $t('campaigns.recent.willSend') }}
+                    <span class="recent-same" data-cy="recent-same-basis">· {{ $t('campaigns.recent.willSendSame') }}</span>
+                  </template>
+                </th>
+                <td>{{ people(displayCounts.willSend) }}</td>
+              </tr>
             </tbody>
           </table>
-          <p class="recent-help" data-cy="recent-as-of">{{ $t('campaigns.recent.asOf', { date: formatDate(counts.asOf) }) }}</p>
+          <p v-if="displayCounts.asOf" class="recent-help" data-cy="recent-as-of">
+            {{ $t('campaigns.recent.asOf', { date: formatDate(displayCounts.asOf) }) }}
+          </p>
           <p class="recent-help">{{ $t('campaigns.recent.bounces') }}</p>
           <p v-if="coverageWarning" class="recent-warning" data-cy="recent-coverage">{{ coverageWarning }}</p>
         </template>
@@ -62,20 +73,31 @@
       </div>
     </template>
 
-    <div v-if="showMadeLine" class="recent-made" role="status" data-cy="recent-list-made">
-      ✓ {{ $t(madeList.saved ? 'campaigns.recent.listMade' : 'campaigns.recent.listMadeNew') }}
-      <router-link :to="{ name: 'list', params: { id: madeList.id } }">{{ $t('lists.draw.viewList') }}</router-link>
-    </div>
-    <p v-else-if="madeList && madeList.error && madeListInUse" class="recent-error" role="alert" data-cy="recent-list-save-error">
-      {{ madeList.error }}
-    </p>
-    <div v-else-if="canMakeList" class="recent-make">
-      <b-button type="is-primary is-light" class="recent-make-button" data-cy="recent-make-list" @click="openList">
-        {{ $t('campaigns.recent.makeList') }}
-      </b-button>
+    <!-- LST-65: a campaign that has started says how many people the rule left out of its send. -->
+    <div v-if="started && (value.enabled || value.held)" class="recent-made" role="status" data-cy="recent-held">
+      ✓ {{ $t(value.enabled ? 'campaigns.recent.held' : 'campaigns.recent.heldCount', {
+        count: (value.held || 0).toLocaleString($i18n.locale), days: value.days, scope: $t(`campaigns.recent.scope.${value.scope}`),
+      }) }}
     </div>
 
-    <p class="recent-notice" data-cy="recent-notice">{{ $t('campaigns.recent.notice') }}</p>
+    <p class="recent-notice" data-cy="recent-notice">{{ $t(started && disabled ? 'campaigns.recent.locked' : 'campaigns.recent.notice') }}</p>
+
+    <!-- The list of the people the rule leaves out is a side action: the rule works without it
+         (LST-46 makes the list as a separate, optional step). -->
+    <div v-if="showMadeLine || (madeList && madeList.error && madeListInUse) || canMakeList" class="recent-optional">
+      <div v-if="showMadeLine" class="recent-made" role="status" data-cy="recent-list-made">
+        ✓ {{ $t(madeList.saved ? 'campaigns.recent.listMade' : 'campaigns.recent.listMadeNew') }}
+        <router-link :to="{ name: 'list', params: { id: madeList.id } }">{{ $t('lists.draw.viewList') }}</router-link>
+      </div>
+      <p v-else-if="madeList && madeList.error && madeListInUse" class="recent-error" role="alert" data-cy="recent-list-save-error">
+        {{ madeList.error }}
+      </p>
+      <div v-else-if="canMakeList" class="recent-make">
+        <b-button size="is-small" type="is-primary" outlined class="recent-make-button" data-cy="recent-make-list" @click="openList">
+          {{ $t('campaigns.recent.makeList') }}
+        </b-button>
+      </div>
+    </div>
 
     <b-modal v-if="listOpen" :active="true" has-modal-card scroll="keep" :aria-modal="true" v-bind="{ ariaRole: 'dialog' }"
       aria-labelledby="recent-list-title" custom-class="recent-list-modal" :width="560"
@@ -140,6 +162,10 @@ export default {
     campaignType: { type: String, default: 'regular' },
     disabled: Boolean,
     value: { type: Object, required: true },
+    // The campaign has started (running, paused, finished or cancelled): the page says how many
+    // people the rule left out of its send (LST-65).
+    started: Boolean,
+    finishedAudience: { type: Object, default: null },
     // The campaign's lists can still be changed (a new, draft or scheduled campaign).
     listsEditable: Boolean,
     // The campaign exists on the server, so making the list also saves it.
@@ -176,18 +202,35 @@ export default {
   },
 
   computed: {
+    displayCounts() {
+      if (!this.finishedAudience) return this.counts;
+      const { target, sent, asOf } = this.finishedAudience;
+      const excluded = this.value.held || 0;
+      // The saved audience can lack send records removed by retention or subscriber deletion.
+      const willSend = Math.max(target - excluded, sent || 0);
+      return {
+        target: willSend + excluded,
+        excluded,
+        willSend,
+        asOf,
+        recordsFrom: this.value.recordsFrom,
+      };
+    },
+
     previewKey() {
       if (!this.$can('campaigns:manage_all', 'campaigns:manage') || this.campaignType === 'optin'
-        || !this.value.enabled || !this.listIds.length
+        || this.finishedAudience || !this.value.enabled || !this.listIds.length
         || (this.value.scope === 'campaigns' && !this.value.campaignIds.length)) return '';
 
       return JSON.stringify({ ...recentRulePayload(this.value), list_ids: this.listIds, campaign_id: this.campaignId });
     },
 
     coverageWarning() {
-      if (!this.counts.recordsFrom) return this.$t('campaigns.recent.noRecords');
-      if (dayjs(this.counts.recordsFrom).isAfter(dayjs(this.counts.asOf).subtract(this.value.days, 'day'))) {
-        return this.$t('campaigns.recent.coverage', { date: this.formatDate(this.counts.recordsFrom, 'YYYY-MM-DD') });
+      const { recordsFrom, asOf } = this.displayCounts || {};
+      if (recordsFrom === undefined) return '';
+      if (!recordsFrom) return this.$t('campaigns.recent.noRecords');
+      if (dayjs(recordsFrom).isAfter(dayjs(asOf).subtract(this.value.days, 'day'))) {
+        return this.$t('campaigns.recent.coverage', { date: this.formatDate(recordsFrom, 'YYYY-MM-DD') });
       }
       return '';
     },
@@ -403,7 +446,10 @@ export default {
 .recent-table tr:last-child th, .recent-table tr:last-child td { font-weight: 700; border: 0; }
 .recent-notice, .recent-warning, .recent-error { border-radius: 4px; padding: 8px 10px; margin-top: 9px; font-size: .8125rem; }
 .recent-notice { background: #eef2fc; color: #263675; }
-.recent-make { margin-top: 12px; }
+.recent-optional { margin-top: 16px; padding-top: 12px; border-top: 1px solid #e3e3e3; }
+.recent-optional .recent-made { margin-top: 0; }
+.recent-make { margin-top: 0; }
+.recent-same { font-weight: 400; font-size: .75rem; color: #616161; margin-left: 4px; }
 @media (max-width: 440px) {
   .recent-make-button { width: 100%; }
 }
