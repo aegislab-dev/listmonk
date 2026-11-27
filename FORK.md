@@ -227,7 +227,7 @@ upstream v6.2.0은 비주얼 캠페인에 기본 템플릿을 씌우지 않는�
 - Markdown 모드는 이 편집기가 쓰는 태그(`<strong>`, `<u>`, `<span style="font-size:Npx">`)만 서식으로 읽는다. `<b>` 같은 다른 태그와 펜스 코드 블록·코드 span 안의 태그는 글자 그대로 두고 그대로 다시 쓴다(들여쓰기 코드 블록은 목록 이어쓰기와 구분하지 않아 보호하지 않는다). 줄 머리의 목록·인용·제목 표시(`- `, `1. `, `> `, `## `)는 태그 앞에 둔다.
 - 캔버스에서 Markdown 블록의 개인화 토큰은 〔이름〕 대신 칩 모양 span으로 보인다(HTML 속성 안의 토큰은 그대로 〔〕).
 - 시험: `frontend/tests/text-format.test.mjs`(저장 형식 왕복), `visual-text-format.cy.js`(툴바·저장·다시 열기·Mailpit 테스트 발송에서 서식·개인화·자동 추적), `TestVisualTrackingKeepsInlineFormatting`(LST-9 자동 추적이 서식 태그를 건드리지 않음).
-- 메일 클라이언트: Mailpit HTML 검사(caniemail)에서 서식 블록이 새 경고를 더하지 않는다(`strong`·`u`·`br`·`font-size`). 실제 Gmail·Outlook·네이버 화면은 dev 테스트 발송으로 확인한다.
+- 메일 클라이언트: Gmail 웹은 실화면 확인(2026-11-27, 견본 메일을 받은편지함에서 열어 굵게·밑줄·크기·줄바꿈·개인화 이름 서식 확인). Outlook은 Mailpit HTML 검사(caniemail) 자료로 대신했고 실화면은 보지 않았다: `strong`·`u`·`br`·`font-size`는 경고 없음(Outlook Windows 2007~2019·Outlook.com·macOS·iOS·Android 포함). 네이버 메일은 caniemail에 자료가 없어 확인하지 못했다.
 
 ## 발송 전 추적 점검 (LST-44)
 
