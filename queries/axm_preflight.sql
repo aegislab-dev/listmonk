@@ -24,9 +24,9 @@
 --   multi      how many of them are on more than one of the lists
 --   excluded   people on the lists of a regular campaign who are not reached (blocklisted,
 --              unsubscribed, not yet confirmed on a double opt-in list)
---   recent     (LST-65) of total, how many the campaign's recent-send rule leaves out of the
---              send: the people with a send record in the rule's scope within its days, and
---              the people it left out already. 0 without a rule.
+--   recent     (LST-65) the people already excluded who are still eligible for the lists,
+--              plus new matches to the rule among candidates the sender will consider.
+--              For a continuation, only IDs after the checkpoint can be newly excluded.
 --   remaining  with $3 (resume) true, how many of total are still to be sent after the
 --              checkpoint $2 (campaigns.last_subscriber_id). A resumed campaign recounts its
 --              upper bound, so there is none here, and a person above the checkpoint who
@@ -83,7 +83,9 @@ held AS (
 fresh AS (
     SELECT r.subscriber_id AS id
     FROM recent_rule
-    CROSS JOIN LATERAL axm_recent_received($1, ARRAY(SELECT id FROM counts WHERE id IS NOT NULL AND n > 0)) r
+    CROSS JOIN LATERAL axm_recent_received($1, ARRAY(
+        SELECT id FROM counts WHERE id IS NOT NULL AND n > 0 AND (NOT $3::BOOLEAN OR id > $2)
+    )) r
     WHERE recent_rule.enabled
         AND NOT EXISTS (SELECT 1 FROM held h WHERE h.id = r.subscriber_id)
 ),
@@ -105,7 +107,7 @@ SELECT cl.list_id AS id, cl.name, COALESCE(cl.optin::TEXT, '') AS optin, cl.is_d
     totals.multi,
     (SELECT COUNT(*) FROM recent_out) AS recent,
     (SELECT COUNT(*) FROM recent_out WHERE held) AS recent_held_in_audience,
-    (CASE WHEN $3::BOOLEAN THEN (SELECT COUNT(*) FROM fresh WHERE id > $2) ELSE (SELECT COUNT(*) FROM fresh) END) AS recent_fresh,
+    (SELECT COUNT(*) FROM fresh) AS recent_fresh,
     CASE WHEN c.type = 'regular' THEN totals.excluded ELSE 0 END AS excluded,
     CASE WHEN $3::BOOLEAN THEN totals.after_checkpoint - (
         -- Count a past delivery or a recent exclusion only once, even if several records match.

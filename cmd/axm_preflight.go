@@ -101,6 +101,7 @@ type recentFacts struct {
 	Excluded       int    `json:"excluded"`
 	Held           int    `json:"held"`
 	HeldInAudience int    `json:"held_in_audience"`
+	Fresh          int    `json:"fresh"`
 }
 
 // preflightFacts is everything the checks are decided from.
@@ -143,13 +144,14 @@ type preflightFacts struct {
 	// not on the team's From list, or a From header while there is a list), with the reason.
 	FromRefused string
 
-	RecentEnabled  bool
-	RecentLocked   bool
-	RecentDays     int
-	RecentScope    string
-	RecentExcluded int
-	RecentHeld     int
-	RecentFresh    int
+	RecentEnabled        bool
+	RecentLocked         bool
+	RecentDays           int
+	RecentScope          string
+	RecentExcluded       int
+	RecentHeld           int
+	RecentHeldInAudience int
+	RecentFresh          int
 }
 
 // Hosts that stand for "not set up yet": the example from the stock install and the
@@ -216,12 +218,11 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		count = f.Remaining
 	}
 	key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists > 0, count > 0)
-	recentAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentFresh > 0 &&
-		(f.RecentFresh == f.Total || f.CountRemaining) && f.RecentHeld == 0
-	recentHeldAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentExcluded > 0 &&
-		f.RecentFresh == 0 && f.RecentHeld > 0 && (f.RecentExcluded == f.Total || f.CountRemaining)
-	recentMixedAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentExcluded > 0 &&
-		f.RecentFresh > 0 && f.RecentHeld > 0 && (f.RecentExcluded == f.Total || f.CountRemaining)
+	canExplainExclusions := key == "recipients.zero" && level == models.PreflightBlock &&
+		(f.RecentExcluded == f.Total || f.CountRemaining)
+	recentAll := canExplainExclusions && f.RecentFresh > 0 && f.RecentHeldInAudience == 0
+	recentHeldAll := canExplainExclusions && f.RecentFresh == 0 && f.RecentHeldInAudience > 0
+	recentMixedAll := canExplainExclusions && f.RecentFresh > 0 && f.RecentHeldInAudience > 0
 	if recentAll {
 		if f.RecentLocked {
 			add("recent.lockedAll", level, map[string]any{"days": f.RecentDays})
@@ -229,9 +230,9 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 			add("recent.all", level, map[string]any{"days": f.RecentDays})
 		}
 	} else if recentHeldAll {
-		add("recent.heldAll", level, map[string]any{"held": f.RecentExcluded})
+		add("recent.heldAll", level, map[string]any{"held": f.RecentHeldInAudience})
 	} else if recentMixedAll {
-		add("recent.mixedAll", level, map[string]any{"fresh": f.RecentFresh, "held": f.RecentExcluded - f.RecentFresh})
+		add("recent.mixedAll", level, map[string]any{"fresh": f.RecentFresh, "held": f.RecentHeldInAudience})
 	} else if key != "" {
 		add(key, level, nil)
 	}
@@ -548,9 +549,10 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 				return err
 			}
 			recent = recentFacts{Enabled: rule.Enabled, Locked: camp.StartedAt.Valid, Days: rule.Days, Scope: rule.Scope,
-				Excluded: aud.Recent, Held: held, HeldInAudience: aud.RecentHeldInAudience}
+				Excluded: aud.Recent, Held: held, HeldInAudience: aud.RecentHeldInAudience, Fresh: aud.RecentFresh}
 			facts.RecentEnabled, facts.RecentLocked, facts.RecentDays, facts.RecentScope = rule.Enabled, camp.StartedAt.Valid, rule.Days, rule.Scope
 			facts.RecentExcluded, facts.RecentHeld, facts.RecentFresh = aud.Recent, held, aud.RecentFresh
+			facts.RecentHeldInAudience = aud.RecentHeldInAudience
 		}
 	}
 

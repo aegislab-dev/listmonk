@@ -217,11 +217,13 @@ test('all-held and mixed recent exclusions keep their own blocking reason', () =
     ['recent.heldAll', { held: 12 }],
     ['recent.mixedAll', { fresh: 4, held: 8 }],
   ]) {
-    const line = checkLines(pf({ checks: [{ key, level: 'block', params }] }))
-      .find((item) => item.name === key);
+    const m = model({ willSend: 0, checks: [{ key, level: 'block', params }] });
+    const line = m.checks.find((item) => item.name === key);
     assert.equal(line.level, 'block');
     assert.equal(line.key, `campaigns.sendConfirm.check.${key}.block`);
     assert.deepEqual(line.params, params);
+    assert.equal(m.disabled, true);
+    assert.equal(m.confirm.key, 'campaigns.sendConfirm.confirm.blocked');
   }
 });
 

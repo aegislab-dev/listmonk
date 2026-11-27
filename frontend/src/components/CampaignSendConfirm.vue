@@ -302,7 +302,7 @@ export default Vue.extend({
       if (m.recent) {
         const held = m.recent.heldInAudience || 0;
         if (held > 0) {
-          const fresh = m.recent.excluded - held;
+          const { fresh } = m.recent;
           if (!out.length) out.push(this.$t('campaigns.sendConfirm.total', { n: this.pf.recipients }));
           out.push(this.$t('campaigns.sendConfirm.recentHeldCount', { n: held }));
           if (fresh > 0) {

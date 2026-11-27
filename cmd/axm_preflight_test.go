@@ -152,10 +152,12 @@ func TestPreflightChecks(t *testing.T) {
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.lockedAll": "block"}},
 		{"old holds alone block with an accurate explanation", with(func(f *preflightFacts) {
 			f.Mode, f.Remaining, f.RecentExcluded, f.RecentHeld = "schedule", 0, 300, 300
+			f.RecentHeldInAudience = 300
 		}),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.heldAll": "block"}},
 		{"fresh and previously held exclusions are distinguished", with(func(f *preflightFacts) {
 			f.Mode, f.Remaining, f.RecentExcluded, f.RecentHeld, f.RecentFresh = "schedule", 0, 300, 300, 125
+			f.RecentHeldInAudience = 175
 		}),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.mixedAll": "block"}},
 		{"recent rule that leaves out all but some does not block", with(func(f *preflightFacts) {

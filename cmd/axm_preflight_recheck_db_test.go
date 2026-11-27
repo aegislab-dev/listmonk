@@ -405,6 +405,60 @@ func TestPreflightContinuesAfterPauseBeforeFirstDelivery(t *testing.T) {
 	}
 }
 
+func TestPreflightRecentExclusionsRespectCheckpoint(t *testing.T) {
+	e := scheduledEnv(t)
+	old := e.pfSub("enabled", "", nil)
+	for i := 0; i < 9; i++ {
+		e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	}
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
+		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns,
+			CampaignIDs: []int64{int64(prior)}}, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	ids := e.ids(`SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 ORDER BY subscriber_id`, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id)
+		SELECT $1, unnest($2::int[])`, e.campID, pq.Array(ids[:8]))
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, ids[8])
+	e.db.MustExec(`UPDATE campaigns SET status='paused', started_at=NOW(), sent=1,
+		last_subscriber_id=$2, to_send=12 WHERE id=$1`, e.campID, ids[8])
+	// This recently contacted subscriber joins after the sender has already passed their ID.
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, old, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2), ($1, $3)`, prior, old, ids[9])
+
+	path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+	for _, status := range []string{"scheduled", "draft"} {
+		if code, data := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+			fmt.Sprintf(`{"status":%q}`, status)); code != http.StatusOK {
+			t.Fatalf("change to %s: HTTP %d %s", status, code, data)
+		}
+	}
+	if code, data := e.save("Send now", []int{e.aList}, nil, "regular"); code != http.StatusOK {
+		t.Fatalf("clear send time: HTTP %d %s", code, data)
+	}
+	assertPreflight := func(remaining, fresh int, key, level string) {
+		t.Helper()
+		data := pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+		var out preflightResponse
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Mode != models.PreflightModeStart || !out.Resumed || out.WillSend != remaining || out.Remaining != remaining ||
+			out.Recent.Held != 8 || out.Recent.HeldInAudience != 8 || out.Recent.Fresh != fresh || out.Recent.Excluded != 8+fresh {
+			t.Fatalf("incorrect continuation audience: %s", data)
+		}
+		if !slices.ContainsFunc(out.Checks, func(c models.PreflightCheck) bool {
+			return c.Key == key && c.Level == level && c.Params["held"] == float64(8) && c.Params["fresh"] == float64(fresh)
+		}) {
+			t.Fatalf("expected %s to report 8 previous and %d new exclusions: %s", key, fresh, data)
+		}
+	}
+	assertPreflight(2, 1, "recent.applied", models.PreflightInfo)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) SELECT $1, unnest($2::int[])`, prior, pq.Array(ids[10:]))
+	assertPreflight(0, 3, "recent.mixedAll", models.PreflightBlock)
+}
+
 func TestStatusWithUnavailableSendLedger(t *testing.T) {
 	for _, ruleOn := range []bool{false, true} {
 		t.Run(fmt.Sprintf("rule enabled %t", ruleOn), func(t *testing.T) {

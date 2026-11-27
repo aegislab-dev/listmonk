@@ -213,7 +213,9 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   let confirmKey = scheduled
     ? `${K}.review.keep`
     : `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
-  if (!scheduled && blocked && checks.some((c) => c.name === 'recent.all' || c.name === 'recent.lockedAll')) confirmKey = `${K}.confirm.blocked`;
+  if (!scheduled && checks.some((c) => c.level === 'block' && c.name.startsWith('recent.'))) {
+    confirmKey = `${K}.confirm.blocked`;
+  }
   const targetStatus = schedule ? 'scheduled' : 'running';
   const asOf = pf.asOf ? new Date(pf.asOf) : null;
 
