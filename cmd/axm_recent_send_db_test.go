@@ -684,6 +684,7 @@ func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() {
 		db.Exec("DROP SCHEMA " + pq.QuoteIdentifier(name) + " CASCADE")
 		db.Close()
@@ -691,7 +692,7 @@ func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
 	// .24 replaces this function with a table-returning function. PostgreSQL rejects that
 	// replacement, simulating an install failure after .23 has already run.
 	db.MustExec(`CREATE FUNCTION axm_recent_campaign_sent_ids(INT) RETURNS INT LANGUAGE SQL AS 'SELECT 1'`)
-	if err := installSchema("v6.2.1-axm.25", db, fs); err == nil {
+	if err := installSchema(db, fs); err == nil {
 		t.Fatal("install succeeded despite an incompatible .24 function")
 	} else if !strings.Contains(err.Error(), "cannot change return type") {
 		t.Fatalf("install failed for an unexpected reason: %v", err)
@@ -708,8 +709,24 @@ func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
 	}
 
 	db.MustExec(`DROP FUNCTION axm_recent_campaign_sent_ids(INT)`)
-	if err := installSchema("v6.2.1-axm.25", db, fs); err != nil {
+	if err := installSchema(db, fs); err != nil {
 		t.Fatalf("retry after removing the conflict: %v", err)
+	}
+	installed, err := isInstallationComplete(db)
+	if err != nil || installed {
+		t.Fatalf("schema-only install must remain retryable until seeds are done: complete=%t, err=%v", installed, err)
+	}
+	// Re-run schema installation as the idempotent CLI does after an interrupted first install.
+	if err := installSchema(db, fs); err != nil {
+		t.Fatalf("schema retry with one DB connection: %v", err)
+	}
+	q := prepareQueries(readQueries(queryFilePath, fs), db, ko)
+	defaultListID, optinListID := installLists(q)
+	installSubs(defaultListID, optinListID, q)
+	campaignTemplateID, archiveTemplateID := installTemplates(q, fs)
+	installCampaign(campaignTemplateID, archiveTemplateID, q)
+	if err := recordMigrationVersion("v6.2.1-axm.25", db); err != nil {
+		t.Fatalf("record installed version with one DB connection: %v", err)
 	}
 	var complete bool
 	if err := db.Get(&complete, `SELECT to_regclass('settings') IS NOT NULL
@@ -724,6 +741,13 @@ func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
 	}
 	if !complete {
 		t.Fatal("retry did not install the complete schema through .25")
+	}
+	var lists, templates, campaigns int
+	db.Get(&lists, `SELECT COUNT(*) FROM lists WHERE name IN ('Default list', 'Opt-in list')`)
+	db.Get(&templates, `SELECT COUNT(*) FROM templates WHERE name IN ('Default campaign template', 'Default archive template', 'Sample transactional template', 'Sample visual template')`)
+	db.Get(&campaigns, `SELECT COUNT(*) FROM campaigns WHERE name = 'Test campaign'`)
+	if lists != 2 || templates != 4 || campaigns != 1 {
+		t.Fatalf("retry seeded lists=%d templates=%d campaigns=%d, want 2, 4, 1", lists, templates, campaigns)
 	}
 }
 

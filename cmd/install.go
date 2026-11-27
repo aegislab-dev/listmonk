@@ -46,19 +46,18 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 
 	// If idempotence is on, check if the DB is already setup.
 	if idempotent {
-		if _, err := db.Exec("SELECT count(*) FROM settings"); err != nil {
-			// If "settings" doesn't exist, assume it's a fresh install.
-			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code != "42P01" {
-				lo.Fatalf("error checking existing DB schema: %v", err)
-			}
-		} else {
+		complete, err := isInstallationComplete(db)
+		if err != nil {
+			lo.Fatalf("error checking existing DB schema: %v", err)
+		}
+		if complete {
 			lo.Println("skipping install as database appears to be already setup")
 			os.Exit(0)
 		}
 	}
 
 	// Migrate the tables.
-	if err := installSchema(lastVer, db, fs); err != nil {
+	if err := installSchema(db, fs); err != nil {
 		lo.Fatalf("error migrating DB schema: %v", err)
 	}
 
@@ -72,7 +71,7 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 	installSubs(defList, optinList, q)
 
 	// Templates.
-	campTplID, archiveTplID := installTemplates(q)
+	campTplID, archiveTplID := installTemplates(q, fs)
 
 	// Sample campaign.
 	installCampaign(campTplID, archiveTplID, q)
@@ -115,12 +114,18 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 		installUser(user, password, apiUser, q)
 	}
 
+	// Record installation only after the default lists, subscribers, templates, campaign,
+	// and optional user have all been created. An interrupted install remains retryable.
+	if err := recordMigrationVersion(lastVer, db); err != nil {
+		lo.Fatalf("error recording migration version: %v", err)
+	}
+
 	lo.Printf("setup complete")
 	lo.Printf(`run the program and access the dashboard at %s`, ko.MustString("app.address"))
 }
 
 // installSchema executes the SQL schema and creates the necessary tables and types.
-func installSchema(curVer string, db *sqlx.DB, fs stuffbin.FileSystem) error {
+func installSchema(db *sqlx.DB, fs stuffbin.FileSystem) error {
 	q, err := fs.Read("/schema.sql")
 	if err != nil {
 		return err
@@ -142,9 +147,21 @@ func installSchema(curVer string, db *sqlx.DB, fs stuffbin.FileSystem) error {
 		}
 		return err
 	}
+	return nil
+}
 
-	// Insert the current migration version.
-	return recordMigrationVersion(curVer, db)
+// isInstallationComplete distinguishes a fully installed database from a schema whose
+// setup was interrupted before its migration marker was recorded.
+func isInstallationComplete(db *sqlx.DB) (bool, error) {
+	var complete bool
+	err := db.Get(&complete, `SELECT EXISTS (
+		SELECT 1 FROM settings WHERE key = 'migrations'
+		AND CASE WHEN jsonb_typeof(value) = 'array' THEN jsonb_array_length(value) > 0 ELSE FALSE END
+	)`)
+	if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "42P01" {
+		return false, nil
+	}
+	return complete, err
 }
 
 func installLists(q *models.Queries) (int, int) {
@@ -202,7 +219,7 @@ func installSubs(defListID, optinListID int, q *models.Queries) {
 	}
 }
 
-func installTemplates(q *models.Queries) (int, int) {
+func installTemplates(q *models.Queries, fs stuffbin.FileSystem) (int, int) {
 	// Default campaign template.
 	campTpl, err := fs.Get("/static/email-templates/default.tpl")
 	if err != nil {
