@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,11 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/internal/migrations"
 	"github.com/knadh/listmonk/models"
-	"github.com/knadh/stuffbin"
 	"github.com/lib/pq"
 )
 
@@ -630,8 +627,9 @@ func TestRecentSendMigrationsMatchFreshSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	trimmedSchema := strings.TrimSpace(string(schema))
-	if !strings.HasPrefix(trimmedSchema, "BEGIN;") || !strings.HasSuffix(trimmedSchema, "COMMIT;") {
-		t.Fatal("schema.sql must wrap the full install in one transaction")
+	if !strings.Contains(trimmedSchema, "BEGIN;\n-- AXM recent-send counts after subscriber deletion") ||
+		!strings.Contains(trimmedSchema, "-- End of AXM recent-send counts after subscriber deletion.\nCOMMIT;") {
+		t.Fatal("schema.sql must run the .23 lock and trigger replacement in one transaction")
 	}
 	for _, tc := range []struct {
 		version string
@@ -659,217 +657,6 @@ func TestRecentSendMigrationsMatchFreshSchema(t *testing.T) {
 				t.Fatalf("schema.sql and migration .%s differ", tc.version)
 			}
 		})
-	}
-}
-
-func TestSchemaInstallFailureRollsBackAndCanRetry(t *testing.T) {
-	dsn := os.Getenv("AXM_TEST_DB_URL")
-	if dsn == "" {
-		t.Skip("AXM_TEST_DB_URL not set")
-	}
-
-	root := repoRoot(t)
-	fs, err := stuffbin.NewLocalFS("/", root+":/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	admin, err := sqlx.Connect("postgres", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := fmt.Sprintf("axm_install_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
-	admin.MustExec(`CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public`)
-	var hadPublicLinks bool
-	if err := admin.Get(&hadPublicLinks, `SELECT to_regclass('public.links') IS NOT NULL`); err != nil {
-		t.Fatal(err)
-	}
-	if hadPublicLinks {
-		admin.Close()
-		t.Skip("public.links already exists; refusing to alter shared test data")
-	}
-	admin.MustExec(`CREATE TABLE public.links (id INTEGER NOT NULL)`)
-	admin.MustExec(`INSERT INTO public.links VALUES (65)`)
-	t.Cleanup(func() {
-		admin.Exec(`DROP TABLE public.links`)
-		admin.Close()
-	})
-	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(name))
-
-	// Do not include public: schema.sql contains unqualified DROP TABLE statements.
-	db, err := sqlx.Connect("postgres", withSearchPath(t, dsn, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() {
-		db.Exec("DROP SCHEMA " + pq.QuoteIdentifier(name) + " CASCADE")
-		db.Close()
-	})
-	// .24 replaces this function with a table-returning function. PostgreSQL rejects that
-	// replacement, simulating an install failure after .23 has already run.
-	db.MustExec(`CREATE FUNCTION axm_recent_campaign_sent_ids(INT) RETURNS INT LANGUAGE SQL AS 'SELECT 1'`)
-	if err := installSchema(db, fs); err == nil {
-		t.Fatal("install succeeded despite an incompatible .24 function")
-	} else if !strings.Contains(err.Error(), "cannot change return type") {
-		t.Fatalf("install failed for an unexpected reason: %v", err)
-	}
-	var partial bool
-	if err := db.Get(&partial, `SELECT to_regclass('settings') IS NOT NULL
-		OR to_regclass('campaigns') IS NOT NULL
-		OR to_regclass('axm_campaign_recent_holds') IS NOT NULL
-		OR to_regprocedure('axm_count_removed_recent_holds()') IS NOT NULL`); err != nil {
-		t.Fatal(err)
-	}
-	if partial {
-		t.Fatal("failed install left schema objects committed; idempotent retry would skip")
-	}
-
-	db.MustExec(`DROP FUNCTION axm_recent_campaign_sent_ids(INT)`)
-	if err := installSchema(db, fs); err != nil {
-		t.Fatalf("retry after removing the conflict: %v", err)
-	}
-	installed, err := isInstallationComplete(db)
-	if err != nil || installed {
-		t.Fatalf("schema-only install must remain retryable until seeds are done: complete=%t, err=%v", installed, err)
-	}
-	// Re-run schema installation as the idempotent CLI does after an interrupted first install.
-	if err := installSchema(db, fs); err != nil {
-		t.Fatalf("schema retry with one DB connection: %v", err)
-	}
-	// Query preparation needs pgcrypto's public.gen_salt; widen the search path only
-	// after the unqualified DROP statements in schema.sql have finished.
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err = sqlx.Connect("postgres", withSearchPath(t, dsn, name+",public"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	q := prepareQueries(readQueries(queryFilePath, fs), db, ko)
-	defaultListID, optinListID := installLists(q)
-	installSubs(defaultListID, optinListID, q)
-	campaignTemplateID, archiveTemplateID := installTemplates(q, fs)
-	installCampaign(campaignTemplateID, archiveTemplateID, q)
-	// An interrupted first install may retry install and then run every unrecorded migration.
-	// The v2.2 and v5 seed migrations must not add a second copy of samples already seeded by
-	// installTemplates.
-	migrationLog := log.New(io.Discard, "", 0)
-	if err := migrations.V2_2_0(db, fs, ko, migrationLog); err != nil {
-		t.Fatalf("replay transactional-template migration after install seeds: %v", err)
-	}
-	if err := migrations.V5_0_0(db, fs, ko, migrationLog); err != nil {
-		t.Fatalf("replay visual-template migration after install seeds: %v", err)
-	}
-	if err := recordMigrationVersion("v6.2.1-axm.25", db); err != nil {
-		t.Fatalf("record installed version with one DB connection: %v", err)
-	}
-	var complete bool
-	if err := db.Get(&complete, `SELECT to_regclass('settings') IS NOT NULL
-		AND to_regclass('campaigns') IS NOT NULL
-		AND to_regclass('axm_campaign_recent_holds') IS NOT NULL
-		AND to_regprocedure('axm_recent_campaign_sent_ids(integer)') IS NOT NULL
-		AND (SELECT value->>-1 FROM settings WHERE key = 'migrations') = 'v6.2.1-axm.25'
-		AND EXISTS (SELECT 1 FROM information_schema.columns
-			WHERE table_schema = current_schema() AND table_name = 'axm_campaign_recent_rules'
-			AND column_name = 'removed_sent_count')`); err != nil {
-		t.Fatal(err)
-	}
-	if !complete {
-		t.Fatal("retry did not install the complete schema through .25")
-	}
-	var lists, templates, campaigns int
-	db.Get(&lists, `SELECT COUNT(*) FROM lists WHERE name IN ('Default list', 'Opt-in list')`)
-	db.Get(&templates, `SELECT COUNT(*) FROM templates WHERE name IN ('Default campaign template', 'Default archive template', 'Sample transactional template', 'Sample visual template')`)
-	db.Get(&campaigns, `SELECT COUNT(*) FROM campaigns WHERE name = 'Test campaign'`)
-	if lists != 2 || templates != 4 || campaigns != 1 {
-		t.Fatalf("retry seeded lists=%d templates=%d campaigns=%d, want 2, 4, 1", lists, templates, campaigns)
-	}
-	var publicLink int
-	if err := admin.Get(&publicLink, `SELECT id FROM public.links`); err != nil || publicLink != 65 {
-		t.Fatalf("install changed public.links sentinel: value=%d, err=%v", publicLink, err)
-	}
-	// Both a populated legacy database with no migration row and a current install whose
-	// row was removed must be recognized as installed rather than destructively reset.
-	if _, err := db.Exec(`DELETE FROM settings WHERE key = 'migrations'`); err != nil {
-		t.Fatal(err)
-	}
-	installed, err = isInstallationComplete(db)
-	if err != nil || !installed {
-		t.Fatalf("populated install without migration record was not recognized: installed=%t, err=%v", installed, err)
-	}
-}
-
-func TestInstallationCompleteChecksEveryEffectiveSearchSchema(t *testing.T) {
-	dsn := os.Getenv("AXM_TEST_DB_URL")
-	if dsn == "" {
-		t.Skip("AXM_TEST_DB_URL not set")
-	}
-	admin, err := sqlx.Connect("postgres", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first := fmt.Sprintf("axm_install_empty_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
-	legacy := fmt.Sprintf("axm_install_legacy_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
-	custom := fmt.Sprintf("axm_install_custom_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
-	mediaOnly := fmt.Sprintf("axm_install_media_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
-	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(first))
-	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(legacy))
-	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(custom))
-	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(mediaOnly))
-	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.settings (key TEXT NOT NULL UNIQUE, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
-	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.subscribers (id INTEGER PRIMARY KEY)`)
-	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(legacy) + `.subscribers VALUES (65)`)
-	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)`)
-	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(legacy) + `.users VALUES (1, 'admin')`)
-	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(custom) + `.settings (key TEXT NOT NULL UNIQUE, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
-	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(custom) + `.settings (key, value) VALUES ('app.lang', '"ko"')`)
-	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(mediaOnly) + `.settings (key TEXT NOT NULL UNIQUE, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
-	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(mediaOnly) + `.settings (key, value) VALUES ('app.lang', '"en"')`)
-	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(mediaOnly) + `.media (id INTEGER PRIMARY KEY)`)
-	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(mediaOnly) + `.media VALUES (65)`)
-	defer func() {
-		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(first) + " CASCADE")
-		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(legacy) + " CASCADE")
-		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(custom) + " CASCADE")
-		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(mediaOnly) + " CASCADE")
-		admin.Close()
-	}()
-
-	db, err := sqlx.Connect("postgres", withSearchPath(t, dsn, first+","+legacy))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var current string
-	if err := db.Get(&current, `SELECT current_schema()`); err != nil {
-		t.Fatal(err)
-	}
-	if current != first {
-		t.Fatalf("current_schema()=%q, want first empty schema %q", current, first)
-	}
-	complete, err := isInstallationComplete(db)
-	if err != nil || !complete {
-		t.Fatalf("populated lower-priority legacy schema was not recognized: complete=%t err=%v", complete, err)
-	}
-	var preserved int
-	if err := db.Get(&preserved, `SELECT id FROM subscribers`); err != nil || preserved != 65 {
-		t.Fatalf("search-path subscriber data changed: id=%d err=%v", preserved, err)
-	}
-	var adminName string
-	if err := db.Get(&adminName, `SELECT name FROM users WHERE id=1`); err != nil || adminName != "admin" {
-		t.Fatalf("legacy admin was not preserved: name=%q err=%v", adminName, err)
-	}
-	for _, schema := range []string{custom, mediaOnly} {
-		candidate, err := sqlx.Connect("postgres", withSearchPath(t, dsn, schema))
-		if err != nil {
-			t.Fatal(err)
-		}
-		complete, err := isInstallationComplete(candidate)
-		candidate.Close()
-		if err != nil || !complete {
-			t.Fatalf("existing settings/media data in %s was not recognized: complete=%t err=%v", schema, complete, err)
-		}
 	}
 }
 

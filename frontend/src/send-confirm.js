@@ -163,7 +163,9 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   // its checkpoint: its people are the ones left, as for a resume (LST-67 review).
   const left = resume || !!pf.resumed;
   const n = left ? pf.remaining : (pf.willSend ?? pf.recipients);
-  const recent = !left && pf.recent && pf.recent.enabled && pf.recent.excluded > 0 ? pf.recent : null;
+  // Keep the count visible on an unscheduled continuation too: its immediate-start
+  // preflight still reports people excluded by the locked recent-send rule.
+  const recent = pf.recent && pf.recent.enabled && pf.recent.excluded > 0 ? pf.recent : null;
   const all = checkLines(pf);
   const blocked = all.some((c) => c.level === 'block');
   // Nobody to send to (approved design A5): the reason is the only line. Otherwise (a From the

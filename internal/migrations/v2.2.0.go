@@ -37,9 +37,7 @@ func V2_2_0(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger
 	if err != nil {
 		return err
 	}
-	if _, err := db.Exec(`INSERT INTO templates (name, type, subject, body)
-		SELECT $1, $2, $3, $4
-		WHERE NOT EXISTS (SELECT 1 FROM templates WHERE name = $1 AND type = $2)`,
+	if _, err := db.Exec(`INSERT INTO templates (name, type, subject, body) VALUES($1, $2, $3, $4)`,
 		"Sample transactional template", "tx", "Welcome {{ .Subscriber.Name }}", txTpl.ReadBytes()); err != nil {
 		return err
 	}

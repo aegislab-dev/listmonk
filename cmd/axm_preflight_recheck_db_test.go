@@ -322,6 +322,29 @@ func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(
 		`{"status":"running"}`); code != http.StatusBadRequest {
 		t.Fatalf("zero-recipient immediate start: HTTP %d %s", code, body)
 	}
+
+	// A paused continuation is different: approved design v2 warns and allows it to
+	// complete with no delivery when every remaining person is already held out.
+	e.db.MustExec(`UPDATE campaigns SET status='paused' WHERE id=$1`, e.campID)
+	data = pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	zeroWarning := false
+	for _, check := range out.Checks {
+		zeroWarning = zeroWarning || (check.Key == "recipients.zero" && check.Level == models.PreflightWarn)
+	}
+	if out.Mode != models.PreflightModeResume || out.Remaining != 0 || !zeroWarning {
+		t.Fatalf("empty paused continuation should warn and allow resume: %s", data)
+	}
+	if code, body := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+		`{"status":"running"}`); code != http.StatusOK {
+		t.Fatalf("zero-recipient paused resume: HTTP %d %s", code, body)
+	}
+	e.get(&status, `SELECT status::TEXT FROM campaigns WHERE id=$1`, e.campID)
+	if status != models.CampaignStatusRunning {
+		t.Fatalf("allowed empty resume left campaign in %q", status)
+	}
 }
 
 func TestScheduledEditChecksAndSavesTheNewRecentRuleAtomically(t *testing.T) {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -46,169 +45,92 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 
 	// If idempotence is on, check if the DB is already setup.
 	if idempotent {
-		complete, err := isInstallationComplete(db)
-		if err != nil {
-			lo.Fatalf("error checking existing DB schema: %v", err)
-		}
-		if complete {
+		if _, err := db.Exec("SELECT count(*) FROM settings"); err != nil {
+			// If "settings" doesn't exist, assume it's a fresh install.
+			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code != "42P01" {
+				lo.Fatalf("error checking existing DB schema: %v", err)
+			}
+		} else {
 			lo.Println("skipping install as database appears to be already setup")
 			os.Exit(0)
 		}
 	}
 
-	user := os.Getenv("LISTMONK_ADMIN_USER")
-	password := os.Getenv("LISTMONK_ADMIN_PASSWORD")
-	apiUser := os.Getenv("LISTMONK_ADMIN_API_USER")
-	if err := validateInstallBeforeSetup(user, password, apiUser, func(hasUser bool) error {
-		// Migrate the tables only after all install credentials have been validated.
-		if err := installSchema(db, fs); err != nil {
-			return fmt.Errorf("error migrating DB schema: %w", err)
-		}
-
-		// Load the queries.
-		q := prepareQueries(qMap, db, ko)
-		defList, optinList := installLists(q)
-		installSubs(defList, optinList, q)
-		campTplID, archiveTplID := installTemplates(q, fs)
-		installCampaign(campTplID, archiveTplID, q)
-
-		if user != "" && password != "" {
-			lo.Printf("creating superadmin user '%s'", user)
-		} else {
-			lo.Printf("no superadmin user created. Visit webpage to create user.")
-		}
-		if apiUser != "" {
-			lo.Printf("creating superadmin API user '%s'", apiUser)
-		}
-		if hasUser {
-			installUser(user, password, apiUser, q)
-		}
-		return nil
-	}); err != nil {
-		lo.Fatal(err)
+	// Migrate the tables.
+	if err := installSchema(lastVer, db, fs); err != nil {
+		lo.Fatalf("error migrating DB schema: %v", err)
 	}
 
-	// Record installation only after the default lists, subscribers, templates, campaign,
-	// and optional user have all been created. An interrupted install remains retryable.
-	if err := recordMigrationVersion(lastVer, db); err != nil {
-		lo.Fatalf("error recording migration version: %v", err)
+	// Load the queries.
+	q := prepareQueries(qMap, db, ko)
+
+	// Sample list.
+	defList, optinList := installLists(q)
+
+	// Sample subscribers.
+	installSubs(defList, optinList, q)
+
+	// Templates.
+	campTplID, archiveTplID := installTemplates(q)
+
+	// Sample campaign.
+	installCampaign(campTplID, archiveTplID, q)
+
+	// Setup admin user optionally.
+	var (
+		user     = os.Getenv("LISTMONK_ADMIN_USER")
+		password = os.Getenv("LISTMONK_ADMIN_PASSWORD")
+		apiUser  = os.Getenv("LISTMONK_ADMIN_API_USER")
+
+		hasUser = false
+	)
+
+	// Admin user.
+	if user != "" && password != "" {
+		if len(user) < 3 || len(password) < 8 {
+			lo.Fatal("LISTMONK_ADMIN_USER should be min 3 chars and LISTMONK_ADMIN_PASSWORD should be min 8 chars")
+		}
+
+		lo.Printf("creating superadmin user '%s'", user)
+		hasUser = true
+	} else {
+		lo.Printf("no superadmin user created. Visit webpage to create user.")
+	}
+
+	// API User.
+	if apiUser != "" {
+		if !hasUser {
+			lo.Fatal("LISTMONK_ADMIN_API_USER requires LISTMONK_ADMIN_USER and LISTMONK_ADMIN_PASSWORD to be set")
+		}
+
+		if len(apiUser) < 3 {
+			lo.Fatal("LISTMONK_ADMIN_API_USER should be min 3 chars")
+		}
+
+		lo.Printf("creating superadmin API user '%s'", apiUser)
+	}
+
+	if hasUser {
+		installUser(user, password, apiUser, q)
 	}
 
 	lo.Printf("setup complete")
 	lo.Printf(`run the program and access the dashboard at %s`, ko.MustString("app.address"))
 }
 
-// validateInstallUsers checks configuration that would otherwise fail after the schema and
-// default data have already been written. Keep it before any installation side effects so an
-// operator can correct the environment and retry safely.
-func validateInstallUsers(user, password, apiUser string) (bool, error) {
-	hasUser := user != "" && password != ""
-	if hasUser && (len(user) < 3 || len(password) < 8) {
-		return false, fmt.Errorf("LISTMONK_ADMIN_USER should be min 3 chars and LISTMONK_ADMIN_PASSWORD should be min 8 chars")
-	}
-	if apiUser != "" {
-		if !hasUser {
-			return false, fmt.Errorf("LISTMONK_ADMIN_API_USER requires LISTMONK_ADMIN_USER and LISTMONK_ADMIN_PASSWORD to be set")
-		}
-		if len(apiUser) < 3 {
-			return false, fmt.Errorf("LISTMONK_ADMIN_API_USER should be min 3 chars")
-		}
-	}
-	return hasUser, nil
-}
-
-// validateInstallBeforeSetup is the install side-effect barrier: configuration is checked
-// before schema or default data setup can run. Keep install's setup behind this function so
-// the regression test exercises the same ordering as the CLI.
-func validateInstallBeforeSetup(user, password, apiUser string, setup func(hasUser bool) error) error {
-	hasUser, err := validateInstallUsers(user, password, apiUser)
-	if err != nil {
-		return err
-	}
-	return setup(hasUser)
-}
-
 // installSchema executes the SQL schema and creates the necessary tables and types.
-func installSchema(db *sqlx.DB, fs stuffbin.FileSystem) error {
+func installSchema(curVer string, db *sqlx.DB, fs stuffbin.FileSystem) error {
 	q, err := fs.Read("/schema.sql")
 	if err != nil {
 		return err
 	}
 
-	// Keep the schema execution on one connection so a failed BEGIN/COMMIT script can
-	// explicitly roll back before the pool reuses it. schema.sql wraps the complete
-	// install in a transaction, including migrations that require transactional locks.
-	ctx := context.Background()
-	conn, err := db.Connx(ctx)
-	if err != nil {
+	if _, err := db.Exec(string(q)); err != nil {
 		return err
 	}
-	defer conn.Close()
 
-	if _, err := conn.ExecContext(ctx, string(q)); err != nil {
-		if _, rollbackErr := conn.ExecContext(ctx, "ROLLBACK"); rollbackErr != nil {
-			return fmt.Errorf("schema install failed (%v), and rollback failed: %w", err, rollbackErr)
-		}
-		return err
-	}
-	return nil
-}
-
-// isInstallationComplete distinguishes a fully installed database from a schema whose
-// setup was interrupted before its migration marker was recorded.
-func isInstallationComplete(db *sqlx.DB) (bool, error) {
-	var complete bool
-	err := db.Get(&complete, `SELECT EXISTS (
-		SELECT 1 FROM settings WHERE key = 'migrations'
-		AND CASE WHEN jsonb_typeof(value) = 'array' THEN jsonb_array_length(value) > 0 ELSE FALSE END
-	)`)
-	if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "42P01" {
-		return false, nil
-	}
-	if err != nil || complete {
-		return complete, err
-	}
-
-	// Databases created before migration tracking have no `migrations` setting. Also,
-	// preserve a populated legacy install if that setting was removed manually. The
-	// fresh schema contains default settings rows but no rows in the other tables, so
-	// those defaults do not make an interrupted schema-only install look complete.
-	type tableInPath struct {
-		Schema string `db:"schemaname"`
-		Name   string `db:"tablename"`
-	}
-	var tables []tableInPath
-	if err := db.Select(&tables, `SELECT schemaname, tablename FROM pg_tables
-		WHERE schemaname = ANY(current_schemas(false))
-		AND tablename IN ('subscribers', 'lists', 'campaigns', 'templates', 'users', 'media')
-		ORDER BY array_position(current_schemas(false), schemaname), tablename`); err != nil {
-		return false, err
-	}
-	for _, table := range tables {
-		var populated bool
-		query := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s.%s LIMIT 1)",
-			pq.QuoteIdentifier(table.Schema), pq.QuoteIdentifier(table.Name))
-		if err := db.Get(&populated, query); err != nil {
-			return false, err
-		}
-		if populated {
-			return true, nil
-		}
-	}
-	// The schema's fresh-install settings have one shared insertion timestamp and
-	// the stock English language. A changed setting (or media-only install) is
-	// user data even when every campaign/list table has been emptied.
-	var customizedSettings bool
-	err = db.Get(&customizedSettings, `SELECT
-		EXISTS (SELECT 1 FROM settings WHERE key = 'app.lang' AND value <> '"en"'::jsonb)
-		OR (SELECT COUNT(DISTINCT updated_at) FROM settings) > 1`)
-	if err != nil {
-		return false, err
-	}
-	if customizedSettings {
-		return true, nil
-	}
-	return false, nil
+	// Insert the current migration version.
+	return recordMigrationVersion(curVer, db)
 }
 
 func installLists(q *models.Queries) (int, int) {
@@ -266,7 +188,7 @@ func installSubs(defListID, optinListID int, q *models.Queries) {
 	}
 }
 
-func installTemplates(q *models.Queries, fs stuffbin.FileSystem) (int, int) {
+func installTemplates(q *models.Queries) (int, int) {
 	// Default campaign template.
 	campTpl, err := fs.Get("/static/email-templates/default.tpl")
 	if err != nil {

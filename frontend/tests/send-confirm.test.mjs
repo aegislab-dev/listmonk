@@ -390,8 +390,11 @@ test('scheduled and sent from before: the title counts the people left, not all 
 
 test('an unscheduled started campaign uses only remaining recipients for an immediate start', () => {
   const m = model({ mode: 'start', resumed: true, recipients: 12, remaining: 0, willSend: 1,
+    recent: { enabled: true, days: 14, scope: 'all', excluded: 11, held: 11 },
     checks: [{ key: 'recipients.zero', level: 'block' }] });
   assert.equal(m.count, 0);
   assert.equal(m.title.key, 'campaigns.sendConfirm.title.zero');
   assert.equal(m.blocked, true);
+  assert.equal(m.recent.excluded, 11);
+  assert.equal(m.zero, false, 'the summary remains visible when the recent rule accounts for the zero');
 });

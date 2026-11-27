@@ -508,7 +508,12 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		if camp.Type == models.CampaignTypeRegular &&
+		// Resuming a paused campaign is allowed even when its remaining audience is empty.
+		// The preflight warns in that case and the manager completes the campaign without
+		// sending another message. Drafts (including cancelled schedules) still need the
+		// zero-recipient guard before a new start or schedule.
+		pausedResume := camp.Status == models.CampaignStatusPaused && req.Status == models.CampaignStatusRunning
+		if !pausedResume && camp.Type == models.CampaignTypeRegular &&
 			(camp.Status == models.CampaignStatusDraft || camp.Status == models.CampaignStatusPaused) {
 			hasSendHistory := camp.StartedAt.Valid || camp.LastSubscriberID > 0 || camp.Sent > 0 || camp.LegacySendHistory
 			lists, aud, err := a.core.GetPreflightAudience(c.Request().Context(), id, camp.LastSubscriberID, hasSendHistory)
