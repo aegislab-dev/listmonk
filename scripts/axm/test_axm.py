@@ -508,7 +508,7 @@ class RouteCoverageTest(unittest.TestCase):
     @staticmethod
     def _visits(spec):
         text = (ROOT / 'frontend/cypress/e2e' / spec).read_text()
-        out = set(re.findall(r"(?:visit|loginAndVisit)\(\s*[`'\"]([^`'\"]*)", text))
+        out = set(re.findall(r"\b(?:visit|loginAndVisit|visitWithFixedClock)\(\s*[`'\"]([^`'\"]*)", text))
         # 클릭으로 옮겨 간 화면도 방문이다: cy.location('pathname').should('eq', '/admin/…')
         out |= set(re.findall(r"location\(\s*'pathname'\s*\)\.should\(\s*'eq',\s*[`'\"]([^`'\"]*)", text))
         out |= {x.split('next=')[1] for x in out if 'next=' in x}
