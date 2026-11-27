@@ -97,7 +97,7 @@ export const parseFormatted = (text, mode) => {
   return out;
 };
 
-export const isFormatted = (seg) => Boolean(seg.bold || seg.underline || seg.size);
+export const isFormatted = (seg) => Boolean(seg.bold || seg.underline || validSize(seg.size));
 export const hasFormatting = (text, mode) => parseFormatted(text, mode).some(isFormatted);
 
 const same = (a, b) => a.bold === b.bold && a.underline === b.underline && a.size === b.size;

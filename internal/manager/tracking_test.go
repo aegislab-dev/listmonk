@@ -273,3 +273,23 @@ func TestRewriteTrackingHTMLPreservesMarkup(t *testing.T) {
 		t.Fatalf("Markup changed outside tracking attributes: %s / %v", got, links)
 	}
 }
+
+// LST-77: a visual Text block with bold, underline and font size is inline HTML in the
+// body. The send keeps that markup as it is, renders the personalization inside it and
+// still tracks the links and adds the view pixel (LST-9).
+func TestVisualTrackingKeepsInlineFormatting(t *testing.T) {
+	const text = `<div><div>안녕하세요, <strong>{{ .Subscriber.Name }}</strong>님.<br/><strong>12월 3일까지</strong> 신청하면 ` +
+		`<span style="font-size:20px"><strong><u>수수료가 0원입니다</u></strong></span>. <u><a href="https://example.test/terms" target="_blank">약관</a></u></div></div>`
+	body := `<html><body>` + text + `<a href="https://example.test/promo">자세히 보기</a></body></html>`
+	m, store := trackingManager()
+	c := models.Campaign{UUID: "campaign", ContentType: "visual", Messenger: "email", Body: body}
+	out := string(renderTrackingCampaign(t, m, &c, "subscriber").Body())
+	if strings.Join(store.urls, "|") != "https://example.test/terms|https://example.test/promo" {
+		t.Fatalf("Wrong registered URLs: %v", store.urls)
+	}
+	want := strings.NewReplacer("{{ .Subscriber.Name }}", "Alice",
+		"https://example.test/terms", "https://lists.example.test/link/link-1/campaign/subscriber").Replace(text)
+	if !strings.Contains(out, want) || !strings.Contains(out, "/link/link-2/campaign/subscriber") || strings.Count(out, "/px.png") != 1 {
+		t.Fatalf("Formatting, personalization or tracking changed: %s", out)
+	}
+}
