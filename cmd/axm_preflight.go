@@ -105,11 +105,11 @@ type recentFacts struct {
 
 // preflightFacts is everything the checks are decided from.
 type preflightFacts struct {
-	Mode        string
+	Mode           string
 	CountRemaining bool
-	CampType    string
-	Messenger   string
-	ContentType string
+	CampType       string
+	Messenger      string
+	ContentType    string
 
 	Total, Remaining int
 	// Lists of the campaign, and how many of them still exist.
@@ -389,9 +389,9 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	ctx := c.Request().Context()
 	// Pending deliveries of a paused or scheduled campaign follow the same rules as the
 	// sender, even if deliveries were recorded before it could save a checkpoint.
-	hasSendHistory := camp.StartedAt.Valid || camp.LastSubscriberID > 0 || camp.Sent > 0 || camp.LegacySendHistory
-	countRemaining := mode == models.PreflightModeResume || mode == models.PreflightModeScheduled ||
-		(mode == models.PreflightModeSchedule && hasSendHistory)
+	hasSendHistory := camp.Type == models.CampaignTypeRegular &&
+		(camp.StartedAt.Valid || camp.LastSubscriberID > 0 || camp.Sent > 0 || camp.LegacySendHistory)
+	countRemaining := mode == models.PreflightModeResume || mode == models.PreflightModeScheduled || hasSendHistory
 	lists, aud, err := a.core.GetPreflightAudience(ctx, id, camp.LastSubscriberID, countRemaining)
 	if err != nil {
 		return err
@@ -404,7 +404,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		}
 	}
 	sentIsMinimum := countRemaining && camp.LegacySendHistory
-	rescheduled := (mode == models.PreflightModeScheduled || (mode == models.PreflightModeSchedule && hasSendHistory)) &&
+	rescheduled := (mode == models.PreflightModeScheduled || hasSendHistory) &&
 		(aud.Remaining != aud.Total-aud.Recent || sent > 0 || camp.LastSubscriberID > 0 || sentIsMinimum)
 
 	// A draft started under the sender policy is sent from the starting user's address.

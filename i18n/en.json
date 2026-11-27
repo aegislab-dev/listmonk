@@ -891,7 +891,7 @@
     "campaigns.sendConfirm.check.recent.applied.resumeNone": "People who got mail in the last {days} days are counted again and left out when it goes on.",
     "campaigns.sendConfirm.check.recent.applied.scopeUnavailable": "The {excluded} people already left out of this send stay out. The source campaign is gone, so its exclusion scope cannot be shown.",
     "campaigns.sendConfirm.check.recent.all.block": "**Everybody on the lists got mail in the last {days} days, so there is nobody to send to.** Turn the rule off or change its period or scope.",
-    "campaigns.sendConfirm.check.recent.lockedAll.block": "**Everybody on the lists got mail in the last {days} days, so there is nobody to send to.** The rule cannot be changed after sending starts. Create a new campaign or change its audience lists.",
+    "campaigns.sendConfirm.check.recent.lockedAll.block": "**There are no recipients left after recent recipients and people already processed in this send are removed.** The rule cannot be changed after sending starts. Create a new campaign or change its audience lists.",
     "campaigns.sendConfirm.check.recent.heldAll.block": "**The {held} people already left out of this send stay out, so there is nobody to send to.** The rule cannot be changed after sending starts. Create a new campaign or change its audience lists.",
     "campaigns.sendConfirm.check.recent.mixedAll.block": "**The {fresh} recent recipients and {held} people already left out of this send are all excluded, so there is nobody to send to.** People already left out stay out. Create a new campaign or change its audience lists.",
     "campaigns.sendConfirm.zeroSummary": "Nobody can receive it.",

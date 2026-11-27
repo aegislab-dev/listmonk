@@ -387,3 +387,11 @@ test('scheduled and sent from before: the title counts the people left, not all 
   assert.equal(none.zero, true);
   assert.equal(none.blocked, true);
 });
+
+test('an unscheduled started campaign uses only remaining recipients for an immediate start', () => {
+  const m = model({ mode: 'start', resumed: true, recipients: 12, remaining: 0, willSend: 1,
+    checks: [{ key: 'recipients.zero', level: 'block' }] });
+  assert.equal(m.count, 0);
+  assert.equal(m.title.key, 'campaigns.sendConfirm.title.zero');
+  assert.equal(m.blocked, true);
+});

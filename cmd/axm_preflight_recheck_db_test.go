@@ -307,6 +307,21 @@ func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(
 	if status != models.CampaignStatusDraft {
 		t.Fatalf("refused reschedule changed status to %q", status)
 	}
+
+	// Removing the time turns the confirmation into an immediate start, but this is
+	// still a continuation and the already sent person must not reappear in its count.
+	e.db.MustExec(`UPDATE campaigns SET send_at=NULL WHERE id=$1`, e.campID)
+	data = pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Mode != models.PreflightModeStart || !out.Resumed || out.WillSend != 0 || out.Remaining != 0 {
+		t.Fatalf("immediate-start confirmation counted sent recipients: %s", data)
+	}
+	if code, body := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+		`{"status":"running"}`); code != http.StatusBadRequest {
+		t.Fatalf("zero-recipient immediate start: HTTP %d %s", code, body)
+	}
 }
 
 func TestScheduledEditChecksAndSavesTheNewRecentRuleAtomically(t *testing.T) {

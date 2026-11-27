@@ -180,7 +180,7 @@ func isInstallationComplete(db *sqlx.DB) (bool, error) {
 	var tables []tableInPath
 	if err := db.Select(&tables, `SELECT schemaname, tablename FROM pg_tables
 		WHERE schemaname = ANY(current_schemas(false))
-		AND tablename IN ('subscribers', 'lists', 'campaigns', 'templates', 'users')
+		AND tablename IN ('subscribers', 'lists', 'campaigns', 'templates', 'users', 'media')
 		ORDER BY array_position(current_schemas(false), schemaname), tablename`); err != nil {
 		return false, err
 	}
@@ -194,6 +194,19 @@ func isInstallationComplete(db *sqlx.DB) (bool, error) {
 		if populated {
 			return true, nil
 		}
+	}
+	// The schema's fresh-install settings have one shared insertion timestamp and
+	// the stock English language. A changed setting (or media-only install) is
+	// user data even when every campaign/list table has been emptied.
+	var customizedSettings bool
+	err = db.Get(&customizedSettings, `SELECT
+		EXISTS (SELECT 1 FROM settings WHERE key = 'app.lang' AND value <> '"en"'::jsonb)
+		OR (SELECT COUNT(DISTINCT updated_at) FROM settings) > 1`)
+	if err != nil {
+		return false, err
+	}
+	if customizedSettings {
+		return true, nil
 	}
 	return false, nil
 }

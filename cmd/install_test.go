@@ -1,26 +1,77 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
 
-func TestInstallValidatesCredentialsBeforeAnySetupSideEffects(t *testing.T) {
-	called := false
-	err := validateInstallBeforeSetup("x", "long-enough", "", func(bool) error {
-		called = true
-		return nil
-	})
-	if err == nil || called {
-		t.Fatalf("invalid credentials: setup called=%t, error=%v", called, err)
-	}
+	"github.com/jmoiron/sqlx"
+	"github.com/knadh/stuffbin"
+	"github.com/lib/pq"
+)
 
-	err = validateInstallBeforeSetup("admin", "long-enough", "", func(hasUser bool) error {
-		called = true
-		if !hasUser {
-			t.Fatal("valid admin was not passed to setup")
+func TestInstallInvalidCredentialsDoNotWriteSchema(t *testing.T) {
+	if dsn := os.Getenv("AXM_INSTALL_INVALID_CHILD_DSN"); dsn != "" {
+		db, err := sqlx.Connect("postgres", dsn)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
 		}
-		return nil
+		fs, err := stuffbin.NewLocalFS("/", repoRoot(t)+":/")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		install("6.2.0", db, fs, false, false)
+		os.Exit(0)
+	}
+	dsn := os.Getenv("AXM_TEST_DB_URL")
+	if dsn == "" {
+		t.Skip("AXM_TEST_DB_URL not set")
+	}
+	admin, err := sqlx.Connect("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("axm_invalid_install_%d", time.Now().UnixNano())
+	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(schema))
+	t.Cleanup(func() {
+		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(schema) + " CASCADE")
+		admin.Close()
 	})
-	if err != nil || !called {
-		t.Fatalf("valid credentials: setup called=%t, error=%v", called, err)
+	childDSN := withSearchPath(t, dsn, schema)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestInstallInvalidCredentialsDoNotWriteSchema$")
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	env := make([]string, 0, len(os.Environ())+4)
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(value, "LISTMONK_ADMIN_USER=") &&
+			!strings.HasPrefix(value, "LISTMONK_ADMIN_PASSWORD=") &&
+			!strings.HasPrefix(value, "LISTMONK_ADMIN_API_USER=") &&
+			!strings.HasPrefix(value, "AXM_INSTALL_INVALID_CHILD_DSN=") {
+			env = append(env, value)
+		}
+	}
+	cmd.Env = append(env,
+		"AXM_INSTALL_INVALID_CHILD_DSN="+childDSN,
+		"LISTMONK_ADMIN_USER=x",
+		"LISTMONK_ADMIN_PASSWORD=long-enough-password",
+		"LISTMONK_ADMIN_API_USER=",
+	)
+	err = cmd.Run()
+	if err == nil || !strings.Contains(output.String(), "LISTMONK_ADMIN_USER should be min 3 chars") {
+		t.Fatalf("CLI did not reject invalid install credentials: err=%v output=%s", err, output.String())
+	}
+	var tables int
+	if err := admin.Get(&tables, `SELECT COUNT(*) FROM pg_tables WHERE schemaname=$1 AND tablename IN ('settings','lists','campaigns','templates')`, schema); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 0 {
+		t.Fatalf("install wrote %d tables before rejecting invalid credentials", tables)
 	}
 }
 

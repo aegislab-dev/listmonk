@@ -811,16 +811,28 @@ func TestInstallationCompleteChecksEveryEffectiveSearchSchema(t *testing.T) {
 	}
 	first := fmt.Sprintf("axm_install_empty_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
 	legacy := fmt.Sprintf("axm_install_legacy_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
+	custom := fmt.Sprintf("axm_install_custom_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
+	mediaOnly := fmt.Sprintf("axm_install_media_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
 	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(first))
 	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(legacy))
-	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.settings (key TEXT NOT NULL UNIQUE, value JSONB NOT NULL)`)
+	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(custom))
+	admin.MustExec("CREATE SCHEMA " + pq.QuoteIdentifier(mediaOnly))
+	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.settings (key TEXT NOT NULL UNIQUE, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
 	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.subscribers (id INTEGER PRIMARY KEY)`)
 	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(legacy) + `.subscribers VALUES (65)`)
 	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)`)
 	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(legacy) + `.users VALUES (1, 'admin')`)
+	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(custom) + `.settings (key TEXT NOT NULL UNIQUE, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(custom) + `.settings (key, value) VALUES ('app.lang', '"ko"')`)
+	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(mediaOnly) + `.settings (key TEXT NOT NULL UNIQUE, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(mediaOnly) + `.settings (key, value) VALUES ('app.lang', '"en"')`)
+	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(mediaOnly) + `.media (id INTEGER PRIMARY KEY)`)
+	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(mediaOnly) + `.media VALUES (65)`)
 	defer func() {
 		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(first) + " CASCADE")
 		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(legacy) + " CASCADE")
+		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(custom) + " CASCADE")
+		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(mediaOnly) + " CASCADE")
 		admin.Close()
 	}()
 
@@ -847,6 +859,17 @@ func TestInstallationCompleteChecksEveryEffectiveSearchSchema(t *testing.T) {
 	var adminName string
 	if err := db.Get(&adminName, `SELECT name FROM users WHERE id=1`); err != nil || adminName != "admin" {
 		t.Fatalf("legacy admin was not preserved: name=%q err=%v", adminName, err)
+	}
+	for _, schema := range []string{custom, mediaOnly} {
+		candidate, err := sqlx.Connect("postgres", withSearchPath(t, dsn, schema))
+		if err != nil {
+			t.Fatal(err)
+		}
+		complete, err := isInstallationComplete(candidate)
+		candidate.Close()
+		if err != nil || !complete {
+			t.Fatalf("existing settings/media data in %s was not recognized: complete=%t err=%v", schema, complete, err)
+		}
 	}
 }
 
