@@ -1,0 +1,147 @@
+// Inline formatting (bold, underline, font size) for visual editor Text blocks (LST-77).
+//
+// A Text block stores its content in `props.text` and the upstream renderer
+// (@usewaypoint/block-text) either escapes it (markdown off) or renders it as
+// Markdown with a small HTML allow-list (b, strong, u, span[style], br, div, ...).
+// Formatting is therefore stored as inline HTML inside the Markdown source, so the
+// unchanged upstream renderer, the editor preview and an older image all render it.
+//
+// Three storage modes:
+// - plain:    markdown off. No formatting. Text is escaped by the renderer.
+// - markdown: markdown on. Text is Markdown source; formatting is inline tags in it.
+// - html:     markdown on and the text is one HTML block written by this editor,
+//             <div class="axm-text">…</div>, with escaped text and <br> for line
+//             breaks. A plain block turns into this when it gets its first formatting,
+//             so its characters keep their literal meaning (no Markdown syntax) and its
+//             line breaks show as typed. Marked passes a one-line HTML block through
+//             untouched.
+
+export const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32];
+const MIN_SIZE = 8;
+const MAX_SIZE = 72;
+
+const HTML_OPEN = '<div class="axm-text">';
+const HTML_CLOSE = '</div>';
+
+export const textMode = (text, markdown) => {
+  if (!markdown) return 'plain';
+  const t = text || '';
+  return t.startsWith(HTML_OPEN) && t.endsWith(HTML_CLOSE) && !t.includes('\n') ? 'html' : 'markdown';
+};
+
+const ENTITIES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", '#x27': "'", nbsp: '\u00a0',
+};
+const decode = (s) => s.replace(/&(amp|lt|gt|quot|#39|#x27|nbsp);/g, (_, e) => ENTITIES[e]);
+const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const NONE = { bold: false, underline: false, size: null };
+const validSize = (n) => Number.isInteger(n) && n >= MIN_SIZE && n <= MAX_SIZE;
+
+// The tags this editor writes, plus the obvious hand-written equivalents.
+const TAG = /<(\/?)(strong|b|u)>|<span style="font-size:\s*(\d+)px;?">|<(\/)span>|<br\s*\/?>/gi;
+
+// Splits stored text into formatted segments: [{ value, bold, underline, size }].
+// Tags that do not open or close one of ours stay as literal source text.
+export const parseFormatted = (text, mode) => {
+  let src = text || '';
+  if (mode === 'plain') return src ? [{ value: src, ...NONE }] : [];
+  const html = mode === 'html';
+  if (html) src = src.slice(HTML_OPEN.length, src.length - HTML_CLOSE.length);
+
+  const stack = [];
+  const out = [];
+  const fmt = () => ({
+    bold: stack.some((t) => t.kind === 'bold'),
+    underline: stack.some((t) => t.kind === 'underline'),
+    size: [...stack].reverse().find((t) => t.kind === 'size')?.size ?? null,
+  });
+  const push = (value) => {
+    if (!value) return;
+    const v = html ? decode(value) : value;
+    const f = fmt();
+    const last = out[out.length - 1];
+    if (last && last.bold === f.bold && last.underline === f.underline && last.size === f.size) last.value += v;
+    else out.push({ value: v, ...f });
+  };
+  const close = (kind) => {
+    for (let i = stack.length - 1; i >= 0; i -= 1) {
+      if (stack[i].kind === kind) { stack.splice(i, 1); return true; }
+    }
+    return false;
+  };
+
+  let pos = 0;
+  TAG.lastIndex = 0;
+  for (let m = TAG.exec(src); m; m = TAG.exec(src)) {
+    push(src.slice(pos, m.index));
+    pos = m.index + m[0].length;
+    const [raw, slash, name, size, spanClose] = m;
+    if (name) {
+      const kind = name.toLowerCase() === 'u' ? 'underline' : 'bold';
+      if (!slash) stack.push({ kind });
+      else if (!close(kind)) push(raw);
+    } else if (size !== undefined) {
+      const n = Number(size);
+      if (validSize(n)) stack.push({ kind: 'size', size: n });
+      else push(raw);
+    } else if (spanClose) {
+      if (!close('size')) push(raw);
+    } else if (html) {
+      push('\n');
+    } else {
+      push(raw);
+    }
+  }
+  push(src.slice(pos));
+  return out;
+};
+
+export const isFormatted = (seg) => Boolean(seg.bold || seg.underline || seg.size);
+export const hasFormatting = (text, mode) => parseFormatted(text, mode).some(isFormatted);
+
+const same = (a, b) => a.bold === b.bold && a.underline === b.underline && a.size === b.size;
+
+// Writes runs back to stored text. A run is { type: 'text', value } or
+// { type: 'token', raw } with bold, underline, size. Returns { text, markdown }.
+export const serializeFormatted = (runs, mode) => {
+  const formatted = runs.some((r) => isFormatted(r) && (r.type === 'token' || r.value.replace(/\n/g, '')));
+  if (mode === 'plain' && !formatted) {
+    return { text: runs.map((r) => (r.type === 'token' ? r.raw : r.value)).join(''), markdown: false };
+  }
+  const html = mode !== 'markdown';
+  const esc = (s) => (html ? escape(s) : s);
+  const nl = html ? '<br>' : '\n';
+
+  // Group consecutive runs with the same formatting.
+  const groups = [];
+  runs.forEach((r) => {
+    const value = r.type === 'token' ? r.raw : r.value;
+    if (!value) return;
+    const piece = { token: r.type === 'token', value };
+    const last = groups[groups.length - 1];
+    if (last && same(last, r)) last.pieces.push(piece);
+    else {
+      groups.push({
+        bold: Boolean(r.bold), underline: Boolean(r.underline), size: validSize(r.size) ? r.size : null, pieces: [piece],
+      });
+    }
+  });
+
+  let text = '';
+  groups.forEach((g) => {
+    const open = (g.size ? `<span style="font-size:${g.size}px">` : '') + (g.bold ? '<strong>' : '') + (g.underline ? '<u>' : '');
+    const end = (g.underline ? '</u>' : '') + (g.bold ? '</strong>' : '') + (g.size ? '</span>' : '');
+    // Tags never span a line break: a Markdown blank line would cut them apart.
+    const lines = [''];
+    g.pieces.forEach((p) => {
+      if (p.token) { lines[lines.length - 1] += p.value; return; }
+      p.value.split('\n').forEach((part, i) => {
+        if (i > 0) lines.push('');
+        lines[lines.length - 1] += esc(part);
+      });
+    });
+    text += lines.map((l) => (l && (open || end) ? open + l + end : l)).join(nl);
+  });
+  return { text: html ? HTML_OPEN + text + HTML_CLOSE : text, markdown: true };
+};

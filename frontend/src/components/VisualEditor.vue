@@ -20,6 +20,9 @@ import Media from '../views/Media.vue';
 import {
   BASE_ITEMS, buildToken, parseTokens, loadItems,
 } from '../personalization';
+import {
+  FONT_SIZES, textMode, parseFormatted, serializeFormatted,
+} from '../text-format';
 
 export default {
   components: {
@@ -56,7 +59,15 @@ export default {
       const standard = (this.serverConfig.axm_standard_attribs || []).map(({ key }) => key);
       const standardLabels = Object.fromEntries(standard.map((key) => [key, this.$t(`subscribers.standard.${key}`)]));
       const labels = () => ({ ...standardLabels, ...(window.listmonkPersonalization?.labels || {}) });
+      const formatKeys = ['toolbar', 'bold', 'underline', 'size', 'sizeDefault', 'clear', 'markdownLocked'];
       return {
+        format: {
+          strings: Object.fromEntries(formatKeys.map((key) => [key, this.$t(`campaigns.format.${key}`)])),
+          sizes: FONT_SIZES,
+          textMode,
+          parseFormatted,
+          serializeFormatted,
+        },
         strings,
         baseItems,
         disabled: this.disabled,

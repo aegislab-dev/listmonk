@@ -1,8 +1,11 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import { Add, Refresh } from '@mui/icons-material';
-import { Box, Button, CircularProgress, List, ListItemButton, Popover, Stack, TextField, Typography } from '@mui/material';
+import { Add, FormatBold, FormatClear, FormatUnderlined, Refresh } from '@mui/icons-material';
 import {
-  chipLabel, chipStyle, ItemResult, Personalization, PersonalizationItem,
+  Box, Button, CircularProgress, IconButton, List, ListItemButton, MenuItem, Popover, Select, Stack, TextField,
+  ToggleButton, Tooltip, Typography,
+} from '@mui/material';
+import {
+  chipLabel, chipStyle, FormatRun, ItemResult, Personalization, PersonalizationItem, TextMode,
 } from '../../../../../personalization';
 
 type Props = {
@@ -10,29 +13,87 @@ type Props = {
   label: string;
   rows: number;
   defaultValue: string;
-  onChange: (text: string) => void;
+  // Text blocks only (LST-77): bold, underline and font size on part of the text.
+  formatting?: boolean;
+  markdown?: boolean | null;
+  onChange: (text: string, markdown?: boolean) => void;
 };
+
+type Fmt = { bold: boolean; underline: boolean; size: number | null };
+const NO_FMT: Fmt = { bold: false, underline: false, size: null };
+
+// The formatting an element adds to what it contains. Chromium's bold/underline
+// commands write <b>/<u> or, when undoing them inside a tag, a style; sizes are
+// spans this editor writes (data-axm-size, "" = back to the block's size).
+function elementFmt(el: HTMLElement, f: Fmt): Fmt {
+  const n = { ...f };
+  if (el.tagName === 'B' || el.tagName === 'STRONG') n.bold = true;
+  if (el.tagName === 'U') n.underline = true;
+  const weight = el.style.fontWeight;
+  if (weight) n.bold = weight === 'bold' || weight === 'bolder' || Number(weight) >= 600;
+  const deco = el.style.textDecorationLine || el.style.textDecoration;
+  if (deco) n.underline = deco.includes('underline');
+  if (el.dataset.axmSize === '') n.size = null;
+  else if (el.dataset.axmSize !== undefined) {
+    // removeFormat strips the style but leaves the mark: the style is what counts.
+    const px = /^(\d+)px$/.exec(el.style.fontSize);
+    if (px) n.size = Number(px[1]);
+  }
+  return n;
+}
+
+function fmtAt(node: Node | null, root: HTMLElement): Fmt {
+  const chain: HTMLElement[] = [];
+  for (let n: Node | null = node; n && n !== root; n = n.parentNode) {
+    if (n instanceof HTMLElement) chain.unshift(n);
+  }
+  return chain.reduce((f, el) => elementFmt(el, f), NO_FMT);
+}
+
+function wrap(node: Node, f: Fmt) {
+  let out = node;
+  if (f.underline) { const u = document.createElement('u'); u.append(out); out = u; }
+  if (f.bold) { const b = document.createElement('strong'); b.append(out); out = b; }
+  if (f.size) { const s = sizeSpan(f.size); s.append(out); out = s; }
+  return out;
+}
+
+function sizeSpan(size: number | null) {
+  const s = document.createElement('span');
+  s.dataset.axmSize = size ? String(size) : '';
+  s.style.fontSize = size ? `${size}px` : '14px';
+  return s;
+}
 
 // This DOM is owned by the browser while editing so React never resets an IME
 // composition, selection or native undo transaction on a document update.
-function serialize(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+function collect(node: Node, f: Fmt, out: FormatRun[]) {
+  const text = (value: string, g: Fmt = f) => { if (value) out.push({ type: 'text', value, ...g }); };
+  if (node.nodeType === Node.TEXT_NODE) { text(node.textContent || ''); return; }
   if (node instanceof HTMLElement) {
-    if (node.dataset.token !== undefined) return node.dataset.token;
-    if (node.tagName === 'BR') return '\n';
+    if (node.dataset.token !== undefined) { out.push({ type: 'token', raw: node.dataset.token, ...f }); return; }
+    if (node.tagName === 'BR') { text('\n', NO_FMT); return; }
   }
   // Chromium also creates block wrappers when insertText contains a newline.
   // A lone <br> is an empty-line caret placeholder, not an extra stored newline.
-  if (node instanceof HTMLElement && node.childNodes.length === 1 && node.firstChild?.nodeName === 'BR') return '';
-  let text = '';
+  if (node instanceof HTMLElement && node.childNodes.length === 1 && node.firstChild?.nodeName === 'BR') return;
+  const inner = node instanceof HTMLElement ? elementFmt(node, f) : f;
   Array.from(node.childNodes).forEach((child, index, children) => {
     const isBlock = (n: Node) => n instanceof HTMLElement && /^(DIV|P)$/.test(n.tagName);
-    if (isBlock(child) && index > 0) text += '\n';
-    text += serialize(child);
-    if (isBlock(child) && children[index + 1] && !isBlock(children[index + 1])) text += '\n';
+    if (isBlock(child) && index > 0) text('\n', NO_FMT);
+    collect(child, inner, out);
+    if (isBlock(child) && children[index + 1] && !isBlock(children[index + 1])) text('\n', NO_FMT);
   });
-  return text;
 }
+
+function runsOf(node: Node, f: Fmt = NO_FMT) {
+  const out: FormatRun[] = [];
+  collect(node, f, out);
+  return out;
+}
+
+const plainText = (runs: FormatRun[]) => runs.map((r) => (r.type === 'token' ? r.raw : r.value)).join('');
+const serialize = (node: Node) => plainText(runsOf(node));
 
 function makeChip(config: Personalization, item: PersonalizationItem, fallback: string, raw: string) {
   const chip = document.createElement('span');
@@ -46,7 +107,12 @@ function makeChip(config: Personalization, item: PersonalizationItem, fallback: 
   return chip;
 }
 
-export default function PersonalizationTextInput({ config, label, rows, defaultValue, onChange }: Props) {
+export default function PersonalizationTextInput({
+  config, label, rows, defaultValue, formatting = false, markdown, onChange,
+}: Props) {
+  const format = formatting ? config.format : undefined;
+  const mode = useRef<TextMode>(format ? format.textMode(defaultValue, markdown) : 'plain');
+  const [active, setActive] = useState<Fmt>(NO_FMT);
   const id = useId();
   const editor = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -68,9 +134,13 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
     const el = editor.current!;
     // StrictMode replays effects. Populate exactly once, not on every keystroke.
     if (!mounted.current) {
-      for (const part of config.parseTokens(defaultValue)) {
-        el.append(part.type === 'text' ? document.createTextNode(part.value)
-          : makeChip(config, part.item, part.fallback, part.raw));
+      const segments = format ? format.parseFormatted(defaultValue, mode.current)
+        : [{ value: defaultValue, ...NO_FMT }];
+      for (const seg of segments) {
+        for (const part of config.parseTokens(seg.value)) {
+          el.append(wrap(part.type === 'text' ? document.createTextNode(part.value)
+            : makeChip(config, part.item, part.fallback, part.raw), seg));
+        }
       }
       mounted.current = true;
     }
@@ -80,6 +150,7 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
         const range = selection.getRangeAt(0);
         if (el.contains(range.startContainer) && el.contains(range.endContainer)) {
           lastRange.current = range.cloneRange();
+          if (format) setActive(fmtAt(range.startContainer, el));
         }
       }
     };
@@ -87,7 +158,60 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
     return () => { document.removeEventListener('selectionchange', remember); request.current += 1; };
   }, []);
 
-  const emit = () => onChange(serialize(editor.current!));
+  useEffect(() => {
+    // The Markdown switch can change the mode of an unformatted block. A block
+    // written as one HTML block by this editor stays that way.
+    if (format && mode.current !== 'html') mode.current = markdown ? 'markdown' : 'plain';
+  }, [markdown]);
+
+  const emit = () => {
+    if (!format) { onChange(serialize(editor.current!)); return; }
+    const res = format.serializeFormatted(runsOf(editor.current!), mode.current);
+    mode.current = format.textMode(res.text, res.markdown);
+    onChange(res.text, res.markdown);
+  };
+
+  const pendingSize = useRef<number | null>(null);
+  const convertFonts = () => {
+    const fonts = editor.current!.querySelectorAll('font');
+    if (!fonts.length) return;
+    // Moving the text nodes would drop a caret inside them; put it back.
+    const selection = window.getSelection()!;
+    const { anchorNode, anchorOffset, focusNode, focusOffset } = selection;
+    fonts.forEach((font) => {
+      const span = sizeSpan(font.getAttribute('size') === '7' ? pendingSize.current : null);
+      font.replaceWith(span);
+      span.append(...Array.from(font.childNodes));
+    });
+    if (anchorNode?.isConnected && focusNode?.isConnected) selection.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
+  };
+
+  // Toolbar commands run on the saved selection, so a click on the size menu
+  // (which takes focus) still formats what was selected in the box.
+  const applyFormat = (command: 'bold' | 'underline' | 'size' | 'clear', size: number | null = null) => {
+    const el = editor.current!;
+    restore();
+    document.execCommand('styleWithCSS', false, 'false');
+    if (command === 'bold' || command === 'underline') {
+      document.execCommand(command);
+    } else if (command === 'size') {
+      // Chromium marks the selection with <font size=7> and splits enclosing sizes;
+      // swap the marker for this editor's size span. With nothing selected the
+      // marker appears with the next typed text.
+      pendingSize.current = size;
+      document.execCommand('fontSize', false, '7');
+      convertFonts();
+    } else {
+      document.execCommand('removeFormat');
+    }
+    el.normalize();
+    const selection = window.getSelection();
+    if (selection?.rangeCount) {
+      lastRange.current = selection.getRangeAt(0).cloneRange();
+      setActive(fmtAt(selection.getRangeAt(0).startContainer, el));
+    }
+    emit();
+  };
   const restore = (chip?: HTMLElement) => {
     const el = editor.current!;
     el.focus();
@@ -208,17 +332,55 @@ export default function PersonalizationTextInput({ config, label, rows, defaultV
       <Button ref={button} disabled={config.disabled} size="small" variant="outlined" startIcon={<Add />} aria-haspopup="dialog"
         aria-expanded={Boolean(anchor)} onMouseDown={(ev) => ev.preventDefault()} onClick={() => open(button.current!)}>{s.insert}</Button>
     </Stack>
+    {format && <Stack direction="row" alignItems="center" gap={0.5} mb={1} role="toolbar" aria-label={format.strings.toolbar}>
+      <Tooltip title={`${format.strings.bold} (Ctrl+B)`}>
+        <span><ToggleButton value="bold" size="small" selected={active.bold} disabled={config.disabled}
+          aria-label={format.strings.bold} data-format="bold" sx={{ p: 0.5 }}
+          onMouseDown={(ev) => ev.preventDefault()} onClick={() => applyFormat('bold')}>
+          <FormatBold fontSize="small" />
+        </ToggleButton></span>
+      </Tooltip>
+      <Tooltip title={`${format.strings.underline} (Ctrl+U)`}>
+        <span><ToggleButton value="underline" size="small" selected={active.underline} disabled={config.disabled}
+          aria-label={format.strings.underline} data-format="underline" sx={{ p: 0.5 }}
+          onMouseDown={(ev) => ev.preventDefault()} onClick={() => applyFormat('underline')}>
+          <FormatUnderlined fontSize="small" />
+        </ToggleButton></span>
+      </Tooltip>
+      <Select size="small" displayEmpty value={active.size ?? ''} disabled={config.disabled}
+        inputProps={{ 'aria-label': format.strings.size, 'data-format': 'size' }}
+        sx={{ minWidth: 104, fontSize: 13, '& .MuiSelect-select': { py: 0.6 } }}
+        renderValue={(v) => (v === '' ? format.strings.size : `${v}px`)}
+        onChange={(ev) => applyFormat('size', ev.target.value === '' ? null : Number(ev.target.value))}
+        MenuProps={{ disablePortal: false }}>
+        <MenuItem value="">{format.strings.sizeDefault}</MenuItem>
+        {format.sizes.map((s) => <MenuItem key={s} value={s} sx={{ fontSize: Math.min(s, 24) }}>{s}px</MenuItem>)}
+      </Select>
+      <Tooltip title={format.strings.clear}>
+        <span><IconButton size="small" aria-label={format.strings.clear} data-format="clear" disabled={config.disabled}
+          onMouseDown={(ev) => ev.preventDefault()} onClick={() => applyFormat('clear')}>
+          <FormatClear fontSize="small" />
+        </IconButton></span>
+      </Tooltip>
+    </Stack>}
     <Box ref={editor} contentEditable={!config.disabled} suppressContentEditableWarning role="textbox" aria-multiline="true"
       aria-labelledby={`${id}-label`} tabIndex={0}
       sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', minHeight: `${rows * 1.65 + 1.5}em`,
         p: 1.5, border: '1px solid #aaa', borderRadius: 1, fontSize: 14, lineHeight: 1.65,
         '&:focus': { outline: '2px solid #1769aa', outlineOffset: -1 }, '& [data-token]:focus': { outline: '2px solid #1769aa' } }}
       onCompositionStart={() => { composing.current = true; }}
-      onCompositionEnd={() => { composing.current = false; emit(); }}
-      onInput={() => { if (!composing.current) emit(); }}
+      onCompositionEnd={() => { composing.current = false; if (format) convertFonts(); emit(); }}
+      onInput={() => { if (!composing.current) { if (format) convertFonts(); emit(); } }}
       onClick={(ev) => { const chip = chipFrom(ev.target); if (chip) open(chip, chip); }}
       onKeyDown={(ev) => {
         if (composing.current || ev.nativeEvent.isComposing) return;
+        // Native Ctrl+B/I/U formatting would show in this box but never reach the
+        // stored text. Keep only what this box can store.
+        if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && /^[biu]$/i.test(ev.key)) {
+          ev.preventDefault();
+          if (format && !config.disabled && /^[bu]$/i.test(ev.key)) applyFormat(ev.key.toLowerCase() === 'b' ? 'bold' : 'underline');
+          return;
+        }
         const chip = chipFrom(ev.target);
         if (chip && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); open(chip, chip); }
         else if (chip && (ev.key === 'Backspace' || ev.key === 'Delete')) {
