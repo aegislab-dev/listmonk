@@ -205,6 +205,10 @@ export default function PersonalizationTextInput({
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const before = useRef<{ start: number; end: number } | null>(null);
+  // The selection as last seen by selectionchange. An edit's input event runs before
+  // the selectionchange it causes, so at record time this is where the edit began
+  // (also for paste, Enter and chip edits, which come without beforeinput).
+  const seen = useRef<{ start: number; end: number } | null>(null);
   const history = useRef<Snap[]>([]);
   const at = useRef(-1);
   const lastEdit = useRef({ kind: '', time: 0 });
@@ -248,7 +252,7 @@ export default function PersonalizationTextInput({
     const top = history.current[at.current];
     // A run of typing is one step, as in the browser.
     const merge = kind === 'type' && lastEdit.current.kind === 'type' && now - lastEdit.current.time < 1000 && at.current > 0;
-    const undo = (merge && top ? top.undo : before.current) || selectionOffsets();
+    const undo = (merge && top ? top.undo : before.current || seen.current) || selectionOffsets();
     before.current = null;
     const snap = { text, mode: mode.current, ...selectionOffsets(), undo };
     if (top && top.text === text) { history.current[at.current] = { ...snap, undo: top.undo }; return; }
@@ -277,6 +281,7 @@ export default function PersonalizationTextInput({
     const [en, eo] = end(caret.end);
     window.getSelection()!.setBaseAndExtent(sn, so, en, eo);
     lastRange.current = window.getSelection()!.getRangeAt(0).cloneRange();
+    seen.current = { start: caret.start, end: caret.end };
     setActive(fmtAt(sn, el));
     onChangeRef.current(snap.text, snap.mode !== 'plain');
   };
@@ -313,6 +318,7 @@ export default function PersonalizationTextInput({
         const range = selection.getRangeAt(0);
         if (el.contains(range.startContainer) && el.contains(range.endContainer)) {
           lastRange.current = range.cloneRange();
+          if (format) seen.current = selectionOffsetsRef.current();
           if (format) setActive(fmtAt(range.startContainer, el));
         }
       }
@@ -332,9 +338,17 @@ export default function PersonalizationTextInput({
     // nothing here applies.)
     if (!format || mode.current === 'html') return;
     mode.current = markdown ? 'markdown' : 'plain';
-    // The switch is not an edit of the text: every state that is not this editor's
-    // HTML block now reads with the new setting, so undo does not turn it back.
-    history.current.forEach((h) => { if (h.mode !== 'html') h.mode = mode.current; });
+    // The switch is a step of its own: undo and redo give back each state's text with
+    // the Markdown setting it had, so tags never come back with Markdown off. (After
+    // an undo or redo the prop arrives equal to the state's mode: nothing is added.)
+    const top = history.current[at.current];
+    if (top && top.mode !== mode.current) {
+      const sel = seen.current || { start: 0, end: 0 };
+      history.current = history.current.slice(0, at.current + 1);
+      history.current.push({ text: top.text, mode: mode.current, ...sel, undo: sel });
+      at.current = history.current.length - 1;
+      lastEdit.current = { kind: '', time: 0 };
+    }
   }, [markdown]);
 
   const emit = (kind = 'edit') => {

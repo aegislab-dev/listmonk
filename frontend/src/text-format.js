@@ -35,12 +35,18 @@ const ENTITIES = {
 const decode = (s) => s.replace(/&(amp|lt|gt|quot|#39|#x27|nbsp);/g, (_, e) => ENTITIES[e]);
 const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-const NONE = { bold: false, underline: false, size: null };
 const validSize = (n) => Number.isInteger(n) && n >= MIN_SIZE && n <= MAX_SIZE;
+const NONE = { bold: false, underline: false, size: null };
+const same = (a, b) => a.bold === b.bold && a.underline === b.underline && a.size === b.size;
+export const isFormatted = (seg) => Boolean(seg.bold || seg.underline || validSize(seg.size));
 
-// Exactly the tags this editor writes, so text it reads back is written back the
-// same. Other HTML (<b>, other spans) stays source text in the box.
-const TAG = /<(\/?)(strong|u)>|<span style="font-size:(\d+)px">|<(\/)span>|<br>/g;
+// The opening of a run this editor writes: size span, then strong, then u, in that
+// order. Its closing is the same tags reversed, on the same line.
+const OPEN = /<span style="font-size:(\d+)px">(<strong>)?(<u>)?|<strong>(<u>)?|<u>/g;
+const OURS = /<\/?(?:strong|u)>|<span style="font-size:\d+px">|<\/span>|<br>/;
+// A Markdown line starts with its block markers (list, quote, heading, indent): the
+// serializer keeps them in front of the tags.
+const MARKERS = /^(?:[ \t]*(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+|>[ \t]?|#{1,6}[ \t]+))*[ \t]*/;
 
 // Markdown code (fenced blocks, indented blocks and `code spans`) shows tags as text:
 // the ranges of the source where a tag is not formatting. An indented line after a
@@ -109,70 +115,60 @@ const codeRanges = (src) => {
 };
 
 // Splits stored text into formatted segments: [{ value, bold, underline, size }].
-// Tags that do not open or close one of ours stay as literal source text.
+//
+// Reading back must never change text nobody edited (LST-77 review: code examples,
+// lists, hand-written HTML). So only what serializeFormatted itself would write is
+// formatting: a whole run <span style="font-size:N"><strong><u>text</u></strong></span>
+// (any of the three, in that order) on one line, with none of these tags inside, not
+// starting with a line's block markers, and not right after an equal run. Everything
+// else, also inside Markdown code, stays source text and is written back as it was.
 export const parseFormatted = (text, mode) => {
   let src = text || '';
   if (mode === 'plain') return src ? [{ value: src, ...NONE }] : [];
   const html = mode === 'html';
   if (html) src = src.slice(HTML_OPEN.length, src.length - HTML_CLOSE.length);
+  const read = (s) => (html ? decode(s.replace(/<br>/g, '\n')) : s);
 
-  const stack = [];
   const out = [];
-  const fmt = () => ({
-    bold: stack.some((t) => t.kind === 'bold'),
-    underline: stack.some((t) => t.kind === 'underline'),
-    size: [...stack].reverse().find((t) => t.kind === 'size')?.size ?? null,
-  });
-  const push = (value) => {
+  const push = (value, f = NONE) => {
     if (!value) return;
-    const v = html ? decode(value) : value;
-    const f = fmt();
     const last = out[out.length - 1];
-    if (last && last.bold === f.bold && last.underline === f.underline && last.size === f.size) last.value += v;
-    else out.push({ value: v, ...f });
+    if (last && !isFormatted(f) && !isFormatted(last)) last.value += value;
+    else out.push({ value, ...f });
   };
-  const close = (kind) => {
-    for (let i = stack.length - 1; i >= 0; i -= 1) {
-      if (stack[i].kind === kind) { stack.splice(i, 1); return true; }
-    }
-    return false;
-  };
-
   const code = html ? [] : codeRanges(src);
+  const inCode = (i) => code.some(([a, b]) => i >= a && i < b);
   let pos = 0;
-  TAG.lastIndex = 0;
-  const tags = [];
-  for (let m = TAG.exec(src); m; m = TAG.exec(src)) {
-    if (!code.some(([a, b]) => m.index >= a && m.index < b)) tags.push(m);
-  }
-  tags.forEach((m) => {
-    push(src.slice(pos, m.index));
-    pos = m.index + m[0].length;
-    const [raw, slash, name, size, spanClose] = m;
-    if (name) {
-      const kind = name === 'u' ? 'underline' : 'bold';
-      if (!slash) stack.push({ kind });
-      else if (!close(kind)) push(raw);
-    } else if (size !== undefined) {
-      const n = Number(size);
-      if (validSize(n)) stack.push({ kind: 'size', size: n });
-      else push(raw);
-    } else if (spanClose) {
-      if (!close('size')) push(raw);
-    } else if (html) {
-      push('\n');
-    } else {
-      push(raw);
+  OPEN.lastIndex = 0;
+  for (let m = OPEN.exec(src); m; m = OPEN.exec(src)) {
+    const span = m[1] !== undefined;
+    const f = {
+      size: span ? Number(m[1]) : null,
+      bold: span ? Boolean(m[2]) : m[0].startsWith('<strong>'),
+      underline: span ? Boolean(m[3]) : Boolean(m[4]) || m[0] === '<u>',
+    };
+    const close = (f.underline ? '</u>' : '') + (f.bold ? '</strong>' : '') + (span ? '</span>' : '');
+    const start = m.index + m[0].length;
+    const end = src.indexOf(close, start);
+    const content = end < 0 ? '' : src.slice(start, end);
+    const lineStart = !html && (m.index === 0 || src[m.index - 1] === '\n');
+    const last = out[out.length - 1];
+    const ok = content && (!span || validSize(f.size)) && !content.includes('\n') && !OURS.test(content)
+      && !inCode(m.index) && !inCode(end)
+      && !(lineStart && MARKERS.exec(content)[0])
+      && !(pos === m.index && last && isFormatted(last) && same(last, f));
+    if (ok) {
+      push(read(src.slice(pos, m.index)));
+      push(read(content), f);
+      pos = end + close.length;
+      OPEN.lastIndex = pos;
     }
-  });
-  push(src.slice(pos));
+  }
+  push(read(src.slice(pos)));
   return out;
 };
 
-export const isFormatted = (seg) => Boolean(seg.bold || seg.underline || validSize(seg.size));
 export const hasFormatting = (text, mode) => parseFormatted(text, mode).some(isFormatted);
-
-const same = (a, b) => a.bold === b.bold && a.underline === b.underline && a.size === b.size;
 
 // Writes runs back to stored text. A run is { type: 'text', value } or
 // { type: 'token', raw } with bold, underline, size. Returns { text, markdown }.
@@ -200,9 +196,7 @@ export const serializeFormatted = (runs, mode) => {
     }
   });
 
-  // A Markdown line starts with its block markers (list, quote, heading, indent):
-  // they stay in front of the tags, or the list or heading would be lost.
-  const MARKERS = /^(?:[ \t]*(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+|>[ \t]?|#{1,6}[ \t]+))*[ \t]*/;
+  // Block markers stay in front of the tags, or the list or heading would be lost.
   let text = '';
   groups.forEach((g) => {
     const open = (g.size ? `<span style="font-size:${g.size}px">` : '') + (g.bold ? '<strong>' : '') + (g.underline ? '<u>' : '');

@@ -74,11 +74,12 @@ test('hand-written and broken tags', () => {
   const segs = parseFormatted('a </u> </span> <span style="font-size:99px">y</span>', 'markdown');
   assert.equal(segs.length, 1);
   assert.equal(segs[0].value, 'a </u> </span> <span style="font-size:99px">y</span>');
-  // An unclosed tag formats to the end.
-  assert.deepEqual(parseFormatted('<u>a', 'markdown'), [{ value: 'a', bold: false, underline: true, size: null }]);
-  // Overlapping tags: each closes its own kind.
-  assert.deepEqual(parseFormatted('<strong>a<u>b</strong>c</u>', 'markdown').map((s) => [s.value, s.bold, s.underline]),
-    [['a', true, false], ['b', true, true], ['c', false, true]]);
+  // An unclosed tag, overlapping tags or the editor's tags in another order are text.
+  for (const s of ['<u>a', '<strong>a<u>b</strong>c</u>', '<u><strong>a</strong></u>']) {
+    assert.deepEqual(roundTrip(s, true), { text: s, markdown: true }, s);
+  }
+  assert.deepEqual(parseFormatted('<u><strong>a</strong></u>', 'markdown').map((x) => [x.value, x.bold]),
+    [['<u>', false], ['a', true], ['</u>', false]]);
 });
 
 test('formatting with nothing in it is no formatting', () => {
@@ -149,4 +150,45 @@ test('indented Markdown code keeps its tags as text, list continuations do not',
   assert.equal(hasFormatting('- a\n\n<strong>x</strong>', 'markdown'), true);
   // A tab indents too.
   assert.equal(hasFormatting('\t<strong>x</strong>', 'markdown'), false);
+});
+
+// LST-77 review 4: whatever the text, reading it back and writing it unchanged gives
+// the same text, so nothing anybody did not edit (code, lists, quotes, hand-written
+// HTML) can change.
+test('reading back and writing unchanged is the identity, for any text', () => {
+  const pieces = ['a', '가', ' ', '  ', '\n', '\n\n', '- ', '* ', '1. ', '2) ', '> ', '# ', '    ', '\t', '`', '```', '~~~',
+    '<strong>', '</strong>', '<u>', '</u>', '<span style="font-size:20px">', '<span style="font-size:99px">', '</span>',
+    '<b>', '<br>', '&amp;', '&lt;', '{{ .Subscriber.Name }}', '*', '_', '<'];
+  let seed = 77;
+  const rand = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let i = 0; i < 5000; i += 1) {
+    let s = '';
+    for (let k = rand(40); k > 0; k -= 1) s += pieces[rand(pieces.length)];
+    assert.deepEqual(roundTrip(s, true), { text: s, markdown: true }, JSON.stringify(s));
+    // The same with one character typed at the end: only that character is added.
+    const runs = runsOf(parseFormatted(s, 'markdown'));
+    runs.push(run('!'));
+    assert.equal(serializeFormatted(runs, 'markdown').text, `${s}!`, JSON.stringify(s));
+  }
+});
+
+test('what the editor writes reads back as the same runs, in both modes', () => {
+  const texts = ['a', '가 나', '- x', '  y', '<', '&', '{{ .Subscriber.Name }}', '\n', '1. z', '`q`'];
+  let seed = 7;
+  const rand = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let i = 0; i < 3000; i += 1) {
+    const runs = [];
+    for (let k = rand(8); k > 0; k -= 1) {
+      runs.push(run(texts[rand(texts.length)], { bold: rand(2) === 1, underline: rand(2) === 1, size: [null, 12, 20, 32][rand(4)] }));
+    }
+    for (const mode of ['markdown', 'plain']) {
+      const out = serializeFormatted(runs, mode);
+      const m = textMode(out.text, out.markdown);
+      // Written again from what was read, the text is the same.
+      assert.deepEqual(roundTrip(out.text, out.markdown), out, JSON.stringify(runs));
+      // And the characters are the same, in order.
+      const plain = runs.map((r) => r.value).join('');
+      assert.equal(parseFormatted(out.text, m).map((x) => x.value).join(''), plain, JSON.stringify(runs));
+    }
+  }
 });
