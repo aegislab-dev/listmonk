@@ -19,7 +19,10 @@ export type Formatting = {
   textMode: (text: string, markdown?: boolean | null) => TextMode;
   parseFormatted: (text: string, mode: TextMode) => FormatSegment[];
   isMarkdownSyntaxAt: (text: string, offset: number) => boolean;
-  preserveMarkdownSyntax: (before: FormatRun[], after: FormatRun[]) => FormatRun[];
+  preserveMarkdownSyntax: (before: FormatRun[], after: FormatRun[]) => {
+    runs: FormatRun[];
+    insertions: { offset: number; text: string }[];
+  };
   serializeFormatted: (runs: FormatRun[], mode: TextMode) => { text: string; markdown: boolean };
 };
 export type Personalization = {

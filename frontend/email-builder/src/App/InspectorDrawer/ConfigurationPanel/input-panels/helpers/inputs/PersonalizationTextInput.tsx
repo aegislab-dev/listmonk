@@ -219,7 +219,7 @@ export default function PersonalizationTextInput({
     const runs = runsOf(r.cloneContents());
     return source ? plainText(runs).length : runs.reduce((n, x) => n + (x.type === 'token' ? 1 : x.value.length), 0);
   };
-  const pointAt = (root: Node, n: number): [Node, number] | number => {
+  const pointAt = (root: Node, n: number, source = false): [Node, number] | number => {
     let left = n;
     for (let i = 0; i < root.childNodes.length; i += 1) {
       const child = root.childNodes[i];
@@ -229,30 +229,30 @@ export default function PersonalizationTextInput({
         left -= len;
       } else if (child instanceof HTMLElement && child.dataset.token !== undefined) {
         if (left === 0) return [root, i];
-        left -= 1;
-        if (left === 0) return [root, i + 1];
+        left -= source ? child.dataset.token.length : 1;
+        if (left <= 0) return [root, i + 1];
       } else {
-        const p = pointAt(child, left);
+        const p = pointAt(child, left, source);
         if (typeof p !== 'number') return p;
         left = p;
       }
     }
     return left;
   };
-  const selectionOffsets = (): SelectionOffsets => {
+  const selectionOffsets = (source = false): SelectionOffsets => {
     const sel = window.getSelection();
     const el = editor.current!;
     if (!sel?.rangeCount) return { start: 0, end: 0 };
     const r = sel.getRangeAt(0);
     if (!el.contains(r.startContainer) || !el.contains(r.endContainer)) return { start: 0, end: 0 };
-    return { start: offsetOf(r.startContainer, r.startOffset), end: offsetOf(r.endContainer, r.endOffset) };
+    return { start: offsetOf(r.startContainer, r.startOffset, source), end: offsetOf(r.endContainer, r.endOffset, source) };
   };
   const selectionOffsetsRef = useRef(selectionOffsets);
   selectionOffsetsRef.current = selectionOffsets;
-  const restoreOffsets = (offsets: SelectionOffsets) => {
+  const restoreOffsets = (offsets: SelectionOffsets, source = false) => {
     const el = editor.current!;
     const point = (n: number): [Node, number] => {
-      const p = pointAt(el, n);
+      const p = pointAt(el, n, source);
       return typeof p === 'number' ? [el, el.childNodes.length] : p;
     };
     el.focus();
@@ -372,7 +372,8 @@ export default function PersonalizationTextInput({
     }
   }, [markdown]);
 
-  const emit = (kind = 'edit', original?: FormatRun[]) => {
+  type MarkdownSelection = { runs: FormatRun[]; selection: SelectionOffsets };
+  const emit = (kind = 'edit', original?: MarkdownSelection) => {
     if (!format) { onChange(serialize(editor.current!)); return; }
     // A size span that has got text loses its caret placeholder (only that one
     // character; pasted or stored zero-width spaces stay).
@@ -383,13 +384,20 @@ export default function PersonalizationTextInput({
       delete span.dataset.axmCaret;
     });
     const runs = runsOf(editor.current!);
-    const safe = original ? format.preserveMarkdownSyntax(original, runs) : runs;
-    const res = format.serializeFormatted(safe, mode.current);
+    const safe = original && format.preserveMarkdownSyntax(original.runs, runs);
+    const res = format.serializeFormatted(safe ? safe.runs : runs, mode.current);
     mode.current = format.textMode(res.text, res.markdown);
-    if (safe !== runs) {
+    if (safe && safe.runs !== runs) {
       const offsets = before.current || selectionOffsets();
       fill(res.text, mode.current);
-      restoreOffsets(offsets);
+      if (original && safe.insertions.length) {
+        const move = (offset: number) => safe.insertions.reduce(
+          (shifted, insertion) => shifted + (insertion.offset <= offset ? insertion.text.length : 0), offset,
+        );
+        restoreOffsets({ start: move(original.selection.start), end: move(original.selection.end) }, true);
+      } else {
+        restoreOffsets(offsets);
+      }
     }
     record(res.text, kind);
     onChange(res.text, res.markdown);
@@ -438,9 +446,9 @@ export default function PersonalizationTextInput({
     }
     const selection = window.getSelection()!;
     const range = selection.rangeCount ? selection.getRangeAt(0) : null;
-    const original = mode.current === 'markdown' ? runsOf(el) : undefined;
+    const original = mode.current === 'markdown' ? { runs: runsOf(el), selection: selectionOffsets(true) } : undefined;
     if (original && range?.collapsed
-      && format?.isMarkdownSyntaxAt(plainText(original), offsetOf(range.startContainer, range.startOffset, true))) return;
+      && format?.isMarkdownSyntaxAt(plainText(original.runs), original.selection.start)) return;
     before.current = selectionOffsets();
     const chipsIn = (r: Range) => Array.from(el.querySelectorAll<HTMLElement>('[data-token]')).filter((c) => r.intersectsNode(c));
     const chips = range && !range.collapsed ? chipsIn(range) : [];

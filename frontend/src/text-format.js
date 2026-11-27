@@ -54,14 +54,16 @@ const MARKERS = /^(?:[ \t]*(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+|>[ \t]?|#{1,6}[ \t]+
 const CODE = new Set(['CodeBlock', 'FencedCode', 'InlineCode']);
 const LINK_STRUCTURE = new Set(['Autolink', 'LinkReference', 'Image']);
 
-const { link, reflink } = Lexer.rules.inline.breaks;
+const {
+  link, reflink, nolink, tag,
+} = Lexer.rules.inline.breaks;
 const isEscaped = (source, start) => {
   let escapeStart = start;
   while (source[escapeStart - 1] === '\\') escapeStart -= 1;
   return (start - escapeStart) % 2 === 1;
 };
 
-const bracketLinkRanges = (source, start, tail, tokenizer, references) => {
+const bracketLinkRanges = (source, start, tail, tokenizer, references, collapsedLinks) => {
   if (isEscaped(source, start)) return [];
   const direct = tokenizer.link(tail);
   const token = direct || tokenizer.reflink(tail, references);
@@ -69,9 +71,18 @@ const bracketLinkRanges = (source, start, tail, tokenizer, references) => {
   const end = start + token.raw.length;
   const label = direct ? link.exec(token.raw) : reflink.exec(token.raw);
   // The display label can contain HTML. Keep its brackets and destination
-  // intact. Shortcut and collapsed references use the label as the key.
-  if (token.type === 'link' && label && (direct || label[2])) {
+  // intact. A collapsed reference needs an explicit key when its label changes.
+  if (token.type === 'link' && label) {
     return [[start, start + 1], [start + 1 + label[1].length, end]];
+  }
+  const collapsed = token.type === 'link' && token.raw.endsWith('][]') && nolink.exec(token.raw);
+  if (collapsed) {
+    const [, key] = collapsed;
+    const labelEnd = start + 1 + key.length;
+    collapsedLinks.push({
+      start: start + 1, end: labelEnd, offset: end - 1, text: key.replace(/\s+/g, ' '),
+    });
+    return [[start, start + 1], [labelEnd, end]];
   }
   return [[start, end]];
 };
@@ -79,11 +90,11 @@ const bracketLinkRanges = (source, start, tail, tokenizer, references) => {
 // Text blocks render with Marked in GFM breaks mode. Its URL tokenizer includes
 // single-label hosts, queries and fragments that the editor grammar can miss.
 // Its link tokenizer also distinguishes a bracketed phrase from a reference link.
-const linkRanges = (source, protectedRanges, cells) => {
+const inlineSyntaxRanges = (source, protectedRanges, cells, collapsedLinks) => {
   const lexer = new Lexer({ gfm: true, breaks: true });
   const { tokenizer } = lexer;
   const references = source.includes(']:') ? lexer.lex(source).links : lexer.tokens.links;
-  const starts = /!?\[|(?:ftp|https?):\/\/|www\.|@/gi;
+  const starts = /<|!?\[|(?:ftp|https?):\/\/|www\.|@/gi;
   const ranges = [];
   let protectedIndex = 0;
   let cellIndex = 0;
@@ -101,8 +112,12 @@ const linkRanges = (source, protectedRanges, cells) => {
       const cell = cells[cellIndex];
       const tail = source.slice(start, cell?.[0] <= start ? cell[1] : undefined);
       let found;
-      if (match[0].endsWith('[')) {
-        found = bracketLinkRanges(source, start, tail, tokenizer, references);
+      if (match[0] === '<') {
+        const markup = !isEscaped(source, start) && tag.exec(tail)?.[0];
+        // Plain HTML line breaks can take the same style as the text around them.
+        found = markup && !/^<br\s*\/?>$/i.test(markup) ? [[start, start + markup.length]] : [];
+      } else if (match[0].endsWith('[')) {
+        found = bracketLinkRanges(source, start, tail, tokenizer, references, collapsedLinks);
       } else {
         const url = tokenizer.url(tail);
         found = url ? [[start, start + url.raw.length]] : [];
@@ -117,7 +132,7 @@ const linkRanges = (source, protectedRanges, cells) => {
   return ranges;
 };
 
-const markdownRanges = (source, formatting) => {
+const markdownRanges = (source, formatting, collapsedLinks = []) => {
   const ranges = [];
   const cells = [];
   markdownLanguage.parser.parse(source).iterate({
@@ -143,7 +158,8 @@ const markdownRanges = (source, formatting) => {
   });
   ranges.sort(([a], [b]) => a - b);
   if (!formatting) return ranges;
-  const combined = [...ranges, ...linkRanges(source, ranges, cells)].sort(([a], [b]) => a - b);
+  const inline = inlineSyntaxRanges(source, ranges, cells, collapsedLinks);
+  const combined = [...ranges, ...inline].sort(([a], [b]) => a - b);
   const disjoint = [];
   combined.forEach(([from, to]) => {
     const previous = disjoint[disjoint.length - 1];
@@ -153,23 +169,53 @@ const markdownRanges = (source, formatting) => {
   return disjoint;
 };
 
-export const isMarkdownSyntaxAt = (source, offset) => (
-  markdownRanges(source, true).some(([from, to]) => from < offset && offset < to)
-);
+export const isMarkdownSyntaxAt = (source, offset) => {
+  const collapsedLinks = [];
+  const ranges = markdownRanges(source, true, collapsedLinks);
+  return ranges.some(([from, to]) => from < offset && offset < to)
+    || collapsedLinks.some(({ start, end }) => start <= offset && offset <= end);
+};
 
 const runValue = (r) => (r.type === 'token' ? r.raw : r.value);
+
+const insertReferenceKeys = (runs, insertions) => {
+  const out = [];
+  let offset = 0;
+  let index = 0;
+  runs.forEach((run) => {
+    const end = offset + runValue(run).length;
+    if (run.type === 'text') {
+      let from = 0;
+      while (insertions[index]?.offset < end) {
+        const { offset: at, text } = insertions[index];
+        const to = at - offset;
+        if (from < to) out.push({ ...run, value: run.value.slice(from, to) });
+        out.push({ type: 'text', value: text, ...NONE });
+        from = to;
+        index += 1;
+      }
+      if (from < run.value.length) out.push({ ...run, value: run.value.slice(from) });
+    } else {
+      out.push(run);
+    }
+    offset = end;
+  });
+  return out;
+};
 
 // Preserve the previous formatting in Markdown ranges where introducing tags could
 // change the rendered structure or literal text. Offsets are in the original source,
 // so they still line up after Chromium splits nodes while applying a format command.
 export const preserveMarkdownSyntax = (before, after) => {
   const source = before.map(runValue).join('');
-  if (after.map(runValue).join('') !== source) return before;
-  const protectedRanges = markdownRanges(source, true);
-  if (!protectedRanges.length) return after;
+  if (after.map(runValue).join('') !== source) return { runs: before, insertions: [] };
+  const collapsedLinks = [];
+  const protectedRanges = markdownRanges(source, true, collapsedLinks);
+  if (!protectedRanges.length) return { runs: after, insertions: [] };
 
   let offset = 0;
   let rangeIndex = 0;
+  let linkIndex = 0;
   let beforeIndex = 0;
   let beforeEnd = before.length ? runValue(before[0]).length : 0;
   let changed = false;
@@ -187,9 +233,15 @@ export const preserveMarkdownSyntax = (before, after) => {
       const [from, to] = protectedRanges[rangeIndex] || [Infinity, Infinity];
       // A personalization chip is indivisible, including inside code or a link.
       const protect = from <= offset || (run.type === 'token' && from < end);
-      const next = run.type === 'token' ? end : Math.min(end, protect ? Math.min(to, beforeEnd) : from);
+      const next = run.type === 'token' ? end : Math.min(end, beforeEnd, protect ? to : from);
       const style = protect ? before[beforeIndex] : run;
       if (!same(style, run)) changed = true;
+      while (collapsedLinks[linkIndex]?.end <= offset) linkIndex += 1;
+      const collapsed = collapsedLinks[linkIndex];
+      const previous = before[beforeIndex];
+      if (collapsed && collapsed.start < next && (isFormatted(style) || isFormatted(previous)) && !same(style, previous)) {
+        collapsed.changed = true;
+      }
       const { bold, underline, size } = style;
       const fmt = { bold, underline, size };
       out.push(run.type === 'token' ? { ...run, ...fmt }
@@ -197,7 +249,9 @@ export const preserveMarkdownSyntax = (before, after) => {
       offset = next;
     }
   });
-  return changed ? out : after;
+  const insertions = collapsedLinks.filter((ref) => ref.changed).map(({ offset: at, text }) => ({ offset: at, text }));
+  const runs = changed ? out : after;
+  return { runs: insertions.length ? insertReferenceKeys(runs, insertions) : runs, insertions };
 };
 
 // Splits stored text into formatted segments: [{ value, bold, underline, size }].
