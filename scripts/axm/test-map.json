@@ -345,7 +345,8 @@
     "campaign-test-send.cy.js",
     "campaign-recent-exclude.cy.js",
     "address-gate.cy.js",
-    "import-campaign-flow.cy.js"
+    "import-campaign-flow.cy.js",
+    "bounce-filter-delete.cy.js"
    ]
   },
   {
