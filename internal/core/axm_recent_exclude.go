@@ -16,6 +16,7 @@ import (
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"gopkg.in/volatiletech/null.v6"
 )
 
 // ValidateRecentRule checks settings shared by preview and save.
@@ -59,6 +60,15 @@ func (c *Core) recentTeamTags(ctx context.Context, tx *sqlx.Tx, lists pq.Int64Ar
 func (c *Core) recentError(err error) error {
 	c.log.Printf("error handling a recent-send exclusion rule: %v", err)
 	return echo.NewHTTPError(http.StatusInternalServerError, c.i18n.T("campaigns.recent.error")).SetInternal(err)
+}
+
+// RecentSendsCoverage reads the first retained record without recalculating a campaign's audience.
+func (c *Core) RecentSendsCoverage(ctx context.Context) (*null.Time, error) {
+	var recordsFrom null.Time
+	if err := c.q.AxmRecentSendsCoverage.GetContext(ctx, &recordsFrom); err != nil {
+		return nil, c.recentError(err)
+	}
+	return &recordsFrom, nil
 }
 
 // RecentExcludeCounts reads the audience, history coverage and team tags at one snapshot.
@@ -142,7 +152,12 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	}
 	defer tx.Rollback()
 
-	var campaign struct{ Status, Type string }
+	var campaign struct {
+		Status           string `db:"status"`
+		Type             string `db:"type"`
+		Started          bool   `db:"started"`
+		LastSubscriberID int    `db:"last_subscriber_id"`
+	}
 	if err := tx.Stmtx(c.q.AxmLockRecentCampaign).GetContext(ctx, &campaign, campaignID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return out, c.recentCampaignNotFound()
@@ -152,8 +167,74 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	if campaign.Type != models.CampaignTypeRegular {
 		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recent.regularOnly"))
 	}
-	if !models.CanEditCampaign(campaign.Status) {
+	if !models.CanEditRecentRule(campaign.Status, campaign.Started) {
 		return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
+	}
+	out, err = c.saveRecentRuleTx(ctx, tx, campaignID, rule, userID)
+	if err != nil {
+		return out, err
+	}
+	if campaign.Status == models.CampaignStatusScheduled {
+		if err := c.checkScheduledRecentAudience(ctx, tx, campaignID, campaign.LastSubscriberID); err != nil {
+			return models.RecentRule{}, err
+		}
+	}
+	// Dedicated rule edits do not also update the campaign row, so invalidate an open send
+	// confirmation here. Scheduled campaign edits already update updated_at in their campaign
+	// UPDATE; touching it again there would make the save's own preflight look stale.
+	if _, err := tx.Stmtx(c.q.AxmTouchRecentCampaign).ExecContext(ctx, campaignID); err != nil {
+		return out, c.recentError(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return out, c.recentError(err)
+	}
+	return out, nil
+}
+
+// checkScheduledRecentAudience applies the scheduled-save recipient check to the rule API too.
+// The caller has already locked the campaign and saved the candidate rule in tx, so both the
+// rule and the audience are judged as one atomic change.
+func (c *Core) checkScheduledRecentAudience(ctx context.Context, tx *sqlx.Tx, campaignID, checkpoint int) error {
+	run := func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }
+	followupListID, err := c.preflightFollowupList(ctx, run, campaignID)
+	if err != nil {
+		return c.recentError(err)
+	}
+	var audience struct {
+		HasLists      bool `db:"has_lists"`
+		HasRecipients bool `db:"has_recipients"`
+	}
+	if err := run(c.q.AxmPreflightHasRecipient).GetContext(ctx, &audience,
+		campaignID, checkpoint, followupListID, c.tracking()); err != nil {
+		return c.recentError(err)
+	}
+	if !audience.HasLists {
+		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recheck.noLists"))
+	}
+	if !audience.HasRecipients {
+		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recheck.zero"))
+	}
+	return nil
+}
+
+// saveRecentRuleTx updates a campaign's rule within the caller's transaction. The caller must
+// hold the campaign row lock; scheduled campaign edits use this to validate the new audience and
+// rule together before committing either.
+func (c *Core) saveRecentRuleTx(ctx context.Context, tx *sqlx.Tx, campaignID int, rule models.RecentRule, userID int) (models.RecentRule, error) {
+	var out models.RecentRule
+	if err := c.ValidateRecentRule(&rule); err != nil {
+		return out, err
+	}
+	// AXM (LST-65): a follow-up campaign goes to the people who got the original, so the rule would
+	// leave out all of them (or race the follow-up's own judgement of each batch): it takes none.
+	if rule.Enabled {
+		var followup bool
+		if err := tx.Stmtx(c.q.AxmFollowupIsFollowup).GetContext(ctx, &followup, campaignID); err != nil {
+			return out, c.recentError(err)
+		}
+		if followup {
+			return out, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recent.followupNone"))
+		}
 	}
 	if rule.Enabled && rule.Scope == models.RecentScopeTeam {
 		var listIDs []int64
@@ -170,18 +251,100 @@ func (c *Core) SaveRecentRule(ctx context.Context, campaignID int, rule models.R
 	}
 
 	if rule.Enabled {
-		err = tx.Stmtx(c.q.AxmUpsertRecentRule).GetContext(ctx, &out,
-			campaignID, rule.Days, rule.Scope, rule.CampaignIDs, userID)
+		if err := tx.Stmtx(c.q.AxmUpsertRecentRule).GetContext(ctx, &out,
+			campaignID, rule.Days, rule.Scope, rule.CampaignIDs, userID); err != nil {
+			return out, c.recentError(err)
+		}
 	} else {
-		_, err = tx.Stmtx(c.q.AxmDeleteRecentRule).ExecContext(ctx, campaignID)
-	}
-	if err != nil {
-		return out, c.recentError(err)
-	}
-	if err := tx.Commit(); err != nil {
-		return out, c.recentError(err)
+		if _, err := tx.Stmtx(c.q.AxmDeleteRecentRule).ExecContext(ctx, campaignID); err != nil {
+			return out, c.recentError(err)
+		}
 	}
 	return out, nil
+}
+
+// HoldRecentBatch (LST-65) returns which of the subscribers ids (a batch the sender has just read for
+// campaign campID) the campaign's recent-send rule leaves out, and remembers them as left out of this
+// campaign for good. It is empty for a campaign without a rule. An error means the batch must not be
+// sent: the rule could not be applied.
+func (c *Core) HoldRecentBatch(ctx context.Context, campID int, ids []int) (map[int]bool, error) {
+	arr := make(pq.Int64Array, len(ids))
+	for i, id := range ids {
+		arr[i] = int64(id)
+	}
+	var decisions []struct {
+		ID   int64 `db:"subscriber_id"`
+		Held bool  `db:"held"`
+	}
+	if err := c.q.AxmRecentEvaluateBatch.SelectContext(ctx, &decisions, campID, arr); err != nil {
+		return nil, err
+	}
+	out := make(map[int]bool, len(decisions))
+	fresh := make(pq.Int64Array, 0, len(decisions))
+	for _, decision := range decisions {
+		out[int(decision.ID)] = true
+		if !decision.Held {
+			fresh = append(fresh, decision.ID)
+		}
+	}
+	if len(fresh) > 0 {
+		if err := c.recordRecentHolds(ctx, campID, fresh); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (c *Core) recordRecentHolds(ctx context.Context, campID int, ids pq.Int64Array) error {
+	const maxLanes, minRowsPerLane = 3, 128
+	lanes := max(1, min(maxLanes, len(ids)/minRowsPerLane))
+	if pool := c.db.Stats(); pool.MaxOpenConnections > 0 {
+		lanes = min(lanes, max(1, pool.MaxOpenConnections-pool.InUse))
+	}
+	if lanes == 1 {
+		return c.recordRecentHoldLane(ctx, campID, ids, 0)
+	}
+
+	// All writers use the same decision snapshot and distinct foreign-key parents.
+	// If a write fails, keep the committed decisions and release no recipients.
+	results := make(chan error, lanes-1)
+	for lane := range lanes - 1 {
+		chunk := ids[lane*len(ids)/lanes : (lane+1)*len(ids)/lanes]
+		go func() { results <- c.recordRecentHoldLane(ctx, campID, chunk, lane) }()
+	}
+	err := c.recordRecentHoldLane(ctx, campID, ids[(lanes-1)*len(ids)/lanes:], lanes-1)
+	for range lanes - 1 {
+		err = errors.Join(err, <-results)
+	}
+	return err
+}
+
+func (c *Core) recordRecentHoldLane(ctx context.Context, campID int, ids pq.Int64Array, lane int) error {
+	_, err := c.q.AxmRecentHoldBatch.ExecContext(ctx, campID, ids, lane)
+	var dbErr *pq.Error
+	if errors.As(err, &dbErr) && dbErr.Code == pgUniqueViolation && dbErr.Constraint == "axm_campaign_recent_holds_pkey" {
+		_, err = c.q.AxmRecentHoldBatch.ExecContext(ctx, campID, ids, lane)
+	}
+	return err
+}
+
+// RecentRuleOn checks whether a regular campaign has a saved rule that the sender must honor.
+// Even if all chosen sources disappear, the saved rule still keeps previous holds in force.
+func (c *Core) RecentRuleOn(campaignID int) (bool, error) {
+	var on bool
+	if err := c.q.AxmRecentHasRule.Get(&on, campaignID); err != nil {
+		return false, c.recentError(err)
+	}
+	return on, nil
+}
+
+// RecentHeldCount is how many people the recent-send rule has left out of the campaign so far.
+func (c *Core) RecentHeldCount(campaignID int) (int, error) {
+	var n int
+	if err := c.q.AxmRecentHeldCount.Get(&n, campaignID); err != nil {
+		return 0, c.recentError(err)
+	}
+	return n, nil
 }
 
 // recentListLockKey serializes the making of recent-exclusion lists (see MakeRecentExcludeList).

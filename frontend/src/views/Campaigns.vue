@@ -515,14 +515,15 @@ export default Vue.extend({
       });
     },
 
-    onClone({ name, listIds }) {
+    async onClone(selection) {
       const c = this.cloneAsk;
       this.cloneAsk = null;
-      if (c) {
-        cloneCampaign(this.$api, this.$utils.getDate(), c.id, name, listIds).then((d) => {
-          this.$router.push({ name: 'campaign', params: { id: d.id } });
-        }).catch(() => {});
-      }
+      if (!c) return;
+
+      const result = await cloneCampaign(this.$api, this.$utils.getDate(), c.id, selection).catch(() => null);
+      if (!result) return;
+      if (result.ruleSaveFailed) this.$utils.toast(this.$t('campaigns.recent.saveError'), 'is-danger');
+      this.$router.push({ name: 'campaign', params: { id: result.campaign.id } });
     },
 
     // Running and paused campaigns cannot be deleted (the server refuses too, LST-55).

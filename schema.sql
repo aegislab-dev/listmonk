@@ -612,6 +612,8 @@ DROP TABLE IF EXISTS axm_deleted_list_subs CASCADE;
 DROP TABLE IF EXISTS axm_deleted_lists CASCADE;
 DROP TABLE IF EXISTS axm_column_presets CASCADE;
 DROP TABLE IF EXISTS axm_campaign_recent_rules CASCADE;
+DROP TABLE IF EXISTS axm_campaign_recent_holds CASCADE;
+DROP TABLE IF EXISTS axm_campaign_recent_hold_lanes CASCADE;
 DROP TABLE IF EXISTS axm_test_addresses CASCADE;
 DROP TABLE IF EXISTS axm_bounced_emails CASCADE;
 DROP TABLE IF EXISTS axm_email_changes CASCADE;
@@ -1719,3 +1721,241 @@ CREATE TRIGGER axm_count_removed_campaign_sends
 AFTER DELETE ON axm_campaign_sends REFERENCING OLD TABLE AS removed_sends
 FOR EACH STATEMENT EXECUTE FUNCTION axm_count_removed_campaign_sends();
 -- End of AXM preserve removed send totals.
+
+-- AXM recent-send exclusion at send time (LST-65). Keep this block identical to V6_2_1_axm_21.
+-- Who a campaign with a recent-send rule has left out so far. The sender decides it when it reads a
+-- batch and the person stays out of that campaign afterwards (a pause that outlasts the rule's days,
+-- a restart, or the expiry of a send record does not let them in). The rows go with the campaign.
+-- Each concurrent writer checks a different parent row, avoiding shared
+-- MultiXact locks on the campaign row for every subscriber in the batch.
+CREATE TABLE IF NOT EXISTS axm_campaign_recent_hold_lanes (
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    lane SMALLINT NOT NULL CHECK (lane IN (0, 1, 2)),
+    PRIMARY KEY (campaign_id, lane)
+);
+CREATE OR REPLACE FUNCTION axm_seed_recent_hold_lanes()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO axm_campaign_recent_hold_lanes (campaign_id, lane)
+    SELECT c.id, lanes.lane
+    FROM inserted_campaigns c CROSS JOIN (VALUES (0), (1), (2)) lanes(lane);
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_seed_recent_hold_lanes ON campaigns;
+CREATE TRIGGER axm_seed_recent_hold_lanes AFTER INSERT ON campaigns
+    REFERENCING NEW TABLE AS inserted_campaigns
+    FOR EACH STATEMENT EXECUTE FUNCTION axm_seed_recent_hold_lanes();
+INSERT INTO axm_campaign_recent_hold_lanes (campaign_id, lane)
+SELECT c.id, lanes.lane
+FROM campaigns c CROSS JOIN (VALUES (0), (1), (2)) lanes(lane)
+ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS axm_campaign_recent_holds (
+    campaign_id   INTEGER NOT NULL,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    held_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    lane          SMALLINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (campaign_id, subscriber_id),
+    FOREIGN KEY (campaign_id, lane) REFERENCES axm_campaign_recent_hold_lanes(campaign_id, lane)
+        ON DELETE CASCADE ON UPDATE CASCADE
+);
+-- Subscriber deletion cascades by subscriber_id without a campaign filter.
+CREATE INDEX IF NOT EXISTS idx_axm_recent_holds_subscriber ON axm_campaign_recent_holds(subscriber_id);
+-- Bounded keyset reads within each campaign list.
+CREATE INDEX IF NOT EXISTS idx_axm_subscriber_lists_list_sub ON subscriber_lists(list_id, subscriber_id);
+-- Whether the sender must apply the saved rule and preserve its holds. A rule whose chosen
+-- campaigns were all deleted has no new matches, but any existing holds still apply.
+CREATE OR REPLACE FUNCTION axm_recent_rule_on(p_campaign INT)
+RETURNS BOOL LANGUAGE SQL STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM axm_campaign_recent_rules rule
+        JOIN campaigns own ON own.id = rule.campaign_id AND own.type = 'regular'
+        WHERE rule.campaign_id = p_campaign
+            AND NOT EXISTS (SELECT 1 FROM axm_campaign_followups f WHERE f.campaign_id = p_campaign)
+    );
+$$;
+-- Which of p_subs the recent-send rule of campaign p_campaign leaves out now: the people with a send
+-- record of a campaign in the rule's scope (as axm_recent_exclusion counts it) in the last days of
+-- the rule. A campaign without a rule, a follow-up campaign and a campaign other than a regular one
+-- leave out nobody; a person this campaign already sent to is never left out later.
+CREATE OR REPLACE FUNCTION axm_recent_received(p_campaign INT, p_subs INT[])
+RETURNS TABLE(subscriber_id INT) LANGUAGE SQL STABLE AS $$
+    WITH r AS (
+        SELECT rule.days, rule.scope, rule.campaign_ids
+        FROM axm_campaign_recent_rules rule
+        WHERE rule.campaign_id = p_campaign AND axm_recent_rule_on(p_campaign)
+    ), team_tags AS (
+        SELECT DISTINCT tag
+        FROM r, campaign_lists cl
+        JOIN lists l ON l.id = cl.list_id
+        CROSS JOIN LATERAL unnest(l.tags) AS t(tag)
+        WHERE r.scope = 'team' AND cl.campaign_id = p_campaign AND tag LIKE '팀:_%'
+    ), camps AS MATERIALIZED (
+        SELECT c.id
+        FROM campaigns c, r
+        WHERE c.type = 'regular' AND c.id <> p_campaign
+            AND (r.scope = 'all'
+                OR (r.scope = 'campaigns' AND c.id = ANY(r.campaign_ids))
+                OR (r.scope = 'team' AND c.id IN (
+                    SELECT cl.campaign_id
+                    FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+                    WHERE l.tags && ARRAY(SELECT tag FROM team_tags)
+                )))
+    )
+    SELECT s.id
+    FROM unnest(p_subs) AS s(id), r
+    CROSS JOIN LATERAL (
+        SELECT 1
+        FROM (
+            -- Keep the scope filter outside this lookup so Postgres starts with the
+            -- (subscriber_id, sent_at) index instead of probing by every campaign ID.
+            SELECT cs.campaign_id FROM axm_campaign_sends cs
+            WHERE cs.subscriber_id = s.id
+                AND cs.sent_at > NOW() - make_interval(days => r.days)
+            OFFSET 0
+        ) history
+        WHERE history.campaign_id = ANY(ARRAY(SELECT id FROM camps))
+        LIMIT 1
+    ) received
+    WHERE EXISTS (SELECT 1 FROM camps)
+        AND NOT EXISTS (
+            SELECT 1 FROM axm_campaign_sends own
+            WHERE own.campaign_id = p_campaign AND own.subscriber_id = s.id
+        );
+$$;
+-- End of AXM recent-send exclusion at send time.
+
+-- AXM completed recent-send counts (LST-65). Keep this block identical to V6_2_1_axm_22.
+ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS finished_held_count INTEGER;
+
+-- AXM-22 AUTOCOMMIT BOUNDARY
+
+-- Save the aggregate with the status change. The subscriber-specific holds can still cascade.
+CREATE OR REPLACE FUNCTION axm_snapshot_recent_holds()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    held_count INTEGER;
+BEGIN
+    -- removed_held_count was added by .23. Read it through the row JSON so this function also
+    -- works while an existing database reruns .22 before .23 is replayed.
+    SELECT COALESCE((to_jsonb(r)->>'removed_held_count')::INTEGER, 0)
+        + (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = NEW.id)
+    INTO held_count FROM axm_campaign_recent_rules r WHERE r.campaign_id = NEW.id;
+    IF FOUND THEN
+        UPDATE axm_campaign_recent_rules SET finished_held_count = held_count WHERE campaign_id = NEW.id;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_recent_holds_finished ON campaigns;
+CREATE TRIGGER axm_recent_holds_finished AFTER UPDATE OF status ON campaigns
+    FOR EACH ROW WHEN (NEW.status = 'finished' AND OLD.status IS DISTINCT FROM 'finished')
+    EXECUTE FUNCTION axm_snapshot_recent_holds();
+
+-- AXM-22 AUTOCOMMIT BOUNDARY
+
+-- Initialize all existing hold totals. Active campaigns ignore this column until they finish;
+-- because the trigger is already live, a completion after this statement's snapshot overwrites
+-- this initial value with the final batch count.
+UPDATE axm_campaign_recent_rules r
+SET finished_held_count = COALESCE((to_jsonb(r)->>'removed_held_count')::INTEGER, 0)
+    + (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id)
+WHERE r.finished_held_count IS NULL AND (
+    COALESCE((to_jsonb(r)->>'removed_held_count')::INTEGER, 0) > 0 OR EXISTS (
+        SELECT 1 FROM axm_campaign_recent_holds h WHERE h.campaign_id = r.campaign_id
+    )
+);
+-- End of AXM completed recent-send counts.
+
+BEGIN;
+-- AXM recent-send counts after subscriber deletion (LST-65). Keep the DDL identical to V6_2_1_axm_23.
+-- Take the exclusive holds lock before acquiring any rule-table DDL lock. The campaign scan
+-- reads holds before rules, and DROP TRIGGER itself needs AccessExclusive on holds; taking this
+-- first keeps scans from holding AccessShare on holds while queued behind the rules DDL.
+LOCK TABLE axm_campaign_recent_holds IN ACCESS EXCLUSIVE MODE;
+
+ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS removed_held_count INTEGER NOT NULL DEFAULT 0;
+
+-- Keep only the count when subscriber deletion cascades to the holds.
+CREATE OR REPLACE FUNCTION axm_count_removed_recent_holds()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    WITH removed AS (
+        SELECT campaign_id, COUNT(*) AS n FROM removed_holds GROUP BY campaign_id
+    ), locked AS (
+        SELECT r.campaign_id, removed.n
+        FROM axm_campaign_recent_rules r JOIN removed USING (campaign_id)
+        ORDER BY r.campaign_id
+        FOR UPDATE OF r
+    )
+    UPDATE axm_campaign_recent_rules r
+    SET removed_held_count = r.removed_held_count + locked.n
+    FROM locked WHERE r.campaign_id = locked.campaign_id;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_recent_holds_removed ON axm_campaign_recent_holds;
+CREATE TRIGGER axm_recent_holds_removed AFTER DELETE ON axm_campaign_recent_holds
+    REFERENCING OLD TABLE AS removed_holds FOR EACH STATEMENT
+    EXECUTE FUNCTION axm_count_removed_recent_holds();
+
+CREATE OR REPLACE FUNCTION axm_snapshot_recent_holds()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    held_count INTEGER;
+BEGIN
+    -- Read both counts from one snapshot, even when a subscriber is being deleted concurrently.
+    SELECT r.removed_held_count + (SELECT COUNT(*) FROM axm_campaign_recent_holds h WHERE h.campaign_id = NEW.id)
+    INTO held_count FROM axm_campaign_recent_rules r WHERE r.campaign_id = NEW.id;
+    IF FOUND THEN
+        UPDATE axm_campaign_recent_rules SET finished_held_count = held_count WHERE campaign_id = NEW.id;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+-- End of AXM recent-send counts after subscriber deletion.
+COMMIT;
+
+-- AXM recent-send audience on resume (LST-65). Keep this block identical to V6_2_1_axm_24.
+-- Losing the ledger table at runtime must not break campaign discovery.
+CREATE OR REPLACE FUNCTION axm_recent_campaign_sent_ids(p_campaign INT)
+RETURNS TABLE(subscriber_id INT) LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    RETURN QUERY SELECT s.subscriber_id FROM axm_campaign_sends s WHERE s.campaign_id = p_campaign;
+EXCEPTION WHEN undefined_table THEN
+    RETURN;
+END;
+$$;
+-- End of AXM recent-send audience on resume.
+
+-- AXM delivered audience after subscriber deletion (LST-65). Keep this block identical to V6_2_1_axm_25.
+ALTER TABLE axm_campaign_recent_rules ADD COLUMN IF NOT EXISTS removed_sent_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE OR REPLACE FUNCTION axm_count_removed_recent_sends()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    WITH removed AS (
+        -- A subscriber's FK cascade removes the record after the subscriber is gone.
+        -- Retention and other ledger-only deletes must not be counted as lost recipients.
+        SELECT s.campaign_id, COUNT(*) AS n
+        FROM removed_sends s
+        JOIN axm_campaign_recent_rules r ON r.campaign_id = s.campaign_id
+        WHERE NOT EXISTS (SELECT 1 FROM subscribers WHERE id = s.subscriber_id)
+        GROUP BY s.campaign_id
+    ), locked AS (
+        SELECT r.campaign_id, removed.n
+        FROM axm_campaign_recent_rules r JOIN removed USING (campaign_id)
+        ORDER BY r.campaign_id
+        FOR UPDATE OF r
+    )
+    UPDATE axm_campaign_recent_rules r
+    SET removed_sent_count = r.removed_sent_count + locked.n
+    FROM locked WHERE r.campaign_id = locked.campaign_id;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS axm_recent_sends_removed ON axm_campaign_sends;
+CREATE TRIGGER axm_recent_sends_removed AFTER DELETE ON axm_campaign_sends
+    REFERENCING OLD TABLE AS removed_sends FOR EACH STATEMENT
+    EXECUTE FUNCTION axm_count_removed_recent_sends();
+-- End of AXM delivered audience after subscriber deletion.

@@ -28,9 +28,8 @@ type preflightResponse struct {
 	Name      string    `json:"name"`
 	Messenger string    `json:"messenger"`
 	Mode      string    `json:"mode"`
-	// Resumed (LST-67): a scheduled campaign that was sent from before (a checkpoint or sent
-	// mails), as after a pause and a new schedule. Its people are the Remaining ones, as when it is
-	// resumed: the sender goes on after the checkpoint and skips who was sent to.
+	// Resumed indicates that a send is continuing. The sender uses Remaining, which accounts
+	// for prior exclusions and deliveries even if it paused before the first successful send.
 	Resumed bool `json:"resumed"`
 
 	// What the recipients will really see: the stored values, replaced by what the custom
@@ -67,6 +66,11 @@ type preflightResponse struct {
 
 	Lists      []models.PreflightList `json:"lists"`
 	Recipients int                    `json:"recipients"`
+	// AXM (LST-65): the campaign's recent-send rule leaves out of the send some of the Recipients
+	// (the sender decides it as it reads each batch). WillSend is how many are sent to: Recipients
+	// less the people left out, or Remaining when resuming.
+	WillSend int         `json:"will_send"`
+	Recent   recentFacts `json:"recent"`
 	// Overlap: people on more than one list; Excluded: people on the lists who are left out.
 	Overlap  int `json:"overlap"`
 	Excluded int `json:"excluded"`
@@ -87,12 +91,26 @@ type preflightResponse struct {
 	TrackingError string                  `json:"tracking_error,omitempty"`
 }
 
+// recentFacts is what the window says about the campaign's recent-send rule: whether it is on, its
+// days and scope, how many of the recipients it leaves out and how many it has left out so far.
+type recentFacts struct {
+	Enabled        bool   `json:"enabled"`
+	Locked         bool   `json:"locked"`
+	Days           int    `json:"days,omitempty"`
+	Scope          string `json:"scope,omitempty"`
+	Excluded       int    `json:"excluded"`
+	Held           int    `json:"held"`
+	HeldInAudience int    `json:"held_in_audience"`
+	Fresh          int    `json:"fresh"`
+}
+
 // preflightFacts is everything the checks are decided from.
 type preflightFacts struct {
-	Mode        string
-	CampType    string
-	Messenger   string
-	ContentType string
+	Mode           string
+	CountRemaining bool
+	CampType       string
+	Messenger      string
+	ContentType    string
 
 	Total, Remaining int
 	// Lists of the campaign, and how many of them still exist.
@@ -112,8 +130,9 @@ type preflightFacts struct {
 	UnsubscribeSampled            int
 	UnsubscribePerSubscriber      bool
 
-	// A saved rule that excludes recent recipients (LST-34) is only recorded, not applied.
-	// RecentExcluded is how many it would exclude; -1: could not be counted.
+	// A saved rule that excludes recent recipients (LST-34) is applied by the sender (LST-65):
+	// RecentExcluded is how many of Total it leaves out, RecentHeld how many it has left out of
+	// this send so far.
 	// HeadersVary: the SMTP servers that may send the mail set different From, Subject or
 	// Reply-To headers, so what the recipient sees depends on the server.
 	HeadersVary bool
@@ -125,9 +144,14 @@ type preflightFacts struct {
 	// not on the team's From list, or a From header while there is a list), with the reason.
 	FromRefused string
 
-	RecentEnabled  bool
-	RecentDays     int
-	RecentExcluded int
+	RecentEnabled        bool
+	RecentLocked         bool
+	RecentDays           int
+	RecentScope          string
+	RecentExcluded       int
+	RecentHeld           int
+	RecentHeldInAudience int
+	RecentFresh          int
 }
 
 // Hosts that stand for "not set up yet": the example from the stock install and the
@@ -188,11 +212,28 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		out = append(out, models.PreflightCheck{Key: key, Level: level, Params: params})
 	}
 
-	count := f.Total
-	if f.Mode == models.PreflightModeResume || f.Mode == models.PreflightModeScheduled {
+	// A scheduled or resumed send reaches only the people still left after the checkpoint.
+	count := f.Total - f.RecentExcluded
+	if f.CountRemaining || f.Mode == models.PreflightModeResume || f.Mode == models.PreflightModeScheduled {
 		count = f.Remaining
 	}
-	if key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists > 0, count > 0); key != "" {
+	key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists > 0, count > 0)
+	canExplainExclusions := key == "recipients.zero" && level == models.PreflightBlock &&
+		(f.RecentExcluded == f.Total || f.CountRemaining)
+	recentAll := canExplainExclusions && f.RecentFresh > 0 && f.RecentHeldInAudience == 0
+	recentHeldAll := canExplainExclusions && f.RecentFresh == 0 && f.RecentHeldInAudience > 0
+	recentMixedAll := canExplainExclusions && f.RecentFresh > 0 && f.RecentHeldInAudience > 0
+	if recentAll {
+		if f.RecentLocked {
+			add("recent.lockedAll", level, map[string]any{"days": f.RecentDays})
+		} else {
+			add("recent.all", level, map[string]any{"days": f.RecentDays})
+		}
+	} else if recentHeldAll {
+		add("recent.heldAll", level, map[string]any{"held": f.RecentHeldInAudience})
+	} else if recentMixedAll {
+		add("recent.mixedAll", level, map[string]any{"fresh": f.RecentFresh, "held": f.RecentHeldInAudience})
+	} else if key != "" {
 		add(key, level, nil)
 	}
 
@@ -246,12 +287,13 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 		add("mail.headers", models.PreflightWarn, nil)
 	}
 
-	if f.RecentEnabled && f.CampType == models.CampaignTypeRegular {
-		p := map[string]any{"days": f.RecentDays}
-		if f.RecentExcluded >= 0 {
-			p["excluded"] = f.RecentExcluded
-		}
-		add("recent.notApplied", models.PreflightWarn, p)
+	// The rule is applied by the sender: an information line says who it leaves out (not a warning:
+	// it is what the person asked for). Resuming says who it left out already.
+	if !recentAll && !recentHeldAll && !recentMixedAll && f.CampType == models.CampaignTypeRegular && (f.RecentEnabled || f.RecentHeld > 0) {
+		add("recent.applied", models.PreflightInfo, map[string]any{
+			"days": f.RecentDays, "scope": f.RecentScope, "excluded": f.RecentExcluded, "held": f.RecentHeld,
+			"fresh": f.RecentFresh,
+		})
 	}
 	return out
 }
@@ -348,7 +390,9 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	ctx := c.Request().Context()
 	// Pending deliveries of a paused or scheduled campaign follow the same rules as the
 	// sender, even if deliveries were recorded before it could save a checkpoint.
-	countRemaining := mode == models.PreflightModeResume || mode == models.PreflightModeScheduled
+	hasSendHistory := camp.Type == models.CampaignTypeRegular &&
+		(camp.StartedAt.Valid || camp.LastSubscriberID > 0 || camp.Sent > 0 || camp.LegacySendHistory)
+	countRemaining := mode == models.PreflightModeResume || mode == models.PreflightModeScheduled || hasSendHistory
 	lists, aud, err := a.core.GetPreflightAudience(ctx, id, camp.LastSubscriberID, countRemaining)
 	if err != nil {
 		return err
@@ -361,7 +405,8 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		}
 	}
 	sentIsMinimum := countRemaining && camp.LegacySendHistory
-	rescheduled := mode == models.PreflightModeScheduled && (aud.Remaining != aud.Total || sent > 0 || camp.LastSubscriberID > 0 || sentIsMinimum)
+	resumed := hasSendHistory || mode == models.PreflightModeScheduled &&
+		(aud.Remaining != aud.Total-aud.Recent || sent > 0 || camp.LastSubscriberID > 0 || sentIsMinimum)
 
 	// A draft started under the sender policy is sent from the starting user's address.
 	from := camp.FromEmail
@@ -441,9 +486,9 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	}
 
 	facts := preflightFacts{
-		Mode: mode, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
+		Mode: mode, CountRemaining: countRemaining, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
 		Total: aud.Total, Remaining: aud.Remaining, ListCount: len(lists),
-		SendAt: camp.SendAt, Now: time.Now(), From: from, RecentExcluded: -1, HeadersVary: headersVary,
+		SendAt: camp.SendAt, Now: time.Now(), From: from, HeadersVary: headersVary,
 	}
 	for _, c := range copies {
 		facts.Copies = append(facts.Copies, c.Address)
@@ -479,32 +524,46 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	if !everyPath {
 		facts.UnsubscribePerSubscriber = true
 	}
-	var listIDs []int
 	for _, l := range lists {
 		if !l.Deleted {
 			facts.LiveLists++
-			listIDs = append(listIDs, l.ID.Int)
 		}
 	}
 
-	// A saved "exclude recent recipients" rule is not applied to the send yet: say so, with
-	// the number it would exclude.
+	// Use the sender's rule applicability before reading its saved settings.
+	// A legacy follow-up can have a saved rule that the sender does not apply.
+	var recent recentFacts
 	if camp.Type == models.CampaignTypeRegular {
-		if rule, err := a.core.GetRecentRule(id); err == nil && rule.Enabled {
-			facts.RecentEnabled, facts.RecentDays = true, rule.Days
-			if len(listIDs) > 0 {
-				if counts, err := a.core.RecentExcludeCounts(ctx, listIDs, rule, id); err == nil {
-					facts.RecentExcluded = counts.Excluded
-				}
+		on, err := a.core.RecentRuleOn(id)
+		if err != nil {
+			return err
+		}
+		if on {
+			rule, err := a.core.GetRecentRule(id)
+			if err != nil {
+				return err
 			}
+			held, err := a.core.RecentHeldCount(id)
+			if err != nil {
+				return err
+			}
+			recent = recentFacts{Enabled: rule.Enabled, Locked: camp.StartedAt.Valid, Days: rule.Days, Scope: rule.Scope,
+				Excluded: aud.Recent, Held: held, HeldInAudience: aud.RecentHeldInAudience, Fresh: aud.RecentFresh}
+			facts.RecentEnabled, facts.RecentLocked, facts.RecentDays, facts.RecentScope = rule.Enabled, camp.StartedAt.Valid, rule.Days, rule.Scope
+			facts.RecentExcluded, facts.RecentHeld, facts.RecentFresh = aud.Recent, held, aud.RecentFresh
+			facts.RecentHeldInAudience = aud.RecentHeldInAudience
 		}
 	}
 
+	willSend := aud.Total - aud.Recent
+	if countRemaining {
+		willSend = aud.Remaining
+	}
 	out := preflightResponse{
 		UpdatedAt: camp.UpdatedAt, Status: camp.Status, Type: camp.Type, Name: camp.Name,
-		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode, Resumed: rescheduled,
+		Subject: subject, SubjectRendered: subjectNote == "rendered", SubjectNote: subjectNote, Varies: sortedKeys(varies), Copies: copies, CopyLists: map[string]string{"cc": kindAddresses(camp.Messenger, server, env.Headers, "Cc"), "bcc": kindAddresses(camp.Messenger, server, env.Headers, "Bcc")}, SenderPerSubscriber: senderPerSubscriber, Messenger: camp.Messenger, Mode: mode, Resumed: resumed,
 		FromEmail: from, ReplyTo: replyTo, SendAt: camp.SendAt,
-		Lists: lists, Recipients: aud.Total, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
+		Lists: lists, Recipients: aud.Total, WillSend: willSend, Recent: recent, Overlap: aud.Multi, Excluded: aud.Excluded, Remaining: aud.Remaining,
 		Sent: sent, SentIsMinimum: sentIsMinimum, ToSend: camp.ToSend, AsOf: aud.AsOf,
 		Checks: preflightChecks(facts),
 	}
