@@ -19,6 +19,7 @@ const (
 // Levels of a pre-send check. Only "block" disables the confirmation.
 const (
 	PreflightOK    = "ok"
+	PreflightInfo  = "info"
 	PreflightWarn  = "warn"
 	PreflightBlock = "block"
 )
@@ -38,10 +39,16 @@ type PreflightAudience struct {
 	Total int `db:"total" json:"total"`
 	// Multi is how many of them are on more than one list; Excluded how many people on the
 	// lists are left out (blocklisted, unsubscribed, not confirmed).
-	Multi     int       `db:"multi" json:"multi"`
-	Excluded  int       `db:"excluded" json:"excluded"`
-	Remaining int       `db:"remaining" json:"remaining"`
-	AsOf      time.Time `db:"as_of" json:"as_of"`
+	Multi     int `db:"multi" json:"multi"`
+	Excluded  int `db:"excluded" json:"excluded"`
+	Remaining int `db:"remaining" json:"remaining"`
+	// Recent (LST-65) is how many of Total the campaign's recent-send rule leaves out of the send.
+	Recent int `db:"recent" json:"-"`
+	// RecentHeldInAudience is how many of those exclusions were already recorded.
+	RecentHeldInAudience int `db:"recent_held_in_audience" json:"-"`
+	// RecentFresh counts new exclusions in the remaining audience when resuming.
+	RecentFresh int       `db:"recent_fresh" json:"-"`
+	AsOf        time.Time `db:"as_of" json:"as_of"`
 }
 
 // PreflightRow is a row of axm-preflight-audience: a list and the totals of all lists.

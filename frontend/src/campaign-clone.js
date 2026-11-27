@@ -2,7 +2,7 @@ import dayjs from 'dayjs';
 import { splitAttribs, TZ_ATTRIB } from './schedule-time';
 
 // Use fresh settings and the original body. The new draft uses only the chosen lists.
-export default async function cloneCampaign(api, now, id, name, listIds) {
+export default async function cloneCampaign(api, now, id, { name, listIds, rule }) {
   const config = await api.getServerConfig();
   const c = await api.getCampaign(id);
   const list = config.from_addresses || [];
@@ -47,5 +47,13 @@ export default async function cloneCampaign(api, now, id, name, listIds) {
     data.archive_slug = `${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString().slice(-4)}`;
   }
 
-  return api.createCampaign(data);
+  const campaign = await api.createCampaign(data);
+  if (rule) {
+    try {
+      await api.saveRecentRule(campaign.id, rule);
+    } catch {
+      return { campaign, ruleSaveFailed: true };
+    }
+  }
+  return { campaign, ruleSaveFailed: false };
 }

@@ -132,9 +132,11 @@
                 <address-check v-if="canShowAddressCheck" :list-ids="recentListIds" :lists="lists.results || []"
                   :optin="data.type === 'optin'" />
 
-                <recent-send-exclude v-if="canShowRecentRule" v-model="recentRule" :campaign-id="data.id || createdDraftId"
-                  :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || !recentRuleLoaded || savingCampaign"
-                  :lists-editable="canChangeLists" :saved-campaign="!!data.id" :made-list="madeListView" @list-made="onRecentListMade" />
+                <recent-send-exclude v-if="canShowRecentRule && !isFollowup" v-model="recentRule" :campaign-id="data.id || createdDraftId"
+                  :list-ids="recentListIds" :campaign-type="data.type" :disabled="!canManage || !canEdit || recentStarted || !recentRuleLoaded || savingCampaign"
+                  :finished-audience="data.status === 'finished' ? { target: data.toSend, sent: data.sent, asOf: data.startedAt } : null"
+                  :started="recentStarted" :lists-editable="canChangeLists" :saved-campaign="!!data.id" :made-list="madeListView"
+                  @list-made="onRecentListMade" />
                 <p v-if="recentRuleError" class="help is-danger mb-4" role="alert">{{ recentRuleError }}</p>
                 <p v-if="isFollowup && canShowRecentRule" class="help mb-4" data-cy="followup-exclude-note">
                   {{ $t('campaigns.followup.excludeNote') }}
@@ -733,7 +735,7 @@ export default Vue.extend({
         this.applyCampaign(data);
         if (data.type === 'regular') {
           try {
-            const rule = await this.$api.getRecentRule(id);
+            const rule = await this.$api.getRecentRule(id, data.status === 'finished');
             this.recentRule = { ...defaultRecentRule(), ...rule };
             this.savedRecentRule = this.recentRuleKey;
             this.recentRuleLoaded = true;
@@ -935,6 +937,19 @@ export default Vue.extend({
         media: this.form.media.map((m) => m.id),
       };
 
+      // A scheduled campaign must validate the audience against the rule being saved, in the
+      // same server transaction. Sending the rule separately can validate stale settings and can
+      // make the follow-up preflight look like somebody else's edit.
+      // Send only a rule the person changed in this editor. A second tab may have saved a newer
+      // rule after this page loaded; resending this tab's unchanged baseline would overwrite it.
+      // The server checks an omitted rule against the current saved rule in its transaction.
+      // The campaign status can change in another editor after this page loaded. Always include
+      // this editor's dirty rule so a draft -> scheduled race validates and saves it atomically.
+      // The server locks and rechecks the current status before saving this field, even if this
+      // editor loaded an older draft/scheduled state.
+      const recentRuleWasDirty = this.recentRuleDirty;
+      if (recentRuleWasDirty) data.recent_rule = recentRulePayload(this.recentRule);
+
       let typMsg = 'globals.messages.updated';
       if (typ === 'start') {
         typMsg = 'campaigns.started';
@@ -957,15 +972,32 @@ export default Vue.extend({
         this.form.replyTo = d.replyTo;
         this.form.archiveSlug = d.archiveSlug;
         this.form.attribsStr = d.attribs ? JSON.stringify(splitAttribs(d.attribs).rest, null, 4) : '{}';
+        const recentRuleSavedWithCampaign = recentRuleWasDirty;
+        if (recentRuleSavedWithCampaign) {
+          this.savedRecentRule = this.recentRuleKey;
+          this.recentRuleError = '';
+        } else if (d.status === 'scheduled' && !recentRuleWasDirty) {
+          // Another editor may have changed the rule since this page loaded. Keep the panel in
+          // sync with the rule the server just used to check this save.
+          try {
+            const currentRule = await this.$api.getRecentRule(d.id);
+            this.recentRule = { ...defaultRecentRule(), ...currentRule };
+            this.savedRecentRule = this.recentRuleKey;
+          } catch (err) {
+            this.recentRuleError = this.$t('campaigns.recent.loadError');
+          }
+        }
         // The target is saved now, whatever happens to the rule below.
         if (this.madeList && this.sentMadeList(data.lists)) this.madeList = { ...this.madeList, error: '' };
         // The rule failing must not hide what the saved campaign now has: the campaign is saved, and
         // the check below reads it (LST-67 review). The rule's error goes on after it.
         let ruleError = null;
-        try {
-          await this.saveRecentRule(d.id);
-        } catch (err) {
-          ruleError = err;
+        if (!recentRuleSavedWithCampaign) {
+          try {
+            await this.saveRecentRule(d.id);
+          } catch (err) {
+            ruleError = err;
+          }
         }
         // A scheduled campaign goes out at its time with nothing between: what the save left is
         // checked again and shown (LST-67). The start and schedule buttons save a draft or a
@@ -1185,6 +1217,10 @@ export default Vue.extend({
 
     canShowRecentRule() {
       return this.isNew || this.data.type === 'regular';
+    },
+    // The campaign has been started (LST-65): the rule panel says how many people it left out.
+    recentStarted() {
+      return !!this.data.startedAt || ['running', 'paused', 'finished', 'cancelled'].includes(this.data.status);
     },
     // An opt-in campaign also mails people: its audience (the unconfirmed subscribers of the
     // double opt-in lists) is checked too.

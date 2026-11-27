@@ -11,6 +11,10 @@
 --     everyone who is not 'unsubscribed' on any other list.
 --   * A dynamic list gives the members of axm_dynamic_list_members (regular campaigns only).
 --   * Blocklisted subscribers are always left out.
+--   * (LST-65) A regular campaign with a recent-send rule leaves out, as the sender does in
+--     NextSubscribers, the people axm_recent_received names and the people it kept out before
+--     (axm_campaign_recent_holds, while the rule is on). The count is `recent`; the remaining
+--     count also leaves them out.
 
 -- name: axm-preflight-audience
 -- One row per list of campaign $1 with the people that list alone would reach (a deleted
@@ -20,6 +24,9 @@
 --   multi      how many of them are on more than one of the lists
 --   excluded   people on the lists of a regular campaign who are not reached (blocklisted,
 --              unsubscribed, not yet confirmed on a double opt-in list)
+--   recent     (LST-65) the people already excluded who are still eligible for the lists,
+--              plus new matches to the rule among candidates the sender will consider.
+--              For a continuation, only IDs after the checkpoint can be newly excluded.
 --   remaining  with $3 (resume) true, how many of total are still to be sent after the
 --              checkpoint $2 (campaigns.last_subscriber_id). A resumed campaign recounts its
 --              upper bound, so there is none here, and a person above the checkpoint who
@@ -65,34 +72,48 @@ totals AS (
         COUNT(*) FILTER (WHERE n = 0) AS excluded,
         COUNT(*) FILTER (WHERE n > 0 AND id > $2) AS after_checkpoint
     FROM counts WHERE id IS NOT NULL
+),
+recent_rule AS MATERIALIZED (
+    SELECT axm_recent_rule_on($1) AS enabled
+),
+held AS (
+    SELECT h.subscriber_id AS id
+    FROM recent_rule CROSS JOIN axm_campaign_recent_holds h
+    WHERE recent_rule.enabled AND h.campaign_id = $1
+),
+fresh AS (
+    SELECT r.subscriber_id AS id
+    FROM recent_rule
+    CROSS JOIN LATERAL axm_recent_received($1, ARRAY(
+        SELECT id FROM counts WHERE id IS NOT NULL AND n > 0 AND (NOT $3::BOOLEAN OR id > $2)
+    )) r
+    WHERE recent_rule.enabled
+        AND NOT EXISTS (SELECT 1 FROM held h WHERE h.id = r.subscriber_id)
+),
+recent_out AS (
+    SELECT id, FALSE AS held FROM fresh
+    UNION ALL
+    SELECT h.id, TRUE AS held FROM held h JOIN counts e ON e.id = h.id WHERE e.n > 0
+),
+pending_exclusions AS (
+    SELECT subscriber_id AS id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2
+    UNION
+    SELECT subscriber_id FROM axm_campaign_followup_claims WHERE campaign_id = $1 AND subscriber_id > $2 AND sent
+    UNION
+    SELECT id FROM recent_out WHERE id > $2
 )
 SELECT cl.list_id AS id, cl.name, COALESCE(cl.optin::TEXT, '') AS optin, cl.is_dynamic AS dynamic, NOT cl.live AS deleted,
     COALESCE(per.n, 0) AS count,
     totals.n AS total,
     totals.multi,
+    (SELECT COUNT(*) FROM recent_out) AS recent,
+    (SELECT COUNT(*) FROM recent_out WHERE held) AS recent_held_in_audience,
+    (SELECT COUNT(*) FROM fresh) AS recent_fresh,
     CASE WHEN c.type = 'regular' THEN totals.excluded ELSE 0 END AS excluded,
-    CASE
-        WHEN $3::BOOLEAN IS NOT TRUE THEN totals.n
-        -- Most scheduled campaigns have no prior deliveries. The same statement's snapshot
-        -- gives both the ledger check and the counts, including when the checkpoint is zero.
-        WHEN NOT EXISTS (
-            SELECT 1 FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2
-            UNION ALL
-            SELECT 1 FROM axm_campaign_followup_claims WHERE campaign_id = $1 AND subscriber_id > $2 AND sent
-        ) THEN totals.after_checkpoint
-        ELSE totals.after_checkpoint - (
-            -- Subtract deliveries that still match a list. A delivery recorded in both
-            -- places counts once, and the join can process the ledgers in bulk.
-            SELECT COUNT(*)
-            FROM (
-                SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2
-                UNION
-                SELECT subscriber_id FROM axm_campaign_followup_claims WHERE campaign_id = $1 AND subscriber_id > $2 AND sent
-            ) sent
-            JOIN counts e ON e.id = sent.subscriber_id
-            WHERE e.id > $2 AND e.n > 0
-        )
-    END AS remaining,
+    CASE WHEN $3::BOOLEAN THEN totals.after_checkpoint - (
+        -- Count a past delivery or a recent exclusion only once, even if several records match.
+        SELECT COUNT(*) FROM pending_exclusions x JOIN counts e ON e.id = x.id WHERE e.n > 0
+    ) ELSE totals.n END AS remaining,
     NOW() AS as_of
 FROM c CROSS JOIN totals CROSS JOIN campLists cl
 LEFT JOIN counts per ON per.list_id = cl.list_id
@@ -121,24 +142,41 @@ candidates AS (
     FROM (SELECT id FROM live_lists WHERE dynamic) l
     CROSS JOIN LATERAL axm_dynamic_list_members(l.id, $2) m
 ),
-held AS MATERIALIZED (
+followup_held AS MATERIALIZED (
     SELECT j.subscriber_id FROM axm_followup_judge($1, NULL, $4) j
     WHERE $3::INT > 0 AND j.reason NOT IN (0, 1)
+),
+pending AS NOT MATERIALIZED (
+    SELECT e.subscriber_id FROM candidates e
+    WHERE NOT EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = $1 AND s.subscriber_id = e.subscriber_id)
+      AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k
+          WHERE k.campaign_id = $1 AND k.subscriber_id = e.subscriber_id AND k.sent)
+      AND (e.list_id <> $3 OR NOT EXISTS (SELECT 1 FROM followup_held h WHERE h.subscriber_id = e.subscriber_id))
+),
+recent_candidates AS MATERIALIZED (
+    SELECT DISTINCT p.subscriber_id FROM pending p
+    WHERE NOT EXISTS (
+        SELECT 1 FROM axm_campaign_recent_holds h
+        WHERE h.campaign_id = $1 AND h.subscriber_id = p.subscriber_id
+    )
 )
 SELECT EXISTS (SELECT 1 FROM live_lists) AS has_lists,
-    EXISTS (
-        SELECT 1 FROM candidates e
-        WHERE NOT EXISTS (SELECT 1 FROM axm_campaign_sends s WHERE s.campaign_id = $1 AND s.subscriber_id = e.subscriber_id)
-          AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k
-              WHERE k.campaign_id = $1 AND k.subscriber_id = e.subscriber_id AND k.sent)
-          AND (e.list_id <> $3 OR NOT EXISTS (SELECT 1 FROM held h WHERE h.subscriber_id = e.subscriber_id))
-    ) AS has_recipients;
+    CASE WHEN axm_recent_rule_on($1) THEN EXISTS (
+        -- Check the saved rule against the edited lists inside the save transaction.
+        -- Send the candidate IDs together so the rule scopes its campaigns once.
+        SELECT 1 FROM recent_candidates e
+        WHERE NOT EXISTS (
+            SELECT 1 FROM axm_recent_received($1, ARRAY(SELECT subscriber_id FROM recent_candidates)) r
+            WHERE r.subscriber_id = e.subscriber_id
+        )
+    ) ELSE EXISTS (SELECT 1 FROM pending) END AS has_recipients;
 
 -- name: axm-preflight-sample
 -- Up to $2 of the people campaign $1 would reach, the lowest IDs first, by the same rule as
 -- axm-preflight-audience (keep the two the same). The pre-send check renders the mail for them.
 -- With $4 (resume) true, only those still to be sent: after the checkpoint $3 and without a send
 -- record or a sent follow-up decision, as in the remaining count of axm-preflight-audience.
+-- Leave out the people excluded by the recent-send rule in both modes.
 WITH c AS (
     SELECT id, type FROM campaigns WHERE id = $1
 ),
@@ -172,4 +210,9 @@ SELECT s.* FROM subscribers s WHERE s.id IN (SELECT id FROM eligible)
     AND (NOT $4::BOOLEAN OR (s.id > $3
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_sends x WHERE x.campaign_id = $1 AND x.subscriber_id = s.id)
         AND NOT EXISTS (SELECT 1 FROM axm_campaign_followup_claims k WHERE k.campaign_id = $1 AND k.subscriber_id = s.id AND k.sent)))
+    AND NOT EXISTS (SELECT 1 FROM axm_recent_received($1, ARRAY[s.id]))
+    AND NOT EXISTS (
+        SELECT 1 FROM axm_campaign_recent_holds h
+        WHERE h.campaign_id = $1 AND h.subscriber_id = s.id
+            AND axm_recent_rule_on($1))
 ORDER BY s.id LIMIT $2;

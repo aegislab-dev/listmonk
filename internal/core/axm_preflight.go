@@ -139,8 +139,8 @@ func (c *Core) lockCampaignState(tx *sqlx.Tx, id int) (models.Campaign, bool, er
 		cm  models.Campaign
 		due bool
 	)
-	err := tx.QueryRowx(`SELECT id, status, send_at FROM campaigns WHERE id = $1 FOR UPDATE`, id).
-		Scan(&cm.ID, &cm.Status, &cm.SendAt)
+	err := tx.Get(&cm, `SELECT id, status, send_at, type, started_at, last_subscriber_id, sent, axm_legacy_send_history
+		FROM campaigns WHERE id = $1 FOR UPDATE`, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return cm, false, echo.NewHTTPError(http.StatusBadRequest,
 			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
@@ -155,6 +155,42 @@ func (c *Core) lockCampaignState(tx *sqlx.Tx, id int) (models.Campaign, bool, er
 		err = tx.QueryRowx(`SELECT clock_timestamp() >= $1::TIMESTAMPTZ`, cm.SendAt.Time).Scan(&due)
 	}
 	return cm, due, err
+}
+
+// checkStatusAudience runs after the confirmation version check, under the same campaign lock
+// used by edits to the campaign or its exclusion rule. A paused resume may finish with no mail.
+func (c *Core) checkStatusAudience(tx *sqlx.Tx, cm models.Campaign, status string) error {
+	if cm.Type != models.CampaignTypeRegular ||
+		!(status == models.CampaignStatusScheduled || status == models.CampaignStatusRunning && cm.Status == models.CampaignStatusDraft) {
+		return nil
+	}
+	hasHistory := cm.StartedAt.Valid || cm.LastSubscriberID > 0 || cm.Sent > 0 || cm.LegacySendHistory
+	if !hasHistory {
+		// An ordinary draft may still start when the operator cannot load the confirmation.
+		// Identify exclusions without reading the send ledger, which may be unavailable.
+		var usesExclusions bool
+		if err := tx.Get(&usesExclusions, `SELECT axm_recent_rule_on($1) OR EXISTS (
+			SELECT 1 FROM axm_campaign_recent_holds WHERE campaign_id = $1)`, cm.ID); err != nil {
+			return c.recentError(err)
+		}
+		if !usesExclusions {
+			return nil
+		}
+	}
+
+	lists, aud, err := c.preflightAudience(context.Background(), tx, cm.ID, cm.LastSubscriberID, hasHistory)
+	if err != nil {
+		return err
+	}
+	if hasHistory && aud.Remaining > 0 || !hasHistory && (aud.Recent == 0 || aud.Total > aud.Recent) {
+		return nil
+	}
+	for _, list := range lists {
+		if !list.Deleted {
+			return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recheck.zero"))
+		}
+	}
+	return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recheck.noLists"))
 }
 
 // checkSendTimeShown refuses a status change from the pre-send confirmation (seenAt given)
@@ -238,6 +274,23 @@ type ScheduledCheck func(hasLists, hasRecipients bool) error
 // that has already picked up the campaign wins the race. The sender skips locked rows and
 // discards counts from an older row version if a save commits while it is counting.
 func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, check ScheduledCheck) (models.Campaign, error) {
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, nil, 0, check, true)
+}
+
+// UpdateScheduledCampaignWithRecentRule atomically saves a scheduled campaign, its replacement
+// recent-send rule, and the recipient check that decides whether the new schedule is viable.
+func (c *Core) UpdateScheduledCampaignWithRecentRule(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule models.RecentRule, userID int, check ScheduledCheck) (models.Campaign, error) {
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, &rule, userID, check, true)
+}
+
+// UpdateCampaignWithRecentRule saves a campaign edit and its dirty rule after locking the live
+// campaign status. The status read in the HTTP handler is only a permission check: another editor
+// may schedule the draft while this request is in flight.
+func (c *Core) UpdateCampaignWithRecentRule(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule models.RecentRule, userID int, check ScheduledCheck) (models.Campaign, error) {
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, &rule, userID, check, false)
+}
+
+func (c *Core) updateCampaignSave(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule *models.RecentRule, userID int, check ScheduledCheck, requireScheduled bool) (models.Campaign, error) {
 	tx, err := c.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return models.Campaign{}, err
@@ -245,8 +298,13 @@ func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Cam
 	defer tx.Rollback()
 
 	run := func(st *sqlx.Stmt) *sqlx.Stmt { return tx.Stmtx(st) }
-	var before models.Campaign
-	if err := tx.GetContext(ctx, &before, `SELECT status, type, last_subscriber_id FROM campaigns WHERE id = $1 FOR NO KEY UPDATE`, id); err != nil {
+	var before struct {
+		Status           string `db:"status"`
+		Type             string `db:"type"`
+		LastSubscriberID int    `db:"last_subscriber_id"`
+		Started          bool   `db:"started"`
+	}
+	if err := tx.GetContext(ctx, &before, `SELECT status, type, last_subscriber_id, started_at IS NOT NULL AS started FROM campaigns WHERE id = $1 FOR NO KEY UPDATE`, id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest,
 				c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
@@ -256,17 +314,30 @@ func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Cam
 	switch before.Status {
 	case models.CampaignStatusScheduled:
 	case models.CampaignStatusDraft, models.CampaignStatusPaused:
-		return models.Campaign{}, echo.NewHTTPError(http.StatusConflict, c.i18n.T("campaigns.sendConfirm.changed"))
+		if requireScheduled {
+			return models.Campaign{}, echo.NewHTTPError(http.StatusConflict, c.i18n.T("campaigns.sendConfirm.changed"))
+		}
 	default:
+		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
+	}
+	if rule != nil && !models.CanEditRecentRule(before.Status, before.Started) {
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
 	}
 
 	if _, err := run(c.q.UpdateCampaign).ExecContext(ctx, updateCampaignArgs(id, o, listIDs, mediaIDs)...); err != nil {
 		return models.Campaign{}, c.updateCampaignErr(err)
 	}
+	if rule != nil {
+		if before.Type != models.CampaignTypeRegular {
+			return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recent.regularOnly"))
+		}
+		if _, err := c.saveRecentRuleTx(ctx, tx, id, *rule, userID); err != nil {
+			return models.Campaign{}, err
+		}
+	}
 
 	// Clearing the send time makes the campaign a draft. Opt-in campaigns only warn.
-	if o.SendAt.Valid && before.Type == models.CampaignTypeRegular && check != nil {
+	if before.Status == models.CampaignStatusScheduled && o.SendAt.Valid && before.Type == models.CampaignTypeRegular && check != nil {
 		followupListID, err := c.preflightFollowupList(ctx, run, id)
 		if err != nil {
 			c.log.Printf("error finding the follow-up list for campaign %d: %v", id, err)

@@ -29,6 +29,9 @@ import (
 type campReq struct {
 	models.Campaign
 	ReplyToInput *string `json:"reply_to"`
+	// RecentRule is included only when a scheduled edit changes the rule, so the
+	// campaign update, rule change, and recipient check commit as one operation.
+	RecentRule *models.RecentRule `json:"recent_rule"`
 
 	// This overrides Campaign.Lists to receive and
 	// write a list of int IDs during creation and updation.
@@ -408,6 +411,19 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 
 	// Filter lists against the current user's permitted lists.
 	user := auth.GetUser(c)
+	if o.RecentRule != nil {
+		if err := a.core.ValidateRecentRule(o.RecentRule); err != nil {
+			return err
+		}
+		if err := a.resolveRecentSources(o.RecentRule, id, c); err != nil {
+			return err
+		}
+		// Match the dedicated rule endpoint: if every selected source was deleted,
+		// there is no new rule to save (existing holds remain in the campaign ledger).
+		if o.RecentRule.Scope == models.RecentScopeCampaigns && len(o.RecentRule.CampaignIDs) == 0 {
+			*o.RecentRule = models.RecentRule{}
+		}
+	}
 	listIDs, err := campaignWriteListIDs(user, o.ListIDs) // AXM (LST-68)
 	if err != nil {
 		return err
@@ -426,15 +442,21 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 		o = c
 	}
 
-	// A send_at value does not activate a draft. Only edits to campaigns
-	// already scheduled or paused must pass the sending checks here.
+	// A send_at value does not activate a draft. The status under the campaign row lock
+	// decides whether the scheduled-save check is needed.
 	if len(a.cfg.SenderDomains) > 0 && (cm.Status == models.CampaignStatusScheduled || cm.Status == models.CampaignStatusPaused) {
 		if err := a.requireVerifiedReply(&o.Campaign); err != nil {
 			return err
 		}
 	}
 	var out models.Campaign
-	if cm.Status == models.CampaignStatusScheduled {
+	if o.RecentRule != nil {
+		// The status read above is not the update's serialization point. If another editor has
+		// locked and scheduled this campaign meanwhile, the core rechecks that live status under
+		// the row lock and saves the rule with the schedule check in the same transaction.
+		out, err = a.core.UpdateCampaignWithRecentRule(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs,
+			*o.RecentRule, user.ID, a.scheduledSaveCheck)
+	} else if cm.Status == models.CampaignStatusScheduled {
 		// AXM (LST-67): a scheduled campaign goes out at its time with nothing between, so what
 		// it would reach is judged again when it is saved, and a save that leaves nobody to send
 		// to is refused (the schedule stays as it was).
@@ -444,6 +466,11 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 	}
 	if err != nil {
 		return err
+	}
+	if o.RecentRule != nil {
+		a.audit(c, auditCampaignRecentRule, auditTarget{auditTargetCampaign, id, cm.Name}, auditNoCount, map[string]any{
+			"days": o.RecentRule.Days, "scope": o.RecentRule.Scope, "campaign_ids": o.RecentRule.CampaignIDs, "enabled": o.RecentRule.Enabled,
+		})
 	}
 
 	if err := a.campaignReplyVerified(&out); err != nil {
@@ -473,7 +500,6 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
-
 	from := ""
 	if len(a.cfg.SenderDomains) > 0 && (req.Status == models.CampaignStatusRunning || req.Status == models.CampaignStatusScheduled) {
 		camp, err := a.core.GetCampaign(id, "", "")

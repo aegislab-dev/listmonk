@@ -37,10 +37,10 @@ Cypress.Commands.add('loginAndVisit', (url) => {
   cy.get('input[name=username]').invoke('val', username);
   cy.get('input[name=password]').invoke('val', password);
 
-  // Submit form, and wait for the session: a request sent before the login answer
-  // arrives has no session cookie yet (403 invalid session in dynamic-lists, LST-77).
+  // Submit form.
   cy.get('button').click();
-  cy.location('pathname', { timeout: 15000 }).should('not.eq', '/admin/login');
+  // API requests queued by the caller must not race the login POST and miss its session cookie.
+  cy.location('pathname').should('not.include', '/admin/login');
 });
 
 Cypress.Commands.add('clickMenu', (...selectors) => {

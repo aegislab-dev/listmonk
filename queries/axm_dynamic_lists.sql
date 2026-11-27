@@ -69,15 +69,24 @@ WITH campLists AS (
     JOIN campaign_lists cl ON cl.list_id = l.id WHERE cl.campaign_id = $1
 ),
 regular AS (
-    SELECT DISTINCT s.id FROM subscriber_lists sl
-    JOIN campLists cl ON cl.list_id = sl.list_id AND cl.axm_filter IS NULL
-    JOIN subscribers s ON s.id = sl.subscriber_id
-    WHERE sl.list_id = ANY($5::INT[]) AND s.id > $3 AND s.id <= $4
-        AND s.status != 'blocklisted'
-        AND CASE WHEN $2 = 'optin' THEN sl.status = 'unconfirmed' AND cl.optin = 'double'
-            WHEN cl.optin = 'double' THEN sl.status = 'confirmed'
-            ELSE sl.status != 'unsubscribed' END
-    ORDER BY s.id LIMIT $6
+    SELECT DISTINCT member.id
+    FROM campLists cl
+    CROSS JOIN LATERAL (
+        SELECT sl.subscriber_id AS id
+        FROM subscriber_lists sl
+        JOIN LATERAL (
+            SELECT status FROM subscribers WHERE id = sl.subscriber_id OFFSET 0
+        ) s ON TRUE
+        WHERE sl.list_id = cl.list_id
+            AND sl.subscriber_id > $3 AND sl.subscriber_id <= $4
+            AND s.status != 'blocklisted'
+            AND CASE WHEN $2 = 'optin' THEN sl.status = 'unconfirmed' AND cl.optin = 'double'
+                WHEN cl.optin = 'double' THEN sl.status = 'confirmed'
+                ELSE sl.status != 'unsubscribed' END
+        ORDER BY sl.subscriber_id LIMIT $6
+    ) member
+    WHERE cl.axm_filter IS NULL AND cl.list_id = ANY($5::INT[])
+    ORDER BY member.id LIMIT $6
 ),
 dynamic AS (
     SELECT m.subscriber_id AS id FROM campLists cl

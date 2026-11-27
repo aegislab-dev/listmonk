@@ -16,6 +16,7 @@ import (
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 	"gopkg.in/volatiletech/null.v6"
 )
 
@@ -42,10 +43,20 @@ func scheduledEnvScan(t *testing.T, scan bool) *teamsEnv {
 // save puts the campaign as the page does and returns the status and the answer's message.
 func (e *teamsEnv) save(subject string, lists []int, sendAt *time.Time, typ string) (int, string) {
 	e.t.Helper()
-	return e.saveAs(e.as(e.superAdmin), subject, lists, sendAt, typ)
+	return e.saveAsRule(e.as(e.superAdmin), subject, lists, sendAt, typ, nil)
+}
+
+func (e *teamsEnv) saveWithRecentRule(subject string, lists []int, sendAt *time.Time, typ string, rule models.RecentRule) (int, string) {
+	e.t.Helper()
+	return e.saveAsRule(e.as(e.superAdmin), subject, lists, sendAt, typ, &rule)
 }
 
 func (e *teamsEnv) saveAs(user auth.User, subject string, lists []int, sendAt *time.Time, typ string) (int, string) {
+	e.t.Helper()
+	return e.saveAsRule(user, subject, lists, sendAt, typ, nil)
+}
+
+func (e *teamsEnv) saveAsRule(user auth.User, subject string, lists []int, sendAt *time.Time, typ string, rule *models.RecentRule) (int, string) {
 	e.t.Helper()
 	body := map[string]any{
 		"name": "Renamed", "subject": subject, "lists": lists, "type": typ, "content_type": "richtext",
@@ -56,6 +67,9 @@ func (e *teamsEnv) saveAs(user auth.User, subject string, lists []int, sendAt *t
 	body["send_at"] = nil
 	if sendAt != nil {
 		body["send_at"] = sendAt.Format(time.RFC3339)
+	}
+	if rule != nil {
+		body["recent_rule"] = rule
 	}
 	b, _ := json.Marshal(body)
 	code, data := e.call(e.a.UpdateCampaign, user, http.MethodPut,
@@ -145,6 +159,591 @@ func TestScheduledSaveIsChecked(t *testing.T) {
 	}
 	if subject, _, _ := e.saved(); subject == "No list" {
 		t.Fatal("saved without a list")
+	}
+}
+
+func TestScheduledSaveAgreesWithRecentExclusionPreflight(t *testing.T) {
+	e := scheduledEnv(t)
+	var sendAt time.Time
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
+		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2`, prior, e.aList)
+
+	check := func(want int, wantBlock string) {
+		t.Helper()
+		path := fmt.Sprintf("/api/campaigns/%d/preflight", e.campID)
+		data := pfRead(t, e, e.as(e.superAdmin), path, strconv.Itoa(e.campID))
+		var out preflightResponse
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		blocked := slices.ContainsFunc(out.Checks, func(c models.PreflightCheck) bool {
+			return c.Key == wantBlock && c.Level == models.PreflightBlock
+		})
+		if out.Mode != models.PreflightModeScheduled || out.Resumed || out.Recipients != 3 ||
+			out.WillSend != want || out.Remaining != want || out.Recent.Excluded != 3-want || blocked != (wantBlock != "") {
+			t.Fatalf("scheduled preflight, want %d recipients: %s", want, data)
+		}
+	}
+	check(0, "recent.all")
+	before, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, data := e.save("Would reach nobody", []int{e.aList}, &sendAt, "regular"); code != http.StatusBadRequest {
+		t.Fatalf("save with all three recently sent to: %d %s", code, data)
+	}
+	after, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil || after.Subject != before.Subject || after.Status != before.Status ||
+		after.SendAt != before.SendAt || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("refused save changed the campaign: %+v, %v", after, err)
+	}
+
+	// Expired history is still excluded if the sender has already recorded the exclusions.
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM axm_campaign_sends WHERE campaign_id=$2`, e.campID, prior)
+	e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at=NOW() - INTERVAL '15 days' WHERE campaign_id=$1`, prior)
+	check(0, "recent.heldAll")
+	if code, data := e.save("All held", []int{e.aList}, &sendAt, "regular"); code != http.StatusBadRequest {
+		t.Fatalf("save with all three held: %d %s", code, data)
+	}
+
+	e.db.MustExec(`DELETE FROM axm_campaign_recent_holds WHERE campaign_id=$1 AND subscriber_id=(
+		SELECT MIN(subscriber_id) FROM axm_campaign_recent_holds WHERE campaign_id=$1)`, e.campID)
+	check(1, "")
+	if code, data := e.save("One recipient", []int{e.aList}, &sendAt, "regular"); code != http.StatusOK {
+		t.Fatalf("save with one recipient left: %d %s", code, data)
+	}
+	check(1, "")
+}
+
+func TestScheduledPreflightExplainsExpiredHoldsAfterSourceDeletion(t *testing.T) {
+	e := scheduledEnv(t)
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns, CampaignIDs: []int64{int64(prior)}}
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, rule, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2`, prior, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2`, e.campID, e.aList)
+	e.db.MustExec(`UPDATE axm_campaign_sends SET sent_at=NOW() - INTERVAL '13 months' WHERE campaign_id=$1`, prior)
+	e.db.MustExec(`UPDATE campaigns SET started_at=NOW() WHERE id=$1`, e.campID)
+	e.db.MustExec(`DELETE FROM campaigns WHERE id=$1`, prior)
+
+	data := pfRead(t, e, e.as(e.superAdmin), fmt.Sprintf("/api/campaigns/%d/preflight", e.campID), strconv.Itoa(e.campID))
+	var out preflightResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	var heldBlock, recentBlock *models.PreflightCheck
+	for i := range out.Checks {
+		switch out.Checks[i].Key {
+		case "recent.heldAll":
+			heldBlock = &out.Checks[i]
+		case "recent.all":
+			recentBlock = &out.Checks[i]
+		}
+	}
+	if out.Mode != models.PreflightModeScheduled || out.WillSend != 0 || out.Recent.Excluded != 3 ||
+		out.Recent.Enabled || out.Recent.Days != 0 || heldBlock == nil || heldBlock.Level != models.PreflightBlock || recentBlock != nil {
+		t.Fatalf("expired holds should block with a hold explanation, not a recent-send reason: %s", data)
+	}
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, models.RecentRule{}, e.superAdmin); err == nil {
+		t.Fatal("started campaign let the operator change its locked recent rule")
+	}
+}
+
+func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(t *testing.T) {
+	e := scheduledEnv(t)
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns, CampaignIDs: []int64{int64(prior)}}
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, rule, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2 ORDER BY subscriber_id LIMIT 1`, e.campID, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2 AND subscriber_id NOT IN
+		(SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1)`, prior, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2 AND subscriber_id NOT IN
+		(SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1)`, e.campID, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET started_at=NOW(), sent=1, to_send=3 WHERE id=$1`, e.campID)
+	e.db.MustExec(`DELETE FROM campaigns WHERE id=$1`, prior)
+
+	path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+	if code, data := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+		`{"status":"draft"}`); code != http.StatusOK {
+		t.Fatalf("cancel schedule: HTTP %d %s", code, data)
+	}
+	data := pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+	var out preflightResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Mode != models.PreflightModeSchedule || out.WillSend != 0 || out.Remaining != 0 ||
+		out.Recent.Held != 2 || out.Recent.HeldInAudience != 2 || out.Recent.Excluded != 2 || !out.Resumed {
+		t.Fatalf("cancelled started schedule lost send history: %s", data)
+	}
+	blocked := false
+	for _, check := range out.Checks {
+		blocked = blocked || (check.Key == "recent.heldAll" && check.Level == models.PreflightBlock)
+	}
+	if !blocked {
+		t.Fatalf("cancelled schedule did not explain the held zero audience: %s", data)
+	}
+	if code, body := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+		`{"status":"scheduled"}`); code != http.StatusBadRequest {
+		t.Fatalf("zero-recipient reschedule: HTTP %d %s", code, body)
+	}
+	var status string
+	e.get(&status, `SELECT status::TEXT FROM campaigns WHERE id=$1`, e.campID)
+	if status != models.CampaignStatusDraft {
+		t.Fatalf("refused reschedule changed status to %q", status)
+	}
+
+	// Removing the time turns the confirmation into an immediate start, but this is
+	// still a continuation and the already sent person must not reappear in its count.
+	e.db.MustExec(`UPDATE campaigns SET send_at=NULL WHERE id=$1`, e.campID)
+	data = pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Mode != models.PreflightModeStart || !out.Resumed || out.WillSend != 0 || out.Remaining != 0 ||
+		out.Recent.HeldInAudience != 2 {
+		t.Fatalf("immediate-start confirmation counted sent recipients: %s", data)
+	}
+	if code, body := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+		`{"status":"running"}`); code != http.StatusBadRequest {
+		t.Fatalf("zero-recipient immediate start: HTTP %d %s", code, body)
+	}
+
+	// A paused continuation is different: approved design v2 warns and allows it to
+	// complete with no delivery when every remaining person is already held out.
+	e.db.MustExec(`UPDATE campaigns SET status='paused' WHERE id=$1`, e.campID)
+	data = pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	zeroWarning := false
+	for _, check := range out.Checks {
+		zeroWarning = zeroWarning || (check.Key == "recipients.zero" && check.Level == models.PreflightWarn)
+	}
+	if out.Mode != models.PreflightModeResume || out.Remaining != 0 || !zeroWarning {
+		t.Fatalf("empty paused continuation should warn and allow resume: %s", data)
+	}
+	if code, body := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+		`{"status":"running"}`); code != http.StatusOK {
+		t.Fatalf("zero-recipient paused resume: HTTP %d %s", code, body)
+	}
+	e.waitCampaign(models.CampaignStatusFinished, 1)
+	held, err := e.core.RecentHeldCount(e.campID)
+	if err != nil || held != 2 || len(e.recorded()) != 1 {
+		t.Fatalf("empty resume changed delivery or exclusion history: sent IDs %v, held %d, err %v", e.recorded(), held, err)
+	}
+}
+
+func TestPreflightContinuesAfterPauseBeforeFirstDelivery(t *testing.T) {
+	e := scheduledEnv(t)
+	for i := 0; i < 9; i++ {
+		e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	}
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
+		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns,
+			CampaignIDs: []int64{int64(prior)}}, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	ids := e.ids(`SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 ORDER BY subscriber_id`, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at)
+		SELECT $1, unnest($2::int[]), NOW()-INTERVAL '25 days'`, prior, pq.Array(ids[:9]))
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id, held_at)
+		SELECT $1, unnest($2::int[]), NOW()-INTERVAL '20 days'`, e.campID, pq.Array(ids[:9]))
+	e.db.MustExec(`UPDATE campaigns SET status='paused', started_at=NOW()-INTERVAL '20 days',
+		sent=0, last_subscriber_id=0, to_send=12 WHERE id=$1`, e.campID)
+
+	path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+	changeStatus := func(status string) {
+		t.Helper()
+		code, data := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+			fmt.Sprintf(`{"status":%q}`, status))
+		if code != http.StatusOK {
+			t.Fatalf("change to %s: HTTP %d %s", status, code, data)
+		}
+	}
+	changeStatus("scheduled")
+	changeStatus("draft")
+	if code, data := e.save("Send now", []int{e.aList}, nil, "regular"); code != http.StatusOK {
+		t.Fatalf("clear send time: HTTP %d %s", code, data)
+	}
+	data := pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+	var out preflightResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Mode != models.PreflightModeStart || !out.Resumed || out.Sent != 0 || out.Remaining != 3 ||
+		out.WillSend != 3 || out.Recent.HeldInAudience != 9 {
+		t.Fatalf("continuation before the first successful send: %s", data)
+	}
+	if !slices.ContainsFunc(out.Checks, func(c models.PreflightCheck) bool {
+		return c.Key == "recent.applied" && c.Params["held"] == float64(9) && c.Params["fresh"] == float64(0)
+	}) {
+		t.Fatalf("expected 9 existing and 0 fresh exclusions: %s", data)
+	}
+	changeStatus("running")
+	e.waitCampaign(models.CampaignStatusFinished, 3)
+	waitFor(t, "three delivery records", func() bool { return len(e.recorded()) == 3 })
+	if got := e.recorded(); !slices.Equal(got, ids[9:]) {
+		t.Fatalf("delivered to %v, want %v", got, ids[9:])
+	}
+}
+
+func TestPreflightRecentExclusionsRespectCheckpoint(t *testing.T) {
+	e := scheduledEnv(t)
+	old := e.pfSub("enabled", "", nil)
+	for i := 0; i < 9; i++ {
+		e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	}
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
+		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns,
+			CampaignIDs: []int64{int64(prior)}}, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	ids := e.ids(`SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 ORDER BY subscriber_id`, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id)
+		SELECT $1, unnest($2::int[])`, e.campID, pq.Array(ids[:8]))
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, ids[8])
+	e.db.MustExec(`UPDATE campaigns SET status='paused', started_at=NOW(), sent=1,
+		last_subscriber_id=$2, to_send=12 WHERE id=$1`, e.campID, ids[8])
+	// This recently contacted subscriber joins after the sender has already passed their ID.
+	e.db.MustExec(`INSERT INTO subscriber_lists (subscriber_id, list_id, status) VALUES ($1, $2, 'confirmed')`, old, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2), ($1, $3)`, prior, old, ids[9])
+
+	path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+	for _, status := range []string{"scheduled", "draft"} {
+		if code, data := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+			fmt.Sprintf(`{"status":%q}`, status)); code != http.StatusOK {
+			t.Fatalf("change to %s: HTTP %d %s", status, code, data)
+		}
+	}
+	if code, data := e.save("Send now", []int{e.aList}, nil, "regular"); code != http.StatusOK {
+		t.Fatalf("clear send time: HTTP %d %s", code, data)
+	}
+	assertPreflight := func(remaining, fresh int, key, level string) {
+		t.Helper()
+		data := pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+		var out preflightResponse
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Mode != models.PreflightModeStart || !out.Resumed || out.WillSend != remaining || out.Remaining != remaining ||
+			out.Recent.Held != 8 || out.Recent.HeldInAudience != 8 || out.Recent.Fresh != fresh || out.Recent.Excluded != 8+fresh {
+			t.Fatalf("incorrect continuation audience: %s", data)
+		}
+		if !slices.ContainsFunc(out.Checks, func(c models.PreflightCheck) bool {
+			return c.Key == key && c.Level == level && c.Params["held"] == float64(8) && c.Params["fresh"] == float64(fresh)
+		}) {
+			t.Fatalf("expected %s to report 8 previous and %d new exclusions: %s", key, fresh, data)
+		}
+	}
+	assertPreflight(2, 1, "recent.applied", models.PreflightInfo)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) SELECT $1, unnest($2::int[])`, prior, pq.Array(ids[10:]))
+	assertPreflight(0, 3, "recent.mixedAll", models.PreflightBlock)
+}
+
+func TestStatusWithUnavailableSendLedger(t *testing.T) {
+	for _, ruleOn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rule enabled %t", ruleOn), func(t *testing.T) {
+			e := newPreflightApp(t)
+			t.Cleanup(e.a.manager.Close)
+			e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+			if ruleOn {
+				_, err := e.core.SaveRecentRule(context.Background(), e.campID,
+					models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}, e.superAdmin)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.db.MustExec(`ALTER TABLE axm_campaign_sends RENAME TO unavailable_sends`)
+			path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+			code, _ := e.call(e.a.GetCampaignPreflight, e.as(e.superAdmin), http.MethodGet, path+"/preflight", id, "")
+			if code != http.StatusInternalServerError {
+				t.Fatalf("preflight with unavailable ledger: HTTP %d", code)
+			}
+			code, body := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id, `{"status":"running"}`)
+			if ruleOn {
+				if code != http.StatusInternalServerError {
+					t.Fatalf("start with active exclusion and unavailable ledger: HTTP %d %s", code, body)
+				}
+				e.waitCampaign(models.CampaignStatusDraft, 0)
+				return
+			}
+			if code != http.StatusOK {
+				t.Fatalf("ordinary start with unavailable ledger: HTTP %d %s", code, body)
+			}
+			e.waitCampaign(models.CampaignStatusFinished, 1)
+		})
+	}
+}
+
+func TestStatusChecksConfirmationVersionBeforeRecentExclusion(t *testing.T) {
+	e := newPreflightAppScan(t, false)
+	t.Cleanup(e.a.manager.Close)
+	sub := e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, prior, sub)
+	path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+	version := func() string {
+		var seen string
+		e.get(&seen, `SELECT updated_at::TEXT FROM campaigns WHERE id=$1`, e.campID)
+		return seen
+	}
+	old := version()
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
+		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		seen string
+		code int
+	}{{old, http.StatusConflict}, {version(), http.StatusBadRequest}} {
+		body, _ := json.Marshal(map[string]string{"status": "running", "updated_at": tc.seen})
+		code, data := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id, string(body))
+		if code != tc.code {
+			t.Fatalf("start with version %s: got HTTP %d, want %d %s", tc.seen, code, tc.code, data)
+		}
+		e.waitCampaign(models.CampaignStatusDraft, 0)
+	}
+}
+
+func TestScheduledEditChecksAndSavesTheNewRecentRuleAtomically(t *testing.T) {
+	e := scheduledEnv(t)
+	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, rule, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2`, prior, e.aList)
+	var sendAt time.Time
+	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
+
+	// Turning the rule off restores all three recipients. The old saved rule would have
+	// rejected the zero-person schedule if the campaign and rule were saved separately.
+	if code, data := e.saveWithRecentRule("Rule disabled", []int{e.aList}, &sendAt, "regular", models.RecentRule{}); code != http.StatusOK {
+		t.Fatalf("disable old rule: %d %s", code, data)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || enabled {
+		t.Fatalf("rule after disable: enabled=%t err=%v", enabled, err)
+	}
+	_, aud, err := e.core.GetPreflightAudience(context.Background(), e.campID, 0, true)
+	if err != nil || aud.Remaining != 3 {
+		t.Fatalf("disabled-rule audience: %+v err=%v", aud, err)
+	}
+
+	// Turning the rule on would leave no recipients. It must reject both the campaign
+	// edit and rule update, preserving the preceding saved version.
+	before, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, data := e.saveWithRecentRule("Must roll back", []int{e.aList}, &sendAt, "regular", rule); code != http.StatusBadRequest {
+		t.Fatalf("enable all-excluding rule: %d %s", code, data)
+	}
+	after, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil || after.Subject != before.Subject || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("failed rule save changed the campaign: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || enabled {
+		t.Fatalf("failed save changed the rule: enabled=%t err=%v", enabled, err)
+	}
+
+	// With only one recent recipient, both the edit response and its immediate preflight
+	// describe the same version and the newly saved rule.
+	e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id=$1 AND subscriber_id IN (
+		SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1 ORDER BY subscriber_id DESC LIMIT 2)`, prior)
+	if code, data := e.saveWithRecentRule("One excluded", []int{e.aList}, &sendAt, "regular", rule); code != http.StatusOK {
+		t.Fatalf("enable partly excluding rule: %d %s", code, data)
+	}
+	after, err = e.core.GetCampaign(e.campID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := pfRead(t, e, e.as(e.superAdmin), fmt.Sprintf("/api/campaigns/%d/preflight", e.campID), strconv.Itoa(e.campID))
+	var pf preflightResponse
+	if err := json.Unmarshal(data, &pf); err != nil {
+		t.Fatal(err)
+	}
+	if !pf.UpdatedAt.Time.Equal(after.UpdatedAt.Time) || pf.WillSend != 2 || !pf.Recent.Enabled ||
+		!slices.ContainsFunc(pf.Checks, func(c models.PreflightCheck) bool { return c.Key == "recent.applied" }) {
+		t.Fatalf("save and preflight differ: saved=%v preflight=%s", after.UpdatedAt, data)
+	}
+}
+
+func TestDraftSaveUsesStatusAfterConcurrentScheduleLock(t *testing.T) {
+	e := scheduledEnv(t)
+	e.db.MustExec(`UPDATE campaigns SET status='draft' WHERE id=$1`, e.campID)
+	var overlap int
+	e.get(&overlap, `SELECT MIN(subscriber_id) FROM subscriber_lists WHERE list_id=$1`, e.aList)
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, prior, overlap)
+
+	// Another editor has acquired the campaign row and is committing the schedule. The update
+	// handler's initial read still sees the old draft; its write must decide from the locked row.
+	reservation := e.db.MustBegin()
+	defer reservation.Rollback()
+	reservation.MustExec(`UPDATE campaigns SET status='scheduled', send_at=NOW()+INTERVAL '1 day' WHERE id=$1`, e.campID)
+	tomorrow := time.Now().Add(24 * time.Hour)
+	saved := make(chan struct {
+		code int
+		data string
+	}, 1)
+	go func() {
+		code, data := e.saveWithRecentRule("Concurrent rule", []int{e.aList}, &tomorrow, "regular",
+			models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll})
+		saved <- struct {
+			code int
+			data string
+		}{code, data}
+	}()
+	waitFor(t, "the editor write waiting on the reservation's campaign lock", func() bool {
+		var waiting bool
+		e.get(&waiting, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname=current_database() AND wait_event_type='Lock'
+			AND query ILIKE '%FOR NO KEY UPDATE%')`)
+		return waiting
+	})
+	if err := reservation.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		code int
+		data string
+	}
+	select {
+	case result = <-saved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("editor save did not finish after the schedule committed")
+	}
+	if result.code != http.StatusOK {
+		t.Fatalf("editor save = %d: %s", result.code, result.data)
+	}
+	var status string
+	e.get(&status, `SELECT status::TEXT FROM campaigns WHERE id=$1`, e.campID)
+	if status != models.CampaignStatusScheduled {
+		t.Fatalf("campaign status = %q, want scheduled", status)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || !enabled {
+		t.Fatalf("rule after concurrent schedule = %t, err %v", enabled, err)
+	}
+	_, audience, err := e.core.GetPreflightAudience(context.Background(), e.campID, 0, true)
+	if err != nil || audience.Total != 3 || audience.Recent != 1 || audience.Remaining != 2 {
+		t.Fatalf("concurrent scheduled save audience = %+v, err %v", audience, err)
+	}
+}
+
+func TestScheduledEditRejectsEnablingRuleThatExcludesEveryone(t *testing.T) {
+	e := scheduledEnv(t)
+	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2`, prior, e.aList)
+	var sendAt time.Time
+	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
+	before, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// This starts from a disabled rule. The campaign edit must test the new rule before it
+	// commits either the campaign fields or the rule because every recipient has recent history.
+	if code, data := e.saveWithRecentRule("Must remain unchanged", []int{e.aList}, &sendAt, "regular", rule); code != http.StatusBadRequest {
+		t.Fatalf("enable all-excluding rule: %d %s", code, data)
+	}
+	after, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil || after.Subject != before.Subject || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("failed save changed the campaign: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || enabled {
+		t.Fatalf("failed save changed the rule: enabled=%t err=%v", enabled, err)
+	}
+}
+
+func TestScheduledSaveReviewRegressions(t *testing.T) {
+	e := scheduledEnv(t)
+	var checkpoint int
+	e.get(&checkpoint, `SELECT MAX(subscriber_id) FROM subscriber_lists WHERE list_id=$1`, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET last_subscriber_id=$2 WHERE id=$1`, e.campID, checkpoint)
+	var sendAt time.Time
+	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
+	before, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code, data := e.save("No pending IDs", []int{e.aList}, &sendAt, "regular"); code != http.StatusBadRequest {
+		t.Fatalf("save beyond checkpoint: %d %s", code, data)
+	}
+	after, err := e.core.GetCampaign(e.campID, "", "")
+	if err != nil || after.Subject != before.Subject || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("save after checkpoint changed the campaign: before=%+v after=%+v err=%v", before, after, err)
+	}
+	e.db.MustExec(`UPDATE campaigns SET last_subscriber_id=0 WHERE id=$1`, e.campID)
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2`, prior, e.aList)
+	body := `{"enabled":true,"days":14,"scope":"all"}`
+	code, data := e.call(e.a.PutRecentRule, e.as(e.superAdmin), http.MethodPut,
+		fmt.Sprintf("/api/campaigns/%d/recent-exclude", e.campID), strconv.Itoa(e.campID), body)
+	if code != http.StatusBadRequest {
+		t.Fatalf("rule-only save with no recipients: %d %s", code, data)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || enabled {
+		t.Fatalf("rejected API save changed the rule: enabled=%t err=%v", enabled, err)
+	}
+	var subject string
+	e.get(&subject, `SELECT subject FROM campaigns WHERE id=$1`, e.campID)
+	if subject != "Subject" {
+		t.Fatalf("rejected API save changed the campaign subject: %q", subject)
+	}
+
+	e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID,
+		models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	ids := e.ids(`SELECT subscriber_id FROM subscriber_lists WHERE list_id=$1 ORDER BY subscriber_id`, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id,subscriber_id) VALUES($1,$2),($1,$3)`, e.campID, ids[0], ids[1])
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id,subscriber_id) VALUES($1,$2)`, e.campID, ids[2])
+	e.db.MustExec(`UPDATE campaigns SET status='scheduled', started_at=NOW()-INTERVAL '1 hour',
+		last_subscriber_id=$2, sent=1, to_send=4 WHERE id=$1`, e.campID, ids[2])
+	e.get(&sendAt, `SELECT send_at FROM campaigns WHERE id=$1`, e.campID)
+
+	if code, data := e.save("Title after resume", []int{e.aList}, &sendAt, "regular"); code != http.StatusOK {
+		t.Fatalf("save started schedule without changing its read-only rule: %d %s", code, data)
+	}
+	e.get(&subject, `SELECT subject FROM campaigns WHERE id=$1`, e.campID)
+	if subject != "Title after resume" {
+		t.Fatalf("title was not saved: %q", subject)
+	}
+	if enabled, err := e.core.RecentRuleOn(e.campID); err != nil || !enabled {
+		t.Fatalf("read-only rule was changed: enabled=%t err=%v", enabled, err)
+	}
+	var n int
+	if err := e.db.Get(&n, `SELECT COUNT(*) FROM axm_campaign_recent_holds WHERE campaign_id=$1`, e.campID); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("the existing holds changed: %d", n)
 	}
 }
 
@@ -498,6 +1097,62 @@ func TestScheduledPreflightRejectsEditDuringAudienceCount(t *testing.T) {
 		out.Remaining != 1 || len(out.Lists) != 1 || int(out.Lists[0].ID.Int) != otherList || out.Lists[0].Count != 1 {
 		t.Fatalf("preflight after the edit: %s", data)
 	}
+}
+
+func TestFollowupPreflightIgnoresLegacyRecentRule(t *testing.T) {
+	e := newPreflightApp(t)
+	t.Cleanup(e.a.manager.Close)
+	sub := e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	parent := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, parent, sub)
+	e.db.MustExec(`INSERT INTO axm_campaign_followups (campaign_id, parent_campaign_id, list_uuid, condition)
+		SELECT $1, $2, uuid, '{"open":"yes","click":"yes"}' FROM lists WHERE id = $3`, e.campID, parent, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_followup_members (campaign_id, subscriber_id, made_for) VALUES ($1, $2, TRUE)`, e.campID, sub)
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_rules (campaign_id, days, scope) VALUES ($1, 14, 'all')`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() + INTERVAL '1 day' WHERE id = $1`, e.campID)
+
+	id := strconv.Itoa(e.campID)
+	path := "/api/campaigns/" + id
+	user := e.as(e.superAdmin)
+	read := func(t *testing.T, mode string) preflightResponse {
+		t.Helper()
+		data := pfRead(t, e, user, path+"/preflight", id)
+		var out preflightResponse
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Mode != mode || out.Recipients != 1 || out.WillSend != 1 || out.Remaining != 1 || out.Recent != (recentFacts{}) {
+			t.Fatalf("follow-up should reach its recipient without applying the old rule: %s", data)
+		}
+		for _, check := range out.Checks {
+			if strings.HasPrefix(check.Key, "recent.") {
+				t.Fatalf("follow-up should have no recent-send exclusion check: %s", data)
+			}
+		}
+		return out
+	}
+	t.Run("scheduled", func(t *testing.T) {
+		read(t, models.PreflightModeScheduled)
+	})
+	t.Run("resume", func(t *testing.T) {
+		e.db.MustExec(`UPDATE campaigns SET status = 'paused', started_at = NOW(), send_at = NULL WHERE id = $1`, e.campID)
+		read(t, models.PreflightModeResume)
+		// An inactive rule's hold has no effect on the sender or the confirmation.
+		e.db.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, sub)
+		out := read(t, models.PreflightModeResume)
+		body := fmt.Sprintf(`{"status":"running","updated_at":%q}`, out.UpdatedAt.Time.Format(time.RFC3339Nano))
+		code, response := e.call(e.a.UpdateCampaignStatus, user, http.MethodPut, path+"/status", id, body)
+		if code != http.StatusOK {
+			t.Fatalf("resume: HTTP %d %s", code, response)
+		}
+		waitFor(t, "the follow-up to finish with one send record", func() bool {
+			status, sent, _ := e.campaign()
+			return status == models.CampaignStatusFinished && sent == 1 && len(e.recorded()) == 1
+		})
+		if got := e.recorded(); !slices.Equal(got, []int{sub}) {
+			t.Fatalf("delivered to %v, want subscriber %d", got, sub)
+		}
+	})
 }
 
 // A follow-up (LST-47) whose check would hold everyone back reaches nobody: saving it while it is

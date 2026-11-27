@@ -333,6 +333,9 @@ func (c *Core) UpdateCampaignStatus(id int, status string, from string, seenAt s
 	if err := c.checkSendTimeShown(cm, due, status, seenAt, pastShown); err != nil {
 		return models.Campaign{}, err
 	}
+	if err := c.checkStatusAudience(tx, cm, status); err != nil {
+		return models.Campaign{}, err
+	}
 
 	if from != "" && cm.Status == models.CampaignStatusDraft {
 		if _, err := tx.Stmtx(c.q.UpdateCampaignFrom).Exec(id, from); err != nil {
