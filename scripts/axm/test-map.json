@@ -340,7 +340,8 @@
     "campaign-test-send.cy.js",
     "campaign-recent-exclude.cy.js",
     "address-gate.cy.js",
-    "import-campaign-flow.cy.js"
+    "import-campaign-flow.cy.js",
+    "bounce-filter-delete.cy.js"
    ]
   },
   {
@@ -387,11 +388,13 @@
     "frontend/src/components/RecentSendExclude.vue",
     "frontend/src/recent-send-exclude.js",
     "cmd/axm_recent_exclude*.go",
+    "cmd/axm_recent_send_db_test.go",
     "internal/core/axm_recent_exclude*.go",
     "models/axm_recent_exclude.go"
    ],
    "specs": [
     "campaign-recent-exclude.cy.js",
+    "campaign-send-confirm.cy.js",
     "address-check.cy.js"
    ]
   },

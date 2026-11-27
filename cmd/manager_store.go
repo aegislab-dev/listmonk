@@ -24,10 +24,6 @@ type store struct {
 	core    *core.Core
 	media   media.Store
 
-	// AXM (LST-47): whether a campaign is a follow-up, asked once per campaign (a campaign only
-	// becomes one when it is made as a draft).
-	followups sync.Map
-
 	// AXM (LST-20): the connection that holds the campaign sending lock.
 	db       *sqlx.DB
 	lockMut  sync.Mutex
@@ -42,12 +38,17 @@ const (
 	campaignLockSQL     = `SELECT pg_try_advisory_lock(4282445, hashtext(current_schema()::TEXT))`
 	campaignLockTimeout = 5 * time.Second
 
+	// AXM (LST-65): cap the candidates read at once when recording recent exclusions.
+	recentSendBatchLimit = 500
+
 	// pgUndefinedTable is the Postgres error code for a relation that does not exist.
 	pgUndefinedTable = "42P01"
 )
 
 type runningCamp struct {
 	IsDynamic        bool   `db:"is_dynamic"`
+	IsFollowup       bool   `db:"is_followup"`
+	HasRecentRule    bool   `db:"has_recent_rule"`
 	CampaignID       int    `db:"campaign_id"`
 	CampaignType     string `db:"campaign_type"`
 	LastSubscriberID int    `db:"last_subscriber_id"`
@@ -122,15 +123,13 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 	// batch is used (core.ClaimFollowupBatch: the people who reacted to the original, opted out of
 	// it, are blocked, or whose reactions cannot be seen), and the batch is given back without them.
 	// A batch of only such people is read past, so the position always moves on. Any other campaign
-	// is read as before.
-	isFollowup, known := s.followups.Load(campID)
-	if !known {
-		var f bool
-		if err := s.queries.AxmFollowupIsFollowup.Get(&f, campID); err != nil {
-			return nil, err
-		}
-		s.followups.Store(campID, f)
-		isFollowup = f
+	// is read as before, except for its recent-send rule (LST-65, below).
+	isFollowup := camps[0].IsFollowup
+	ctx := context.Background()
+	hasRecentRule := camps[0].HasRecentRule
+	if hasRecentRule {
+		// The rule is locked while the campaign is running. Cap the batch before reading it.
+		limit = min(limit, recentSendBatchLimit)
 	}
 	after := camps[0].LastSubscriberID
 	for {
@@ -138,16 +137,31 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 		if err := query.Select(&out, camps[0].CampaignID, camps[0].CampaignType, after, camps[0].MaxSubscriberID, pq.Array(listIDs), limit); err != nil {
 			return out, err
 		}
-		if len(out) == 0 || !isFollowup.(bool) {
+		if len(out) == 0 || (!isFollowup && !hasRecentRule) {
 			return out, nil
 		}
 		ids := make([]int, len(out))
 		for i, sub := range out {
 			ids[i] = sub.ID
 		}
-		left, _, err := s.core.ClaimFollowupBatch(context.Background(), campID, ids)
-		if err != nil {
-			return nil, err
+
+		// AXM (LST-65): any other campaign with a recent-send rule leaves out, as it reads each batch,
+		// the people who got a campaign of the rule's scope within the rule's days (and keeps leaving
+		// out whom it left out before, whatever the send records say later). A failure to decide
+		// returns the error: the batch is not sent, and the next scan reads it again. A batch of only
+		// such people is read past too, but the campaign is looked at again first: it may have been
+		// paused or cancelled meanwhile, and the sender must not read on to the end of the list.
+		var left map[int]bool
+		if isFollowup {
+			var err error
+			if left, _, err = s.core.ClaimFollowupBatch(ctx, campID, ids); err != nil {
+				return nil, err
+			}
+		} else {
+			var err error
+			if left, err = s.core.HoldRecentBatch(ctx, campID, ids); err != nil {
+				return nil, err
+			}
 		}
 		if len(left) == 0 {
 			return out, nil
@@ -162,6 +176,16 @@ func (s *store) NextSubscribers(campID, lastSubID, limit int) ([]models.Subscrib
 			return kept, nil
 		}
 		after = out[len(out)-1].ID
+
+		if !isFollowup {
+			var again []runningCamp
+			if err := s.queries.GetRunningCampaign.Select(&again, campID); err != nil {
+				return nil, err
+			}
+			if len(again) == 0 {
+				return nil, manager.ErrCampaignNotRunning
+			}
+		}
 	}
 }
 

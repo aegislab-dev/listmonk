@@ -84,7 +84,19 @@ const checkLine = (c, pf) => {
   if (c.key === 'recipients.zero' && c.level === 'warn') {
     key = `${K}.check.recipients.zero.${pf.mode === 'resume' ? 'resume' : 'optin'}`;
   }
-  if (c.key === 'recent.notApplied' && p.excluded === undefined) key = `${K}.check.recent.notApplied.noCount`;
+  // The recent-send rule is applied by the sender (LST-65): who it leaves out, who it left out
+  // already when resuming, and the rule on with nobody to leave out.
+  if (c.key === 'recent.applied') {
+    if (p.held > 0 || pf.mode === 'resume' || pf.resumed) {
+      // Who it left out already stays out; who is newly caught is left out when it goes on.
+      const kind = (p.held > 0 ? 'held' : '') + (p.fresh > 0 ? 'Fresh' : '');
+      key = `${K}.check.recent.applied.resume${{ held: 'Held', Fresh: 'Fresh', heldFresh: 'Both' }[kind] || 'None'}`;
+    } else if (p.excluded > 0 && !['all', 'team', 'campaigns'].includes(p.scope)) {
+      key = `${K}.check.recent.applied.scopeUnavailable`;
+    } else {
+      key = `${K}.check.recent.applied.${p.excluded > 0 ? p.scope : 'none'}`;
+    }
+  }
   if (c.key === 'unsubscribe.missing') p.tag = '{{ UnsubscribeURL }}';
   return {
     key, params: p, level: c.level, name: c.key,
@@ -145,8 +157,12 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   const scheduled = pf.mode === 'scheduled';
   // A scheduled campaign that was sent from before (paused, then scheduled again) goes on after
   // its checkpoint: its people are the ones left, as for a resume (LST-67 review).
-  const left = resume || (scheduled && !!pf.resumed);
-  const n = left ? pf.remaining : pf.recipients;
+  const left = resume || !!pf.resumed;
+  const n = left ? pf.remaining : (pf.willSend ?? pf.recipients);
+  // Keep the count visible on an unscheduled continuation too: its immediate-start
+  // preflight still reports people excluded by the locked recent-send rule.
+  const recent = pf.recent && pf.recent.excluded > 0
+    && (pf.recent.enabled || pf.recent.heldInAudience > 0) ? pf.recent : null;
   const all = checkLines(pf);
   const blocked = all.some((c) => c.level === 'block');
   // Nobody to send to (approved design A5): the reason is the only line. Otherwise (a From the
@@ -194,9 +210,12 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
 
   // The window of a scheduled campaign has one way on: it stays scheduled (the other button
   // takes the schedule off). No "anyway": nothing is being started here.
-  const confirmKey = scheduled
+  let confirmKey = scheduled
     ? `${K}.review.keep`
     : `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
+  if (!scheduled && checks.some((c) => c.level === 'block' && c.name.startsWith('recent.'))) {
+    confirmKey = `${K}.confirm.blocked`;
+  }
   const targetStatus = schedule ? 'scheduled' : 'running';
   const asOf = pf.asOf ? new Date(pf.asOf) : null;
 
@@ -221,7 +240,9 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
       : null,
     overlap: pf.overlap || 0,
     excluded: pf.excluded || 0,
-    zero: !resume && n === 0,
+    zero: !resume && n === 0 && !recent,
+    // The rule leaves out some of the recipients: the line that sums it up (null when none).
+    recent,
     asOf,
   };
 };

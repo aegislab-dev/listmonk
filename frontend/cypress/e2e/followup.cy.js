@@ -151,7 +151,7 @@ describe('follow-up campaign draft', () => {
     cy.get('[data-cy=followup-pending]').should('contain', '0 would be left out');
     // The note about the recent-send exclusion is under that panel, not in the banner.
     cy.get('[data-cy=followup-banner]').should('not.contain', 'recent-send exclusion');
-    cy.get('[data-cy=followup-exclude-note]').should('be.visible').and('contain', 'recent-send exclusion');
+    cy.get('[data-cy=followup-exclude-note]').should('be.visible').and('contain', 'does not use this rule');
     // The draft sends to the new list only.
     cy.get('.list-selector').contains('label', /\(1\)$/).should('be.visible');
     cy.get('[data-cy=followup-parent-link]').click();

@@ -201,10 +201,10 @@ campMedia AS (
     WHERE campaign_id = ANY(SELECT id FROM camps) AND media_id IS NOT NULL
     GROUP BY campaign_id
 ),
-counts AS (
-    SELECT camps.id AS campaign_id, COUNT(DISTINCT sl.subscriber_id) AS to_send, COALESCE(MAX(sl.subscriber_id), 0) AS max_subscriber_id
+eligible AS (
+    SELECT camps.id AS campaign_id, sl.subscriber_id
     FROM camps
-    JOIN campLists cl ON cl.campaign_id = camps.id
+    JOIN campLists cl ON cl.campaign_id = camps.id AND NOT cl.is_dynamic
     JOIN subscriber_lists sl ON sl.list_id = cl.list_id
         AND (
             CASE
@@ -213,41 +213,48 @@ counts AS (
                 ELSE sl.status != 'unsubscribed'
             END
         )
-    JOIN subscribers s ON (s.id = sl.subscriber_id AND s.status != 'blocklisted')
-    GROUP BY camps.id
-),
-dynCounts AS (
-    SELECT ca.id AS campaign_id, COUNT(DISTINCT members.id) AS to_send,
-        COALESCE(MAX(members.id), 0) AS max_subscriber_id
-    FROM camps ca
+    JOIN subscribers s ON s.id = sl.subscriber_id AND s.status != 'blocklisted'
+    UNION ALL
+    -- Keep a count of zero for dynamic campaigns with no current members.
+    SELECT camps.id, members.subscriber_id
+    FROM camps
+    JOIN campLists cl ON cl.campaign_id = camps.id AND cl.is_dynamic
     LEFT JOIN LATERAL (
-        SELECT s.id FROM campLists cl
-        JOIN subscriber_lists sl ON sl.list_id = cl.list_id
-        JOIN subscribers s ON s.id = sl.subscriber_id AND s.status != 'blocklisted'
-        WHERE cl.campaign_id = ca.id AND NOT cl.is_dynamic
-            AND CASE WHEN ca.type = 'optin' THEN sl.status = 'unconfirmed' AND cl.optin = 'double'
-                WHEN cl.optin = 'double' THEN sl.status = 'confirmed'
-                ELSE sl.status != 'unsubscribed' END
-        UNION
-        SELECT m.subscriber_id FROM campLists cl
-        CROSS JOIN LATERAL axm_dynamic_list_members(cl.list_id) m
-        WHERE cl.campaign_id = ca.id AND cl.is_dynamic AND ca.type != 'optin'
+        SELECT m.subscriber_id FROM axm_dynamic_list_members(cl.list_id) m WHERE camps.type != 'optin'
     ) members ON TRUE
-    WHERE EXISTS (SELECT 1 FROM campLists cl WHERE cl.campaign_id = ca.id AND cl.is_dynamic)
-    GROUP BY ca.id
 ),
-tallies AS (
-    SELECT * FROM counts co WHERE NOT EXISTS (
-        SELECT 1 FROM campLists cl WHERE cl.campaign_id = co.campaign_id AND cl.is_dynamic
-    )
-    UNION ALL SELECT * FROM dynCounts
+audience AS (
+    SELECT campaign_id, subscriber_id, TRUE AS eligible FROM eligible
+    UNION ALL
+    -- A past exclusion remains part of the original audience after a change in eligibility.
+    SELECT h.campaign_id, h.subscriber_id, FALSE
+    FROM camps JOIN axm_campaign_recent_holds h ON h.campaign_id = camps.id
+    WHERE camps.type = 'regular'
+    UNION ALL
+    -- Someone who already received this campaign can also disappear from its current lists.
+    SELECT camps.id, sent.subscriber_id, FALSE
+    FROM camps
+    CROSS JOIN LATERAL axm_recent_campaign_sent_ids(camps.id) sent
+    WHERE (camps.campaign).started_at IS NOT NULL AND axm_recent_rule_on(camps.id)
+),
+counts AS (
+    SELECT campaign_id, COUNT(DISTINCT subscriber_id) AS to_send,
+        COALESCE(MAX(subscriber_id) FILTER (WHERE eligible), 0) AS max_subscriber_id
+    FROM audience
+    GROUP BY campaign_id
 ),
 picked AS MATERIALIZED (
-    -- Counting can overlap a save. Only pick the row version whose schedule, content
-    -- and lists this scan read. If an edit holds the row, let the next scan discover it.
-    SELECT camps.id, t.to_send, t.max_subscriber_id
+    -- Count each eligible, excluded or sent ID once, plus the aggregate for deleted subscribers.
+    -- The send cursor only uses currently eligible subscribers.
+    -- If a save raced the count or holds the row, let the next scan read the new revision.
+    SELECT camps.id,
+        CASE WHEN co.to_send IS NOT NULL OR r.removed_held_count + r.removed_sent_count > 0
+            THEN COALESCE(co.to_send, 0) + COALESCE(r.removed_held_count + r.removed_sent_count, 0)
+        END AS to_send,
+        COALESCE(co.max_subscriber_id, 0) AS max_subscriber_id
     FROM camps
-    LEFT JOIN tallies t ON t.campaign_id = camps.id
+    LEFT JOIN counts co ON co.campaign_id = camps.id
+    LEFT JOIN axm_campaign_recent_rules r ON r.campaign_id = camps.id
     JOIN campaigns ca ON ca.id = camps.id AND ca.xmin = camps.row_version
     FOR NO KEY UPDATE OF ca SKIP LOCKED
 ),
@@ -350,12 +357,17 @@ SELECT link_clicks.campaign_id,
 -- running (paused, cancelled, finished). The caller must not treat that as "no subscribers left":
 -- a campaign that was paused while its pipe was reading and was resumed right after would
 -- otherwise be finished with its recipients unsent.
-SELECT campaigns.id AS campaign_id, campaigns.type as campaign_type, last_subscriber_id, max_subscriber_id,
-    COALESCE(lists.id, 0) AS list_id, COALESCE(lists.axm_filter IS NOT NULL, false) AS is_dynamic
-    FROM campaigns
-    LEFT JOIN campaign_lists ON (campaign_lists.campaign_id = campaigns.id)
-    LEFT JOIN lists ON (lists.id = campaign_lists.list_id)
-    WHERE campaigns.id = $1 AND campaigns.status='running';
+WITH running AS MATERIALIZED (
+    SELECT c.id AS campaign_id, c.type AS campaign_type, c.last_subscriber_id, c.max_subscriber_id,
+        EXISTS (SELECT 1 FROM axm_campaign_followups f WHERE f.campaign_id = c.id) AS is_followup,
+        axm_recent_rule_on(c.id) AS has_recent_rule
+    FROM campaigns c
+    WHERE c.id = $1 AND c.status = 'running'
+)
+SELECT running.*, COALESCE(lists.id, 0) AS list_id, (lists.axm_filter IS NOT NULL) AS is_dynamic
+FROM running
+LEFT JOIN campaign_lists ON campaign_lists.campaign_id = running.campaign_id
+LEFT JOIN lists ON lists.id = campaign_lists.list_id;
 
 -- name: next-campaign-subscribers
 -- Returns a batch of subscribers in a given campaign after the subscriber ID $3, the
@@ -379,39 +391,29 @@ WITH campLists AS (
     LEFT JOIN campaign_lists ON campaign_lists.list_id = lists.id
     WHERE campaign_lists.campaign_id = $1
 ),
-subs AS (
-    SELECT s.*
-    FROM (
-        SELECT DISTINCT s.id
+subIDs AS (
+    -- Take at most the first $6 eligible IDs from each list before merging.
+    -- Any later ID already has $6 distinct predecessors on that list alone.
+    SELECT DISTINCT member.id
+    FROM campLists cl
+    CROSS JOIN LATERAL (
+        SELECT sl.subscriber_id AS id
         FROM subscriber_lists sl
-        JOIN campLists ON sl.list_id = campLists.list_id
-        JOIN subscribers s ON s.id = sl.subscriber_id
-        WHERE
-            sl.list_id = ANY($5::INT[])
-            -- last_subscriber_id
-            AND s.id > $3
-             -- max_subscriber_id
-            AND s.id <= $4
-             -- Subscriber should not be blacklisted.
+        JOIN LATERAL (
+            SELECT status FROM subscribers WHERE id = sl.subscriber_id OFFSET 0
+        ) s ON TRUE
+        WHERE sl.list_id = cl.list_id
+            AND sl.subscriber_id > $3 AND sl.subscriber_id <= $4
             AND s.status != 'blocklisted'
-            AND (
-                -- If it's an optin campaign and the list is double-optin, only pick unconfirmed subscribers.
-                ($2 = 'optin' AND sl.status = 'unconfirmed' AND campLists.optin = 'double')
-                OR (
-                    -- It is a regular campaign.
-                    $2 != 'optin' AND (
-                        -- It is a double optin list. Only pick confirmed subscribers.
-                        (campLists.optin = 'double' AND sl.status = 'confirmed') OR
-
-                        -- It is a single optin list. Pick all non-unsubscribed subscribers.
-                        (campLists.optin != 'double' AND sl.status != 'unsubscribed')
-                    )
-                )
-            )
-        ORDER BY s.id LIMIT $6
-    ) subIDs JOIN subscribers s ON (s.id = subIDs.id) ORDER BY s.id
+            AND CASE WHEN $2 = 'optin' THEN sl.status = 'unconfirmed' AND cl.optin = 'double'
+                WHEN cl.optin = 'double' THEN sl.status = 'confirmed'
+                ELSE sl.status != 'unsubscribed' END
+        ORDER BY sl.subscriber_id LIMIT $6
+    ) member
+    WHERE cl.list_id = ANY($5::INT[])
+    ORDER BY member.id LIMIT $6
 )
-SELECT * FROM subs ORDER BY id;
+SELECT s.* FROM subIDs JOIN subscribers s ON s.id = subIDs.id ORDER BY s.id;
 
 -- name: delete-campaign-views
 DELETE FROM campaign_views WHERE created_at < $1;

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -637,6 +638,7 @@ func TestDynamicDBTriggerPaths(t *testing.T) {
 func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 	db, q, _ := dynamicTestDB(t)
 	normal := testList(db, nil, "single")
+	overlap := testList(db, nil, "single")
 	double := testList(db, nil, "double")
 	dynamic := testList(db, testFilter("lists", []int{normal}), "single")
 	allDynamic := testList(db, testFilter("all", nil), "single")
@@ -652,10 +654,21 @@ func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 	}
 	db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'unconfirmed')`, ids[0], double)
 	db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES($1,$2,'unsubscribed')`, ids[4], dynamic)
+	extra := testSub(db, `{}`, "enabled")
+	db.MustExec(`INSERT INTO subscriber_lists(subscriber_id,list_id,status)
+		VALUES ($1,$3,'confirmed'),($2,$3,'confirmed')`, ids[0], extra, overlap)
+	merged := append(slices.Clone(ids), extra)
 	cases := []struct {
 		name, typ   string
 		lists, want []int
-	}{{"dynamic", "regular", []int{dynamic}, []int{ids[0], ids[1], ids[3]}}, {"mixed", "regular", []int{normal, dynamic}, ids}, {"regular", "regular", []int{normal}, ids}, {"optin", "optin", []int{double, dynamic}, []int{ids[0]}}, {"zero", "regular", []int{testList(db, testFilter("lists", []int{99999}), "single")}, []int{}}}
+	}{
+		{"dynamic", "regular", []int{dynamic}, []int{ids[0], ids[1], ids[3]}},
+		{"mixed", "regular", []int{normal, overlap, dynamic}, merged},
+		{"regular", "regular", []int{normal}, ids},
+		{"regular-overlap", "regular", []int{normal, overlap}, merged},
+		{"optin", "optin", []int{double, dynamic}, []int{ids[0]}},
+		{"zero", "regular", []int{testList(db, testFilter("lists", []int{99999}), "single")}, []int{}},
+	}
 	var dynamicCamp int
 	for _, tc := range cases {
 		for _, batch := range []int{1, 2, 100} {
@@ -684,7 +697,7 @@ func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 				actual := []int{}
 				after := 0
 				query := q["next-campaign-subscribers-dynamic"]
-				if tc.name == "regular" {
+				if tc.name == "regular" || tc.name == "regular-overlap" {
 					query = q["next-campaign-subscribers"]
 				}
 				for i := 0; i < 20; i++ {
@@ -694,6 +707,9 @@ func TestDynamicDBCampaignsAndUnsubscribe(t *testing.T) {
 					}
 					if len(out) == 0 {
 						break
+					}
+					if len(out) != min(batch, len(tc.want)-len(actual)) {
+						t.Fatalf("after %d: batch had %d rows, want up to %d distinct recipients", after, len(out), batch)
 					}
 					for _, s := range out {
 						actual = append(actual, s.ID)
@@ -748,7 +764,12 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		{"-- AXM recent-send exclusion. Keep this block identical to V6_2_1_axm_13.", "-- End of AXM recent-send exclusion.", "v6.2.1-axm.13.go"},
 		{"-- AXM bounced addresses (LST-56). Keep this block identical to V6_2_1_axm_16.", "-- End of AXM bounced addresses.", "v6.2.1-axm.16.go"},
 		{"-- AXM unbounded dynamic list membership (LST-67). Keep this block identical to V6_2_1_axm_18.", "-- End of AXM unbounded dynamic list membership.", "v6.2.1-axm.18.go"},
+		{"-- AXM expired send totals (LST-67). Keep this block identical to V6_2_1_axm_19.", "-- End of AXM expired send totals.", "v6.2.1-axm.19.go"},
 		{"-- AXM preserve removed send totals (LST-67). Keep this block identical to V6_2_1_axm_20.", "-- End of AXM preserve removed send totals.", "v6.2.1-axm.20.go"},
+		{"-- AXM completed recent-send counts (LST-65). Keep this block identical to V6_2_1_axm_22.", "-- End of AXM completed recent-send counts.", "v6.2.1-axm.22.go"},
+		{"-- AXM recent-send counts after subscriber deletion (LST-65). Keep the DDL identical to V6_2_1_axm_23.", "-- End of AXM recent-send counts after subscriber deletion.", "v6.2.1-axm.23.go"},
+		{"-- AXM recent-send audience on resume (LST-65). Keep this block identical to V6_2_1_axm_24.", "-- End of AXM recent-send audience on resume.", "v6.2.1-axm.24.go"},
+		{"-- AXM delivered audience after subscriber deletion (LST-65). Keep this block identical to V6_2_1_axm_25.", "-- End of AXM delivered audience after subscriber deletion.", "v6.2.1-axm.25.go"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../migrations", b.migration))
 		if err != nil {
@@ -764,6 +785,13 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		}
 		// The block's own marker line names the migration; compare what follows it.
 		block := strings.TrimSpace(strings.TrimPrefix(schema[start:start+end], b.start))
+		if strings.HasSuffix(b.migration, "v6.2.1-axm.23.go") {
+			// Fresh schema wraps .23's table lock in a transaction for psql; the migration
+			// function supplies the transaction around the same DDL itself.
+			block = strings.TrimPrefix(block, "BEGIN;")
+			block = strings.TrimSuffix(block, "COMMIT;")
+			block = strings.TrimSpace(block)
+		}
 		if block == "" || !strings.Contains(string(raw), block) {
 			t.Fatal("schema and migration SQL differ: " + b.start)
 		}
@@ -777,20 +805,27 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		return out
 	}
 	before := defs()
-	// 32: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
+	// 42: 26 on the base (with LST-56's .16), and axm_followup_reaches_otherwise, axm_followup_judge,
 	// axm_followup_reaction, axm_followup_recipients, axm_followup_to_send and axm_followup_recount
-	// (LST-47, .17; their parity is in TestFollowupSchemaAndMigration). LST-67 adds
-	// axm_filter_members_unlimited and two functions for preserving removed send totals.
-	if len(before) != 35 {
-		t.Fatalf("expected 35 axm functions, got %d", len(before))
+	// (LST-47, .17), three functions for LST-67 and seven for LST-65.
+	if len(before) != 42 {
+		t.Fatalf("expected 42 axm functions, got %d", len(before))
 	}
 	db.MustExec(`DROP TRIGGER axm_count_removed_campaign_sends ON axm_campaign_sends;
 		DROP TRIGGER axm_lock_send_campaigns_on_subscriber_delete ON subscribers;
 		DROP FUNCTION axm_count_removed_campaign_sends();
-		DROP FUNCTION axm_lock_send_campaigns_on_subscriber_delete()`)
+		DROP FUNCTION axm_lock_send_campaigns_on_subscriber_delete();
+		DROP TABLE axm_campaign_expired_sends`)
 	// Simulate official schema, then upgrade twice. The list draw objects (.7) go first: the
 	// official schema has none, and they use the functions dropped below.
-	db.MustExec(`DROP FUNCTION axm_recent_exclusion(INT[], INT, TEXT, INT[], INT);
+	db.MustExec(`DROP TRIGGER axm_recent_sends_removed ON axm_campaign_sends; DROP FUNCTION axm_count_removed_recent_sends();
+		DROP FUNCTION axm_recent_campaign_sent_ids(INT);
+		DROP TRIGGER axm_recent_holds_removed ON axm_campaign_recent_holds; DROP FUNCTION axm_count_removed_recent_holds();
+		DROP TRIGGER axm_recent_holds_finished ON campaigns; DROP FUNCTION axm_snapshot_recent_holds();
+		DROP TABLE axm_campaign_recent_holds; DROP FUNCTION axm_recent_received(INT, INT[]); DROP FUNCTION axm_recent_rule_on(INT);
+		DROP TRIGGER axm_seed_recent_hold_lanes ON campaigns; DROP FUNCTION axm_seed_recent_hold_lanes();
+		DROP TABLE axm_campaign_recent_hold_lanes; DROP INDEX idx_axm_subscriber_lists_list_sub;
+		DROP FUNCTION axm_recent_exclusion(INT[], INT, TEXT, INT[], INT);
 		DROP FUNCTION axm_campaign_audience(INT[]); DROP TABLE axm_campaign_recent_rules`)
 	db.MustExec(`DROP TRIGGER axm_unsubscribe_blocked_email ON subscribers; DROP FUNCTION axm_unsubscribe_blocked_email(); DROP TRIGGER axm_suppress_changed_email ON subscribers; DROP FUNCTION axm_suppress_changed_email();
 		DROP TRIGGER axm_suppress_new_subscriber ON subscribers; DROP TRIGGER axm_track_blocklist_ins ON subscribers; DROP TRIGGER axm_track_blocklist_upd ON subscribers;
@@ -837,7 +872,25 @@ func TestDynamicDBMigrationParity(t *testing.T) {
 		if err := migrations.V6_2_1_axm_18(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
+		if err := migrations.V6_2_1_axm_19(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 		if err := migrations.V6_2_1_axm_20(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_21(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_22(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_23(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_24(db, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.V6_2_1_axm_25(db, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
