@@ -161,7 +161,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   const scheduled = pf.mode === 'scheduled';
   // A scheduled campaign that was sent from before (paused, then scheduled again) goes on after
   // its checkpoint: its people are the ones left, as for a resume (LST-67 review).
-  const left = resume || (scheduled && !!pf.resumed);
+  const left = resume || ((schedule || scheduled) && !!pf.resumed);
   const n = left ? pf.remaining : (pf.willSend ?? pf.recipients);
   const recent = !left && pf.recent && pf.recent.enabled && pf.recent.excluded > 0 ? pf.recent : null;
   const all = checkLines(pf);
@@ -214,7 +214,7 @@ export const sendConfirmModel = (pf, { tz, lang = 'ko', now = new Date() } = {})
   let confirmKey = scheduled
     ? `${K}.review.keep`
     : `${K}.${warnings && !blocked ? 'confirmAnyway' : 'confirm'}.${pf.mode}`;
-  if (!scheduled && blocked && checks.some((c) => c.name === 'recent.all')) confirmKey = `${K}.confirm.blocked`;
+  if (!scheduled && blocked && checks.some((c) => c.name === 'recent.all' || c.name === 'recent.lockedAll')) confirmKey = `${K}.confirm.blocked`;
   const targetStatus = schedule ? 'scheduled' : 'running';
   const asOf = pf.asOf ? new Date(pf.asOf) : null;
 

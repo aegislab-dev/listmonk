@@ -259,6 +259,56 @@ func TestScheduledPreflightExplainsExpiredHoldsAfterSourceDeletion(t *testing.T)
 	}
 }
 
+func TestCancelledStartedScheduleKeepsSentAndHeldAudienceAndRejectsZeroSchedule(t *testing.T) {
+	e := scheduledEnvScan(t, false)
+	prior := e.pfCampaign("regular", "finished", e.aList)
+	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeCampaigns, CampaignIDs: []int64{int64(prior)}}
+	if _, err := e.core.SaveRecentRule(context.Background(), e.campID, rule, e.superAdmin); err != nil {
+		t.Fatal(err)
+	}
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2 ORDER BY subscriber_id LIMIT 1`, e.campID, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends(campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2 AND subscriber_id NOT IN
+		(SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1)`, prior, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_holds(campaign_id, subscriber_id)
+		SELECT $1, subscriber_id FROM subscriber_lists WHERE list_id=$2 AND subscriber_id NOT IN
+		(SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id=$1)`, e.campID, e.aList)
+	e.db.MustExec(`UPDATE campaigns SET started_at=NOW(), sent=1, to_send=3 WHERE id=$1`, e.campID)
+	e.db.MustExec(`DELETE FROM campaigns WHERE id=$1`, prior)
+
+	path, id := fmt.Sprintf("/api/campaigns/%d", e.campID), strconv.Itoa(e.campID)
+	if code, data := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+		`{"status":"draft"}`); code != http.StatusOK {
+		t.Fatalf("cancel schedule: HTTP %d %s", code, data)
+	}
+	data := pfRead(t, e, e.as(e.superAdmin), path+"/preflight", id)
+	var out preflightResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Mode != models.PreflightModeSchedule || out.WillSend != 0 || out.Remaining != 0 ||
+		out.Recent.Held != 2 || out.Recent.Excluded != 2 || !out.Resumed {
+		t.Fatalf("cancelled started schedule lost send history: %s", data)
+	}
+	blocked := false
+	for _, check := range out.Checks {
+		blocked = blocked || (check.Key == "recent.heldAll" && check.Level == models.PreflightBlock)
+	}
+	if !blocked {
+		t.Fatalf("cancelled schedule did not explain the held zero audience: %s", data)
+	}
+	if code, body := e.call(e.a.UpdateCampaignStatus, e.as(e.superAdmin), http.MethodPut, path+"/status", id,
+		`{"status":"scheduled"}`); code != http.StatusBadRequest {
+		t.Fatalf("zero-recipient reschedule: HTTP %d %s", code, body)
+	}
+	var status string
+	e.get(&status, `SELECT status::TEXT FROM campaigns WHERE id=$1`, e.campID)
+	if status != models.CampaignStatusDraft {
+		t.Fatalf("refused reschedule changed status to %q", status)
+	}
+}
+
 func TestScheduledEditChecksAndSavesTheNewRecentRuleAtomically(t *testing.T) {
 	e := scheduledEnv(t)
 	rule := models.RecentRule{Enabled: true, Days: 14, Scope: models.RecentScopeAll}

@@ -146,6 +146,10 @@ func TestPreflightChecks(t *testing.T) {
 			f.RecentEnabled, f.RecentDays, f.RecentScope, f.RecentExcluded, f.RecentFresh = true, 14, "all", 300, 300
 		}),
 			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.all": "block"}},
+		{"locked rule that leaves out everybody gives an immutable-rule explanation", with(func(f *preflightFacts) {
+			f.RecentEnabled, f.RecentLocked, f.RecentDays, f.RecentScope, f.RecentExcluded, f.RecentFresh = true, true, 14, "all", 300, 300
+		}),
+			map[string]string{"from.placeholder": "ok", "unsubscribe.missing": "ok", "recent.lockedAll": "block"}},
 		{"old holds alone block with an accurate explanation", with(func(f *preflightFacts) {
 			f.Mode, f.Remaining, f.RecentExcluded, f.RecentHeld = "schedule", 0, 300, 300
 		}),

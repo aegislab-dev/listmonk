@@ -500,6 +500,38 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
+	// A draft can retain its send time after a schedule is cancelled. Recheck the
+	// remaining audience before accepting a new schedule so sent or held people do
+	// not turn a zero-recipient campaign into an allowed one.
+	if req.Status == models.CampaignStatusScheduled {
+		camp, err := a.core.GetCampaignForSendCheck(id, 0)
+		if err != nil {
+			return err
+		}
+		if camp.Type == models.CampaignTypeRegular && camp.Status != models.CampaignStatusScheduled {
+			hasSendHistory := camp.StartedAt.Valid || camp.LastSubscriberID > 0 || camp.Sent > 0 || camp.LegacySendHistory
+			lists, aud, err := a.core.GetPreflightAudience(c.Request().Context(), id, camp.LastSubscriberID, hasSendHistory)
+			if err != nil {
+				return err
+			}
+			hasLists := false
+			for _, list := range lists {
+				hasLists = hasLists || !list.Deleted
+			}
+			hasRecipients := aud.Total-aud.Recent > 0
+			if hasSendHistory {
+				hasRecipients = aud.Remaining > 0
+			}
+			// Keep historical empty-draft behavior unless the zero audience is caused by
+			// continuation history or the recent-recipient rule. Those cases are the ones
+			// where an unschedule/re-schedule could otherwise replay or silently lose people.
+			if !hasRecipients && (hasSendHistory || aud.Recent > 0) {
+				if err := a.scheduledSaveCheck(hasLists, hasRecipients); err != nil {
+					return err
+				}
+			}
+		}
+	}
 
 	from := ""
 	if len(a.cfg.SenderDomains) > 0 && (req.Status == models.CampaignStatusRunning || req.Status == models.CampaignStatusScheduled) {

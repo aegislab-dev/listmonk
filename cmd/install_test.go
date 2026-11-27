@@ -2,6 +2,28 @@ package main
 
 import "testing"
 
+func TestInstallValidatesCredentialsBeforeAnySetupSideEffects(t *testing.T) {
+	called := false
+	err := validateInstallBeforeSetup("x", "long-enough", "", func(bool) error {
+		called = true
+		return nil
+	})
+	if err == nil || called {
+		t.Fatalf("invalid credentials: setup called=%t, error=%v", called, err)
+	}
+
+	err = validateInstallBeforeSetup("admin", "long-enough", "", func(hasUser bool) error {
+		called = true
+		if !hasUser {
+			t.Fatal("valid admin was not passed to setup")
+		}
+		return nil
+	})
+	if err != nil || !called {
+		t.Fatalf("valid credentials: setup called=%t, error=%v", called, err)
+	}
+}
+
 func TestValidateInstallUsersRejectsInvalidCredentialsBeforeInstall(t *testing.T) {
 	for _, tc := range []struct {
 		name, user, password, apiUser string

@@ -59,46 +59,33 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 	user := os.Getenv("LISTMONK_ADMIN_USER")
 	password := os.Getenv("LISTMONK_ADMIN_PASSWORD")
 	apiUser := os.Getenv("LISTMONK_ADMIN_API_USER")
-	hasUser, err := validateInstallUsers(user, password, apiUser)
-	if err != nil {
+	if err := validateInstallBeforeSetup(user, password, apiUser, func(hasUser bool) error {
+		// Migrate the tables only after all install credentials have been validated.
+		if err := installSchema(db, fs); err != nil {
+			return fmt.Errorf("error migrating DB schema: %w", err)
+		}
+
+		// Load the queries.
+		q := prepareQueries(qMap, db, ko)
+		defList, optinList := installLists(q)
+		installSubs(defList, optinList, q)
+		campTplID, archiveTplID := installTemplates(q, fs)
+		installCampaign(campTplID, archiveTplID, q)
+
+		if user != "" && password != "" {
+			lo.Printf("creating superadmin user '%s'", user)
+		} else {
+			lo.Printf("no superadmin user created. Visit webpage to create user.")
+		}
+		if apiUser != "" {
+			lo.Printf("creating superadmin API user '%s'", apiUser)
+		}
+		if hasUser {
+			installUser(user, password, apiUser, q)
+		}
+		return nil
+	}); err != nil {
 		lo.Fatal(err)
-	}
-
-	// Migrate the tables.
-	if err := installSchema(db, fs); err != nil {
-		lo.Fatalf("error migrating DB schema: %v", err)
-	}
-
-	// Load the queries.
-	q := prepareQueries(qMap, db, ko)
-
-	// Sample list.
-	defList, optinList := installLists(q)
-
-	// Sample subscribers.
-	installSubs(defList, optinList, q)
-
-	// Templates.
-	campTplID, archiveTplID := installTemplates(q, fs)
-
-	// Sample campaign.
-	installCampaign(campTplID, archiveTplID, q)
-
-	// Setup admin user optionally.
-	// Admin user.
-	if user != "" && password != "" {
-		lo.Printf("creating superadmin user '%s'", user)
-	} else {
-		lo.Printf("no superadmin user created. Visit webpage to create user.")
-	}
-
-	// API User.
-	if apiUser != "" {
-		lo.Printf("creating superadmin API user '%s'", apiUser)
-	}
-
-	if hasUser {
-		installUser(user, password, apiUser, q)
 	}
 
 	// Record installation only after the default lists, subscribers, templates, campaign,
@@ -128,6 +115,17 @@ func validateInstallUsers(user, password, apiUser string) (bool, error) {
 		}
 	}
 	return hasUser, nil
+}
+
+// validateInstallBeforeSetup is the install side-effect barrier: configuration is checked
+// before schema or default data setup can run. Keep install's setup behind this function so
+// the regression test exercises the same ordering as the CLI.
+func validateInstallBeforeSetup(user, password, apiUser string, setup func(hasUser bool) error) error {
+	hasUser, err := validateInstallUsers(user, password, apiUser)
+	if err != nil {
+		return err
+	}
+	return setup(hasUser)
 }
 
 // installSchema executes the SQL schema and creates the necessary tables and types.
@@ -182,7 +180,7 @@ func isInstallationComplete(db *sqlx.DB) (bool, error) {
 	var tables []tableInPath
 	if err := db.Select(&tables, `SELECT schemaname, tablename FROM pg_tables
 		WHERE schemaname = ANY(current_schemas(false))
-		AND tablename IN ('subscribers', 'lists', 'campaigns', 'templates')
+		AND tablename IN ('subscribers', 'lists', 'campaigns', 'templates', 'users')
 		ORDER BY array_position(current_schemas(false), schemaname), tablename`); err != nil {
 		return false, err
 	}

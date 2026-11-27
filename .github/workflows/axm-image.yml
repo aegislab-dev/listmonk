@@ -225,19 +225,35 @@ jobs:
           cd frontend
           yarn install --frozen-lockfile
           for tz in Asia/Seoul America/New_York Pacific/Auckland; do TZ=$tz node --test tests/schedule-time.test.mjs; done
-          # Chrome's Cypress runner fails parsing `*` during spec handoff. Isolate every
-          # spec in a fresh process while keeping the complete browser suite in CI.
-          for spec in \
-            import-mapping.cy.js sender-addresses.cy.js from-addresses.cy.js dynamic-lists.cy.js \
-            list-draw.cy.js list-teams.cy.js reaction-lists.cy.js followup.cy.js \
-            subscriber-columns.cy.js column-presets.cy.js audit.cy.js list-trash.cy.js \
-            campaign-recent-exclude.cy.js campaign-tracking-check.cy.js analytics-proof.cy.js \
-            address-check.cy.js address-gate.cy.js campaign-test-send.cy.js schedule-time.cy.js \
-            campaign-send-confirm.cy.js campaign-delete-guard.cy.js campaign-clone-lists.cy.js \
-            campaign-scheduled-edit.cy.js import-campaign-flow.cy.js stats-dashboard.cy.js \
-            bounce-filter-delete.cy.js; do
-            npx cypress run --browser chrome --spec "cypress/e2e/$spec"
-          done
+          # Keep literal, one-spec Cypress commands so local selection tools can also
+          # reconcile the complete CI browser set. Each fresh process avoids Chrome's
+          # `*` URL parsing failure during Cypress spec handoff.
+          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/sender-addresses.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/from-addresses.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/dynamic-lists.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/list-draw.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/list-teams.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/reaction-lists.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/followup.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/subscriber-columns.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/column-presets.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/audit.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/list-trash.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/campaign-recent-exclude.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/campaign-tracking-check.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/analytics-proof.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/address-check.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/address-gate.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/campaign-test-send.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/schedule-time.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/campaign-send-confirm.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/campaign-delete-guard.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/campaign-clone-lists.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/campaign-scheduled-edit.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/import-campaign-flow.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/stats-dashboard.cy.js'
+          npx cypress run --browser chrome --spec 'cypress/e2e/bounce-filter-delete.cy.js'
 
       - name: Upgrade official v6.2.0 database and smoke test
         env:

@@ -96,6 +96,7 @@ type preflightResponse struct {
 // days and scope, how many of the recipients it leaves out and how many it has left out so far.
 type recentFacts struct {
 	Enabled  bool   `json:"enabled"`
+	Locked   bool   `json:"locked"`
 	Days     int    `json:"days,omitempty"`
 	Scope    string `json:"scope,omitempty"`
 	Excluded int    `json:"excluded"`
@@ -105,6 +106,7 @@ type recentFacts struct {
 // preflightFacts is everything the checks are decided from.
 type preflightFacts struct {
 	Mode        string
+	CountRemaining bool
 	CampType    string
 	Messenger   string
 	ContentType string
@@ -142,6 +144,7 @@ type preflightFacts struct {
 	FromRefused string
 
 	RecentEnabled  bool
+	RecentLocked   bool
 	RecentDays     int
 	RecentScope    string
 	RecentExcluded int
@@ -209,15 +212,22 @@ func preflightChecks(f preflightFacts) []models.PreflightCheck {
 
 	// A scheduled or resumed send reaches only the people still left after the checkpoint.
 	count := f.Total - f.RecentExcluded
-	if f.Mode == models.PreflightModeResume || f.Mode == models.PreflightModeScheduled {
+	if f.CountRemaining || f.Mode == models.PreflightModeResume || f.Mode == models.PreflightModeScheduled {
 		count = f.Remaining
 	}
 	key, level := audienceBlock(f.CampType, f.Mode, f.LiveLists > 0, count > 0)
-	recentAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentFresh > 0 && f.RecentFresh == f.Total
-	recentHeldAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentExcluded > 0 && f.RecentExcluded == f.Total && f.RecentFresh == 0 && f.RecentHeld > 0
-	recentMixedAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentExcluded > 0 && f.RecentExcluded == f.Total && f.RecentFresh > 0 && f.RecentFresh < f.Total && f.RecentHeld > 0
+	recentAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentFresh > 0 &&
+		(f.RecentFresh == f.Total || f.CountRemaining) && f.RecentHeld == 0
+	recentHeldAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentExcluded > 0 &&
+		f.RecentFresh == 0 && f.RecentHeld > 0 && (f.RecentExcluded == f.Total || f.CountRemaining)
+	recentMixedAll := key == "recipients.zero" && level == models.PreflightBlock && f.RecentExcluded > 0 &&
+		f.RecentFresh > 0 && f.RecentHeld > 0 && (f.RecentExcluded == f.Total || f.CountRemaining)
 	if recentAll {
-		add("recent.all", level, map[string]any{"days": f.RecentDays})
+		if f.RecentLocked {
+			add("recent.lockedAll", level, map[string]any{"days": f.RecentDays})
+		} else {
+			add("recent.all", level, map[string]any{"days": f.RecentDays})
+		}
 	} else if recentHeldAll {
 		add("recent.heldAll", level, map[string]any{"held": f.RecentExcluded})
 	} else if recentMixedAll {
@@ -379,7 +389,9 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	ctx := c.Request().Context()
 	// Pending deliveries of a paused or scheduled campaign follow the same rules as the
 	// sender, even if deliveries were recorded before it could save a checkpoint.
-	countRemaining := mode == models.PreflightModeResume || mode == models.PreflightModeScheduled
+	hasSendHistory := camp.StartedAt.Valid || camp.LastSubscriberID > 0 || camp.Sent > 0 || camp.LegacySendHistory
+	countRemaining := mode == models.PreflightModeResume || mode == models.PreflightModeScheduled ||
+		(mode == models.PreflightModeSchedule && hasSendHistory)
 	lists, aud, err := a.core.GetPreflightAudience(ctx, id, camp.LastSubscriberID, countRemaining)
 	if err != nil {
 		return err
@@ -392,7 +404,8 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		}
 	}
 	sentIsMinimum := countRemaining && camp.LegacySendHistory
-	rescheduled := mode == models.PreflightModeScheduled && (aud.Remaining != aud.Total-aud.Recent || sent > 0 || camp.LastSubscriberID > 0 || sentIsMinimum)
+	rescheduled := (mode == models.PreflightModeScheduled || (mode == models.PreflightModeSchedule && hasSendHistory)) &&
+		(aud.Remaining != aud.Total-aud.Recent || sent > 0 || camp.LastSubscriberID > 0 || sentIsMinimum)
 
 	// A draft started under the sender policy is sent from the starting user's address.
 	from := camp.FromEmail
@@ -472,7 +485,7 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 	}
 
 	facts := preflightFacts{
-		Mode: mode, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
+		Mode: mode, CountRemaining: countRemaining, CampType: camp.Type, Messenger: camp.Messenger, ContentType: camp.ContentType,
 		Total: aud.Total, Remaining: aud.Remaining, ListCount: len(lists),
 		SendAt: camp.SendAt, Now: time.Now(), From: from, HeadersVary: headersVary,
 	}
@@ -529,13 +542,13 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		if on && (rule.Enabled || countRemaining) {
+		if on || countRemaining {
 			held, err := a.core.RecentHeldCount(id)
 			if err != nil {
 				return err
 			}
-			recent = recentFacts{Enabled: rule.Enabled, Days: rule.Days, Scope: rule.Scope, Excluded: aud.Recent, Held: held}
-			facts.RecentEnabled, facts.RecentDays, facts.RecentScope = rule.Enabled, rule.Days, rule.Scope
+			recent = recentFacts{Enabled: rule.Enabled, Locked: camp.StartedAt.Valid, Days: rule.Days, Scope: rule.Scope, Excluded: aud.Recent, Held: held}
+			facts.RecentEnabled, facts.RecentLocked, facts.RecentDays, facts.RecentScope = rule.Enabled, camp.StartedAt.Valid, rule.Days, rule.Scope
 			facts.RecentExcluded, facts.RecentHeld, facts.RecentFresh = aud.Recent, held, aud.RecentFresh
 		}
 	}

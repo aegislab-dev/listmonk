@@ -78,7 +78,7 @@ recent_rule AS MATERIALIZED (
 ),
 held AS (
     SELECT subscriber_id AS id FROM axm_campaign_recent_holds
-    WHERE campaign_id = $1 AND (SELECT enabled FROM recent_rule)
+    WHERE campaign_id = $1
 ),
 fresh AS (
     SELECT r.subscriber_id AS id

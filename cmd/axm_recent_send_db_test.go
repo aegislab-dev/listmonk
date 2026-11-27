@@ -816,6 +816,8 @@ func TestInstallationCompleteChecksEveryEffectiveSearchSchema(t *testing.T) {
 	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.settings (key TEXT NOT NULL UNIQUE, value JSONB NOT NULL)`)
 	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.subscribers (id INTEGER PRIMARY KEY)`)
 	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(legacy) + `.subscribers VALUES (65)`)
+	admin.MustExec("CREATE TABLE " + pq.QuoteIdentifier(legacy) + `.users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)`)
+	admin.MustExec("INSERT INTO " + pq.QuoteIdentifier(legacy) + `.users VALUES (1, 'admin')`)
 	defer func() {
 		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(first) + " CASCADE")
 		admin.MustExec("DROP SCHEMA " + pq.QuoteIdentifier(legacy) + " CASCADE")
@@ -841,6 +843,10 @@ func TestInstallationCompleteChecksEveryEffectiveSearchSchema(t *testing.T) {
 	var preserved int
 	if err := db.Get(&preserved, `SELECT id FROM subscribers`); err != nil || preserved != 65 {
 		t.Fatalf("search-path subscriber data changed: id=%d err=%v", preserved, err)
+	}
+	var adminName string
+	if err := db.Get(&adminName, `SELECT name FROM users WHERE id=1`); err != nil || adminName != "admin" {
+		t.Fatalf("legacy admin was not preserved: name=%q err=%v", adminName, err)
 	}
 }
 

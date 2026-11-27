@@ -895,6 +895,7 @@
     "campaigns.sendConfirm.check.recent.applied.resumeNone": "최근 {days}일 안에 메일을 받은 사람은 이어서 보내는 시각에 다시 세어 뺍니다.",
     "campaigns.sendConfirm.check.recent.applied.scopeUnavailable": "이 발송에서 이미 뺀 {excluded}명은 계속 뺍니다. 원본 캠페인이 없어 제외 범위를 표시할 수 없습니다.",
     "campaigns.sendConfirm.check.recent.all.block": "**받는 사람이 모두 최근 {days}일 안에 메일을 받아 보낼 사람이 없습니다.** 제외 규칙을 끄거나 기간·범위를 바꾸세요.",
+    "campaigns.sendConfirm.check.recent.lockedAll.block": "**받는 사람이 모두 최근 {days}일 안에 메일을 받아 보낼 사람이 없습니다.** 발송이 시작된 뒤에는 제외 규칙을 바꿀 수 없습니다. 새 캠페인을 만들거나 대상 리스트를 바꾸세요.",
     "campaigns.sendConfirm.check.recent.heldAll.block": "**이 발송에서 이미 뺀 {held}명이 계속 제외되어 보낼 사람이 없습니다.** 발송이 시작된 뒤에는 제외 규칙을 바꿀 수 없습니다. 새 캠페인을 만들거나 대상 리스트를 바꾸세요.",
     "campaigns.sendConfirm.check.recent.mixedAll.block": "**최근 수신 {fresh}명과 이 발송에서 이미 뺀 {held}명을 모두 제외해 보낼 사람이 없습니다.** 이미 뺀 사람은 계속 제외됩니다. 새 캠페인을 만들거나 대상 리스트를 바꾸세요.",
     "campaigns.sendConfirm.zeroSummary": "받을 수 있는 사람이 0명입니다.",

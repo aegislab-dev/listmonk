@@ -262,7 +262,7 @@ describe('Pre-send confirmation window', () => {
       });
   });
 
-  it('agrees with scheduled editing when sending history leaves zero recipients', () => {
+  it('blocks scheduling when recent sends leave nobody and matches the preflight', () => {
     let scheduledSourceID;
     cy.then(() => create('scheduled-zero-source', { lists: [listY] }))
       .then(({ id }) => {
@@ -292,52 +292,23 @@ describe('Pre-send confirmation window', () => {
     row('scheduled-zero').find('[data-cy=btn-schedule]').should('exist');
     cy.get('@scheduledZeroID').then((id) => {
       cy.intercept('GET', path(id, '/preflight')).as('scheduledZeroCheck');
-      cy.request('PUT', path(id, '/status'), { status: 'scheduled' });
+      cy.request({ method: 'PUT', url: path(id, '/status'), body: { status: 'scheduled' }, failOnStatusCode: false })
+        .its('status').should('equal', 400);
     });
     row('scheduled-zero').find('[data-cy=btn-schedule]').click();
     cy.wait('@scheduledZeroCheck').its('response.body.data').should((data) => {
       expect(data).to.include({
-        mode: 'scheduled', recipients: 2, remaining: 0, will_send: 0,
+        mode: 'schedule', recipients: 2, will_send: 0,
       });
       expect(data.recent.excluded).to.equal(2);
     });
-    cy.get(`${win}[data-state=ready][data-mode=scheduled]`).should('exist');
+    cy.get(`${win}[data-state=ready][data-mode=schedule]`).should('exist');
     cy.get('[data-cy="send-check-recent.all"]').should('have.attr', 'data-level', 'block');
-    cy.get('[data-cy=send-ok]').should('contain', 'keep the schedule').click();
+    cy.get('[data-cy=send-ok]').should('be.disabled');
+    cy.get('[data-cy=send-cancel]').click();
     cy.get(win).should('not.exist');
-
-    cy.get('@scheduledZeroID').then((id) => cy.visit(`/admin/campaigns/${id}`));
-    // Turn the already-saved rule off while editing the scheduled campaign. The new rule
-    // restores both recipients, so the campaign edit and rule change must be checked together.
-    cy.intercept('PUT', '**/api/campaigns/*').as('restoreRecipients');
-    cy.get('[data-cy=recent-enabled] .check').click();
-    cy.get('[data-cy=btn-save]').click();
-    cy.wait('@restoreRecipients').then(({ request, response }) => {
-      expect(request.body.recent_rule).to.deep.equal({ enabled: false });
-      expect(response.statusCode).to.equal(200);
-    });
-    ready();
-    cy.get('[data-cy=send-ok]').click();
-    cy.get(win).should('not.exist');
-    cy.get('@scheduledZeroID').then((id) => cy.request(path(id, '/recent-exclude')))
-      .its('body.data.enabled').should('equal', false);
-    cy.get('@scheduledZeroID').then((id) => cy.request(path(id, '/preflight')))
-      .its('body.data.will_send').should('equal', 2);
-
-    // Turn it back on: the same history now excludes everyone. Neither the campaign edit nor
-    // the newly enabled rule may be saved, and the prior scheduled version stays in place.
-    cy.intercept('PUT', '**/api/campaigns/*').as('zeroSave');
-    cy.get('[data-cy=recent-enabled] .check').click();
-    cy.get('[data-cy=btn-save]').click();
-    cy.wait('@zeroSave').then(({ request, response }) => {
-      expect(request.body.recent_rule).to.include({ enabled: true, days: 14, scope: 'campaigns' });
-      expect(response.statusCode).to.equal(400);
-    });
-    cy.get('.toast.is-danger').should('contain', 'Not saved').and('contain', '0 recipients');
     cy.get('@scheduledZeroID').then((id) => cy.request(path(id)))
-      .its('body.data.status').should('equal', 'scheduled');
-    cy.get('@scheduledZeroID').then((id) => cy.request(path(id, '/recent-exclude')))
-      .its('body.data.enabled').should('equal', false);
+      .its('body.data.status').should('equal', 'draft');
   });
 
   it('keeps a dirty recent rule when another editor schedules or unschedules the campaign', () => {
