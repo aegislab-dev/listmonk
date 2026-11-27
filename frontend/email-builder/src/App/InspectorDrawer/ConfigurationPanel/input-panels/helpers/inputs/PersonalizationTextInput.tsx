@@ -21,6 +21,8 @@ type Props = {
 
 type Fmt = { bold: boolean; underline: boolean; size: number | null };
 const NO_FMT: Readonly<Fmt> = Object.freeze({ bold: false, underline: false, size: null });
+type SelectionOffsets = { start: number; end: number };
+const TYPING = new Set(['insertText', 'deleteContentBackward', 'deleteContentForward']);
 
 // The formatting an element adds to what it contains. Chromium's bold/underline
 // commands write <b>/<u> or, when undoing them inside a tag, a style; sizes are
@@ -201,14 +203,12 @@ export default function PersonalizationTextInput({
   // the selection as character offsets (a chip counts as one).
   // undo: where the selection was when the edit that led to this state began, so an
   // undo puts the caret back there.
-  type Snap = { text: string; mode: TextMode; start: number; end: number; undo: { start: number; end: number } };
+  type Snap = SelectionOffsets & { text: string; mode: TextMode; undo: SelectionOffsets };
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
-  const before = useRef<{ start: number; end: number } | null>(null);
-  // The selection as last seen by selectionchange. An edit's input event runs before
-  // the selectionchange it causes, so at record time this is where the edit began
-  // (also for paste, Enter and chip edits, which come without beforeinput).
-  const seen = useRef<{ start: number; end: number } | null>(null);
+  const before = useRef<SelectionOffsets | null>(null);
+  // Fallback for browser edits that dispatch input without beforeinput.
+  const seen = useRef<SelectionOffsets | null>(null);
   const history = useRef<Snap[]>([]);
   const at = useRef(-1);
   const lastEdit = useRef({ kind: '', time: 0 });
@@ -238,11 +238,12 @@ export default function PersonalizationTextInput({
     }
     return left;
   };
-  const selectionOffsets = () => {
+  const selectionOffsets = (): SelectionOffsets => {
     const sel = window.getSelection();
     const el = editor.current!;
-    if (!sel?.rangeCount || !el.contains(sel.getRangeAt(0).startContainer)) return { start: 0, end: 0 };
+    if (!sel?.rangeCount) return { start: 0, end: 0 };
     const r = sel.getRangeAt(0);
+    if (!el.contains(r.startContainer) || !el.contains(r.endContainer)) return { start: 0, end: 0 };
     return { start: offsetOf(r.startContainer, r.startOffset), end: offsetOf(r.endContainer, r.endOffset) };
   };
   const selectionOffsetsRef = useRef(selectionOffsets);
@@ -250,12 +251,19 @@ export default function PersonalizationTextInput({
   const record = (text: string, kind: string) => {
     const now = Date.now();
     const top = history.current[at.current];
-    // A run of typing is one step, as in the browser.
-    const merge = kind === 'type' && lastEdit.current.kind === 'type' && now - lastEdit.current.time < 1000 && at.current > 0;
-    const undo = (merge && top ? top.undo : before.current || seen.current) || selectionOffsets();
+    const start = before.current || seen.current || selectionOffsets();
     before.current = null;
+    // Continue a typing run only at the caret where the previous input ended.
+    const merge = top && at.current > 0 && TYPING.has(kind) && kind === lastEdit.current.kind
+      && now - lastEdit.current.time < 1000 && start.start === start.end
+      && top.start === start.start && top.end === start.end;
+    const undo = merge ? top.undo : start;
     const snap = { text, mode: mode.current, ...selectionOffsets(), undo };
-    if (top && top.text === text) { history.current[at.current] = { ...snap, undo: top.undo }; return; }
+    seen.current = { start: snap.start, end: snap.end };
+    if (top && top.text === text && top.mode === snap.mode) {
+      if (!TYPING.has(kind)) lastEdit.current = { kind: '', time: 0 };
+      return;
+    }
     history.current = history.current.slice(0, merge ? at.current : at.current + 1);
     history.current.push(snap);
     if (history.current.length > 200) history.current.shift();
@@ -268,6 +276,7 @@ export default function PersonalizationTextInput({
     // Undo puts the caret where the undone edit began; redo where it ended.
     const caret = step < 0 ? history.current[at.current].undo : snap;
     at.current += step;
+    before.current = null;
     lastEdit.current = { kind: '', time: 0 };
     const el = editor.current!;
     mode.current = snap.mode;
@@ -305,7 +314,7 @@ export default function PersonalizationTextInput({
       if (!format) return;
       if (ev.inputType !== 'historyUndo' && ev.inputType !== 'historyRedo') {
         // The selection as the edit begins, for the undo of this edit.
-        if (!before.current) before.current = selectionOffsetsRef.current();
+        if (!composing.current && !applying.current) before.current = selectionOffsetsRef.current();
         return;
       }
       ev.preventDefault();
@@ -318,8 +327,15 @@ export default function PersonalizationTextInput({
         const range = selection.getRangeAt(0);
         if (el.contains(range.startContainer) && el.contains(range.endContainer)) {
           lastRange.current = range.cloneRange();
-          if (format) seen.current = selectionOffsetsRef.current();
-          if (format) setActive(fmtAt(range.startContainer, el));
+          if (format) {
+            const offsets = selectionOffsetsRef.current();
+            seen.current = offsets;
+            const top = history.current[at.current];
+            if (top && (offsets.start !== top.start || offsets.end !== top.end)) {
+              lastEdit.current = { kind: '', time: 0 };
+            }
+            setActive(fmtAt(range.startContainer, el));
+          }
         }
       }
     };
@@ -383,6 +399,16 @@ export default function PersonalizationTextInput({
       span.append(...Array.from(font.childNodes));
     });
     if (anchorNode?.isConnected && focusNode?.isConnected) selection.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
+  };
+  // Programmatic edits can dispatch input without beforeinput. Capture the live
+  // selection first and record once, including any caret adjustment by the command.
+  const runEdit = (edit: () => void) => {
+    if (format) before.current = selectionOffsets();
+    applying.current = true;
+    edit();
+    applying.current = false;
+    if (format) convertFonts();
+    emit();
   };
 
   // Toolbar commands run on the saved selection, so a click on the size menu
@@ -535,14 +561,14 @@ export default function PersonalizationTextInput({
   const apply = (remove = false) => {
     if (!remove && !selected) return;
     restore(editing || undefined);
-    if (remove) {
-      document.execCommand('delete');
-    } else {
-      const chip = makeChip(config, selected!, fallback, config.buildToken(selected!, fallback));
-      insertMarkup(chip.outerHTML);
-    }
+    runEdit(() => {
+      if (remove) document.execCommand('delete');
+      else {
+        const chip = makeChip(config, selected!, fallback, config.buildToken(selected!, fallback));
+        insertMarkup(chip.outerHTML);
+      }
+    });
     lastRange.current = window.getSelection()?.getRangeAt(0).cloneRange() || null;
-    emit();
     close(() => restore());
   };
   const copy = (ev: React.ClipboardEvent, cut = false) => {
@@ -550,7 +576,7 @@ export default function PersonalizationTextInput({
     if (selection?.rangeCount && !selection.isCollapsed) {
       ev.preventDefault();
       ev.clipboardData.setData('text/plain', serialize(selection.getRangeAt(0).cloneContents()));
-      if (cut) { document.execCommand('delete'); emit(); }
+      if (cut) runEdit(() => document.execCommand('delete'));
     }
   };
   const chipFrom = (target: EventTarget) => (target instanceof Element ? target.closest<HTMLElement>('[data-token]') : null);
@@ -614,9 +640,17 @@ export default function PersonalizationTextInput({
       sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', minHeight: `${rows * 1.65 + 1.5}em`,
         p: 1.5, border: '1px solid #aaa', borderRadius: 1, fontSize: 14, lineHeight: 1.65,
         '&:focus': { outline: '2px solid #1769aa', outlineOffset: -1 }, '& [data-token]:focus': { outline: '2px solid #1769aa' } }}
-      onCompositionStart={() => { composing.current = true; }}
-      onCompositionEnd={() => { composing.current = false; if (format) convertFonts(); emit('type'); }}
-      onInput={() => { if (!composing.current && !applying.current) { if (format) convertFonts(); emit('type'); } }}
+      onCompositionStart={() => {
+        composing.current = true;
+        if (format) before.current = selectionOffsets();
+      }}
+      onCompositionEnd={() => { composing.current = false; if (format) convertFonts(); emit(); }}
+      onInput={(ev) => {
+        if (!composing.current && !applying.current) {
+          if (format) convertFonts();
+          emit((ev.nativeEvent as InputEvent).inputType);
+        }
+      }}
       onClick={(ev) => { const chip = chipFrom(ev.target); if (chip) open(chip, chip); }}
       onKeyDown={(ev) => {
         if (composing.current || ev.nativeEvent.isComposing) return;
@@ -635,8 +669,13 @@ export default function PersonalizationTextInput({
         const chip = chipFrom(ev.target);
         if (chip && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); open(chip, chip); }
         else if (chip && (ev.key === 'Backspace' || ev.key === 'Delete')) {
-          ev.preventDefault(); restore(chip); document.execCommand('delete'); emit();
-        } else if (ev.key === 'Enter') { ev.preventDefault(); document.execCommand('insertLineBreak'); }
+          ev.preventDefault();
+          restore(chip);
+          runEdit(() => document.execCommand('delete'));
+        } else if (ev.key === 'Enter') {
+          ev.preventDefault();
+          runEdit(() => document.execCommand('insertLineBreak'));
+        }
       }}
       onPaste={(ev) => {
         ev.preventDefault();
@@ -648,8 +687,7 @@ export default function PersonalizationTextInput({
         const content = document.createElement('div');
         parts.forEach((part) => content.append(part.type === 'text' ? document.createTextNode(part.value)
           : makeChip(config, part.item, part.fallback, part.raw)));
-        insertMarkup(content.innerHTML);
-        emit();
+        runEdit(() => insertMarkup(content.innerHTML));
       }}
       onDrop={(ev) => ev.preventDefault()}
       onCopy={(ev) => copy(ev)}

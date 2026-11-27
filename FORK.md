@@ -217,14 +217,15 @@ upstream v6.2.0은 비주얼 캠페인에 기본 템플릿을 씌우지 않는�
 
 ## 비주얼 에디터 일부 글자 서식 (LST-77)
 
-업스트림 v6.2.0 비주얼 에디터(usewaypoint email-builder)의 Text 블록은 글 전체가 한 문자열이다. 사이드바의 Font size·Font weight는 블록 전체에만 걸리고, 일부 글자 서식은 Markdown을 켜고 `**굵게**`·`<u>`·`<span style="font-size:…">`를 손으로 써야 했다. 또 LST-3 개인화 입력칸(contenteditable)에서는 Ctrl+B/U가 칸에만 보이고 저장 때 버려졌다.
+업스트림 v6.2.0 비주얼 에디터(usewaypoint email-builder)의 Text 블록은 글 전체가 한 문자열이다. 사이드바의 Font size·Font weight는 블록 전체에만 걸리고, 일부 글자 서식은 Markdown을 켜고 `**굵게**`·`<u>`·`<span style="font-size:…">`를 손으로 써야 했다. 또 LST-3 개인화 입력칸(contenteditable)에서는 Ctrl+B/U가 칸에만 보이고 저장 때 버려졌다. 리치 텍스트 에디터(TinyMCE)는 기존 툴바에서 일부 글자의 굵게·밑줄·크기를 지원한다.
 
 - Text 블록 Content 칸 위에 굵게·밑줄·글자 크기(12~32px, 「블록 기본 크기」로 해제)·서식 지우기. Ctrl+B/U도 같다. Ctrl+I와, 제목(Heading) 칸의 Ctrl+B/I/U는 막는다(저장하지 못하는 서식을 보여 주지 않는다).
 - 저장은 `props.text` 안의 인라인 HTML: `<span style="font-size:Npx"><strong><u>…</u></strong></span>`. 업스트림 Text 렌더러(marked + insane 허용 태그)가 그대로 그리므로 **렌더러·발송기·DB·마이그레이션 변경 없음**. 롤백 이미지(axm.7)도 저장된 본문을 같게 보낸다(그 에디터로 다시 열면 칸에 태그가 글자로 보인다).
 - 세 모드(`frontend/src/text-format.js`): Markdown 꺼짐(`plain`, 서식 없음) / Markdown 켜짐(`markdown`, 원문에 태그만 끼움, 링크·`**` 등 기존 문법은 원문 그대로) / 에디터가 쓴 한 줄 HTML 덩어리(`html`, `<div class="axm-text">…</div>`, 글자는 `& < >` 이스케이프, 줄바꿈은 `<br>`). Markdown이 꺼진 블록에 처음 서식을 주면 `html`로 바뀌어 `* _ #` 같은 글자가 마크다운으로 해석되지 않고, 칸에서 친 줄바꿈이 메일에도 나간다(꺼진 블록은 원래 줄바꿈이 한 줄로 붙는다). `html` 블록은 Markdown 스위치를 숨기고, 서식이 든 `markdown` 블록은 스위치를 잠근다(끄면 태그가 글자로 찍힌다). 태그는 줄바꿈을 넘지 않게 줄마다 닫고 다시 연다.
 - 개인화 칩은 편집 불가 span이라 Chromium의 굵게·밑줄·크기 명령이 건너뛴다. 선택 안의 칩은 편집기가 같은 서식으로 감싸거나 서식 요소 밖으로 꺼낸다.
 - 선택 없이 크기를 고르면 커서 자리에 빈 크기 span(폭 0 공백, 저장하지 않음)을 넣고, 메뉴가 닫히면 편집칸에 커서를 돌려준다.
-- Markdown 모드는 이 편집기가 쓰는 태그(`<strong>`, `<u>`, `<span style="font-size:Npx">`)만 서식으로 읽는다. `<b>` 같은 다른 태그와 펜스 코드 블록·코드 span 안의 태그는 글자 그대로 두고 그대로 다시 쓴다(들여쓰기 코드 블록은 목록 이어쓰기와 구분하지 않아 보호하지 않는다). 줄 머리의 목록·인용·제목 표시(`- `, `1. `, `> `, `## `)는 태그 앞에 둔다.
+- Markdown 모드는 이 편집기가 쓰는 태그(`<strong>`, `<u>`, `<span style="font-size:Npx">`)의 저장 형식이 정확히 일치할 때 서식으로 읽는다. 서식 안의 `<br>`는 Markdown 원문의 일부로 유지하고, `020px`처럼 표기가 다른 크기도 원문 그대로 저장한다. 감지한 코드 범위의 태그는 글자로 표시한다. 줄 머리의 목록·인용·제목 표시(`- `, `1. `, `> `, `## `)는 태그 앞에 둔다.
+- 같은 커서에서 이어서 입력한 글자는 한 단계로 취소한다. 커서를 옮겨 다른 위치를 편집하면 별도 단계로 기록한다.
 - 캔버스에서 Markdown 블록의 개인화 토큰은 〔이름〕 대신 칩 모양 span으로 보인다(HTML 속성 안의 토큰은 그대로 〔〕).
 - 시험: `frontend/tests/text-format.test.mjs`(저장 형식 왕복), `visual-text-format.cy.js`(툴바·저장·다시 열기·Mailpit 테스트 발송에서 서식·개인화·자동 추적), `TestVisualTrackingKeepsInlineFormatting`(LST-9 자동 추적이 서식 태그를 건드리지 않음).
 - 메일 클라이언트: Gmail 웹은 실화면 확인(2026-11-27, 견본 메일을 받은편지함에서 열어 굵게·밑줄·크기·줄바꿈·개인화 이름 서식 확인). Outlook은 Mailpit HTML 검사(caniemail) 자료로 대신했고 실화면은 보지 않았다: `strong`·`u`·`br`·`font-size`는 경고 없음(Outlook Windows 2007~2019·Outlook.com·macOS·iOS·Android 포함). 네이버 메일은 caniemail에 자료가 없어 확인하지 못했다.

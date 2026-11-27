@@ -61,6 +61,26 @@ test('Markdown blocks keep their source and get inline tags', () => {
   assert.deepEqual(roundTrip(out.text, true), out);
 });
 
+test('inline HTML line breaks in Markdown can be formatted and reopened', () => {
+  const value = '오늘 안내<br>내일 마감';
+  const fmt = { bold: true, underline: true, size: 24 };
+  const out = serializeFormatted([run(value, fmt)], 'markdown');
+  assert.deepEqual(parseFormatted(out.text, 'markdown'), [{ value, ...fmt }]);
+  assert.equal(hasFormatting(out.text, 'markdown'), true);
+  assert.deepEqual(roundTrip(out.text, true), out);
+});
+
+test('noncanonical font sizes stay verbatim when editing another paragraph', () => {
+  const example = '<span style="font-size:020px">예시</span>';
+  for (const prefix of ['-     ', '> -     ', '1.\t\t', '']) {
+    const text = `안내\n\n${prefix}${example}\n\n아래 문단`;
+    const runs = runsOf(parseFormatted(text, 'markdown'));
+    assert.equal(hasFormatting(text, 'markdown'), false);
+    runs.push(run('!'));
+    assert.deepEqual(serializeFormatted(runs, 'markdown'), { text: `${text}!`, markdown: true });
+  }
+});
+
 test('hand-written and broken tags', () => {
   // Only the exact tags this editor writes are formatting; the rest stays source.
   const other = '<b>a</b><span style="font-size: 18px;">b</span>';
@@ -157,10 +177,10 @@ test('indented Markdown code keeps its tags as text, list continuations do not',
 // HTML) can change.
 test('reading back and writing unchanged is the identity, for any text', () => {
   const pieces = ['a', '가', ' ', '  ', '\n', '\n\n', '- ', '* ', '1. ', '2) ', '> ', '# ', '    ', '\t', '`', '```', '~~~',
-    '<strong>', '</strong>', '<u>', '</u>', '<span style="font-size:20px">', '<span style="font-size:99px">', '</span>',
+    '<strong>', '</strong>', '<u>', '</u>', '<span style="font-size:20px">', '<span style="font-size:020px">', '<span style="font-size:99px">', '</span>',
     '<b>', '<br>', '&amp;', '&lt;', '{{ .Subscriber.Name }}', '*', '_', '<'];
   let seed = 77;
-  const rand = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const rand = (n) => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return (seed >>> 8) % n; };
   for (let i = 0; i < 5000; i += 1) {
     let s = '';
     for (let k = rand(40); k > 0; k -= 1) s += pieces[rand(pieces.length)];

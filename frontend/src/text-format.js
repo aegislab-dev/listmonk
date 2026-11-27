@@ -43,7 +43,7 @@ export const isFormatted = (seg) => Boolean(seg.bold || seg.underline || validSi
 // The opening of a run this editor writes: size span, then strong, then u, in that
 // order. Its closing is the same tags reversed, on the same line.
 const OPEN = /<span style="font-size:(\d+)px">(<strong>)?(<u>)?|<strong>(<u>)?|<u>/g;
-const OURS = /<\/?(?:strong|u)>|<span style="font-size:\d+px">|<\/span>|<br>/;
+const OURS = /<\/?(?:strong|u)>|<span style="font-size:\d+px">|<\/span>/;
 // A Markdown line starts with its block markers (list, quote, heading, indent): the
 // serializer keeps them in front of the tags.
 const MARKERS = /^(?:[ \t]*(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+|>[ \t]?|#{1,6}[ \t]+))*[ \t]*/;
@@ -153,7 +153,10 @@ export const parseFormatted = (text, mode) => {
     const content = end < 0 ? '' : src.slice(start, end);
     const lineStart = !html && (m.index === 0 || src[m.index - 1] === '\n');
     const last = out[out.length - 1];
-    const ok = content && (!span || validSize(f.size)) && !content.includes('\n') && !OURS.test(content)
+    // Markdown keeps a literal <br> in the run. In an HTML block it decodes to a
+    // newline, which the serializer writes between runs, so it cannot be inside one.
+    const ok = content && (!span || (validSize(f.size) && String(f.size) === m[1]))
+      && !content.includes('\n') && !OURS.test(content) && !(html && content.includes('<br>'))
       && !inCode(m.index) && !inCode(end)
       && !(lineStart && MARKERS.exec(content)[0])
       && !(pos === m.index && last && isFormatted(last) && same(last, f));

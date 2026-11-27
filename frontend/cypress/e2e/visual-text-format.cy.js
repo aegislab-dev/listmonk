@@ -71,6 +71,34 @@ const pickSize = (px) => {
 };
 const canvasText = () => editorDoc().then((d) => [...d.querySelectorAll('#visual-editor-container div')].reverse()
   .find((el) => el.textContent.startsWith('안녕하세요')));
+const textCampaign = (subject, content, markdown = true) => cy.request('POST', '/api/campaigns', {
+  name: subject, subject, lists: [listId], type: 'regular', content_type: 'visual', messenger: 'email',
+  body: '<p>x</p>',
+  body_source: JSON.stringify({
+    root: { type: 'EmailLayout', data: { childrenIds: ['t'] } },
+    t: { type: 'Text', data: { props: { text: content, markdown }, style: {} } },
+  }),
+}).its('body.data.id');
+const saveText = (id, expected) => {
+  cy.get('button[data-cy=btn-save]').click();
+  return cy.waitUntil(() => cy.request(`/api/campaigns/${id}`).then(({ body }) => {
+    const { text } = JSON.parse(body.data.body_source).t.data.props;
+    return text === expected && body.data;
+  }), { timeout: 10000 });
+};
+const sendTest = (id, subject) => {
+  cy.visit(`/admin/campaigns/${id}`);
+  cy.get('[data-cy=test-send] input[data-cy=test-emails]').type(`${subEmail}{enter}`);
+  cy.intercept('POST', `/api/campaigns/${id}/test`).as('testSend');
+  cy.get('[data-cy=test-send] [data-cy=btn-test-send]').click();
+  cy.wait('@testSend').its('response.statusCode').should('eq', 200);
+
+  const inbox = Cypress.env('mailpitUrl');
+  expect(inbox, 'CYPRESS_mailpitUrl (the test inbox)').to.be.a('string').and.not.be.empty;
+  return cy.waitUntil(() => cy.request(`${inbox}/api/v1/search?query=${encodeURIComponent(`subject:"${subject}"`)}`)
+    .then(({ body }) => body.messages[0]?.ID), { timeout: 30000 })
+    .then((messageId) => cy.request(`${inbox}/api/v1/message/${messageId}`)).its('body.HTML');
+};
 
 describe('Visual editor inline formatting', () => {
   before(() => {
@@ -169,30 +197,59 @@ describe('Visual editor inline formatting', () => {
   it('sends the formatting with personalization and tracking', () => {
     // The campaign as saved by the test above.
     cy.request(`/api/campaigns/${campaignId}`).its('body.data.body').should('contain', formatted);
-    cy.visit(`/admin/campaigns/${campaignId}`);
-    cy.get('[data-cy=test-send] input[data-cy=test-emails]').type(`${subEmail}{enter}`);
-    cy.intercept('POST', `/api/campaigns/${campaignId}/test`).as('testSend');
-    cy.get('[data-cy=test-send] [data-cy=btn-test-send]').click();
-    cy.wait('@testSend').its('response.statusCode').should('eq', 200);
-
-    const inbox = Cypress.env('mailpitUrl');
-    expect(inbox, 'CYPRESS_mailpitUrl (the test inbox)').to.be.a('string').and.not.be.empty;
-    const received = (tries = 30) => cy.request(`${inbox}/api/v1/search?query=${encodeURIComponent(`subject:"Format subject ${stamp}"`)}`)
-      .then(({ body }) => {
-        if (!body.messages.length && tries > 0) {
-          cy.wait(1000);
-          return received(tries - 1);
-        }
-        return body.messages[0];
-      });
-    received().then((m) => cy.request(`${inbox}/api/v1/message/${m.ID}`)).then(({ body }) => {
-      const html = body.HTML;
+    sendTest(campaignId, `Format subject ${stamp}`).then((html) => {
       expect(html).to.contain(formatted);
       expect(html).to.contain('<span style="font-size:24px"><strong><u>안녕하세요, 김시험님.</u></strong></span><br/><strong>12월 3일까지</strong>');
       // LST-9: the button link is tracked and the view pixel is added.
       expect(html).to.not.contain(`href="https://example.test/promo-${stamp}"`);
       expect(html).to.match(/href="[^"]*\/link\/[^"]+"/);
       expect(html).to.match(/\/campaign\/[^"]+\/px\.png/);
+    });
+  });
+
+  it('reopens and sends bold Markdown containing an HTML line break', () => {
+    const source = '오늘 안내<br>내일 마감';
+    const subject = `Markdown line break ${stamp}`;
+    textCampaign(subject, source).then((id) => {
+      openText(false, id, '오늘 안내');
+      select(source);
+      box().type('{ctrl}b');
+      saveText(id, `<strong>${source}</strong>`);
+      openText(true, id, '오늘 안내');
+      box().find('strong').should('have.text', source);
+      editorDoc().find('label:contains("Markdown") input').should('be.checked').and('be.disabled');
+
+      sendTest(id, subject).then((html) => {
+        expect(html, 'bold text and line break in received HTML')
+          .to.match(/<strong>\s*오늘 안내\s*<br\s*\/?>\s*내일 마감\s*<\/strong>/);
+      });
+    });
+  });
+
+  it('groups typing at the same caret and undoes edits in different places separately', () => {
+    const line = '신청 기간 12월 마감';
+    textCampaign(`Undo navigation ${stamp}`, line, false).then((id) => {
+      openText(false, id, line);
+      box().type('{moveToEnd}!?{moveToStart}오타', { delay: 0 });
+      box().should('have.text', `오타${line}!?`);
+      box().type('{ctrl}z');
+      box().should('have.text', `${line}!?`);
+      saveText(id, `${line}!?`).its('body').should('contain', `${line}!?`);
+      box().type('{ctrl}z');
+      box().should('have.text', line);
+    });
+  });
+
+  it('preserves the source and rendered code in lists and quotes when editing below it', () => {
+    const example = '<span style="font-size:020px">예시</span>';
+    const source = `안내\n\n-     ${example}\n\n> -     ${example}\n\n아래 문단`;
+    textCampaign(`Markdown list code ${stamp}`, source).then((id) => {
+      openText(false, id, '안내');
+      box().type('{moveToEnd}!');
+      saveText(id, `${source}!`).then(({ body }) => {
+        const doc = new DOMParser().parseFromString(body, 'text/html');
+        expect([...doc.querySelectorAll('li code')].map((el) => el.textContent.trim())).to.deep.equal([example, example]);
+      });
     });
   });
 
@@ -236,16 +293,18 @@ describe('Visual editor inline formatting', () => {
     });
   });
 
-  it('undoes and redoes formatting on a line with the name chip without losing text', () => {
+  it('inserts a name chip and keeps it when undoing and redoing formatting', () => {
     const greet = '안녕하세요 {{ .Subscriber.Name }}님';
-    const md = { root: { type: 'EmailLayout', data: { childrenIds: ['t'] } }, t: { type: 'Text', data: { props: { text: greet }, style: {} } } };
-    cy.request('POST', '/api/campaigns', {
-      name: `Format undo ${stamp}`, subject: 'undo', lists: [listId], type: 'regular', content_type: 'visual', messenger: 'email',
-      body: '<p>x</p>', body_source: JSON.stringify(md),
-    }).then(({ body: c }) => {
-      const stored = () => cy.request(`/api/campaigns/${c.data.id}`).then(({ body }) => JSON.parse(body.data.body_source).t.data.props);
-      const save = () => { cy.get('button[data-cy=btn-save]').click(); cy.wait(800); };
-      openText(false, c.data.id, '안녕하세요');
+    textCampaign(`Format undo ${stamp}`, '안녕하세요 님', false).then((id) => {
+      openText(false, id, '안녕하세요');
+      select('님');
+      editorDoc().then((d) => d.getSelection().collapseToStart());
+      box().parent().find('button[aria-haspopup=dialog]').click();
+      editorDoc().find('[role=dialog]').contains(/^(Name|이름)$/).click();
+      editorDoc().find('[role=dialog]').contains('button', /^(Insert|넣기)$/).click();
+      box().find('[data-token="{{ .Subscriber.Name }}"]').should('exist');
+      editorDoc().find('[role=dialog]').should('not.exist');
+
       box().then(($b) => {
         const el = $b[0];
         el.focus();
@@ -259,12 +318,12 @@ describe('Visual editor inline formatting', () => {
       box().type('{ctrl}z');
       box().find('b, strong').should('not.exist');
       box().should('contain.text', '안녕하세요').find('[data-token]').should('exist');
-      save();
-      stored().should('deep.include', { text: greet, markdown: false });
+      saveText(id, greet).then(({ body_source: source }) => {
+        expect(JSON.parse(source).t.data.props.markdown).to.equal(false);
+      });
       box().type('{ctrl}y');
       box().find('strong [data-token]').should('exist');
-      save();
-      stored().its('text').should('eq', `<div class="axm-text"><strong>${greet}</strong></div>`);
+      saveText(id, `<div class="axm-text"><strong>${greet}</strong></div>`);
     });
   });
 
