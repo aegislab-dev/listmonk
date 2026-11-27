@@ -41,6 +41,16 @@
 	</div>
 	
 	<footer class="container">
+		{{ if not .BusinessFooter.Empty }}
+			<div class="business-info">
+				{{ range .BusinessFooter.Lines }}
+					<p>{{ range $i, $item := . }}{{ if $i }} &middot; {{ end }}<span{{ if $item.NoWrap }} class="nowrap"{{ end }}>{{ $item.Text }}</span>{{ end }}</p>
+				{{ end }}
+				{{ if .BusinessFooter.Extra }}
+					<p class="extra">{{ range $i, $l := .BusinessFooter.Extra }}{{ if $i }}<br />{{ end }}{{ $l }}{{ end }}</p>
+				{{ end }}
+			</div>
+		{{ end }}
 		{{ L.T "public.poweredBy" }} <a target="_blank" rel="noreferrer" href="https://listmonk.app">listmonk</a>
 		&middot; <a target="_blank" rel="noopener noreferrer" href="https://github.com/aegislab-dev/listmonk">{{ L.T "public.sourceCode" }}</a> (AGPL-3.0)
 	</footer>

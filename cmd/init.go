@@ -611,21 +611,7 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 		lo.Println("running in passive mode. won't process campaigns.")
 	}
 
-	footerHTML, footerText := manager.BuildBusinessFooter(models.BusinessFooter{
-		Enabled:        ko.Bool("axm.business_footer.enabled"),
-		CompanyName:    ko.String("axm.business_footer.company_name"),
-		Representative: ko.String("axm.business_footer.representative"),
-		RegistrationNo: ko.String("axm.business_footer.registration_no"),
-		Address:        ko.String("axm.business_footer.address"),
-		Phone:          ko.String("axm.business_footer.phone"),
-		Email:          ko.String("axm.business_footer.email"),
-		Extra:          ko.String("axm.business_footer.extra"),
-	}, manager.BusinessFooterLabels{
-		Representative: i.T("email.businessFooter.representative"),
-		RegistrationNo: i.T("email.businessFooter.registrationNo"),
-		Phone:          i.T("email.businessFooter.phone"),
-		Email:          i.T("email.businessFooter.email"),
-	})
+	footerHTML, footerText := manager.BuildBusinessFooter(businessFooterSettings(ko), businessFooterLabels(i))
 
 	mgr := manager.New(manager.Config{
 		SenderPolicyEnabled:   len(ko.Strings("axm.sender_domains")) > 0,
@@ -660,6 +646,31 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 	}
 
 	return mgr
+}
+
+// businessFooterSettings reads the business details (setting axm.business_footer, LST-7).
+// Campaign mails and, since LST-76, the footer of the public pages show them.
+func businessFooterSettings(ko *koanf.Koanf) models.BusinessFooter {
+	return models.BusinessFooter{
+		Enabled:        ko.Bool("axm.business_footer.enabled"),
+		CompanyName:    ko.String("axm.business_footer.company_name"),
+		Representative: ko.String("axm.business_footer.representative"),
+		RegistrationNo: ko.String("axm.business_footer.registration_no"),
+		Address:        ko.String("axm.business_footer.address"),
+		Phone:          ko.String("axm.business_footer.phone"),
+		Email:          ko.String("axm.business_footer.email"),
+		Extra:          ko.String("axm.business_footer.extra"),
+	}
+}
+
+// businessFooterLabels are the labels of the business details in the instance language.
+func businessFooterLabels(i *i18n.I18n) manager.BusinessFooterLabels {
+	return manager.BusinessFooterLabels{
+		Representative: i.T("email.businessFooter.representative"),
+		RegistrationNo: i.T("email.businessFooter.registrationNo"),
+		Phone:          i.T("email.businessFooter.phone"),
+		Email:          i.T("email.businessFooter.email"),
+	}
 }
 
 // initTxTemplates initializes and compiles the transactional templates and caches them in-memory.
@@ -992,6 +1003,7 @@ func initHTTPServer(cfg *Config, urlCfg *UrlConfig, i *i18n.I18n, fs stuffbin.Fi
 		EnablePublicSubPage: cfg.EnablePublicSubPage,
 		EnablePublicArchive: cfg.EnablePublicArchive,
 		IndividualTracking:  cfg.Privacy.IndividualTracking,
+		BusinessFooter:      manager.NewBusinessFooterBlock(businessFooterSettings(ko), businessFooterLabels(i)),
 	}
 
 	// Initialize the static file server.
