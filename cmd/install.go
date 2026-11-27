@@ -108,12 +108,22 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 	lo.Printf(`run the program and access the dashboard at %s`, ko.MustString("app.address"))
 }
 
+// sqlGetter is what the inspection needs of a database or a transaction.
+type sqlGetter interface {
+	Get(dest interface{}, query string, args ...interface{}) error
+	Select(dest interface{}, query string, args ...interface{}) error
+}
+
 // runInstall does the install in two atomic steps. The schema goes in one transaction that
 // also writes the marker; the sample data, the optional users, the removal of the marker and
 // the migration record go in a second one. So the database is either empty, or has the
 // schema and the marker (and no data), or is finished; a crash or an error never leaves a
 // version recorded for a half-built database. skipped is true when the database was already
 // installed. apiToken is the generated token of the optional API user.
+//
+// Each step takes the same transaction-level advisory lock, so containers started together
+// install one at a time, and holds no connection between the steps: it works with
+// db.max_open = 1.
 func runInstall(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, qMap goyesql.Queries, c installCreds, idempotent bool) (skipped bool, apiToken string, err error) {
 	hasUser, err := c.validate()
 	if err != nil {
@@ -125,44 +135,22 @@ func runInstall(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, qMap goyesq
 		return false, "", fmt.Errorf("error reading schema: %v", err)
 	}
 
-	// One installer at a time: containers started together would otherwise both see an
-	// empty database.
 	ctx := context.Background()
-	lock, err := db.Connx(ctx)
+	state, why, err := installSchemaStep(ctx, db, string(schemaSQL), idempotent)
 	if err != nil {
-		return false, "", fmt.Errorf("error connecting to the database: %v", err)
+		return false, "", err
 	}
-	defer lock.Close()
-	if _, err := lock.ExecContext(ctx, "SELECT pg_advisory_lock($1)", installLockID); err != nil {
-		return false, "", fmt.Errorf("error locking the database for install: %v", err)
-	}
-	defer lock.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", installLockID)
-
-	needSchema := true
-	if idempotent {
-		state, why, err := inspectInstall(db, string(schemaSQL))
-		if err != nil {
-			return false, "", fmt.Errorf("error checking existing DB schema: %v", err)
-		}
-		switch state {
-		case installDone:
-			return true, "", nil
-		case installUnfinished:
-			lo.Println("finishing an install that was interrupted before its sample data was written")
-			needSchema = false
-		case installForeign:
-			return false, "", fmt.Errorf("refusing to install: %s. Nothing was changed. "+
-				"This is not an empty database, and listmonk does not recognise it as a finished or an interrupted install, "+
-				"so installing would overwrite its data. Restore the record of the installed version "+
-				"(settings key 'migrations') or point listmonk at an empty database. "+
-				"Use --install without --idempotent only to wipe on purpose", why)
-		}
-	}
-
-	if needSchema {
-		if err := installSchema(ctx, db, string(schemaSQL)); err != nil {
-			return false, "", fmt.Errorf("error migrating DB schema: %v", err)
-		}
+	switch state {
+	case installDone:
+		return true, "", nil
+	case installForeign:
+		return false, "", fmt.Errorf("refusing to install: %s. Nothing was changed. "+
+			"This is not an empty database, and listmonk does not recognise it as a finished or an interrupted install, "+
+			"so installing would overwrite its data. Restore the record of the installed version "+
+			"(settings key 'migrations') or point listmonk at an empty database. "+
+			"Use --install without --idempotent only to wipe on purpose", why)
+	case installUnfinished:
+		lo.Println("finishing an install that was interrupted before its sample data was written")
 	}
 
 	// Load the queries.
@@ -173,11 +161,24 @@ func runInstall(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, qMap goyesq
 		return false, "", err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock($1)", installLockID); err != nil {
+		return false, "", fmt.Errorf("error locking the database for install: %v", err)
+	}
+
+	// Another installer may have finished while this one waited for the lock: the marker is
+	// then gone. (A plain reset has no one to wait for, and its own step just wrote the marker.)
+	var marked bool
+	if err := tx.Get(&marked, "SELECT EXISTS (SELECT 1 FROM settings WHERE key = $1)", installMarkerKey); err != nil {
+		return false, "", err
+	}
+	if !marked {
+		return true, "", nil
+	}
 
 	if apiToken, err = installData(tx, q, fs, c, hasUser); err != nil {
 		return false, "", fmt.Errorf("error installing the sample data (nothing of it was kept, run the install again): %v", err)
 	}
-	if _, err := tx.Exec(`DELETE FROM settings WHERE key = $1`, installMarkerKey); err != nil {
+	if _, err := tx.Exec("DELETE FROM settings WHERE key = $1", installMarkerKey); err != nil {
 		return false, "", err
 	}
 	// Record the version last: from here on the install counts as finished.
@@ -188,6 +189,45 @@ func runInstall(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, qMap goyesq
 		return false, "", err
 	}
 	return false, apiToken, nil
+}
+
+// installSchemaStep takes the install lock, looks at the database (idempotent only) and
+// writes the schema and the marker in one transaction. It returns installFresh when the
+// schema was written, installUnfinished when an earlier install of this tool left the
+// schema and only the data is missing, and installDone or installForeign (with why) when
+// nothing may be installed. A plain reset writes the schema whatever is there.
+func installSchemaStep(ctx context.Context, db *sqlx.DB, schemaSQL string, idempotent bool) (installState, string, error) {
+	tx, err := db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock($1)", installLockID); err != nil {
+		return 0, "", fmt.Errorf("error locking the database for install: %v", err)
+	}
+
+	if idempotent {
+		state, why, err := inspectInstall(tx, schemaSQL)
+		if err != nil {
+			return 0, "", fmt.Errorf("error checking existing DB schema: %v", err)
+		}
+		if state != installFresh {
+			return state, why, nil
+		}
+	}
+
+	// The schema is one multi-statement string; run inside the transaction, it either
+	// applies completely or not at all.
+	if _, err := tx.Exec(schemaSQL); err != nil {
+		return 0, "", fmt.Errorf("error migrating DB schema: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO settings (key, value) VALUES ($1, 'true'::JSONB) ON CONFLICT (key) DO NOTHING`, installMarkerKey); err != nil {
+		return 0, "", fmt.Errorf("error migrating DB schema: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, "", err
+	}
+	return installFresh, "", nil
 }
 
 // txStmt binds a prepared statement to the transaction. sqlx does not carry the unsafe mode
@@ -222,25 +262,6 @@ func installData(tx *sqlx.Tx, q *models.Queries, fs stuffbin.FileSystem, c insta
 	}
 	lo.Printf("no superadmin user created. Visit webpage to create user.")
 	return "", nil
-}
-
-// installSchema executes the SQL schema and the marker in one transaction. The schema is
-// one multi-statement string; run inside the transaction, it either applies completely or
-// not at all.
-func installSchema(ctx context.Context, db *sqlx.DB, schemaSQL string) error {
-	tx, err := db.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(schemaSQL); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`INSERT INTO settings (key, value) VALUES ($1, 'true'::JSONB) ON CONFLICT (key) DO NOTHING`, installMarkerKey); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 // installState is what a database holds, as far as installing into it is concerned.
@@ -302,8 +323,10 @@ type existingObject struct {
 func (o existingObject) String() string { return o.Schema + "." + o.Name }
 
 // findSchemaObjects lists the objects of the schema that exist in any schema of the search
-// path, the first one first.
-func findSchemaObjects(db *sqlx.DB, objs schemaObjects) ([]existingObject, error) {
+// path, the first one first. A type counts whatever its kind: the schema drops its types with
+// CASCADE, which also removes the columns of any table that uses a type of that name (an
+// enum, a composite type or a domain, such as another application's own).
+func findSchemaObjects(db sqlGetter, objs schemaObjects) ([]existingObject, error) {
 	rels, types := []string{}, []string{}
 	for n := range objs.relations {
 		rels = append(rels, n)
@@ -322,15 +345,31 @@ func findSchemaObjects(db *sqlx.DB, objs schemaObjects) ([]existingObject, error
 			SELECT n.nspname::TEXT, t.typname::TEXT, 'type'
 			FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
 			WHERE n.nspname = ANY(current_schemas(false)) AND t.typname::TEXT = ANY($2)
-				AND t.typrelid = 0 AND t.typcategory <> 'A'
 		) o ORDER BY array_position(current_schemas(false), schema::NAME), name`,
 		pq.Array(rels), pq.Array(types))
 	return out, err
 }
 
+// readInTx runs a read that may fail for a reason that says something about the database
+// (a settings table of another shape) without aborting the transaction around it.
+func readInTx(tx *sqlx.Tx, read func() error) error {
+	if _, err := tx.Exec("SAVEPOINT axm_inspect"); err != nil {
+		return err
+	}
+	if err := read(); err != nil {
+		if _, rbErr := tx.Exec("ROLLBACK TO SAVEPOINT axm_inspect"); rbErr != nil {
+			return rbErr
+		}
+		return err
+	}
+	_, err := tx.Exec("RELEASE SAVEPOINT axm_inspect")
+	return err
+}
+
 // inspectInstall classifies the database. why describes what was found when it is foreign.
-func inspectInstall(db *sqlx.DB, schemaSQL string) (installState, string, error) {
-	found, err := findSchemaObjects(db, parseSchemaObjects(schemaSQL))
+// It runs in the install's transaction, so it needs no second connection.
+func inspectInstall(tx *sqlx.Tx, schemaSQL string) (installState, string, error) {
+	found, err := findSchemaObjects(tx, parseSchemaObjects(schemaSQL))
 	if err != nil {
 		return 0, "", err
 	}
@@ -348,9 +387,28 @@ func inspectInstall(db *sqlx.DB, schemaSQL string) (installState, string, error)
 	}
 	why := fmt.Sprintf("the database already has listmonk objects (%s) and no record of a finished install", strings.Join(names, ", "))
 
-	recorded, err := getRecordedMigrations(db)
+	var hasSettings bool
+	if err := tx.Get(&hasSettings, `SELECT to_regclass('settings') IS NOT NULL`); err != nil {
+		return 0, "", err
+	}
+	if !hasSettings {
+		return installForeign, why, nil
+	}
+
+	// A settings table of another shape, or a record that is not a list of versions, is not ours.
+	var recorded []string
+	var marked bool
+	err = readInTx(tx, func() error {
+		var err error
+		if recorded, err = getRecordedMigrations(tx); err != nil {
+			return err
+		}
+		return tx.Get(&marked, `SELECT EXISTS (SELECT 1 FROM settings WHERE key = $1)`, installMarkerKey)
+	})
 	if err != nil {
-		// A settings table of another shape, or a record that is not a list of versions.
+		if _, ok := err.(*pq.Error); !ok && !strings.Contains(err.Error(), "recorded migrations") {
+			return 0, "", err
+		}
 		return installForeign, fmt.Sprintf("%s (reading its settings: %v)", why, err), nil
 	}
 	if len(recorded) > 0 {
@@ -359,16 +417,6 @@ func inspectInstall(db *sqlx.DB, schemaSQL string) (installState, string, error)
 
 	// No version recorded. It is this installer's own unfinished install only when it left its
 	// marker and no row of data (the sample data is written in one transaction after it).
-	var marked bool
-	var hasSettings bool
-	if err := db.Get(&hasSettings, `SELECT to_regclass('settings') IS NOT NULL`); err != nil {
-		return 0, "", err
-	}
-	if hasSettings {
-		if err := db.Get(&marked, `SELECT EXISTS (SELECT 1 FROM settings WHERE key = $1)`, installMarkerKey); err != nil {
-			return installForeign, fmt.Sprintf("%s (reading its settings: %v)", why, err), nil
-		}
-	}
 	if !marked {
 		return installForeign, why, nil
 	}
@@ -377,7 +425,7 @@ func inspectInstall(db *sqlx.DB, schemaSQL string) (installState, string, error)
 			continue
 		}
 		var has bool
-		if err := db.Get(&has, fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s.%s)",
+		if err := tx.Get(&has, fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s.%s)",
 			pq.QuoteIdentifier(o.Schema), pq.QuoteIdentifier(o.Name))); err != nil {
 			return 0, "", err
 		}

@@ -211,7 +211,7 @@ func pendingMigrations(list []migFunc, recorded []string) []migFunc {
 
 // getRecordedMigrations returns every migration version recorded in the DB, oldest first as
 // recorded. There is none before v0.7.0 or on a database that was never installed.
-func getRecordedMigrations(db *sqlx.DB) ([]string, error) {
+func getRecordedMigrations(db sqlGetter) ([]string, error) {
 	var raw []byte
 	if err := db.Get(&raw, `SELECT COALESCE((SELECT value FROM settings WHERE key='migrations'), '[]'::JSONB)`); err != nil {
 		if isTableNotExistErr(err) {

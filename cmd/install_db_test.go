@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +52,11 @@ func TestInstallChildProcess(t *testing.T) {
 	}
 	// The app reads rows in sqlx's unsafe mode (initDB).
 	db = db.Unsafe()
+	if v := os.Getenv("AXM_INSTALL_CHILD_MAXOPEN"); v != "" {
+		n, _ := strconv.Atoi(v)
+		db.SetMaxOpenConns(n)
+		db.SetMaxIdleConns(n)
+	}
 	local, err := stuffbin.NewLocalFS("/", repoRoot(t)+":/")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -75,6 +82,7 @@ type installRun struct {
 	idempotent bool
 	breakFile  string // a file that fails to read
 	searchPath string
+	maxOpen    int      // db.max_open of the child (0: the default)
 	env        []string // LISTMONK_ADMIN_* values
 }
 
@@ -131,7 +139,9 @@ func (e *instDB) cmd(o installRun) *exec.Cmd {
 	if o.searchPath != "" {
 		dsn = withSearchPath(e.t, dsn, o.searchPath)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestInstallChildProcess$", "-test.count=1")
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	e.t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestInstallChildProcess$", "-test.count=1")
 	env := []string{}
 	for _, v := range os.Environ() {
 		if !strings.HasPrefix(v, "LISTMONK_ADMIN_") && !strings.HasPrefix(v, "AXM_INSTALL_CHILD_") {
@@ -141,6 +151,9 @@ func (e *instDB) cmd(o installRun) *exec.Cmd {
 	env = append(env, "AXM_INSTALL_CHILD_DSN="+dsn, "AXM_INSTALL_CHILD_BREAK="+o.breakFile)
 	if o.idempotent {
 		env = append(env, "AXM_INSTALL_CHILD_IDEMPOTENT=1")
+	}
+	if o.maxOpen > 0 {
+		env = append(env, "AXM_INSTALL_CHILD_MAXOPEN="+strconv.Itoa(o.maxOpen))
 	}
 	cmd.Env = append(env, o.env...)
 	return cmd
@@ -306,6 +319,32 @@ func TestInstallIdempotentNeverWipesExistingData(t *testing.T) {
 			t.Fatal("install created tables in the empty schema over public's data")
 		}
 	})
+
+	// DROP TYPE ... CASCADE removes the columns that use the type, whatever kind of type it is.
+	for name, ddl := range map[string]string{
+		"composite type": "CREATE TYPE public.content_type AS (secret TEXT)",
+		"array domain":   "CREATE DOMAIN public.content_type AS TEXT[]",
+		"range type":     "CREATE TYPE public.content_type AS RANGE (subtype = int4)",
+	} {
+		t.Run("another application's "+name+" shares a type name", func(t *testing.T) {
+			e := newInstDB(t)
+			e.db.MustExec(ddl)
+			e.db.MustExec("CREATE TABLE public.other_app (id INT, payload public.content_type)")
+			e.db.MustExec("INSERT INTO public.other_app (id) VALUES (7)")
+			e.db.MustExec("UPDATE public.other_app SET payload = NULL")
+			r := e.install(installRun{idempotent: true})
+			if r.exit == 0 || !strings.Contains(r.output, "refus") {
+				t.Errorf("installed over another application's type (exit %d):\n%s", r.exit, r.output)
+			}
+			var cols int
+			if err := e.db.Get(&cols, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'other_app'"); err != nil || cols != 2 {
+				t.Fatalf("the other application's table lost a column: %d columns, %v\n%s", cols, err, r.output)
+			}
+			if e.tableExists("public.settings") {
+				t.Fatal("listmonk's schema was created next to the other application's type")
+			}
+		})
+	}
 
 	t.Run("another application's tables share the names", func(t *testing.T) {
 		e := newInstDB(t)
@@ -501,4 +540,21 @@ func TestInstallGuardNamesEverythingTheSchemaBuilds(t *testing.T) {
 			t.Errorf("the install guard does not know the type %s that schema.sql creates", n)
 		}
 	}
+}
+
+// With db.max_open = 1 the installer must not hold a connection while it needs another.
+func TestInstallWithOneConnection(t *testing.T) {
+	e := newInstDB(t)
+	e.mustInstall(installRun{idempotent: true, maxOpen: 1})
+	e.wantSample(0)
+	// The restart of a finished database, and an interrupted install's retry.
+	e.mustInstall(installRun{idempotent: true, maxOpen: 1})
+	e.wantSample(0)
+
+	f := newInstDB(t)
+	if r := f.install(installRun{idempotent: true, maxOpen: 1, breakFile: "/static/email-templates/sample-tx.tpl"}); r.exit == 0 {
+		t.Fatalf("the injected failure did not stop the install:\n%s", r.output)
+	}
+	f.mustInstall(installRun{idempotent: true, maxOpen: 1})
+	f.wantSample(0)
 }
