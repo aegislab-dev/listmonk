@@ -29,7 +29,7 @@ UID, GID = os.getuid(), os.getgid()
 
 GO_IMAGE = 'golang:1.26.11-bookworm'
 PG_IMAGE = 'postgres:17.7-alpine'
-CYPRESS_IMAGE = 'cypress/included:15.8.1'
+CYPRESS_IMAGE = 'cypress/included:15.21.2'
 # The test inbox, as in CI's browser step (LST-48: specs check who a campaign really reached).
 MAILPIT_IMAGE = 'axllent/mailpit:v1.27'
 LOCAL_VERSION = 'v6.2.0-axm.0-local'
