@@ -20,7 +20,7 @@ type Props = {
 };
 
 type Fmt = { bold: boolean; underline: boolean; size: number | null };
-const NO_FMT: Fmt = { bold: false, underline: false, size: null };
+const NO_FMT: Readonly<Fmt> = Object.freeze({ bold: false, underline: false, size: null });
 
 // The formatting an element adds to what it contains. Chromium's bold/underline
 // commands write <b>/<u> or, when undoing them inside a tag, a style; sizes are
@@ -47,7 +47,7 @@ function fmtAt(node: Node | null, root: HTMLElement): Fmt {
   for (let n: Node | null = node; n && n !== root; n = n.parentNode) {
     if (n instanceof HTMLElement) chain.unshift(n);
   }
-  return chain.reduce((f, el) => elementFmt(el, f), NO_FMT);
+  return chain.reduce((f, el) => elementFmt(el, f), { ...NO_FMT });
 }
 
 function wrap(node: Node, f: Fmt) {
@@ -115,7 +115,13 @@ function covers(range: Range, node: Text) {
 // composition, selection or native undo transaction on a document update.
 function collect(node: Node, f: Fmt, out: FormatRun[]) {
   const text = (value: string, g: Fmt = f) => { if (value) out.push({ type: 'text', value, ...g }); };
-  if (node.nodeType === Node.TEXT_NODE) { text((node.textContent || '').replace(/\u200b/g, '')); return; }
+  if (node.nodeType === Node.TEXT_NODE) {
+    // Only the caret holder of an empty size span is not text; a zero-width space
+    // that was in the stored text stays.
+    const holder = node.parentElement?.dataset.axmCaret !== undefined;
+    text(holder ? (node.textContent || '').replace(/\u200b/g, '') : node.textContent || '');
+    return;
+  }
   if (node instanceof HTMLElement) {
     if (node.dataset.token !== undefined) { out.push({ type: 'token', raw: node.dataset.token, ...f }); return; }
     if (node.tagName === 'BR') { text('\n', NO_FMT); return; }
@@ -176,20 +182,111 @@ export default function PersonalizationTextInput({
   const [fallback, setFallback] = useState('');
   const s = config.strings;
 
+  const fill = (text: string, m: TextMode) => {
+    const el = editor.current!;
+    const segments = format ? format.parseFormatted(text, m) : [{ value: text, ...NO_FMT }];
+    el.replaceChildren();
+    for (const seg of segments) {
+      for (const part of config.parseTokens(seg.value)) {
+        el.append(wrap(part.type === 'text' ? document.createTextNode(part.value)
+          : makeChip(config, part.item, part.fallback, part.raw), seg));
+      }
+    }
+  };
+
+  // Undo/redo of a formatting box is this box's own (LST-77 review): the formatting
+  // commands also move chips and spans by hand, and the browser's undo would replay
+  // its records over that changed DOM and delete text. A state is the stored text and
+  // the selection as character offsets (a chip counts as one).
+  type Snap = { text: string; mode: TextMode; start: number; end: number };
+  const history = useRef<Snap[]>([]);
+  const at = useRef(-1);
+  const lastEdit = useRef({ kind: '', time: 0 });
+  const offsetOf = (node: Node, offset: number) => {
+    const r = document.createRange();
+    r.setStart(editor.current!, 0);
+    r.setEnd(node, offset);
+    return runsOf(r.cloneContents()).reduce((n, x) => n + (x.type === 'token' ? 1 : x.value.length), 0);
+  };
+  const pointAt = (root: Node, n: number): [Node, number] | number => {
+    let left = n;
+    for (let i = 0; i < root.childNodes.length; i += 1) {
+      const child = root.childNodes[i];
+      if (child.nodeType === Node.TEXT_NODE) {
+        const len = (child.textContent || '').length;
+        if (left <= len) return [child, left];
+        left -= len;
+      } else if (child instanceof HTMLElement && child.dataset.token !== undefined) {
+        if (left === 0) return [root, i];
+        left -= 1;
+        if (left === 0) return [root, i + 1];
+      } else {
+        const p = pointAt(child, left);
+        if (typeof p !== 'number') return p;
+        left = p;
+      }
+    }
+    return left;
+  };
+  const selectionOffsets = () => {
+    const sel = window.getSelection();
+    const el = editor.current!;
+    if (!sel?.rangeCount || !el.contains(sel.getRangeAt(0).startContainer)) return { start: 0, end: 0 };
+    const r = sel.getRangeAt(0);
+    return { start: offsetOf(r.startContainer, r.startOffset), end: offsetOf(r.endContainer, r.endOffset) };
+  };
+  const record = (text: string, kind: string) => {
+    const snap = { text, mode: mode.current, ...selectionOffsets() };
+    const now = Date.now();
+    const top = history.current[at.current];
+    if (top && top.text === text) { history.current[at.current] = snap; return; }
+    // A run of typing is one step, as in the browser.
+    const merge = kind === 'type' && lastEdit.current.kind === 'type' && now - lastEdit.current.time < 1000 && at.current > 0;
+    history.current = history.current.slice(0, merge ? at.current : at.current + 1);
+    history.current.push(snap);
+    if (history.current.length > 200) history.current.shift();
+    at.current = history.current.length - 1;
+    lastEdit.current = { kind, time: now };
+  };
+  const travel = (step: number) => {
+    const snap = history.current[at.current + step];
+    if (!snap || !format) return;
+    at.current += step;
+    lastEdit.current = { kind: '', time: 0 };
+    const el = editor.current!;
+    mode.current = snap.mode;
+    fill(snap.text, snap.mode);
+    el.focus();
+    const end = (n: number): [Node, number] => {
+      const p = pointAt(el, n);
+      return typeof p === 'number' ? [el, el.childNodes.length] : p;
+    };
+    const [sn, so] = end(snap.start);
+    const [en, eo] = end(snap.end);
+    window.getSelection()!.setBaseAndExtent(sn, so, en, eo);
+    lastRange.current = window.getSelection()!.getRangeAt(0).cloneRange();
+    setActive(fmtAt(sn, el));
+    onChange(snap.text, snap.mode !== 'plain');
+  };
+
   useEffect(() => {
     const el = editor.current!;
     // StrictMode replays effects. Populate exactly once, not on every keystroke.
     if (!mounted.current) {
-      const segments = format ? format.parseFormatted(defaultValue, mode.current)
-        : [{ value: defaultValue, ...NO_FMT }];
-      for (const seg of segments) {
-        for (const part of config.parseTokens(seg.value)) {
-          el.append(wrap(part.type === 'text' ? document.createTextNode(part.value)
-            : makeChip(config, part.item, part.fallback, part.raw), seg));
-        }
-      }
+      fill(defaultValue, mode.current);
       mounted.current = true;
+      if (format) {
+        history.current = [{ text: defaultValue, mode: mode.current, start: 0, end: 0 }];
+        at.current = 0;
+      }
     }
+    // Undo/redo from the context menu arrive as beforeinput.
+    const onHistory = (ev: InputEvent) => {
+      if (!format || (ev.inputType !== 'historyUndo' && ev.inputType !== 'historyRedo')) return;
+      ev.preventDefault();
+      travel(ev.inputType === 'historyUndo' ? -1 : 1);
+    };
+    el.addEventListener('beforeinput', onHistory);
     const remember = () => {
       const selection = window.getSelection();
       if (selection?.rangeCount) {
@@ -201,7 +298,11 @@ export default function PersonalizationTextInput({
       }
     };
     document.addEventListener('selectionchange', remember);
-    return () => { document.removeEventListener('selectionchange', remember); request.current += 1; };
+    return () => {
+      document.removeEventListener('selectionchange', remember);
+      el.removeEventListener('beforeinput', onHistory);
+      request.current += 1;
+    };
   }, []);
 
   useEffect(() => {
@@ -210,14 +311,18 @@ export default function PersonalizationTextInput({
     if (format && mode.current !== 'html') mode.current = markdown ? 'markdown' : 'plain';
   }, [markdown]);
 
-  const emit = () => {
+  const emit = (kind = 'edit') => {
     if (!format) { onChange(serialize(editor.current!)); return; }
     const res = format.serializeFormatted(runsOf(editor.current!), mode.current);
     mode.current = format.textMode(res.text, res.markdown);
+    record(res.text, kind);
     onChange(res.text, res.markdown);
   };
 
   const pendingSize = useRef<number | null>(null);
+  // While a toolbar command runs, the input events of its own execCommand calls are
+  // not edits of their own: the command records one state when it is done.
+  const applying = useRef(false);
   const convertFonts = () => {
     const fonts = editor.current!.querySelectorAll('font');
     if (!fonts.length) return;
@@ -236,7 +341,15 @@ export default function PersonalizationTextInput({
   // (which takes focus) still formats what was selected in the box.
   const applyFormat = (command: 'bold' | 'underline' | 'size' | 'clear', size: number | null = null) => {
     const el = editor.current!;
-    restore();
+    // A keyboard shortcut can come before the selectionchange that saves the
+    // selection: use the live one when it is in the box, the saved one otherwise.
+    const live = window.getSelection();
+    const liveRange = live?.rangeCount ? live.getRangeAt(0) : null;
+    if (document.activeElement === el && liveRange && el.contains(liveRange.startContainer) && el.contains(liveRange.endContainer)) {
+      lastRange.current = liveRange.cloneRange();
+    } else {
+      restore();
+    }
     const selection = window.getSelection()!;
     const range = selection.rangeCount ? selection.getRangeAt(0) : null;
     const chipsIn = (r: Range) => Array.from(el.querySelectorAll<HTMLElement>('[data-token]')).filter((c) => r.intersectsNode(c));
@@ -250,6 +363,7 @@ export default function PersonalizationTextInput({
       }
       return null;
     };
+    applying.current = true;
     document.execCommand('styleWithCSS', false, 'false');
     if (command === 'bold' || command === 'underline') {
       document.execCommand(command);
@@ -260,6 +374,7 @@ export default function PersonalizationTextInput({
       // Nothing selected: what is typed next goes into an empty size span. A
       // zero-width space holds the caret there and is never stored.
       const span = sizeSpan(size);
+      span.dataset.axmCaret = '';
       const holder = document.createTextNode('\u200b');
       span.append(holder);
       range.insertNode(span);
@@ -279,12 +394,17 @@ export default function PersonalizationTextInput({
         setChipFmt(c, el, 'underline', false);
       });
     }
+    applying.current = false;
     el.normalize();
     if (selection.rangeCount) {
-      lastRange.current = selection.getRangeAt(0).cloneRange();
-      setActive(fmtAt(selection.getRangeAt(0).startContainer, el));
+      const r = selection.getRangeAt(0);
+      lastRange.current = r.cloneRange();
+      const f = { ...fmtAt(r.startContainer, el) };
+      // With nothing selected the browser keeps bold/underline for the next typing.
+      if (r.collapsed && (command === 'bold' || command === 'underline')) f[command] = document.queryCommandState(command);
+      setActive(f);
     }
-    emit();
+    emit('format');
   };
   const restore = (chip?: HTMLElement) => {
     const el = editor.current!;
@@ -443,13 +563,18 @@ export default function PersonalizationTextInput({
         p: 1.5, border: '1px solid #aaa', borderRadius: 1, fontSize: 14, lineHeight: 1.65,
         '&:focus': { outline: '2px solid #1769aa', outlineOffset: -1 }, '& [data-token]:focus': { outline: '2px solid #1769aa' } }}
       onCompositionStart={() => { composing.current = true; }}
-      onCompositionEnd={() => { composing.current = false; if (format) convertFonts(); emit(); }}
-      onInput={() => { if (!composing.current) { if (format) convertFonts(); emit(); } }}
+      onCompositionEnd={() => { composing.current = false; if (format) convertFonts(); emit('type'); }}
+      onInput={() => { if (!composing.current && !applying.current) { if (format) convertFonts(); emit('type'); } }}
       onClick={(ev) => { const chip = chipFrom(ev.target); if (chip) open(chip, chip); }}
       onKeyDown={(ev) => {
         if (composing.current || ev.nativeEvent.isComposing) return;
         // Native Ctrl+B/I/U formatting would show in this box but never reach the
         // stored text. Keep only what this box can store.
+        if (format && (ev.ctrlKey || ev.metaKey) && !ev.altKey && /^[zy]$/i.test(ev.key)) {
+          ev.preventDefault();
+          travel(ev.key.toLowerCase() === 'y' || ev.shiftKey ? 1 : -1);
+          return;
+        }
         if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && /^[biu]$/i.test(ev.key)) {
           ev.preventDefault();
           if (format && !config.disabled && /^[bu]$/i.test(ev.key)) applyFormat(ev.key.toLowerCase() === 'b' ? 'bold' : 'underline');

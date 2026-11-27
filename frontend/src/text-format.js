@@ -42,17 +42,21 @@ const validSize = (n) => Number.isInteger(n) && n >= MIN_SIZE && n <= MAX_SIZE;
 // same. Other HTML (<b>, other spans) stays source text in the box.
 const TAG = /<(\/?)(strong|u)>|<span style="font-size:(\d+)px">|<(\/)span>|<br>/g;
 
-// Markdown code (fenced blocks and `code spans`) shows tags as text: the ranges of
-// the source where a tag is not formatting. Indented code is not told apart from a
-// list item's continuation and is not covered.
+// Markdown code (fenced blocks, indented blocks and `code spans`) shows tags as text:
+// the ranges of the source where a tag is not formatting. An indented line after a
+// list item is taken as the item's continuation, not as code.
 const codeRanges = (src) => {
   const ranges = [];
   let pos = 0;
   const lines = src.split('\n');
   let fence = null;
   let start = 0;
+  let prevBlank = true;
+  let indented = false;
+  let inList = false;
   lines.forEach((line) => {
     const m = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    const blank = !line.trim();
     if (fence) {
       if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !line.slice(m[0].length).trim()) {
         ranges.push([start, pos + line.length]);
@@ -61,7 +65,19 @@ const codeRanges = (src) => {
     } else if (m) {
       [, fence] = m;
       start = pos;
+      indented = false;
+      inList = false;
+    } else if (!blank && /^( {4}|\t)/.test(line) && (indented || (prevBlank && !inList))) {
+      // An indented code block starts after a blank line (it cannot interrupt a
+      // paragraph) and runs on over blank lines while its lines stay indented.
+      indented = true;
+      ranges.push([pos, pos + line.length]);
+    } else if (!blank) {
+      indented = false;
+      if (/^ {0,3}([-*+]|\d{1,9}[.)])([ \t]|$)/.test(line)) inList = true;
+      else if (!/^[ \t]/.test(line)) inList = false;
     }
+    prevBlank = blank;
     pos += line.length + 1;
   });
   if (fence) ranges.push([start, src.length]);

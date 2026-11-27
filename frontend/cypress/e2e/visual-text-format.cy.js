@@ -235,4 +235,36 @@ describe('Visual editor inline formatting', () => {
         === '- <strong>여름 상품</strong>\n- <strong>겨울 상품</strong>'), { timeout: 10000 });
     });
   });
+
+  it('undoes and redoes formatting on a line with the name chip without losing text', () => {
+    const greet = '안녕하세요 {{ .Subscriber.Name }}님';
+    const md = { root: { type: 'EmailLayout', data: { childrenIds: ['t'] } }, t: { type: 'Text', data: { props: { text: greet }, style: {} } } };
+    cy.request('POST', '/api/campaigns', {
+      name: `Format undo ${stamp}`, subject: 'undo', lists: [listId], type: 'regular', content_type: 'visual', messenger: 'email',
+      body: '<p>x</p>', body_source: JSON.stringify(md),
+    }).then(({ body: c }) => {
+      const stored = () => cy.request(`/api/campaigns/${c.data.id}`).then(({ body }) => JSON.parse(body.data.body_source).t.data.props);
+      const save = () => { cy.get('button[data-cy=btn-save]').click(); cy.wait(800); };
+      openText(false, c.data.id, '안녕하세요');
+      box().then(($b) => {
+        const el = $b[0];
+        el.focus();
+        const r = el.ownerDocument.createRange();
+        r.selectNodeContents(el);
+        el.ownerDocument.getSelection().removeAllRanges();
+        el.ownerDocument.getSelection().addRange(r);
+      });
+      editorDoc().find('[data-format=bold]').click();
+      box().find('strong [data-token]').should('exist');
+      box().type('{ctrl}z');
+      box().find('b, strong').should('not.exist');
+      box().should('contain.text', '안녕하세요').find('[data-token]').should('exist');
+      save();
+      stored().should('deep.include', { text: greet, markdown: false });
+      box().type('{ctrl}y');
+      box().find('strong [data-token]').should('exist');
+      save();
+      stored().its('text').should('eq', `<div class="axm-text"><strong>${greet}</strong></div>`);
+    });
+  });
 });

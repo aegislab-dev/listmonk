@@ -122,3 +122,19 @@ test('list, quote and heading markers stay in front of the tags', () => {
   // The HTML block has no Markdown: nothing moves.
   assert.equal(serializeFormatted([run('- a', { bold: true })], 'plain').text, '<div class="axm-text"><strong>- a</strong></div>');
 });
+
+test('indented Markdown code keeps its tags as text, list continuations do not', () => {
+  const text = '예문:\n\n    <u><strong>예시</strong></u>\n\n    <strong>둘째</strong>\n\n아래 <strong>본문</strong>';
+  const segs = parseFormatted(text, 'markdown');
+  assert.deepEqual(segs.filter((s) => s.bold || s.underline).map((s) => s.value), ['본문']);
+  assert.deepEqual(roundTrip(text, true), { text, markdown: true });
+  const runs = runsOf(segs);
+  runs.push(run('!'));
+  assert.equal(serializeFormatted(runs, 'markdown').text, `${text}!`);
+  // An indented line cannot interrupt a paragraph: no blank line, not code.
+  assert.equal(hasFormatting('문단\n    <strong>x</strong>', 'markdown'), true);
+  // After a list item an indented paragraph belongs to the item.
+  assert.equal(hasFormatting('- 항목\n\n    <strong>x</strong>', 'markdown'), true);
+  // A tab indents too.
+  assert.equal(hasFormatting('\t<strong>x</strong>', 'markdown'), false);
+});
