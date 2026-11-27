@@ -278,7 +278,8 @@ func TestRewriteTrackingHTMLPreservesMarkup(t *testing.T) {
 // body. The send keeps that markup as it is, renders the personalization inside it and
 // still tracks the links and adds the view pixel (LST-9).
 func TestVisualTrackingKeepsInlineFormatting(t *testing.T) {
-	const text = `<div><div>안녕하세요, <strong>{{ .Subscriber.Name }}</strong>님.<br/><strong>12월 3일까지</strong> 신청하면 ` +
+	// As the editor writes a whole formatted line with the name chip in it.
+	const text = `<div><div><span style="font-size:24px"><strong><u>안녕하세요, {{ .Subscriber.Name }}님.</u></strong></span><br/><strong>12월 3일까지</strong> 신청하면 ` +
 		`<span style="font-size:20px"><strong><u>수수료가 0원입니다</u></strong></span>. <u><a href="https://example.test/terms" target="_blank">약관</a></u></div></div>`
 	body := `<html><body>` + text + `<a href="https://example.test/promo">자세히 보기</a></body></html>`
 	m, store := trackingManager()

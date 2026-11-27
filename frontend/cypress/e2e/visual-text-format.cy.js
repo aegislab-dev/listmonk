@@ -22,16 +22,17 @@ let listId;
 const editorDoc = () => cy.get('#visual-editor').its('0.contentDocument');
 const ready = () => cy.waitUntil(() => cy.get('#visual-editor').then(($f) => Boolean($f[0].contentWindow.EmailBuilder
   && $f[0].contentWindow.EmailBuilder.isRendered('visual-editor-container')
-  && $f[0].contentDocument.querySelector('#visual-editor-container [role=textbox], #visual-editor-container p, #visual-editor-container h2'))), { timeout: 20000 });
+)), { timeout: 20000 });
+const findBlock = (d, start) => [...d.querySelectorAll('#visual-editor-container div')].reverse()
+  .find((el) => el.textContent.trim().startsWith(start));
 const openText = (reload = false, id = null, start = '안녕하세요') => {
   // A visit that only changes the hash does not load the page again.
   if (reload) cy.reload();
   else cy.visit(`/admin/campaigns/${id || campaignId}#content`);
   ready();
-  editorDoc().then((d) => {
-    [...d.querySelectorAll('#visual-editor-container div')].reverse()
-      .find((el) => el.textContent.trim().startsWith(start)).click();
-  });
+  // The document is loaded a moment after the editor renders.
+  cy.waitUntil(() => editorDoc().then((d) => Boolean(findBlock(d, start))), { timeout: 10000 });
+  editorDoc().then((d) => findBlock(d, start).click());
   editorDoc().find('[role=toolbar] [data-format=bold]').should('exist');
 };
 const box = () => editorDoc().find('[role=textbox][contenteditable=true]');
@@ -142,7 +143,7 @@ describe('Visual editor inline formatting', () => {
     cy.request(`/api/campaigns/${campaignId}`).then(({ body }) => {
       expect(JSON.parse(body.data.body_source).t.data.props.markdown).to.equal(true);
       expect(body.data.body).to.contain(formatted).and.contain('<strong>12월 3일까지</strong>')
-        .and.contain('{{ .Subscriber.Name }}님.<br/>');
+        .and.contain(`${line1}<br/>`);
     });
 
     // Reopened, the box shows the same formatting and the chip.
