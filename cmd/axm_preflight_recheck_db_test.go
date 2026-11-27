@@ -1099,6 +1099,62 @@ func TestScheduledPreflightRejectsEditDuringAudienceCount(t *testing.T) {
 	}
 }
 
+func TestFollowupPreflightIgnoresLegacyRecentRule(t *testing.T) {
+	e := newPreflightApp(t)
+	t.Cleanup(e.a.manager.Close)
+	sub := e.pfSub("enabled", "", map[int]string{e.aList: "confirmed"})
+	parent := e.pfCampaign("regular", "finished", e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id) VALUES ($1, $2)`, parent, sub)
+	e.db.MustExec(`INSERT INTO axm_campaign_followups (campaign_id, parent_campaign_id, list_uuid, condition)
+		SELECT $1, $2, uuid, '{"open":"yes","click":"yes"}' FROM lists WHERE id = $3`, e.campID, parent, e.aList)
+	e.db.MustExec(`INSERT INTO axm_campaign_followup_members (campaign_id, subscriber_id, made_for) VALUES ($1, $2, TRUE)`, e.campID, sub)
+	e.db.MustExec(`INSERT INTO axm_campaign_recent_rules (campaign_id, days, scope) VALUES ($1, 14, 'all')`, e.campID)
+	e.db.MustExec(`UPDATE campaigns SET status = 'scheduled', send_at = NOW() + INTERVAL '1 day' WHERE id = $1`, e.campID)
+
+	id := strconv.Itoa(e.campID)
+	path := "/api/campaigns/" + id
+	user := e.as(e.superAdmin)
+	read := func(t *testing.T, mode string) preflightResponse {
+		t.Helper()
+		data := pfRead(t, e, user, path+"/preflight", id)
+		var out preflightResponse
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Mode != mode || out.Recipients != 1 || out.WillSend != 1 || out.Remaining != 1 || out.Recent != (recentFacts{}) {
+			t.Fatalf("follow-up should reach its recipient without applying the old rule: %s", data)
+		}
+		for _, check := range out.Checks {
+			if strings.HasPrefix(check.Key, "recent.") {
+				t.Fatalf("follow-up should have no recent-send exclusion check: %s", data)
+			}
+		}
+		return out
+	}
+	t.Run("scheduled", func(t *testing.T) {
+		read(t, models.PreflightModeScheduled)
+	})
+	t.Run("resume", func(t *testing.T) {
+		e.db.MustExec(`UPDATE campaigns SET status = 'paused', started_at = NOW(), send_at = NULL WHERE id = $1`, e.campID)
+		read(t, models.PreflightModeResume)
+		// An inactive rule's hold has no effect on the sender or the confirmation.
+		e.db.MustExec(`INSERT INTO axm_campaign_recent_holds (campaign_id, subscriber_id) VALUES ($1, $2)`, e.campID, sub)
+		out := read(t, models.PreflightModeResume)
+		body := fmt.Sprintf(`{"status":"running","updated_at":%q}`, out.UpdatedAt.Time.Format(time.RFC3339Nano))
+		code, response := e.call(e.a.UpdateCampaignStatus, user, http.MethodPut, path+"/status", id, body)
+		if code != http.StatusOK {
+			t.Fatalf("resume: HTTP %d %s", code, response)
+		}
+		waitFor(t, "the follow-up to finish with one send record", func() bool {
+			status, sent, _ := e.campaign()
+			return status == models.CampaignStatusFinished && sent == 1 && len(e.recorded()) == 1
+		})
+		if got := e.recorded(); !slices.Equal(got, []int{sub}) {
+			t.Fatalf("delivered to %v, want subscriber %d", got, sub)
+		}
+	})
+}
+
 // A follow-up (LST-47) whose check would hold everyone back reaches nobody: saving it while it is
 // scheduled is refused, as the window stops it, and is saved while somebody is left.
 func TestScheduledSaveOfFollowupLeavesOutWhoWouldBeHeld(t *testing.T) {

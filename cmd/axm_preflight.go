@@ -530,20 +530,19 @@ func (a *App) GetCampaignPreflight(c echo.Context) error {
 		}
 	}
 
-	// A saved "exclude recent recipients" rule is applied by the sender (LST-65): the audience count
-	// says how many of the recipients it leaves out. A rule that cannot be read fails the answer
-	// (the window offers to go on without the count), as the sender would not send either.
+	// Use the sender's rule applicability before reading its saved settings.
+	// A legacy follow-up can have a saved rule that the sender does not apply.
 	var recent recentFacts
 	if camp.Type == models.CampaignTypeRegular {
-		rule, err := a.core.GetRecentRule(id)
-		if err != nil {
-			return err
-		}
 		on, err := a.core.RecentRuleOn(id)
 		if err != nil {
 			return err
 		}
-		if on || countRemaining || aud.RecentHeldInAudience > 0 {
+		if on {
+			rule, err := a.core.GetRecentRule(id)
+			if err != nil {
+				return err
+			}
 			held, err := a.core.RecentHeldCount(id)
 			if err != nil {
 				return err

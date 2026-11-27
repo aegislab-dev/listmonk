@@ -77,8 +77,9 @@ recent_rule AS MATERIALIZED (
     SELECT axm_recent_rule_on($1) AS enabled
 ),
 held AS (
-    SELECT subscriber_id AS id FROM axm_campaign_recent_holds
-    WHERE campaign_id = $1
+    SELECT h.subscriber_id AS id
+    FROM recent_rule CROSS JOIN axm_campaign_recent_holds h
+    WHERE recent_rule.enabled AND h.campaign_id = $1
 ),
 fresh AS (
     SELECT r.subscriber_id AS id
