@@ -26,7 +26,8 @@
   "campaign-scheduled-edit.cy.js",
   "import-campaign-flow.cy.js",
   "stats-dashboard.cy.js",
-  "bounce-filter-delete.cy.js"
+  "bounce-filter-delete.cy.js",
+  "visual-text-format.cy.js"
  ],
  "smoke": [
   "audit.cy.js",
@@ -141,7 +142,8 @@
    ],
    "specs": [
     "campaign-test-send.cy.js",
-    "campaign-send-confirm.cy.js"
+    "campaign-send-confirm.cy.js",
+    "visual-text-format.cy.js"
    ]
   },
   {
@@ -184,7 +186,8 @@
     "campaign-send-confirm.cy.js",
     "campaign-scheduled-edit.cy.js",
     "import-campaign-flow.cy.js",
-    "stats-dashboard.cy.js"
+    "stats-dashboard.cy.js",
+    "visual-text-format.cy.js"
    ]
   },
   {
@@ -217,7 +220,8 @@
     "campaign-send-confirm.cy.js",
     "campaign-clone-lists.cy.js",
     "list-teams.cy.js",
-    "stats-dashboard.cy.js"
+    "stats-dashboard.cy.js",
+    "visual-text-format.cy.js"
    ]
   },
   {
@@ -243,7 +247,8 @@
     "campaign-scheduled-edit.cy.js",
     "import-campaign-flow.cy.js",
     "list-teams.cy.js",
-    "stats-dashboard.cy.js"
+    "stats-dashboard.cy.js",
+    "visual-text-format.cy.js"
    ]
   },
   {
@@ -420,7 +425,8 @@
    ],
    "specs": [
     "campaign-tracking-check.cy.js",
-    "campaign-send-confirm.cy.js"
+    "campaign-send-confirm.cy.js",
+    "visual-text-format.cy.js"
    ]
   },
   {
@@ -600,6 +606,18 @@
     "analytics-proof.cy.js",
     "list-teams.cy.js",
     "followup.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "frontend/email-builder/src/**",
+    "frontend/src/components/VisualEditor.vue",
+    "frontend/src/text-format.js",
+    "frontend/src/personalization.js",
+    "frontend/cypress/e2e/visual-text-format.cy.js"
+   ],
+   "specs": [
+    "visual-text-format.cy.js"
    ]
   }
  ],
