@@ -136,10 +136,12 @@ const markdownRanges = (source, formatting, collapsedLinks = [], emphasis = []) 
   const ranges = [];
   const cells = [];
   markdownLanguage.parser.parse(source).iterate({
-    // Emphasis, innermost first: its opening and closing marks and what is between.
+    // Emphasis and strikethrough, innermost first: its opening and closing marks and
+    // what is between.
     leave(node) {
-      if (!formatting || (node.name !== 'Emphasis' && node.name !== 'StrongEmphasis')) return;
-      const marks = node.node.getChildren('EmphasisMark');
+      const markName = { Emphasis: 'EmphasisMark', StrongEmphasis: 'EmphasisMark', Strikethrough: 'StrikethroughMark' }[node.name];
+      if (!formatting || !markName) return;
+      const marks = node.node.getChildren(markName);
       if (marks.length < 2) return;
       const open = marks[0];
       const close = marks[marks.length - 1];
@@ -240,14 +242,38 @@ const isEdge = (ch) => ch === undefined || /[\s\p{P}\p{S}]/u.test(ch);
 // opens or closes the emphasis. When the format covers the whole emphasis the tags go
 // around the marks; when it covers only its start or end, next to a letter, it is not
 // applied there.
+//
+// Tags must also nest with the emphasis element: `**<u>특가**를</u>` makes marked emit
+// <strong><u>특가</strong>를</u>, and the sanitizer of the mail renderer cuts that
+// short, dropping the bold or the underline. A formatted run that starts outside the
+// emphasis and ends inside it (or the other way round) is such a tag.
 const keepEmphasis = (source, before, runs, emphasis) => {
   const now = styleAt(runs);
   const old = styleAt(before);
   const edge = (arr, i) => !same(arr[i - 1], arr[i]);
-  let changed = false;
-  emphasis.forEach(({
+  // Does a formatted run of arr start outside the emphasis element and end inside it
+  // (or start inside it and end outside)? Inside means after the opening mark and
+  // before the closing one.
+  const crosses = (arr, {
     a, b, c, d,
   }) => {
+    let from = 0;
+    for (let i = 1; i <= arr.length; i += 1) {
+      if (i === arr.length || !same(arr[i], arr[from])) {
+        if (isFormatted(arr[from])) {
+          if (from <= a && i >= b && i <= c) return true;
+          if (from >= b && from <= c && i >= d) return true;
+        }
+        from = i;
+      }
+    }
+    return false;
+  };
+  // Returns whether it changed the styles.
+  const settle = (mark) => {
+    const {
+      a, b, c, d,
+    } = mark;
     // A tag boundary the format adds: in a mark, or right after the opening mark as a
     // closing tag, or right before the closing mark as an opening tag, or on the
     // inside next to a letter, no longer lets the marks open and close the emphasis.
@@ -257,22 +283,34 @@ const keepEmphasis = (source, before, runs, emphasis) => {
     for (let p = c + 1; p < d; p += 1) bad = bad || fresh(p);
     // What is next to the whole run of marks counts (***x*** is one run of marks).
     let runStart = a;
-    while (runStart > 0 && (source[runStart - 1] === '*' || source[runStart - 1] === '_')) runStart -= 1;
+    while (runStart > 0 && /[*_~]/.test(source[runStart - 1])) runStart -= 1;
     let runEnd = d;
-    while (source[runEnd] === '*' || source[runEnd] === '_') runEnd += 1;
+    while (/[*_~]/.test(source[runEnd] || '')) runEnd += 1;
     if (fresh(b) && (isFormatted(now[b - 1]) || !isEdge(source[runStart - 1]))) bad = true;
     if (fresh(c) && (isFormatted(now[c]) || !isEdge(source[runEnd]))) bad = true;
-    if (!bad) return;
-    changed = true;
+    if (!bad && crosses(now, mark) && !crosses(old, mark)) bad = true;
+    if (!bad) return false;
     // The same format all through the words: the tags go around the marks. Otherwise
     // the emphasis keeps what it had.
     let whole = true;
     for (let i = b; whole && i < c; i += 1) whole = same(now[i], now[b]);
+    let moved = false;
     for (let i = a; i < d; i += 1) {
-      if (!whole) now[i] = old[i];
-      else if (i < b || i >= c) now[i] = now[b];
+      let style = old[i];
+      if (whole) style = i < b || i >= c ? now[b] : now[i];
+      if (!same(style, now[i])) {
+        now[i] = style;
+        moved = true;
+      }
     }
-  });
+    return moved;
+  };
+  // Putting an emphasis back can leave another one, around or inside it, crossing.
+  let changed = false;
+  for (let pass = 0, again = true; again && pass <= emphasis.length; pass += 1) {
+    again = emphasis.map(settle).includes(true);
+    changed = changed || again;
+  }
   if (!changed) return runs;
   const out = [];
   let offset = 0;

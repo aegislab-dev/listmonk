@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { marked } from 'marked';
 import {
   FONT_SIZES, textMode, parseFormatted, isMarkdownSyntaxAt, preserveMarkdownSyntax, serializeFormatted, hasFormatting,
@@ -125,6 +126,32 @@ const format = (source, phrase, fmt) => {
 const strip = (html) => html.replace(/<\/?(?:strong|u|span[^>]*)>/g, '');
 const render = (s) => marked.parse(s, { gfm: true, breaks: true });
 
+// The mail renderer (@usewaypoint/block-text) runs marked, then the insane sanitizer,
+// which cuts misnested tags short (<strong><u>a</strong>b</u> loses the underline). It
+// lives in the email builder's node_modules; without it only the nesting is checked.
+const insane = (() => {
+  try {
+    return createRequire(import.meta.url)('../email-builder/node_modules/insane');
+  } catch (e) {
+    return null;
+  }
+})();
+const tagSequence = (html) => (html.match(/<\/?[a-z][a-z0-9]*/gi) || []).map((t) => t.toLowerCase());
+const checkNested = (html, label) => {
+  const stack = [];
+  tagSequence(html).filter((t) => !/^<(?:br|hr|img)$/.test(t)).forEach((t) => {
+    if (t[1] === '/') assert.equal(stack.pop(), t.slice(2), `misnested tags: ${label} -> ${html}`);
+    else stack.push(t.slice(1));
+  });
+  assert.deepEqual(stack, [], label);
+  if (insane) {
+    // Well-nested HTML passes the sanitizer with all its tags (the allow-list of the renderer).
+    const allowed = ['a', 'b', 'br', 'code', 'del', 'div', 'em', 'hr', 'li', 'ol', 'p', 'pre', 'span', 'strong', 'u', 'ul', 'blockquote', 'h1', 'h2', 'h3', 'table', 'thead', 'tbody', 'tr', 'td', 'th'];
+    const clean = insane(html, { allowedTags: allowed, allowedAttributes: Object.fromEntries(allowed.map((t) => [t, ['style', 'title', 'href', 'target']])) });
+    assert.deepEqual(tagSequence(clean), tagSequence(html), `sanitizer cut the tags short: ${label} -> ${html}`);
+  }
+};
+
 test('formatting the words of Markdown emphasis keeps the emphasis, also before a Korean particle', () => {
   const cases = [
     ['이번 **특가**를 확인하세요', '특가', { underline: true }, '이번 <u>**특가**</u>를 확인하세요'],
@@ -140,13 +167,18 @@ test('formatting the words of Markdown emphasis keeps the emphasis, also before 
     // A selection from before the emphasis to the end of its words: the tags go around the marks.
     ['이번 **특가**를 확인하세요', '이번 **특가', { underline: true }, '<u>이번 **특가**</u>를 확인하세요'],
     ['새 *신상품*이 나왔어요', '새 *신상품', { bold: true }, '<strong>새 *신상품*</strong>이 나왔어요'],
-    ['이번 **특가**를 확인하세요', '특가**를', { underline: true }, '이번 **<u>특가**를</u> 확인하세요'],
+    // A selection that crosses only one mark: the tags must nest with the emphasis.
+    ['이번 **특가**를 확인하세요', '특가**를', { underline: true }, '이번 <u>**특가**를</u> 확인하세요'],
+    ['이번 **특가**를 확인하세요', '**특가', { underline: true }, '이번 <u>**특가**</u>를 확인하세요'],
+    ['__두껍게__ 끝', '__두', { underline: true }, null],
+    ['앞 ~~삭제~~ 뒤', '앞 ~~삭', { bold: true }, null],
   ];
   cases.forEach(([source, phrase, fmt, expected]) => {
     const out = format(source, phrase, fmt);
     if (expected !== null) assert.equal(out, expected, source);
     assert.equal(strip(render(out)), strip(render(source)), out);
     assert.doesNotMatch(render(out), /\*/, out);
+    checkNested(render(out), out);
     // Reading it back and writing it again changes nothing.
     assert.equal(roundTrip(out, true).text, out);
   });
@@ -154,7 +186,7 @@ test('formatting the words of Markdown emphasis keeps the emphasis, also before 
 
 test('formatting any selection around Markdown emphasis renders the emphasis as before', () => {
   const sources = ['이번 **특가**를 확인하세요', '새 *신상품*이 나왔어요', '이번 **특가** 확인', 'a**b**c', '***특가***를',
-    '가 **나 *다* 라**를 마', '이번 __특가__ 확인', '앞 _기울임_ 뒤'];
+    '가 **나 *다* 라**를 마', '이번 __특가__ 확인', '앞 _기울임_ 뒤', '__두껍게__ 끝', '앞 ~~삭제~~ 뒤', '**가 _나_ 다**를'];
   const fmts = [{ bold: true }, { underline: true }, { size: 20 }];
   sources.forEach((source) => {
     const before = runsOf(parseFormatted(source, 'markdown'));
@@ -166,6 +198,7 @@ test('formatting any selection around Markdown emphasis renders the emphasis as 
           const label = JSON.stringify([source, source.slice(s, e), fmt, out]);
           assert.equal(strip(render(out)).replace(/\s+/g, ' '), strip(render(source)).replace(/\s+/g, ' '), label);
           assert.equal(roundTrip(out, true).text, out, label);
+          checkNested(render(out), label);
         }
       }
     });
