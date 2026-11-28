@@ -30,12 +30,11 @@ Cypress.Commands.add('sortTable', (theadSelector, ordIDs) => {
 Cypress.Commands.add('loginAndVisit', (url) => {
   cy.visit(`/admin/login?next=${url}`);
 
-  const username = Cypress.env('LISTMONK_ADMIN_USER') || 'admin';
-  const password = Cypress.env('LISTMONK_ADMIN_PASSWORD') || 'listmonk';
-
   // Fill the username and passowrd and login.
-  cy.get('input[name=username]').invoke('val', username);
-  cy.get('input[name=password]').invoke('val', password);
+  cy.env(['LISTMONK_ADMIN_USER', 'LISTMONK_ADMIN_PASSWORD']).then((env) => {
+    cy.get('input[name=username]').invoke('val', env.LISTMONK_ADMIN_USER || 'admin');
+    cy.get('input[name=password]').invoke('val', env.LISTMONK_ADMIN_PASSWORD || 'listmonk');
+  });
 
   // Submit form.
   cy.get('button').click();
