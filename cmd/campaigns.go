@@ -462,7 +462,10 @@ func (a *App) UpdateCampaign(c echo.Context) error {
 		// to is refused (the schedule stays as it was).
 		out, err = a.core.UpdateScheduledCampaign(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs, a.scheduledSaveCheck)
 	} else {
-		out, err = a.core.UpdateCampaign(id, o.Campaign, o.ListIDs, o.MediaIDs)
+		// AXM (LST-71): a draft or paused campaign is saved under the campaign row lock, for the
+		// status it was read with. Another request may have scheduled it, or the sender started it,
+		// since that read.
+		out, err = a.core.UpdateDraftCampaign(c.Request().Context(), id, o.Campaign, o.ListIDs, o.MediaIDs, cm.Status)
 	}
 	if err != nil {
 		return err
