@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -146,6 +147,12 @@ func checkUpgrade(db *sqlx.DB) {
 		len(toRun), vers, lastVer)
 }
 
+// errNoMigrationRecord is returned for a database that has a settings table without any
+// recorded migration.
+var errNoMigrationRecord = errors.New("the database has a settings table but no recorded migration, so its version is unknown. " +
+	"Refusing to run every migration from the oldest one over it. If an install was interrupted, run listmonk --install --idempotent to finish it. " +
+	"Otherwise restore the 'migrations' row of the settings table (a JSON list with the version the schema is at) from a backup, or from the version you know it has")
+
 // getPendingMigrations gets the pending migrations by comparing the migrations recorded
 // in the DB against all migrations listed in `migrations`. It returns the highest recorded
 // semver and the migrations to run, in list order.
@@ -153,6 +160,19 @@ func getPendingMigrations(db *sqlx.DB) (string, []migFunc, error) {
 	recorded, err := getRecordedMigrations(db)
 	if err != nil {
 		return "", nil, err
+	}
+	// Nothing recorded means every migration, from v0.4.0 up, is pending. That is right for a
+	// database from before settings existed (v0.7.0), and wrong for one that has the settings
+	// table: its record was lost or its install never finished, and the old migrations were
+	// written for old schemas. Do not run them over it.
+	if len(recorded) == 0 {
+		var hasSettings bool
+		if err := db.Get(&hasSettings, `SELECT to_regclass('settings') IS NOT NULL`); err != nil {
+			return "", nil, err
+		}
+		if hasSettings {
+			return "", nil, errNoMigrationRecord
+		}
 	}
 	last := "v0.0.0"
 	for _, v := range recorded {
@@ -196,7 +216,7 @@ func pendingMigrations(list []migFunc, recorded []string) []migFunc {
 
 // getRecordedMigrations returns every migration version recorded in the DB, oldest first as
 // recorded. There is none before v0.7.0 or on a database that was never installed.
-func getRecordedMigrations(db *sqlx.DB) ([]string, error) {
+func getRecordedMigrations(db sqlGetter) ([]string, error) {
 	var raw []byte
 	if err := db.Get(&raw, `SELECT COALESCE((SELECT value FROM settings WHERE key='migrations'), '[]'::JSONB)`); err != nil {
 		if isTableNotExistErr(err) {
