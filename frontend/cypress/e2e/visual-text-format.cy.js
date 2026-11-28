@@ -93,7 +93,7 @@ const sendTest = (id, subject) => {
   cy.get('[data-cy=test-send] [data-cy=btn-test-send]').click();
   cy.wait('@testSend').its('response.statusCode').should('eq', 200);
 
-  const inbox = Cypress.env('mailpitUrl');
+  const inbox = Cypress.expose('mailpitUrl');
   expect(inbox, 'CYPRESS_mailpitUrl (the test inbox)').to.be.a('string').and.not.be.empty;
   return cy.waitUntil(() => cy.request(`${inbox}/api/v1/search?query=${encodeURIComponent(`subject:"${subject}"`)}`)
     .then(({ body }) => body.messages[0]?.ID), { timeout: 30000 })
