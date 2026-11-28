@@ -115,6 +115,64 @@ test('formatting a whole block keeps Setext underlines and thematic breaks as sy
   assert.equal(isMarkdownSyntaxAt('제목\n===\n본문', 1), false);
 });
 
+// What the editor does for a selection: split the source into before / selected / after.
+const format = (source, phrase, fmt) => {
+  const before = runsOf(parseFormatted(source, 'markdown'));
+  const at = source.indexOf(phrase);
+  const after = [run(source.slice(0, at)), run(phrase, fmt), run(source.slice(at + phrase.length))].filter((r) => r.value);
+  return serializeFormatted(preserve(before, after), 'markdown').text;
+};
+const strip = (html) => html.replace(/<\/?(?:strong|u|span[^>]*)>/g, '');
+const render = (s) => marked.parse(s, { gfm: true, breaks: true });
+
+test('formatting the words of Markdown emphasis keeps the emphasis, also before a Korean particle', () => {
+  const cases = [
+    ['이번 **특가**를 확인하세요', '특가', { underline: true }, '이번 <u>**특가**</u>를 확인하세요'],
+    ['이번 **특가**를 확인하세요', '특가', { size: 20 }, '이번 <span style="font-size:20px">**특가**</span>를 확인하세요'],
+    ['신 *신상품*이 나왔어요', '신상품', { bold: true }, '신 <strong>*신상품*</strong>이 나왔어요'],
+    ['a**b**c', 'b', { underline: true }, 'a<u>**b**</u>c'],
+    ['***특가***를', '특가', { bold: true }, '<strong>***특가***</strong>를'],
+    // With a space after, the tags can stay inside the marks.
+    ['이번 **특가** 확인', '특가', { underline: true }, null],
+    // Part of the words, in the middle of a word: the tags would break the marks, so the format is not applied.
+    ['**특가 행사**를', '행사', { underline: true }, '**특가 행사**를'],
+    ['이**특가 행사**', '특가', { underline: true }, '이**특가 행사**'],
+  ];
+  cases.forEach(([source, phrase, fmt, expected]) => {
+    const out = format(source, phrase, fmt);
+    if (expected !== null) assert.equal(out, expected, source);
+    assert.equal(strip(render(out)), strip(render(source)), out);
+    assert.doesNotMatch(render(out), /\*/, out);
+    // Reading it back and writing it again changes nothing.
+    assert.equal(roundTrip(out, true).text, out);
+  });
+});
+
+test('a format run that ends or starts at a backslash does not escape the tag', () => {
+  const cases = [
+    ['저장 위치: C:\\쿠폰\\ 폴더입니다', 'C:\\쿠폰\\', { bold: true }, '저장 위치: <strong>C:\\쿠폰</strong>\\ 폴더입니다'],
+    ['¯\\_(ツ)_/¯', '_(ツ)_/¯', { bold: true }, '¯<strong>\\_(ツ)_/¯</strong>'],
+    ['가\\나', '나', { underline: true }, '가<u>\\나</u>'],
+    ['경로 D:\\\\ 끝', 'D:\\\\', { bold: true }, '경로 <strong>D:</strong>\\\\ 끝'],
+  ];
+  cases.forEach(([source, phrase, fmt, expected]) => {
+    const out = format(source, phrase, fmt);
+    assert.equal(out, expected, source);
+    assert.doesNotMatch(render(out), /&lt;\/?(strong|u)/, out);
+    assert.equal(roundTrip(out, true).text, out);
+  });
+  // Two groups side by side with a backslash between them.
+  const before = [run('가\\나다')];
+  const out = serializeFormatted([run('가', { bold: true }), run('\\', { bold: true }), run('나', { underline: true }), run('다')], 'markdown').text;
+  assert.equal(out, '<strong>가</strong><u>\\나</u>다');
+  assert.equal(roundTrip(out, true).text, out);
+  assert.ok(before);
+  // Written by hand, a tag after a single backslash stays text.
+  assert.equal(hasFormatting('가\\<strong>나</strong>', 'markdown'), false);
+  assert.equal(hasFormatting('<strong>나\\</strong>', 'markdown'), false);
+  assert.equal(hasFormatting('가\\\\<strong>나</strong>', 'markdown'), true);
+});
+
 test('a personalization token inside code or a link destination is Markdown syntax', () => {
   const source = '쿠폰 `{{ .Subscriber.Name }}-2026`을 [내 페이지](https://example.test/{{.Subscriber.Name}}) '
     + '[혜택](https://example.test/promo "환영 {{ .Subscriber.Name }}") {{ .Subscriber.Name }}';
@@ -356,7 +414,7 @@ test('indented Markdown code keeps its tags as text, list continuations do not',
 // the same text, so nothing anybody did not edit (code, lists, quotes, hand-written
 // HTML) can change.
 test('reading back and writing unchanged is the identity, for any text', () => {
-  const pieces = ['a', '가', ' ', '  ', '\n', '\n\n', '- ', '* ', '1. ', '2) ', '> ', '# ', '    ', '\t', '`', '```', '~~~',
+  const pieces = ['a', '가', ' ', '  ', '\\', '**', '\n', '\n\n', '- ', '* ', '1. ', '2) ', '> ', '# ', '    ', '\t', '`', '```', '~~~',
     '<strong>', '</strong>', '<u>', '</u>', '<span style="font-size:20px">', '<span style="font-size:020px">', '<span style="font-size:99px">', '</span>',
     '<b>', '<br>', '&amp;', '&lt;', '{{ .Subscriber.Name }}', '*', '_', '<'];
   let seed = 77;

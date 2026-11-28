@@ -319,6 +319,29 @@ describe('Visual editor inline formatting', () => {
     });
   });
 
+  it('keeps Markdown emphasis before a particle and tags next to a backslash working', () => {
+    const emphasis = '이번 **특가**를 확인하세요';
+    textCampaign(`Format emphasis ${stamp}`, emphasis).then((id) => {
+      openText(false, id, '이번');
+      select('특가');
+      editorDoc().find('[data-format=underline]').click();
+      saveText(id, '이번 <u>**특가**</u>를 확인하세요').then(({ body }) => {
+        expect(body).to.include('<strong>특가</strong>');
+        expect(body).to.not.include('**');
+      });
+    });
+    const path = '저장 위치: C:\\쿠폰\\ 폴더입니다';
+    textCampaign(`Format backslash ${stamp}`, path).then((id) => {
+      openText(false, id, '저장');
+      select('C:\\쿠폰\\');
+      editorDoc().find('[data-format=bold]').click();
+      saveText(id, '저장 위치: <strong>C:\\쿠폰</strong>\\ 폴더입니다').then(({ body }) => {
+        expect(body).to.include('<strong>C:\\쿠폰</strong>');
+        expect(body).to.not.include('&lt;/strong');
+      });
+    });
+  });
+
   it('shows a name inside code or a link address as plain text on the canvas', () => {
     const source = '쿠폰 `{{ .Subscriber.Name }}-2026`을 입력하세요.\n\n[내 페이지](https://example.test/{{.Subscriber.Name}}) '
       + '[혜택 보기](https://example.test/promo "환영 {{ .Subscriber.Name }}") {{ .Subscriber.Name }}님';

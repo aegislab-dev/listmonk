@@ -132,10 +132,23 @@ const inlineSyntaxRanges = (source, protectedRanges, cells, collapsedLinks) => {
   return ranges;
 };
 
-const markdownRanges = (source, formatting, collapsedLinks = []) => {
+const markdownRanges = (source, formatting, collapsedLinks = [], emphasis = []) => {
   const ranges = [];
   const cells = [];
   markdownLanguage.parser.parse(source).iterate({
+    // Emphasis, innermost first: its opening and closing marks and what is between.
+    leave(node) {
+      if (!formatting || (node.name !== 'Emphasis' && node.name !== 'StrongEmphasis')) return;
+      const marks = node.node.getChildren('EmphasisMark');
+      if (marks.length < 2) return;
+      const open = marks[0];
+      const close = marks[marks.length - 1];
+      if (open.to < close.from) {
+        emphasis.push({
+          a: open.from, b: open.to, c: close.from, d: close.to,
+        });
+      }
+    },
     enter(node) {
       if (CODE.has(node.name) || (formatting && LINK_STRUCTURE.has(node.name))) {
         ranges.push([node.from, node.to]);
@@ -211,6 +224,72 @@ const insertReferenceKeys = (runs, insertions) => {
   return out;
 };
 
+const styleAt = (runs) => {
+  const out = [];
+  runs.forEach((r) => {
+    const style = { bold: Boolean(r.bold), underline: Boolean(r.underline), size: validSize(r.size) ? r.size : null };
+    for (let i = runValue(r).length; i > 0; i -= 1) out.push(style);
+  });
+  return out;
+};
+// CommonMark: a delimiter run next to a letter, digit or the like is flanked by it.
+const isEdge = (ch) => ch === undefined || /[\s\p{P}\p{S}]/u.test(ch);
+
+// A tag between an emphasis mark and its text turns the mark's neighbour into
+// punctuation, and before a letter (a Korean particle: **특가**를) the mark no longer
+// opens or closes the emphasis. When the format covers the whole emphasis the tags go
+// around the marks; when it covers only its start or end, next to a letter, it is not
+// applied there.
+const keepEmphasis = (source, before, runs, emphasis) => {
+  const now = styleAt(runs);
+  const old = styleAt(before);
+  const edge = (arr, i) => !same(arr[i - 1], arr[i]);
+  let changed = false;
+  emphasis.forEach(({
+    a, b, c, d,
+  }) => {
+    const openNew = edge(now, b) && !edge(old, b);
+    const closeNew = edge(now, c) && !edge(old, c);
+    if (!openNew && !closeNew) return;
+    const first = now[b];
+    let whole = openNew && closeNew;
+    for (let i = b; whole && i < c; i += 1) whole = same(now[i], first);
+    if (whole) {
+      for (let i = a; i < b; i += 1) now[i] = first;
+      for (let i = c; i < d; i += 1) now[i] = first;
+      changed = true;
+      return;
+    }
+    if (openNew && !isEdge(source[a - 1])) {
+      for (let i = b; i < c && same(now[i], first); i += 1) now[i] = old[i];
+      changed = true;
+    }
+    if (closeNew && !isEdge(source[d])) {
+      const last = now[c - 1];
+      for (let i = c - 1; i >= b && same(now[i], last); i -= 1) now[i] = old[i];
+      changed = true;
+    }
+  });
+  if (!changed) return runs;
+  const out = [];
+  let offset = 0;
+  runs.forEach((r) => {
+    const { length } = runValue(r);
+    if (r.type === 'token') out.push({ ...r, ...now[offset] });
+    else {
+      let from = 0;
+      for (let i = 1; i <= length; i += 1) {
+        if (i === length || !same(now[offset + i], now[offset + from])) {
+          out.push({ type: 'text', value: r.value.slice(from, i), ...now[offset + from] });
+          from = i;
+        }
+      }
+    }
+    offset += length;
+  });
+  return out;
+};
+
 // Preserve the previous formatting in Markdown ranges where introducing tags could
 // change the rendered structure or literal text. Offsets are in the original source,
 // so they still line up after Chromium splits nodes while applying a format command.
@@ -218,8 +297,9 @@ export const preserveMarkdownSyntax = (before, after) => {
   const source = before.map(runValue).join('');
   if (after.map(runValue).join('') !== source) return { runs: before, insertions: [] };
   const collapsedLinks = [];
-  const protectedRanges = markdownRanges(source, true, collapsedLinks);
-  if (!protectedRanges.length) return { runs: after, insertions: [] };
+  const emphasis = [];
+  const protectedRanges = markdownRanges(source, true, collapsedLinks, emphasis);
+  if (!protectedRanges.length && !emphasis.length) return { runs: after, insertions: [] };
 
   let offset = 0;
   let rangeIndex = 0;
@@ -258,7 +338,7 @@ export const preserveMarkdownSyntax = (before, after) => {
     }
   });
   const insertions = collapsedLinks.filter((ref) => ref.changed).map(({ offset: at, text }) => ({ offset: at, text }));
-  const runs = changed ? out : after;
+  const runs = keepEmphasis(source, before, changed ? out : after, emphasis);
   return { runs: insertions.length ? insertReferenceKeys(runs, insertions) : runs, insertions };
 };
 
@@ -306,6 +386,7 @@ export const parseFormatted = (text, mode) => {
     const ok = content && (!span || (validSize(f.size) && String(f.size) === m[1]))
       && !content.includes('\n') && !OURS.test(content) && !(html && content.includes('<br>'))
       && !inCode(m.index) && !inCode(end)
+      && (html || (!content.endsWith('\\') && !(/\\*$/.exec(src.slice(0, m.index))[0].length % 2)))
       && !(lineStart && MARKERS.exec(content)[0])
       && !(pos === m.index && last && isFormatted(last) && same(last, f));
     if (ok) {
@@ -361,12 +442,28 @@ export const serializeFormatted = (runs, mode) => {
         lines[lines.length - 1] += esc(part);
       });
     });
-    text += lines.map((l, i) => {
+    let base = text;
+    const joined = lines.map((l, i) => {
       if (!l || !(open || end)) return l;
-      const lineStart = i > 0 || text === '' || text.endsWith('\n');
+      const lineStart = i > 0 || base === '' || base.endsWith('\n');
       const lead = !html && lineStart ? MARKERS.exec(l)[0] : '';
-      return l.length > lead.length ? lead + open + l.slice(lead.length) + end : l;
+      let body = l.slice(lead.length);
+      // In Markdown a backslash escapes the next character, also the "<" of a tag: a
+      // run's own trailing backslashes go after its closing tag, and a single one
+      // right before its opening tag goes inside.
+      let tail = '';
+      if (!html) {
+        [tail] = /\\*$/.exec(body);
+        body = body.slice(0, body.length - tail.length);
+        const held = body && !lineStart ? /\\*$/.exec(base)[0] : '';
+        if (held.length % 2) {
+          base = base.slice(0, base.length - held.length);
+          body = held + body;
+        }
+      }
+      return body ? lead + open + body + end + tail : l;
     }).join(nl);
+    text = base + joined;
   });
   return { text: html ? HTML_OPEN + text + HTML_CLOSE : text, markdown: true };
 };
