@@ -558,3 +558,18 @@ func TestInstallWithOneConnection(t *testing.T) {
 	f.mustInstall(installRun{idempotent: true, maxOpen: 1})
 	f.wantSample(0)
 }
+
+// install runs schema.sql inside its own transaction together with the retry marker; a
+// top-level BEGIN or COMMIT in the script would end that transaction early.
+func TestSchemaHasNoTransactionControl(t *testing.T) {
+	raw, err := os.ReadFile(repoRoot(t) + "/schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, l := range strings.Split(string(raw), "\n") {
+		switch strings.ToUpper(strings.TrimSpace(l)) {
+		case "BEGIN;", "COMMIT;", "ROLLBACK;", "START TRANSACTION;":
+			t.Errorf("schema.sql:%d has a top-level %s that would end the install transaction", i+1, strings.TrimSpace(l))
+		}
+	}
+}
