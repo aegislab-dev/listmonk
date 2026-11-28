@@ -169,15 +169,14 @@ export function teamRows(camps, teams, now = new Date()) {
   return rows.sort((x, y) => rank(x) - rank(y) || (rank(x) === 0 ? y.a.click - x.a.click : y.a.sent - x.a.sent) || x.tag.localeCompare(y.tag));
 }
 
-// KST pieces of a time (the weekday 0=Mon..6=Sun, the hour), whatever the browser's zone.
+// KST pieces of a time (the weekday 0=Mon..6=Sun), whatever the browser's zone.
 const kstParts = (iso) => {
   const p = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Seoul', weekday: 'short', hour: '2-digit', hourCycle: 'h23',
+    timeZone: 'Asia/Seoul', weekday: 'short',
   }).formatToParts(new Date(iso)).reduce((o, x) => ({ ...o, [x.type]: x.value }), {});
-  return { wd: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(p.weekday), hour: Number(p.hour) };
+  return { wd: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(p.weekday) };
 };
 export const weekdayOf = (c) => kstParts(c.startedAt).wd;
-export const hourBandOf = (c) => Math.floor(kstParts(c.startedAt).hour / 6);
 export const lengthBandOf = (c) => {
   const n = [...String(c.subject || '')].length;
   if (n <= 20) {
@@ -274,11 +273,14 @@ export function overlapRows(camps, overlaps, team = '') {
 
 // The groups of recipients the server sent for one team ('' for everyone), as rows with rates
 // in the order of `order` (keys), the rest by size; the merged "other" group last. `small` marks a
-// group a card leaves out: too few people, or too few of them tracked to give a click rate (a
-// group without any tracking is not small, it has no rate for another reason).
+// group a card leaves out for its sample: too few people, or too few of them tracked to give a click
+// rate (a group without any tracking is not small, it has no rate for another reason). `merged` marks
+// the group the server put together from the classes below MIN.recipientGroup people: a card leaves
+// it out as well, for that reason and not for its size (it can hold hundreds of people).
 export function recipientRows(groups, team, order = null) {
   const g = (groups || []).filter((x) => x.team === team).map((x) => {
-    const ok = x.recipients >= MIN.recipientSample && x.key !== '__other__';
+    const merged = x.key === '__other__';
+    const ok = x.recipients >= MIN.recipientSample && !merged;
     const enoughTracking = ok && x.trackedRecipients >= MIN.recipientSample;
     return {
       key: x.key,
@@ -290,11 +292,12 @@ export function recipientRows(groups, team, order = null) {
       open: enoughTracking ? pct(x.opened, x.trackedSent) : null,
       bounce: pct(x.bounced, x.sent),
       ok,
-      small: !ok || (!enoughTracking && x.trackedSent > 0),
+      merged,
+      small: !merged && (!ok || (!enoughTracking && x.trackedSent > 0)),
     };
   });
   const rank = (r) => {
-    if (r.key === '__other__') {
+    if (r.merged) {
       return 1e9;
     }
     return order ? order.indexOf(r.key) : 0;
@@ -304,13 +307,27 @@ export function recipientRows(groups, team, order = null) {
 }
 
 // Include the pair even when the original started before the selected period.
-export function followupPairs(camps) {
+// `all` is where the original is looked up (every team's campaigns of the period): a follow-up names its
+// original by number only, and an original that started before the period is not there (`parent` is null,
+// only its send count is known). The original's own rates use the same denominator as the combined ones.
+export function followupPairs(camps, all = camps) {
+  const byId = new Map(all.map((c) => [c.id, c]));
   return camps.filter((c) => c.followupOf && c.status === 'finished' && c.sent > 0).map((followup) => {
     const tracked = !followup.trackingOff && (followup.combinedClickers > 0 || followup.combinedViewers > 0);
+    const parent = byId.get(followup.followupOf) || null;
+    const alone = tracked && parent && !parent.trackingOff;
+    const click = tracked ? pct(followup.combinedClickers, followup.followupParentSent) : null;
+    const parentClick = alone ? pct(parent.clickers, followup.followupParentSent) : null;
     return {
       followup,
-      click: tracked ? pct(followup.combinedClickers, followup.followupParentSent) : null,
+      parent,
+      click,
       open: tracked ? pct(followup.combinedViewers, followup.followupParentSent) : null,
+      parentClick,
+      parentOpen: alone ? pct(parent.viewers, followup.followupParentSent) : null,
+      // What the follow-up added to the original: percentage points and people.
+      gain: click !== null && parentClick !== null ? click - parentClick : null,
+      addedClickers: click !== null && parentClick !== null ? followup.combinedClickers - parent.clickers : null,
     };
   });
 }

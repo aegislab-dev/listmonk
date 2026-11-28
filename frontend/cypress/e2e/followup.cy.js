@@ -271,7 +271,7 @@ describe('follow-up campaign draft', () => {
       expect(child).to.include({ status: 'finished', followup_of: campaignId });
       expect(child.sent).to.be.greaterThan(0);
     });
-    cy.get('[data-cy=card-followup]').should('contain', `#${followupId} ← #${campaignId}`)
+    cy.get(`[data-cy=followup-${followupId}]`).should('contain', `#${campaignId}`).and('contain', `#${followupId}`)
       .and('contain', 'Collecting');
 
     const reactionTitle = "Create a list from people who did or didn't react";

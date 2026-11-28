@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  aggregate, change, changeText, classify, formatKST, groupBy, hourBandOf, lengthBandOf, listGroups, medianOf,
+  aggregate, change, changeText, classify, formatKST, groupBy, lengthBandOf, listGroups, medianOf,
   overlapRows, recipientRows, teamMedian, teamRows, weekdayOf, clickRate, bounceOver, complaintOver, campaignSummary, followupPairs, NO_TEAM_KEY,
 } from '../src/stats.js';
 import { readFileSync } from 'node:fs';
@@ -158,8 +158,6 @@ test('groups: a group needs three campaigns and 1,000 messages, and the best nee
   const wed = new Date('2026-11-18T09:00:00Z').toISOString(); // Wednesday 18:00 KST
   assert.equal(weekdayOf({ startedAt: mon }), 0);
   assert.equal(weekdayOf({ startedAt: tue }), 1);
-  assert.equal(hourBandOf({ startedAt: mon }), 1);
-  assert.equal(hourBandOf({ startedAt: wed }), 3);
   const camps = [
     ...[1, 2, 3].map(() => camp({ startedAt: mon, clickers: 100 })),
     ...[1, 2, 3].map(() => camp({ startedAt: tue, clickers: 50 })),
@@ -247,7 +245,24 @@ test('recipient groups: rates per group, the merged other group last', () => {
   assert.equal(rows[1].click, null);
   assert.equal(rows[1].open, null);
   assert.equal(rows[1].ok, false);
-  assert.deepEqual(rows.map((r) => r.small), [false, true, true], 'too few people, and the merged rest: left out of a card');
+  assert.deepEqual(rows.map((r) => r.small), [false, true, false], 'too few people: left out of a card for its sample');
+  assert.deepEqual(rows.map((r) => r.merged), [false, false, true], 'the merged rest is left out for being merged, not for its size');
+});
+
+// LST-82: the merged group was called a small sample ("fewer than 200 tracked recipients") even with 850 people.
+test('recipient groups: a big merged group is merged, not a small sample, and has no rate of its own', () => {
+  const [kr, other] = recipientRows([
+    { team: '', key: '__other__', sent: 900, recipients: 850, trackedSent: 900, trackedRecipients: 850, opened: 320, clicked: 70, bounced: 9 },
+    { team: '', key: 'KR', sent: 4000, recipients: 4000, trackedSent: 4000, trackedRecipients: 4000, opened: 1800, clicked: 380, bounced: 50 },
+  ], '');
+  assert.equal(kr.key, 'KR');
+  assert.deepEqual([kr.merged, kr.small], [false, false]);
+  assert.equal(other.key, '__other__');
+  assert.equal(other.merged, true);
+  assert.equal(other.small, false);
+  assert.equal(other.ok, false);
+  assert.equal(other.click, null, 'a mix of classes is not compared with a single class');
+  assert.equal(other.recipients, 850);
 });
 
 test('recipient groups require 200 tracked people to show engagement rates', () => {
@@ -272,7 +287,7 @@ test('KST date text does not depend on the zone of the machine', () => {
 });
 
 test('every figure the screen explains has a definition with a meaning, a formula and a sample', () => {
-  ['sent', 'click', 'open', 'bounce', 'complaint', 'neutral', 'small', 'collecting', 'untracked', 'median'].forEach((k) => {
+  ['sent', 'click', 'open', 'bounce', 'complaint', 'neutral', 'small', 'collecting', 'untracked', 'median', 'followup'].forEach((k) => {
     const d = DEFINITIONS.find((x) => x.key === k);
     assert.ok(d, k);
     assert.ok(d.name && d.meaning && d.formula && d.compare && d.sample, k);
@@ -316,6 +331,30 @@ test('a follow-up shows combined unique people over original sent even outside t
   assert.equal(pair.click, 6);
   assert.equal(pair.open.toFixed(1), '27.5');
   assert.equal(pair.followup.followupCondition.click, 'any');
+  // The original started before the period: it is not among the campaigns, so nothing is said about it alone.
+  assert.equal(pair.parent, null);
+  assert.deepEqual([pair.parentClick, pair.parentOpen, pair.gain, pair.addedClickers], [null, null, null, null]);
+});
+
+// LST-82: the card says what the follow-up added to the original, so the pair carries the original.
+test('a follow-up is paired with its original: the original alone, with the follow-up, and the difference', () => {
+  const parent = camp({ id: 900, name: 'Original', sent: 2000, clickers: 80, viewers: 400 });
+  const child = camp({
+    id: 901, followupOf: 900, followupParentSent: 2000, sent: 1500, clickers: 45, viewers: 200, combinedClickers: 120, combinedViewers: 550,
+    followupCondition: { open: 'any', click: 'no' },
+  });
+  // The team filter can leave the original out of the first list: it is looked up among all campaigns.
+  const [pair] = followupPairs([child], [child, parent]);
+  assert.equal(pair.parent, parent);
+  assert.equal(pair.parentClick, 4);
+  assert.equal(pair.click, 6);
+  assert.equal(pair.gain, 2);
+  assert.equal(pair.addedClickers, 40);
+  assert.equal(pair.parentOpen, 20);
+  assert.equal(followupPairs([child, parent]).length, 1, 'the original is not a row of its own');
+  // An original sent without tracking has no rate of its own; the combined rate stays.
+  const [untracked] = followupPairs([child], [child, { ...parent, trackingOff: true }]);
+  assert.deepEqual([untracked.parentClick, untracked.gain, untracked.click], [null, null, 6]);
 });
 
 test('follow-up history includes recently finished sends while results are collecting', () => {

@@ -2001,9 +2001,30 @@ th.role-toggle-select a {
 .st .st-rbv b { min-width: 42px; text-align: right; }
 .st .st-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 1100px) { .st .st-grid2 { grid-template-columns: 1fr; } }
+/* An odd number of cards: the last one takes the whole row instead of leaving half of it empty. In a card
+   that wide the figures get half of the row, so they are not folded into a narrow column beside a long bar. */
+.st .st-grid2 > .st-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.st .st-grid2 > .st-card:last-child:nth-child(odd) .st-br { grid-template-columns: 110px minmax(40px, 1fr) minmax(200px, 1fr); }
 .st .st-ic h3 { font-size: 14px; font-weight: 600; margin: 0; padding: 11px 16px 0; }
 .st .st-ic .concl { padding: 2px 16px 8px; font-size: 13px; }
 .st .st-ic .left { margin: 7px 16px 9px; font-size: 11.5px; color: #6b7280; }
+.st .st-ic .about { padding: 2px 16px 8px; font-size: 12.5px; color: #6b7280; }
+.st .st-ic > .button { margin: 2px 16px 12px; }
+/* A follow-up and its original (LST-82): the two campaigns on the left, what the second mail added to the
+   original's click rate on the right; under each other when the card is narrow. */
+.st .st-fu { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 8px 28px; margin: 0 16px; padding: 10px 0; border-top: 1px solid #eef0f4; font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
+.st .st-fu .who > div, .st .st-fu .what > div:first-child { display: grid; grid-template-columns: 58px 1fr; gap: 8px; }
+.st .st-fu .who > div + div { margin-top: 6px; }
+.st .st-fu .k { color: #6b7280; font-size: 11.5px; padding-top: 1px; }
+.st .st-fu .s { display: block; color: #6b7280; font-size: 11.5px; }
+.st .st-fu .what b { font-size: 14px; }
+.st .st-fu .what .st-chg { white-space: nowrap; margin-left: 4px; }
+.st .st-fu .tr { display: block; height: 10px; background: #eef0f4; border-radius: 2px; position: relative; overflow: hidden; margin: 6px 0 5px 66px; }
+.st .st-fu .fl { position: absolute; left: 0; top: 0; bottom: 0; background: #b9c1cf; }
+.st .st-fu .fl.best { background: #0055d4; }
+.st .st-fu .what > .s { margin-left: 66px; }
+.st .st-fu.mute .what { color: #a2a8b2; }
+.st .st-fu.mute .what b { color: #6b7280; }
 .st .st-ic .foot { padding: 7px 16px; font-size: 11.5px; color: #6b7280; border-top: 1px solid #e5e7eb; }
 .st .st-br { display: grid; grid-template-columns: 110px minmax(40px, 1fr) minmax(200px, 330px); gap: 8px; align-items: center; font-size: 12.5px; margin: 5px 16px; word-break: keep-all; overflow-wrap: anywhere; }
 .st .st-br .tr { height: 10px; background: #eef0f4; border-radius: 2px; position: relative; }
