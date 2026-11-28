@@ -1402,8 +1402,9 @@ func TestSenderStatusWriteKeepsCancelledAndPaused(t *testing.T) {
 		{"finished", "paused", "finished"},
 	} {
 		id, _ := e.addCampaign(tc.from)
-		if err := e.store.UpdateCampaignStatus(id, tc.write); err != nil {
-			t.Fatal(err)
+		err := e.store.UpdateCampaignStatus(id, tc.write)
+		if applied := tc.want == tc.write; applied != (err == nil) || (!applied && !errors.Is(err, manager.ErrCampaignNotRunning)) {
+			t.Fatalf("%s campaign, sender writes %s: err %v", tc.from, tc.write, err)
 		}
 		if got := status(id); got != tc.want {
 			t.Fatalf("%s campaign, sender writes %s: %s, want %s", tc.from, tc.write, got, tc.want)
@@ -1442,7 +1443,8 @@ func TestResumeAfterRetentionSendsNobodyTwice(t *testing.T) {
 	}
 
 	msgr := &gateMessenger{}
-	e.startManager(e.store, msgr, io.Discard)
+	m := e.startManager(e.store, msgr, io.Discard)
+	t.Cleanup(m.Close)
 	e.setStatus(models.CampaignStatusRunning)
 	e.waitCampaign("finished", 40)
 	wantSame(t, "sent to", msgr.sentIDs(), e.eligible[15:])
