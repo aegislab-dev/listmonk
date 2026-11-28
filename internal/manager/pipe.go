@@ -358,7 +358,14 @@ func (p *pipe) cleanup() {
 
 	// The campaign was auto-paused due to errors.
 	if p.withErrors.Load() {
-		if err := p.m.store.UpdateCampaignStatus(p.camp.ID, models.CampaignStatusPaused); err != nil {
+		err := p.m.store.UpdateCampaignStatus(p.camp.ID, models.CampaignStatusPaused)
+		if errors.Is(err, ErrCampaignNotRunning) {
+			// AXM (LST-72): an operator cancelled or paused it meanwhile. That state stays and
+			// is not reported as a pause after errors.
+			p.m.log.Printf("campaign (%s) is no longer running, not setting it to %s", p.camp.Name, models.CampaignStatusPaused)
+			return
+		}
+		if err != nil {
 			p.m.log.Printf("error updating campaign (%s) status to %s: %v", p.camp.Name, models.CampaignStatusPaused, err)
 		} else {
 			p.m.log.Printf("set campaign (%s) to %s", p.camp.Name, models.CampaignStatusPaused)
@@ -385,7 +392,13 @@ func (p *pipe) cleanup() {
 	// If a running campaign has exhausted subscribers, it's finished.
 	if c.Status == models.CampaignStatusRunning || c.Status == models.CampaignStatusScheduled {
 		c.Status = models.CampaignStatusFinished
-		if err := p.m.store.UpdateCampaignStatus(p.camp.ID, models.CampaignStatusFinished); err != nil {
+		err := p.m.store.UpdateCampaignStatus(p.camp.ID, models.CampaignStatusFinished)
+		if errors.Is(err, ErrCampaignNotRunning) {
+			// AXM (LST-72): cancelled or paused after the status was read.
+			p.m.log.Printf("campaign (%s) is no longer running, not finishing it", p.camp.Name)
+			return
+		}
+		if err != nil {
 			p.m.log.Printf("error finishing campaign (%s): %v", p.camp.Name, err)
 		} else {
 			p.m.log.Printf("campaign (%s) finished", p.camp.Name)

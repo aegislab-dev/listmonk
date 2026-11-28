@@ -136,6 +136,7 @@ type Queries struct {
 	AxmCountCampaignSends          *sqlx.Stmt `query:"axm-count-campaign-sends"`
 	AxmGetCampaignSentIDs          *sqlx.Stmt `query:"axm-get-campaign-sent-ids"`
 	AxmDeleteCampaignSends         *sqlx.Stmt `query:"axm-delete-campaign-sends"`
+	AxmSenderCampaignStatus        *sqlx.Stmt `query:"axm-sender-campaign-status"`
 
 	AxmInsertAudit *sqlx.Stmt `query:"axm-insert-audit"`
 	AxmAuditUsers  *sqlx.Stmt `query:"axm-audit-users"`
