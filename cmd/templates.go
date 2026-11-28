@@ -169,8 +169,15 @@ func (a *App) UpdateTemplate(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	// Update the template in the DB.
+	// AXM (LST-71): not a change that takes the unsubscribe link away from a scheduled campaign.
 	id := getID(c)
+	if o.Type == models.TemplateTypeCampaign {
+		if err := a.checkScheduledTemplate(id, o.Body); err != nil {
+			return err
+		}
+	}
+
+	// Update the template in the DB.
 	out, err := a.core.UpdateTemplate(id, o.Name, o.Subject, []byte(o.Body), o.BodySource)
 	if err != nil {
 		return err

@@ -231,6 +231,10 @@ describe('import to campaign flow', () => {
     const list = fresh('sched');
     const when = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
     makeList(list).then(({ id }) => {
+      // Scheduling needs somebody on the list: the server refuses a campaign with nobody to send to (LST-71).
+      cy.request('POST', '/api/subscribers', {
+        email: `flow-sched-${stamp}@example.invalid`, name: 'Flow scheduled', status: 'enabled', lists: [id], preconfirm_subscriptions: true,
+      });
       cy.request('POST', '/api/campaigns', {
         name: `Flow scheduled ${stamp}`, subject: 'Flow subject', type: 'regular', messenger: 'email', content_type: 'richtext', body: '<p>Hi</p>', lists: [id], send_at: when,
       }).then(({ body }) => {

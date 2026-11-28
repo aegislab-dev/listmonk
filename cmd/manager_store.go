@@ -15,6 +15,7 @@ import (
 	"github.com/knadh/listmonk/internal/media"
 	"github.com/knadh/listmonk/models"
 	"github.com/lib/pq"
+	null "gopkg.in/volatiletech/null.v6"
 )
 
 // store implements DataSource over the primary
@@ -71,7 +72,51 @@ func newManagerStore(q *models.Queries, c *core.Core, m media.Store, db *sqlx.DB
 func (s *store) NextCampaigns(currentIDs []int64) ([]*models.Campaign, error) {
 	var out []*models.Campaign
 	err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs))
-	return out, err
+	if err != nil {
+		return out, err
+	}
+
+	// AXM (LST-71): a regular campaign that is due and has nobody on its lists was not started
+	// above (it keeps its state). It is taken out of the schedule instead of being found again at
+	// every scan, and sent to whoever subscribes later. It is not handed to the manager.
+	var due []int
+	for _, c := range out {
+		if c.Status == models.CampaignStatusScheduled && c.Type == models.CampaignTypeRegular {
+			due = append(due, c.ID)
+		}
+	}
+	if len(due) == 0 {
+		return out, nil
+	}
+	back, err := s.core.RevertEmptyScheduled(due)
+	if err != nil {
+		// The campaigns were read as they always were: this only did not take some of them
+		// out of the schedule, and it is tried again at the next scan.
+		lo.Printf("error returning empty scheduled campaigns to draft: %v", err)
+		return out, nil
+	}
+	if len(back) == 0 {
+		return out, nil
+	}
+	gone := make(map[int]bool, len(back))
+	for _, r := range back {
+		gone[r.ID] = true
+		// Written as the server itself, as the rows of auditSystem.
+		if err := s.core.AddAudit(models.AuditEntry{
+			UserType: models.AuditUserTypeSystem, Username: "system", UserName: "system",
+			Action: auditCampaignUnschedule, TargetType: auditTargetCampaign,
+			TargetID: null.IntFrom(r.ID), TargetName: cutName(scrubAuditText(r.Name)),
+		}, map[string]any{"status": r.Status, "reason": "no_recipients"}); err != nil {
+			lo.Printf("error writing the audit log (%s): %v", auditCampaignUnschedule, err)
+		}
+	}
+	kept := out[:0]
+	for _, c := range out {
+		if !gone[c.ID] {
+			kept = append(kept, c)
+		}
+	}
+	return kept, nil
 }
 
 // NextSubscribers retrieves a subset of subscribers of a given campaign.

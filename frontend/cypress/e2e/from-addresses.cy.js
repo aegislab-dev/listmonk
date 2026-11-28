@@ -4,6 +4,7 @@ describe('Team From address list', () => {
   const mine = 'aegislab_us@crevasse.ai';
   const team = 'AEGIS 팀 <team@crevasse.ai>';
   let listId;
+  let recipientId;
   let saved;
   let savedSettings;
   const campaigns = [];
@@ -44,6 +45,10 @@ describe('Team From address list', () => {
     cy.request('POST', '/api/lists', {
       name: `Synthetic from list ${stamp}`, type: 'private', optin: 'single', tags: [],
     }).then(({ body }) => { listId = body.data.id; });
+    // Scheduling needs somebody on the list: the server refuses a campaign with nobody to send to (LST-71).
+    cy.then(() => cy.request('POST', '/api/subscribers', {
+      email: `from-list-rcpt-${stamp}@example.invalid`, name: 'Synthetic recipient', status: 'enabled', lists: [listId], preconfirm_subscriptions: true,
+    })).then(({ body }) => { recipientId = body.data.id; });
     setList([]);
   });
 
@@ -53,6 +58,7 @@ describe('Team From address list', () => {
       cy.request({ method: 'DELETE', url: `/api/campaigns?id=${id}`, failOnStatusCode: false });
     });
     if (listId) cy.request('DELETE', `/api/lists?id=${listId}`);
+    if (recipientId) cy.request({ method: 'DELETE', url: `/api/subscribers/${recipientId}`, failOnStatusCode: false });
     if (savedSettings) {
       cy.request('PUT', '/api/settings/axm.sender_domains', savedSettings['axm.sender_domains']);
       cy.waitForBackend();
@@ -281,6 +287,8 @@ describe('Team From address list', () => {
       expect(body.data.status).to.eq('scheduled');
       expect(body.data.from_email).to.eq('Approved Team <team@crevasse.ai>');
     });
+    // A scheduled campaign keeps its From on the list: the next tests change the list (LST-71).
+    cy.then(() => cy.request('PUT', `/api/campaigns/${id}/status`, { status: 'draft' }));
   });
 
   it('leaves account senders alone, and warns about a placeholder draft once the list is empty', () => {

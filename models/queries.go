@@ -42,10 +42,14 @@ type Queries struct {
 	AxmBouncedUnlessRecorded    *sqlx.Stmt `query:"axm-bounced-unless-recorded"`
 	AxmBouncedReleaseSubscriber *sqlx.Stmt `query:"axm-bounced-release-subscriber"`
 
-	AxmPreflightAudience     *sqlx.Stmt `query:"axm-preflight-audience"`
-	AxmPreflightHasRecipient *sqlx.Stmt `query:"axm-preflight-has-recipient"`
-	AxmPreflightSample       *sqlx.Stmt `query:"axm-preflight-sample"`
-	AxmCampaignForSendCheck  *sqlx.Stmt `query:"axm-campaign-for-send-check"`
+	AxmPreflightAudience        *sqlx.Stmt `query:"axm-preflight-audience"`
+	AxmPreflightHasRecipient    *sqlx.Stmt `query:"axm-preflight-has-recipient"`
+	AxmPreflightListedRecipient *sqlx.Stmt `query:"axm-preflight-listed-recipient"`
+	AxmRevertEmptyScheduled     *sqlx.Stmt `query:"axm-revert-empty-scheduled"`
+	AxmScheduledByTemplate      *sqlx.Stmt `query:"axm-scheduled-by-template"`
+	AxmScheduledSenders         *sqlx.Stmt `query:"axm-scheduled-senders"`
+	AxmPreflightSample          *sqlx.Stmt `query:"axm-preflight-sample"`
+	AxmCampaignForSendCheck     *sqlx.Stmt `query:"axm-campaign-for-send-check"`
 
 	AxmDrawLock                    *sqlx.Stmt `query:"axm-draw-lock"`
 	AxmDrawSource                  *sqlx.Stmt `query:"axm-draw-source"`
