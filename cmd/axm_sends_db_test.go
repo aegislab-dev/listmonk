@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -1319,11 +1320,144 @@ func TestSendRecordRetention(t *testing.T) {
 	}
 }
 
+// LST-72: a record the sender can still need to leave someone out is not deleted by the retention
+// cleanup, however old: one of a campaign that has not ended, above its checkpoint. The rest of
+// the records of such a campaign, and all of an ended campaign, are deleted as before.
+func TestSendRecordRetentionKeepsWhatAResumeNeeds(t *testing.T) {
+	e := newSendsEnv(t, 0)
+	e.db.MustExec(`DELETE FROM subscribers`)
+	e.db.MustExec(`INSERT INTO subscribers (uuid, email, name)
+		SELECT gen_random_uuid(), 'k' || g || '@example.invalid', 'Synthetic' FROM generate_series(1, 20) g`)
+	subs := e.ids(`SELECT id FROM subscribers ORDER BY id`)
+	checkpoint := subs[9]
+
+	camps := map[string]int{}
+	for _, status := range []string{"draft", "scheduled", "running", "paused", "finished", "cancelled"} {
+		id, _ := e.addCampaign(status)
+		camps[status] = id
+		e.db.MustExec(`UPDATE campaigns SET last_subscriber_id = $2 WHERE id = $1`, id, checkpoint)
+		e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at)
+			SELECT $1, id, NOW() - INTERVAL '14 months' FROM subscribers`, id)
+	}
+	left := func(status string) (below, above int) {
+		t.Helper()
+		e.get(&below, `SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id <= $2`, camps[status], checkpoint)
+		e.get(&above, `SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2`, camps[status], checkpoint)
+		return below, above
+	}
+
+	// Ten records at or below the checkpoint of each of the four campaigns that can still send
+	// and all twenty of the two that cannot are deleted. Ten above the checkpoint of each of the
+	// four stay.
+	if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 4*10+2*20 {
+		t.Fatalf("deleted %d records, err %v", n, err)
+	}
+	for _, status := range []string{"draft", "scheduled", "running", "paused"} {
+		if below, above := left(status); below != 0 || above != 10 {
+			t.Fatalf("%s campaign: %d records at or below its checkpoint, %d above, want 0 and 10", status, below, above)
+		}
+	}
+	for _, status := range []string{"finished", "cancelled"} {
+		if below, above := left(status); below != 0 || above != 0 {
+			t.Fatalf("%s campaign: %d records at or below its checkpoint, %d above, want 0 and 0", status, below, above)
+		}
+	}
+	if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 0 {
+		t.Fatalf("second purge deleted %d, err %v", n, err)
+	}
+
+	// The checkpoint moving up releases the records it passes, and so does the end of the campaign.
+	e.db.MustExec(`UPDATE campaigns SET last_subscriber_id = $2 WHERE id = $1`, camps["paused"], subs[14])
+	e.db.MustExec(`UPDATE campaigns SET status = 'finished' WHERE id = $1`, camps["running"])
+	e.db.MustExec(`UPDATE campaigns SET status = 'cancelled' WHERE id = $1`, camps["draft"])
+	if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 5+10+10 {
+		t.Fatalf("deleted %d records after the checkpoint and the statuses moved, err %v", n, err)
+	}
+	if _, above := left("paused"); above != 5 {
+		t.Fatalf("paused campaign kept %d records above its new checkpoint, want 5", above)
+	}
+	if _, above := left("scheduled"); above != 10 {
+		t.Fatalf("scheduled campaign kept %d records, want 10", above)
+	}
+}
+
+// LST-72: the sender's own status writes never undo what an operator did meanwhile. An auto-pause
+// after errors that lands after a cancel used to turn the cancelled campaign into a paused one,
+// which can be resumed after the retention cleanup deleted the records of a cancelled campaign.
+func TestSenderStatusWriteKeepsCancelledAndPaused(t *testing.T) {
+	e := newSendsEnv(t, 0)
+	status := func(id int) string {
+		var s string
+		e.get(&s, `SELECT status FROM campaigns WHERE id = $1`, id)
+		return s
+	}
+	for _, tc := range []struct{ from, write, want string }{
+		{"running", "paused", "paused"},
+		{"running", "finished", "finished"},
+		{"scheduled", "finished", "finished"},
+		{"running", "cancelled", "cancelled"},
+		{"cancelled", "paused", "cancelled"},
+		{"cancelled", "finished", "cancelled"},
+		{"paused", "finished", "paused"},
+		{"finished", "paused", "finished"},
+	} {
+		id, _ := e.addCampaign(tc.from)
+		err := e.store.UpdateCampaignStatus(id, tc.write)
+		if applied := tc.want == tc.write; applied != (err == nil) || (!applied && !errors.Is(err, manager.ErrCampaignNotRunning)) {
+			t.Fatalf("%s campaign, sender writes %s: err %v", tc.from, tc.write, err)
+		}
+		if got := status(id); got != tc.want {
+			t.Fatalf("%s campaign, sender writes %s: %s, want %s", tc.from, tc.write, got, tc.want)
+		}
+	}
+}
+
+// LST-72: the sender, picking a campaign up again after the retention period, still leaves out
+// the people above its checkpoint who already got it. Their records are what says so, and a
+// per-campaign count of deleted records cannot.
+func TestResumeAfterRetentionSendsNobodyTwice(t *testing.T) {
+	e := newSendsEnv(t, 40)
+	e.setStatus(models.CampaignStatusPaused)
+
+	// The state a pause left, 14 months ago: 15 of the 40 were sent, the checkpoint is behind
+	// the last five of them.
+	checkpoint := e.eligible[9]
+	e.db.MustExec(`UPDATE campaigns SET to_send = 40, sent = 15, last_subscriber_id = $2,
+		started_at = NOW() - INTERVAL '14 months' WHERE id = $1`, e.campID, checkpoint)
+	for _, id := range e.eligible[:15] {
+		e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() - INTERVAL '14 months')`, e.campID, id)
+	}
+
+	if n, err := e.core.PurgeOldCampaignSends(); err != nil || n != 10 {
+		t.Fatalf("deleted %d records, err %v, want the ten at or below the checkpoint", n, err)
+	}
+	wantSame(t, "records kept", e.recorded(), e.eligible[10:15])
+
+	// The resume confirmation counts them as sent, too.
+	_, aud, err := e.core.GetPreflightAudience(context.Background(), e.campID, checkpoint, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aud.Remaining != 25 {
+		t.Fatalf("remaining %d, want 25", aud.Remaining)
+	}
+
+	msgr := &gateMessenger{}
+	m := e.startManager(e.store, msgr, io.Discard)
+	t.Cleanup(m.Close)
+	e.setStatus(models.CampaignStatusRunning)
+	e.waitCampaign("finished", 40)
+	wantSame(t, "sent to", msgr.sentIDs(), e.eligible[15:])
+}
+
 func TestSendRecordRetentionSkipsLockedCampaign(t *testing.T) {
 	e := newSendsEnv(t, 0)
+	// A campaign that has ended: the cleanup deletes its records (LST-72 keeps those of a
+	// campaign that can still send).
+	e.setStatus(models.CampaignStatusFinished)
 	var other int
-	if err := e.db.Get(&other, `INSERT INTO campaigns (uuid, name, subject, from_email, body, messenger)
-		VALUES (gen_random_uuid(), 'Other', 'Subject', 'sender@example.invalid', 'Body', 'email') RETURNING id`); err != nil {
+	if err := e.db.Get(&other, `INSERT INTO campaigns (uuid, name, subject, from_email, body, messenger, status)
+		VALUES (gen_random_uuid(), 'Other', 'Subject', 'sender@example.invalid', 'Body', 'email', 'finished') RETURNING id`); err != nil {
 		t.Fatal(err)
 	}
 	e.db.MustExec(`INSERT INTO subscribers (uuid, email, name)

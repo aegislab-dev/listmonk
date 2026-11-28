@@ -43,11 +43,30 @@ WHERE c.uuid = $1::UUID AND s.uuid = $2::UUID
 -- gets it twice (LST-20).
 SELECT subscriber_id FROM axm_campaign_sends WHERE campaign_id = $1 AND subscriber_id > $2;
 
+-- name: axm-sender-campaign-status
+-- (LST-72) The sender's own status writes (auto-pause after errors, finish, cancel for an
+-- unknown messenger), as update-campaign-status but only for a campaign that is still being
+-- sent (running or scheduled). An operator who cancelled or paused the campaign while the pipe
+-- wound down keeps that state: the pause after errors used to turn a cancelled campaign into a
+-- paused one, which can be resumed, and a resume after the retention cleanup deleted records of
+-- a cancelled campaign would send to the people it had already reached.
+UPDATE campaigns SET status = $2::campaign_status, updated_at = NOW()
+WHERE id = $1 AND status IN ('running', 'scheduled');
+
 -- name: axm-count-campaign-sends
 SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1;
 
 -- name: axm-delete-campaign-sends
 -- Delete a batch. The ledger's delete trigger carries its count forward.
+-- (LST-72) A record that the sender can still need is kept however old it is: one of a
+-- campaign that has not ended (anything but finished or cancelled, which cannot start again)
+-- for a subscriber above the campaign's checkpoint. A campaign that is picked up again reads
+-- from its checkpoint and leaves out the people above it who already got the mail by these
+-- records (axm-get-campaign-sent-ids). Deleted, they would get it a second time, and only a
+-- per-campaign count would be left of who they were. Once the campaign ends, or its checkpoint
+-- passes them, they are deleted like any other. The checkpoint only moves up and a finished or
+-- cancelled campaign never runs again, so a status or checkpoint read while this statement
+-- runs cannot make a kept record deletable too early.
 WITH due AS MATERIALIZED (
     -- Lock the parent before its send records. Deleting a campaign takes the same
     -- locks in that order. Apply the limit to rows whose parent can be locked so a
@@ -55,6 +74,7 @@ WITH due AS MATERIALIZED (
     SELECT s.ctid, s.campaign_id
     FROM axm_campaign_sends s JOIN campaigns c ON c.id = s.campaign_id
     WHERE s.sent_at < $1
+        AND (c.status IN ('finished', 'cancelled') OR s.subscriber_id <= c.last_subscriber_id)
     LIMIT $2
     FOR KEY SHARE OF c SKIP LOCKED
 ),
