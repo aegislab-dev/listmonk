@@ -137,6 +137,10 @@ test('formatting the words of Markdown emphasis keeps the emphasis, also before 
     // Part of the words, in the middle of a word: the tags would break the marks, so the format is not applied.
     ['**특가 행사**를', '행사', { underline: true }, '**특가 행사**를'],
     ['이**특가 행사**', '특가', { underline: true }, '이**특가 행사**'],
+    // A selection from before the emphasis to the end of its words: the tags go around the marks.
+    ['이번 **특가**를 확인하세요', '이번 **특가', { underline: true }, '<u>이번 **특가**</u>를 확인하세요'],
+    ['새 *신상품*이 나왔어요', '새 *신상품', { bold: true }, '<strong>새 *신상품*</strong>이 나왔어요'],
+    ['이번 **특가**를 확인하세요', '특가**를', { underline: true }, '이번 **<u>특가**를</u> 확인하세요'],
   ];
   cases.forEach(([source, phrase, fmt, expected]) => {
     const out = format(source, phrase, fmt);
@@ -145,6 +149,26 @@ test('formatting the words of Markdown emphasis keeps the emphasis, also before 
     assert.doesNotMatch(render(out), /\*/, out);
     // Reading it back and writing it again changes nothing.
     assert.equal(roundTrip(out, true).text, out);
+  });
+});
+
+test('formatting any selection around Markdown emphasis renders the emphasis as before', () => {
+  const sources = ['이번 **특가**를 확인하세요', '새 *신상품*이 나왔어요', '이번 **특가** 확인', 'a**b**c', '***특가***를',
+    '가 **나 *다* 라**를 마', '이번 __특가__ 확인', '앞 _기울임_ 뒤'];
+  const fmts = [{ bold: true }, { underline: true }, { size: 20 }];
+  sources.forEach((source) => {
+    const before = runsOf(parseFormatted(source, 'markdown'));
+    fmts.forEach((fmt) => {
+      for (let s = 0; s < source.length; s += 1) {
+        for (let e = s + 1; e <= source.length; e += 1) {
+          const after = [run(source.slice(0, s)), run(source.slice(s, e), fmt), run(source.slice(e))].filter((r) => r.value);
+          const out = serializeFormatted(preserve(before, after), 'markdown').text;
+          const label = JSON.stringify([source, source.slice(s, e), fmt, out]);
+          assert.equal(strip(render(out)).replace(/\s+/g, ' '), strip(render(source)).replace(/\s+/g, ' '), label);
+          assert.equal(roundTrip(out, true).text, out, label);
+        }
+      }
+    });
   });
 });
 

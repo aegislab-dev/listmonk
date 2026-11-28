@@ -248,26 +248,29 @@ const keepEmphasis = (source, before, runs, emphasis) => {
   emphasis.forEach(({
     a, b, c, d,
   }) => {
-    const openNew = edge(now, b) && !edge(old, b);
-    const closeNew = edge(now, c) && !edge(old, c);
-    if (!openNew && !closeNew) return;
-    const first = now[b];
-    let whole = openNew && closeNew;
-    for (let i = b; whole && i < c; i += 1) whole = same(now[i], first);
-    if (whole) {
-      for (let i = a; i < b; i += 1) now[i] = first;
-      for (let i = c; i < d; i += 1) now[i] = first;
-      changed = true;
-      return;
-    }
-    if (openNew && !isEdge(source[a - 1])) {
-      for (let i = b; i < c && same(now[i], first); i += 1) now[i] = old[i];
-      changed = true;
-    }
-    if (closeNew && !isEdge(source[d])) {
-      const last = now[c - 1];
-      for (let i = c - 1; i >= b && same(now[i], last); i -= 1) now[i] = old[i];
-      changed = true;
+    // A tag boundary the format adds: in a mark, or right after the opening mark as a
+    // closing tag, or right before the closing mark as an opening tag, or on the
+    // inside next to a letter, no longer lets the marks open and close the emphasis.
+    const fresh = (p) => edge(now, p) && !edge(old, p);
+    let bad = false;
+    for (let p = a + 1; p < b; p += 1) bad = bad || fresh(p);
+    for (let p = c + 1; p < d; p += 1) bad = bad || fresh(p);
+    // What is next to the whole run of marks counts (***x*** is one run of marks).
+    let runStart = a;
+    while (runStart > 0 && (source[runStart - 1] === '*' || source[runStart - 1] === '_')) runStart -= 1;
+    let runEnd = d;
+    while (source[runEnd] === '*' || source[runEnd] === '_') runEnd += 1;
+    if (fresh(b) && (isFormatted(now[b - 1]) || !isEdge(source[runStart - 1]))) bad = true;
+    if (fresh(c) && (isFormatted(now[c]) || !isEdge(source[runEnd]))) bad = true;
+    if (!bad) return;
+    changed = true;
+    // The same format all through the words: the tags go around the marks. Otherwise
+    // the emphasis keeps what it had.
+    let whole = true;
+    for (let i = b; whole && i < c; i += 1) whole = same(now[i], now[b]);
+    for (let i = a; i < d; i += 1) {
+      if (!whole) now[i] = old[i];
+      else if (i < b || i >= c) now[i] = now[b];
     }
   });
   if (!changed) return runs;
