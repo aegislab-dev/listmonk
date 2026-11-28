@@ -350,7 +350,10 @@
     "campaign-recent-exclude.cy.js",
     "address-gate.cy.js",
     "import-campaign-flow.cy.js",
-    "bounce-filter-delete.cy.js"
+    "bounce-filter-delete.cy.js",
+    "sender-addresses.cy.js",
+    "from-addresses.cy.js",
+    "analytics-proof.cy.js"
    ]
   },
   {
