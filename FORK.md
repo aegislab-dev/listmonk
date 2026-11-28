@@ -69,6 +69,9 @@ git push origin v6.2.0-axm.1
 - 수동 실행: 같은 검사만 수행, 게시 없음.
 - `v*-axm.*` 태그: 엄격한 버전 형식·유지 브랜치 포함 여부·미게시 태그 확인 → 같은 검사 → GHCR 게시.
 - 게시에는 `GITHUB_TOKEN`만 사용한다. DockerHub로 보내지 않는다.
+- 잡 구성(LST-83): `plan`(버전·미게시 확인, 문서만 바뀐 PR 판정) → `go`(Go 시험)와 `build`(이미지 빌드·저장)가 동시에 → `browser (1)`~`(4)`(설치 smoke + 브라우저 시험 4묶음)와 `upgrade`(공식 v6.2.0 DB 업그레이드) → `publish`(태그만) → `image`(판정). 시험·게시 잡은 `build`가 저장한 이미지 파일을 sha256으로 확인해 쓰므로 시험한 이미지와 게시한 이미지가 같다. digest는 `publish` 잡 요약에 나온다.
+- PR 체크로 볼 것은 `image` 하나다. 문서만 바뀐 PR(맨 위 `*.md`, `docs/**`)은 이미지 검사를 건너뛰고 `image`만 초록으로 끝난다. 태그는 언제나 전부 돈다.
+- 잡 시한: `go` 30분, `build` 20분, `browser` 묶음마다 30분, `upgrade`·`publish` 15분. 한 잡이 30분 시한에 19~27분을 쓰던 때(2026-11-26~28 사이 10회 시한 초과 취소)와 달리 평소 걸리는 시간의 4배 이상을 둔다.
 - OCI 라벨에는 source, url(소스 태그), revision(전체 SHA), version, licenses, created, title, 원본의 수정판이라는 description을 담는다.
 
 ### 릴리스 기록

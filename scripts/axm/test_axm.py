@@ -7,6 +7,8 @@ import importlib.machinery
 import importlib.util
 import json
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -744,6 +746,133 @@ class Round11Test(unittest.TestCase):
                   'frontend/src/views/settings/general.vue', 'cmd/campaigns.go', 'cmd/senders.go',
                   'cmd/settings.go', 'cmd/admin.go', 'frontend/cypress/e2e/from-addresses.cy.js'):
             self.assertIn('from-addresses.cy.js', pick(f)['specs'], f)
+
+
+class CiScopeTest(unittest.TestCase):
+    """scripts/axm/ci-scope: 문서만 바뀐 PR 만 이미지 검사를 건너뛴다(LST-83)."""
+
+    BASE = {'LICENSE': 'license\n', 'README.md': 'readme\n', 'FORK.md': 'fork\n', 'docs/site/a.md': 'a\n',
+            'cmd/main.go': 'package main\n', 'static/email-templates/base.html': '<p>\n'}
+
+    def _git(self, repo, *args):
+        return subprocess.run(['git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@example.invalid',
+                               '-c', 'commit.gpgsign=false', *args], check=True, capture_output=True, text=True).stdout
+
+    def _scope(self, change, event='pull_request', refs=('HEAD^1', 'HEAD')):
+        """BASE 를 커밋하고 change(경로 → 내용, None 은 삭제)를 두 번째 커밋으로 얹은 저장소에서 스크립트를 돌린다."""
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            self._git(repo, 'init', '-q')
+            for commit in (self.BASE, change):
+                for path, text in commit.items():
+                    f = repo / path
+                    if text is None:
+                        f.unlink()
+                    else:
+                        f.parent.mkdir(parents=True, exist_ok=True)
+                        f.write_text(text)
+                self._git(repo, 'add', '-A')
+                self._git(repo, 'commit', '-q', '--allow-empty', '-m', 'c')
+            r = subprocess.run(['bash', str(HERE / 'ci-scope'), event, *refs], cwd=repo, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return r.stdout.strip()
+
+    def test_documents_only_skip_the_image_checks(self):
+        self.assertEqual(self._scope({'FORK.md': 'fork 2\n'}), 'build=false')
+        self.assertEqual(self._scope({'AGENTS.md': 'new\n', 'docs/site/a.md': 'b\n', 'docs/swagger/x.yaml': 'x\n'}), 'build=false')
+        self.assertEqual(self._scope({'docs/site/a.md': None}), 'build=false')
+        self.assertEqual(self._scope({}), 'build=false')
+
+    def test_anything_else_runs_them(self):
+        for change in ({'FORK.md': 'fork 2\n', 'cmd/main.go': 'package main // x\n'},
+                       {'.github/workflows/axm-image.yml': 'x\n'},
+                       {'LICENSE': 'other\n'},
+                       {'scripts/axm/ci-scope': 'x\n'},
+                       {'static/email-templates/notes.md': 'x\n'},   # 하위 폴더의 .md 는 문서가 아니다
+                       {'frontend/README.md': 'x\n'},
+                       {'cmd/main.go': None, 'main.md': 'package main\n'}):  # 이름 바꾸기 = 삭제 + 추가
+            self.assertEqual(self._scope(change), 'build=true', change)
+
+    def test_documents_the_image_carries_must_stay(self):
+        for change in ({'FORK.md': None}, {'README.md': ''}, {'LICENSE': None, 'NOTICE.md': 'x\n'}):
+            self.assertEqual(self._scope(change), 'build=true', change)
+
+    def test_only_pull_requests_can_skip(self):
+        for event in ('push', 'workflow_dispatch', ''):
+            self.assertEqual(self._scope({'FORK.md': 'fork 2\n'}, event=event), 'build=true', event)
+
+    def test_unreadable_change_list_runs_them(self):
+        self.assertEqual(self._scope({'FORK.md': 'fork 2\n'}, refs=('no-such-ref', 'HEAD')), 'build=true')
+
+    def test_workflow_calls_the_script_and_gates_on_it(self):
+        wf = yaml_jobs()
+        self.assertIn('scripts/axm/ci-scope', (ROOT / axm.CI_WORKFLOW).read_text())
+        for job in ('go', 'build'):
+            self.assertEqual(wf[job]['if'], "needs.plan.outputs.build == 'true'", job)
+
+
+def yaml_jobs():
+    """워크플로의 잡을 { 이름: { 'if': …, 'needs': [...], 'body': 텍스트 } } 로 읽는다(PyYAML 없이, 들여쓰기 기준)."""
+    text = (ROOT / axm.CI_WORKFLOW).read_text()
+    body = text[text.index('\njobs:\n') + len('\njobs:\n'):]
+    jobs = {}
+    for m in re.finditer(r'^  ([\w-]+):\n((?:(?:    .*|\s*|  #.*)\n)*)', body, re.M):
+        b = m.group(2)
+        cond = re.search(r'^    if: (.*)$', b, re.M)
+        needs = re.search(r'^    needs: (.*)$', b, re.M)
+        jobs[m.group(1)] = {'if': cond.group(1).strip() if cond else None,
+                            'needs': re.findall(r'[\w-]+', needs.group(1)) if needs else [], 'body': b}
+    return jobs
+
+
+class CiJobsTest(unittest.TestCase):
+    """잡을 나눈 워크플로(LST-83)가 지켜야 하는 것."""
+
+    def test_every_matrix_group_has_its_command_and_the_other_way(self):
+        browser = yaml_jobs()['browser']['body']
+        matrix = re.search(r'^\s+shard: \[([\d, ]+)\]$', browser, re.M)
+        groups = [int(x) for x in matrix.group(1).split(',')]
+        labels = [int(x) for x in re.findall(r'^\s+(\d+)\) npx cypress\s+run\b', browser, re.M)]
+        self.assertEqual(groups, labels)   # 행렬에 없는 번호의 spec 은 아무도 돌리지 않는다
+        self.assertEqual(groups, list(range(1, len(groups) + 1)))
+
+    def test_groups_cover_the_ci_specs_once(self):
+        browser = yaml_jobs()['browser']['body']
+        names = re.findall(r'cypress/e2e/([\w-]+\.cy\.js)', '\n'.join(l for l in browser.splitlines() if re.search(r'cypress\s+run', l)))
+        self.assertEqual(names, TMAP['map_ci_specs'])
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_the_gate_waits_for_every_job_and_always_runs(self):
+        jobs = yaml_jobs()
+        gate = jobs['image']
+        self.assertEqual(gate['if'], 'always()')
+        self.assertEqual(sorted(gate['needs']), sorted(j for j in jobs if j != 'image'))
+        for job in gate['needs']:
+            self.assertIn('needs.%s.result' % job, gate['body'], job)
+
+    def test_publish_needs_every_check_and_only_runs_for_a_release(self):
+        jobs = yaml_jobs()
+        self.assertEqual(sorted(jobs['publish']['needs']), sorted(j for j in jobs if j not in ('image', 'publish')))
+        self.assertEqual(jobs['publish']['if'], "success() && needs.plan.outputs.publish == 'true'")
+        # GHCR 에 쓸 수 있는 잡은 publish 와(게시 여부를 묻는) plan 뿐이다.
+        writers = [j for j, v in jobs.items() if 'packages: write' in v['body']]
+        self.assertEqual(sorted(writers), ['plan', 'publish'])
+
+    def test_every_job_that_uses_the_image_checks_the_saved_file(self):
+        jobs = yaml_jobs()
+        users = [j for j, v in jobs.items() if 'listmonk-axm:ci' in v['body'] and j != 'build']
+        self.assertEqual(sorted(users), ['browser', 'publish', 'upgrade'])
+        for j in users:
+            self.assertIn('sha256sum --check --strict', jobs[j]['body'], j)
+            self.assertIn('build', jobs[j]['needs'], j)
+
+    def test_no_layer_cache_is_written(self):
+        text = (ROOT / axm.CI_WORKFLOW).read_text()
+        self.assertIsNone(re.search(r'^\s*cache-(from|to):', text, re.M))
+
+    def test_every_job_has_a_time_limit(self):
+        for name, job in yaml_jobs().items():
+            self.assertRegex(job['body'], r'(?m)^    timeout-minutes: \d+$', name)
 
 
 if __name__ == '__main__':
