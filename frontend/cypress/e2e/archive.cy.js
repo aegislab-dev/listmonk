@@ -1,4 +1,4 @@
-const apiUrl = Cypress.env('apiUrl');
+const apiUrl = Cypress.expose('apiUrl');
 
 describe('Archive', () => {
   it('Opens campaigns page', () => {

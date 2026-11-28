@@ -1,4 +1,4 @@
-const apiUrl = Cypress.env('apiUrl');
+const apiUrl = Cypress.expose('apiUrl');
 const headers = '[{"X-Custom": "Custom-Value"}]';
 
 describe('Campaigns', () => {
@@ -371,7 +371,7 @@ describe('Campaigns', () => {
   });
 
   it('Bulk deletes campaigns', () => {
-    const apiUrl = Cypress.env('apiUrl');
+    const apiUrl = Cypress.expose('apiUrl');
 
     const params = {
       name: 'test-campaign-bulk',

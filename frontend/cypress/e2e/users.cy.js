@@ -1,4 +1,4 @@
-const apiUrl = Cypress.env('apiUrl');
+const apiUrl = Cypress.expose('apiUrl');
 
 describe('First time user setup', () => {
   it('Sets up the superadmin user', () => {

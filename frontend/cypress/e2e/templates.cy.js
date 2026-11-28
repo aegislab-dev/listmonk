@@ -44,7 +44,7 @@ describe('Templates', () => {
   });
 
   it('Previews campaign templates', () => {
-    const apiUrl = Cypress.env('apiUrl');
+    const apiUrl = Cypress.expose('apiUrl');
 
     // Edited one should have a bare body.
     cy.request(`${apiUrl}/api/templates/1/preview`).then((resp) => {
@@ -60,7 +60,7 @@ describe('Templates', () => {
   });
 
   it('Previews tx templates', () => {
-    const apiUrl = Cypress.env('apiUrl');
+    const apiUrl = Cypress.expose('apiUrl');
 
     // Cloned tx template.
     cy.request(`${apiUrl}/api/templates/6/preview`).then((resp) => {

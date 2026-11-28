@@ -1,4 +1,4 @@
-const apiUrl = Cypress.env('apiUrl');
+const apiUrl = Cypress.expose('apiUrl');
 const rootURL = 'http://127.0.0.1:9000';
 const faveURL = 'http://127.0.0.1:9000/public/static/logo.png';
 
