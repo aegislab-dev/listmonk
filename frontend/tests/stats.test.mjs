@@ -5,7 +5,7 @@ import {
   overlapRows, recipientRows, teamMedian, teamRows, weekdayOf, clickRate, bounceOver, complaintOver, campaignSummary, followupPairs, NO_TEAM_KEY,
 } from '../src/stats.js';
 import { readFileSync } from 'node:fs';
-import { DEFINITIONS, MIN, helpText } from '../src/stats-definitions.js';
+import { DEFINITIONS, MIN, helpParts } from '../src/stats-definitions.js';
 
 const en = JSON.parse(readFileSync(new URL('../../i18n/en.json', import.meta.url)));
 const t = (key, params = {}) => (en[key] || key).replace(/\{(\w+)\}/g, (_, k) => params[k]);
@@ -251,8 +251,12 @@ test('every figure the screen explains has a definition with a meaning, a formul
     const d = DEFINITIONS.find((x) => x.key === k);
     assert.ok(d, k);
     assert.ok(d.name && d.meaning && d.formula && d.compare && d.sample, k);
-    assert.ok(helpText(k, t).includes(t(d.formula)));
+    const help = helpParts(k, t);
+    assert.equal(help.name, t(d.name));
+    assert.equal(help.meaning, t(d.meaning));
+    assert.deepEqual(help.rows.map((r) => r.text), [t(d.formula), t(d.compare), t(d.sample)]);
   });
+  assert.equal(helpParts('nope', t), null);
   assert.equal(clickRate({ clickers: 1, sent: 8 }), 12.5);
 });
 

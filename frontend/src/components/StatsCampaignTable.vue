@@ -7,7 +7,7 @@
         <a href="#" @click.prevent="$emit('clear')" @keyup.enter="$emit('clear')" :title="$t('globals.buttons.clear')">×</a></span>
       <small>{{ team ? $t('stats.recentTeamNote', { total: total, shown: shown.length }) : $t('stats.recentNote', { n: shown.length }) }}</small>
     </h2>
-    <table class="st-table">
+    <table class="st-table st-fit">
       <thead>
         <tr>
           <th>{{ $tc('globals.terms.campaign', 1) }}</th><th>{{ $t('stats.start') }}</th><th>{{ $t('stats.sent') }}</th>
@@ -18,7 +18,7 @@
       </thead>
       <tbody>
         <tr v-for="c in shown" :key="c.id" :class="{ coll: k(c).collecting || sum(c).small }" :data-cy="`camp-row-${c.id}`" :data-own="String(c.own)">
-          <td>
+          <td class="st-title">
             <b>#{{ c.id }}</b> {{ c.name }}
             <span v-if="c.subject" class="s" data-cy="campaign-subject">{{ c.subject }}</span>
             <span v-if="isMyTeam(c)" class="st-pill">{{ $t('stats.myTeam') }}</span>
@@ -31,8 +31,8 @@
             <span v-else-if="k(c).untracked" class="st-tag">{{ $t('stats.untracked') }}</span>
             <span v-else-if="c.sent < MIN.campaignSent" class="st-tag dash">{{ $t('stats.small') }} · {{ $t('stats.sent') }} {{ c.sent }}</span>
           </td>
-          <td style="white-space:nowrap">{{ kst(c.startedAt) }}</td>
-          <td style="white-space:nowrap">{{ n(c.sent) }}<template v-if="k(c).state === 'running'"> / {{ n(c.toSend) }}</template></td>
+          <td>{{ kst(c.startedAt) }}</td>
+          <td>{{ n(c.sent) }}<template v-if="k(c).state === 'running'"> / {{ n(c.toSend) }}</template></td>
           <td v-if="k(c).state === 'running'" colspan="5" style="text-align:center;color:#a2a8b2">{{ $t('stats.runningNote') }}</td>
           <template v-else>
             <td>
@@ -55,7 +55,7 @@
               <span v-else class="st-note">{{ $t('stats.noCompare') }}</span>
             </td>
           </template>
-          <td>
+          <td class="st-acts">
             <stats-campaign-actions v-if="c.own" :campaign="c" />
             <span v-else class="st-note">{{ $t('stats.noOpen') }}</span>
           </td>

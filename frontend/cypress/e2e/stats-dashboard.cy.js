@@ -112,6 +112,102 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.contains('Campaign views').should('not.exist');
   });
 
+  // LST-81: a long subject used to take the whole width, the last column shrank to one letter and the
+  // Korean links broke after every letter. The link words are Korean here as on the production screen.
+  it('keeps the row actions on one line next to a long campaign name and subject', () => {
+    cy.intercept('GET', '/api/lang/*', (req) => req.continue((res) => {
+      Object.assign(res.body.data, { 'stats.analyze': '분석', 'globals.buttons.clone': '복제', 'stats.followupAction': '후속 메일' });
+    }));
+    const long = camp({
+      id: 15, name: `${'아주 긴 캠페인 이름 '.repeat(10)}끝`, subject: `${'A very long subject line '.repeat(8)}end`, started_at: day(11),
+    });
+    stub({ cur: [...mine, long, ...other] });
+    cy.viewport(1680, 900);
+    visitWithFixedClock();
+    cy.wait('@stats');
+
+    // Lines the text of an element takes.
+    const lines = (el) => {
+      const range = el.ownerDocument.createRange();
+      range.selectNodeContents(el);
+      return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+    };
+    const check = (stacked) => {
+      cy.get('[data-cy=camp-row-15] td').last().find('a').should('have.length', 3).then(($links) => {
+        expect([...$links].map((a) => a.textContent.trim())).to.deep.equal(['분석', '복제', '후속 메일']);
+        [...$links].forEach((a) => expect(lines(a), a.textContent).to.equal(1));
+        const tops = new Set([...$links].map((a) => Math.round(a.getBoundingClientRect().top)));
+        expect(tops.size).to.equal(stacked ? 3 : 1);
+      });
+      cy.get('[data-cy=stats-campaigns] tbody a').each(($a) => expect(lines($a[0]), $a.text()).to.equal(1));
+      // The long name and subject wrap inside their own column; the figures next to them do not.
+      cy.get('[data-cy=camp-row-15] td').first().then(($td) => {
+        expect($td[0].getBoundingClientRect().width).to.be.at.least(240);
+        expect($td[0].scrollWidth).to.be.at.most($td[0].clientWidth);
+        expect(lines($td.find('[data-cy=campaign-subject]')[0])).to.be.greaterThan(1);
+      });
+      cy.get('[data-cy=camp-row-15] td').eq(1).then(($td) => expect(lines($td[0])).to.equal(1));
+      cy.get('[data-cy=stats-campaigns] thead th').each(($th) => expect($th[0].getBoundingClientRect().height).to.be.lessThan(40));
+    };
+    check(false);
+    // A laptop and a narrow window: one link a line, still no link broken.
+    cy.viewport(1280, 900);
+    check(true);
+    cy.viewport(900, 900);
+    check(true);
+  });
+
+  it('opens the "?" bubble inside the screen, one item a line, above the "?" when there is room', () => {
+    stub();
+    cy.viewport(1280, 900);
+    visitWithFixedClock();
+    cy.wait('@stats');
+    const inside = ($bubble) => {
+      const box = $bubble[0].getBoundingClientRect();
+      expect(box.left).to.be.at.least(0);
+      expect(box.right).to.be.at.most($bubble[0].ownerDocument.documentElement.clientWidth);
+      return box;
+    };
+
+    // The last column: a bubble centred on the "?" would leave the screen on the right.
+    cy.get('[data-cy=stats-teams] thead th').last().find('[data-cy=help-complaint]').as('edge');
+    cy.get('@edge').find('button').scrollIntoView({ offset: { top: -400, left: 0 } }).focus();
+    cy.get('@edge').find('.tooltip-content').should('be.visible').then(($bubble) => {
+      inside($bubble);
+      expect($bubble.css('text-align')).to.match(/left|start/);
+      expect($bubble.css('word-break')).to.equal('keep-all');
+    });
+    // Name, meaning, then a labelled line each for the formula, the comparison and the sample.
+    cy.get('@edge').find('.st-help-name').should('have.text', 'Complaint rate');
+    cy.get('@edge').find('.st-help-label').should('have.length', 3).then(($labels) => {
+      expect([...$labels].map((l) => l.textContent)).to.deep.equal(['Formula', 'Compared with', 'Minimum sample']);
+      const tops = new Set([...$labels].map((l) => Math.round(l.getBoundingClientRect().top)));
+      expect(tops.size).to.equal(3);
+    });
+
+    // Above the "?" (the figures it explains are under it); below only when the top of the screen is too near.
+    cy.get('[data-cy=card-hour] [data-cy=help-click]').as('card');
+    cy.get('@card').find('button').scrollIntoView({ offset: { top: -400, left: 0 } }).focus();
+    cy.get('@card').find('.tooltip-content').should('be.visible').then(($bubble) => {
+      const button = $bubble.closest('[data-cy=help-click]').find('button')[0].getBoundingClientRect();
+      expect(inside($bubble).bottom).to.be.at.most(button.top);
+    });
+    cy.get('[data-cy=card-weekday] [data-cy=help-click]').as('top');
+    cy.get('@top').find('button').scrollIntoView({ offset: { top: -70, left: 0 } }).focus();
+    cy.get('@top').find('.tooltip-content').should('be.visible').then(($bubble) => {
+      const button = $bubble.closest('[data-cy=help-click]').find('button')[0].getBoundingClientRect();
+      expect(inside($bubble).top).to.be.at.least(button.bottom);
+    });
+
+    // A phone: the bubble is as wide as the screen allows.
+    cy.viewport(390, 800);
+    cy.get('[data-cy=card-length] [data-cy=help-click]').as('phone');
+    cy.get('@phone').find('button').scrollIntoView({ offset: { top: -400, left: 0 } }).focus();
+    cy.get('@phone').find('.tooltip-content').should('be.visible').then(($bubble) => {
+      expect(inside($bubble).width).to.be.at.most(390 - 24);
+    });
+  });
+
   it('explains the figures with a "?" and folds the definitions', () => {
     stub();
     visitWithFixedClock();
