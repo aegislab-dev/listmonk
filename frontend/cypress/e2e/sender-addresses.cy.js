@@ -4,6 +4,7 @@ describe('Unverified reply addresses on dated drafts', () => {
   const reply = `sender-draft-${Date.now()}@example.invalid`;
   let domains;
   let listId;
+  let recipientId;
   let draft;
   const campaigns = [];
   const fields = () => ({
@@ -30,6 +31,8 @@ describe('Unverified reply addresses on dated drafts', () => {
     cy.request('POST', '/api/lists', {
       name: `Synthetic sender draft ${Date.now()}`, type: 'private', optin: 'single', tags: [],
     }).then(({ body }) => { listId = body.data.id; });
+    // Scheduling needs somebody on the list: the server refuses a campaign with nobody to send to (LST-71).
+    cy.then(() => cy.request('POST', '/api/subscribers', { email: `sender-draft-rcpt-${Date.now()}@example.invalid`, name: 'Synthetic recipient', status: 'enabled', lists: [listId], preconfirm_subscriptions: true })).then(({ body }) => { recipientId = body.data.id; });
   });
 
   after(() => {
@@ -38,6 +41,7 @@ describe('Unverified reply addresses on dated drafts', () => {
       cy.request('DELETE', `/api/campaigns?id=${id}`);
     });
     if (listId) cy.request('DELETE', `/api/lists?id=${listId}`);
+    if (recipientId) cy.request({ method: 'DELETE', url: `/api/subscribers/${recipientId}`, failOnStatusCode: false });
     if (domains) {
       cy.request('PUT', '/api/settings/axm.sender_domains', domains);
       cy.waitForBackend();

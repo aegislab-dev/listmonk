@@ -6,6 +6,7 @@ const nameB = `휴지통시험B${stamp}`;
 let idA;
 let idB;
 let subId;
+let recipientId;
 
 // Earlier specs can fill the first page. Search for the lists owned by this spec.
 function openFixtureLists() {
@@ -94,6 +95,10 @@ describe('list trash', () => {
       cy.request('POST', '/api/campaigns', {
         name: `휴지통 캠페인 ${stamp}`, subject: 's', lists: [id], type: 'regular', content_type: 'richtext', body: '<p>x</p>', messenger: 'email',
       }).then(({ body: camp }) => {
+        // Scheduling needs somebody on the list: the server refuses a campaign with nobody to send to (LST-71).
+        cy.request('POST', '/api/subscribers', {
+          email: `trash-rcpt-${stamp}@example.invalid`, name: 'Synthetic recipient', status: 'enabled', lists: [id], preconfirm_subscriptions: true,
+        }).then(({ body: sub }) => { recipientId = sub.data.id; });
         // A draft campaign does not block; scheduling one does.
         cy.request('PUT', `/api/campaigns/${camp.data.id}`, {
           name: `휴지통 캠페인 ${stamp}`, subject: 's', lists: [id], type: 'regular', content_type: 'richtext', body: '<p>x</p>', messenger: 'email',
@@ -104,6 +109,7 @@ describe('list trash', () => {
         cy.request('PUT', `/api/campaigns/${camp.data.id}/status`, { status: 'draft' });
         cy.request('DELETE', `/api/campaigns/${camp.data.id}`);
         cy.request('DELETE', `/api/lists/${id}`).its('status').should('eq', 200);
+        cy.then(() => cy.request({ method: 'DELETE', url: `/api/subscribers/${recipientId}`, failOnStatusCode: false }));
       });
     });
   });

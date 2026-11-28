@@ -216,3 +216,72 @@ SELECT s.* FROM subscribers s WHERE s.id IN (SELECT id FROM eligible)
         WHERE h.campaign_id = $1 AND h.subscriber_id = s.id
             AND axm_recent_rule_on($1))
 ORDER BY s.id LIMIT $2;
+
+-- name: axm-preflight-listed-recipient
+-- The least a regular campaign needs to be started or scheduled (LST-71): a list that still
+-- exists and someone on it that the sender could send to. It reads no send ledger, so a draft
+-- that was never sent can still be started when the ledger cannot be read. It is only a
+-- necessary condition: exclusions, checkpoints and follow-up holds are judged by
+-- axm-preflight-audience / axm-preflight-has-recipient where they apply. Eligibility as above.
+WITH live_lists AS MATERIALIZED (
+    SELECT l.id, l.optin, l.axm_filter IS NOT NULL AS dynamic
+    FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+    WHERE cl.campaign_id = $1
+)
+SELECT EXISTS (SELECT 1 FROM live_lists) AS has_lists,
+    EXISTS (
+        SELECT 1 FROM live_lists l
+        JOIN subscriber_lists sl ON sl.list_id = l.id
+        JOIN subscribers s ON s.id = sl.subscriber_id
+        WHERE NOT l.dynamic AND s.status != 'blocklisted'
+            AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END
+        UNION ALL
+        SELECT 1 FROM (SELECT id FROM live_lists WHERE dynamic) l
+        CROSS JOIN LATERAL axm_dynamic_list_members(l.id, 0) m
+    ) AS has_recipients;
+
+-- name: axm-revert-empty-scheduled
+-- A regular campaign that is scheduled and due, and that the sender did not start because
+-- nobody is on its lists (next-campaigns leaves such a campaign as it is), is taken back out of
+-- the schedule (LST-71). Left scheduled it would go later to whoever subscribed, without a new
+-- schedule, and look scheduled forever. $1 are the campaigns the sender just found due.
+-- A campaign that never started becomes a draft. One that started before (paused, then resumed
+-- with a send time) becomes paused again, and only when none of its lists is left: what it
+-- still owes is counted by the sender's ledger rules, which this does not repeat.
+-- Follow-ups are ended by axm-followup-finish-empty, and a dynamic list is counted (zero) by the
+-- sender, which finishes the campaign. A row that changed or is locked meanwhile is left alone.
+WITH due AS MATERIALIZED (
+    SELECT c.id FROM campaigns c
+    WHERE c.id = ANY($1::INT[]) AND c.status = 'scheduled' AND c.type = 'regular' AND NOW() >= c.send_at
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_followups f WHERE f.campaign_id = c.id)
+        AND NOT EXISTS (SELECT 1 FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+            WHERE cl.campaign_id = c.id AND l.axm_filter IS NOT NULL)
+        AND (c.started_at IS NULL OR NOT EXISTS (SELECT 1 FROM campaign_lists cl WHERE cl.campaign_id = c.id AND cl.list_id IS NOT NULL))
+        AND NOT EXISTS (SELECT 1 FROM axm_campaign_recent_holds h WHERE h.campaign_id = c.id)
+        AND NOT EXISTS (
+            SELECT 1 FROM campaign_lists cl
+            JOIN lists l ON l.id = cl.list_id
+            JOIN subscriber_lists sl ON sl.list_id = l.id
+            JOIN subscribers s ON s.id = sl.subscriber_id
+            WHERE cl.campaign_id = c.id AND s.status != 'blocklisted'
+                AND CASE WHEN l.optin = 'double' THEN sl.status = 'confirmed' ELSE sl.status != 'unsubscribed' END)
+    FOR NO KEY UPDATE OF c SKIP LOCKED
+)
+UPDATE campaigns c SET status = (CASE WHEN c.started_at IS NULL THEN 'draft' ELSE 'paused' END)::campaign_status,
+    updated_at = NOW()
+FROM due WHERE c.id = due.id
+RETURNING c.id, c.name, c.status::TEXT AS status;
+
+-- name: axm-scheduled-by-template
+-- The scheduled regular campaigns that go out with template $1: the ones that use it, and, when
+-- it is the default template, the ones with no template left (the sender uses the default then).
+SELECT c.id, c.name FROM campaigns c
+WHERE c.status = 'scheduled' AND c.type = 'regular'
+    AND (c.template_id = $1 OR (
+        (c.template_id IS NULL OR NOT EXISTS (SELECT 1 FROM templates t WHERE t.id = c.template_id))
+        AND EXISTS (SELECT 1 FROM templates d WHERE d.id = $1 AND d.is_default)))
+ORDER BY c.send_at, c.id;
+
+-- name: axm-scheduled-senders
+-- The scheduled campaigns and the sender each has, to read against a changed From list.
+SELECT id, name, from_email FROM campaigns WHERE status = 'scheduled' ORDER BY send_at, id;

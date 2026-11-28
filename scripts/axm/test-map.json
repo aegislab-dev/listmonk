@@ -146,6 +146,15 @@
   },
   {
    "paths": [
+    "cmd/axm_scheduled_guard*.go"
+   ],
+   "specs": [
+    "campaign-scheduled-edit.cy.js",
+    "campaign-send-confirm.cy.js"
+   ]
+  },
+  {
+   "paths": [
     "frontend/src/components/TimezonePicker.vue",
     "frontend/src/components/TimezoneRow.vue",
     "frontend/src/schedule-time.js",
@@ -341,7 +350,10 @@
     "campaign-recent-exclude.cy.js",
     "address-gate.cy.js",
     "import-campaign-flow.cy.js",
-    "bounce-filter-delete.cy.js"
+    "bounce-filter-delete.cy.js",
+    "sender-addresses.cy.js",
+    "from-addresses.cy.js",
+    "analytics-proof.cy.js"
    ]
   },
   {
