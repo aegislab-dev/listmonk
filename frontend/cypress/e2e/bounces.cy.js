@@ -1,4 +1,4 @@
-const apiUrl = Cypress.env('apiUrl');
+const apiUrl = Cypress.expose('apiUrl');
 
 describe('Bounces', () => {
   const subs = [];

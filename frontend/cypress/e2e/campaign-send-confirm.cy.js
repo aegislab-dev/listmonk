@@ -104,7 +104,7 @@ describe('Pre-send confirmation window', () => {
     // It really went to the 4 people the window counted, once each, and to nobody else
     // (the blocked person is left out): read the test inbox.
     const want = [1, 2, 3, 4].map((n) => `send-${n}-${stamp}@example.invalid`).sort();
-    const inbox = Cypress.env('mailpitUrl');
+    const inbox = Cypress.expose('mailpitUrl');
     expect(inbox, 'CYPRESS_mailpitUrl (the test inbox)').to.be.a('string').and.not.be.empty;
     const received = (tries = 30) => cy.request(`${inbox}/api/v1/search?query=${encodeURIComponent('subject:"Send page subject"')}&limit=50`)
       .then(({ body }) => {
@@ -725,7 +725,7 @@ describe('Pre-send confirmation window', () => {
       create('subjuuid', { lists: [listS], subject: 'Send uuid {{ .Campaign.UUID }}' });
       create('subjhead', { lists: [listS], subject: 'Send plain field', headers: [{ Subject: 'Send head {{ .Campaign.Name }}' }] });
     });
-    const inbox = Cypress.env('mailpitUrl');
+    const inbox = Cypress.expose('mailpitUrl');
     expect(inbox, 'CYPRESS_mailpitUrl (the test inbox)').to.be.a('string').and.not.be.empty;
     const to = `send-s1-${stamp}@example.invalid`;
     const received = (subject, tries = 30) => cy.request(`${inbox}/api/v1/search?query=${encodeURIComponent(`to:"${to}" subject:"${subject}"`)}`)
@@ -773,7 +773,7 @@ describe('Pre-send confirmation window', () => {
       .and('contain', desk).and('contain', '2 more mails');
     cy.get('[data-cy=send-ok]').click();
     cy.get(win).should('not.exist');
-    const inbox = Cypress.env('mailpitUrl');
+    const inbox = Cypress.expose('mailpitUrl');
     const received = (tries = 30) => cy.request(`${inbox}/api/v1/search?query=${encodeURIComponent('subject:"Send cc subject"')}`)
       .then(({ body }) => {
         if (body.messages.length < 2 && tries > 0) {

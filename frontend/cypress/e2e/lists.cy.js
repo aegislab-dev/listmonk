@@ -129,7 +129,7 @@ describe('Lists', () => {
   });
 
   it('Opens forms page', () => {
-    const apiUrl = Cypress.env('apiUrl');
+    const apiUrl = Cypress.expose('apiUrl');
     cy.loginAndVisit(`${apiUrl}/subscription/form`);
     cy.get('ul li').its('length').should('eq', 2);
 
@@ -147,7 +147,7 @@ describe('Lists', () => {
   });
 
   it('Bulk deletes lists', () => {
-    const apiUrl = Cypress.env('apiUrl');
+    const apiUrl = Cypress.expose('apiUrl');
 
     // Create 30 in a loop.
     for (let i = 0; i < 30; i += 1) {
