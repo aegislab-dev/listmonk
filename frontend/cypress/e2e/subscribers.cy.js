@@ -1,4 +1,4 @@
-const apiUrl = Cypress.env('apiUrl');
+const apiUrl = Cypress.expose('apiUrl');
 
 describe('Subscribers', () => {
   it('Opens subscribers page', () => {
