@@ -851,7 +851,7 @@
     "campaigns.sendConfirm.zone": "{zone} · {offset} · the time zone chosen for the schedule",
     "campaigns.sendConfirm.zoneOther": "The same moment is {kst} in Korea.",
     "campaigns.sendConfirm.progress": "{sent} sent of {total}",
-    "campaigns.sendConfirm.remaining": "About {n} left to send. Recipients whose send records were deleted may receive this email again.",
+    "campaigns.sendConfirm.remaining": "About {n} left to send.",
     "campaigns.sendConfirm.checks": "Checks before sending",
     "campaigns.sendConfirm.check.lists.none.block": "**The campaign has no list.** It may have been deleted. Pick the lists on the campaign page.",
     "campaigns.sendConfirm.check.recipients.zero.block": "**Nobody would get it.** Everyone on the lists has unsubscribed or is blocklisted, or has not confirmed a double opt-in list yet. Change the lists on the campaign page.",

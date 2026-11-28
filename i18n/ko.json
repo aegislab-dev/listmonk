@@ -855,7 +855,7 @@
     "campaigns.sendConfirm.zone": "{zone} · {offset} · 예약할 때 고른 시간대",
     "campaigns.sendConfirm.zoneOther": "같은 순간이 한국 시각으로는 {kst}입니다.",
     "campaigns.sendConfirm.progress": "보낸 수 {sent} / 전체 {total}",
-    "campaigns.sendConfirm.remaining": "남은 약 {n}명에게 이어서 보냅니다. 발송 기록이 삭제된 수신자는 같은 메일을 다시 받을 수 있습니다.",
+    "campaigns.sendConfirm.remaining": "남은 약 {n}명에게 이어서 보냅니다.",
     "campaigns.sendConfirm.checks": "보내기 전 점검",
     "campaigns.sendConfirm.check.lists.none.block": "**받는 리스트가 없습니다.** 리스트가 삭제됐을 수 있습니다. 캠페인에서 받는 리스트를 고르세요.",
     "campaigns.sendConfirm.check.recipients.zero.block": "**받는 사람이 없습니다.** 리스트 구성원이 모두 수신거부·차단됐거나, 더블 옵트인 리스트에서 아직 구독을 확인하지 않았습니다. 캠페인에서 받는 리스트를 바꾸세요.",
