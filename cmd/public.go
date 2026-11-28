@@ -36,6 +36,8 @@ type tplRenderer struct {
 	EnablePublicSubPage bool
 	EnablePublicArchive bool
 	IndividualTracking  bool
+	// AXM (LST-76): the business details shown in the footer of every public page.
+	BusinessFooter manager.BusinessFooterBlock
 }
 
 // tplData is the data container that is injected
@@ -49,6 +51,7 @@ type tplData struct {
 	EnablePublicSubPage bool
 	EnablePublicArchive bool
 	IndividualTracking  bool
+	BusinessFooter      manager.BusinessFooterBlock
 	Data                any
 	L                   *i18n.I18n
 }
@@ -113,6 +116,7 @@ func (t *tplRenderer) Render(w io.Writer, name string, data any, c echo.Context)
 		EnablePublicSubPage: t.EnablePublicSubPage,
 		EnablePublicArchive: t.EnablePublicArchive,
 		IndividualTracking:  t.IndividualTracking,
+		BusinessFooter:      t.BusinessFooter,
 		Data:                data,
 		L:                   c.Get("app").(*App).i18n,
 	})
