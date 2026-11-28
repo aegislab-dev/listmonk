@@ -1707,14 +1707,16 @@ func TestFollowupResumedAfterTheSendRecordExpiredSendsNobodyTwice(t *testing.T) 
 			e.db.MustExec(`INSERT INTO axm_campaign_followup_claims (campaign_id, subscriber_id) VALUES ($1, $2)`, camp, manual)
 			e.db.MustExec(`INSERT INTO axm_campaign_sends (campaign_id, subscriber_id, sent_at) VALUES ($1, $2, NOW() - INTERVAL '400 days')`, camp, manual)
 			e.db.MustExec(`UPDATE campaigns SET status = 'paused', sent = 1, last_subscriber_id = 0 WHERE id = $1`, camp)
-			// The send records expire while it is paused.
-			deleted, err := e.a.core.PurgeOldCampaignSends()
-			if err != nil {
+			// The send record is gone while it is paused. The retention cleanup no longer
+			// deletes the record of a campaign that can still send (LST-72), so this stands for
+			// a record lost any other way: the decision table must be enough by itself.
+			if _, err := e.a.core.PurgeOldCampaignSends(); err != nil {
 				t.Fatal(err)
 			}
-			if n := e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1`, camp); deleted == 0 || n != 0 {
-				t.Fatalf("expired %d, left %d", deleted, n)
+			if e.count(`SELECT COUNT(*) FROM axm_campaign_sends WHERE campaign_id = $1`, camp) != 1 {
+				t.Fatal("the retention cleanup deleted the record of a paused follow-up")
 			}
+			e.db.MustExec(`DELETE FROM axm_campaign_sends WHERE campaign_id = $1`, camp)
 			want := []int{charlie}
 			if deleteOriginal {
 				// The follow-up goes on as an ordinary campaign: Daniel's open of the original no
