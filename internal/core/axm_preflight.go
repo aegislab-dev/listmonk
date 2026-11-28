@@ -174,7 +174,10 @@ func (c *Core) checkStatusAudience(tx *sqlx.Tx, cm models.Campaign, status strin
 			return c.recentError(err)
 		}
 		if !usesExclusions {
-			return nil
+			// AXM (LST-71): nothing that depends on the ledger applies, but a regular campaign
+			// with no list or nobody on its lists is still not started or scheduled, through the
+			// API as through the confirmation window (LST-66 table 3).
+			return c.checkListedAudience(tx, cm.ID)
 		}
 	}
 
@@ -191,6 +194,27 @@ func (c *Core) checkStatusAudience(tx *sqlx.Tx, cm models.Campaign, status strin
 		}
 	}
 	return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.recheck.noLists"))
+}
+
+// checkListedAudience refuses (400) a regular campaign that has no list left or nobody on its
+// lists, with the messages of the scheduled save. It reads no send ledger (LST-71).
+func (c *Core) checkListedAudience(tx *sqlx.Tx, id int) error {
+	var aud struct {
+		HasLists      bool `db:"has_lists"`
+		HasRecipients bool `db:"has_recipients"`
+	}
+	if err := tx.Stmtx(c.q.AxmPreflightListedRecipient).Get(&aud, id); err != nil {
+		c.log.Printf("error checking the recipients of campaign %d: %v", id, err)
+		return echo.NewHTTPError(http.StatusInternalServerError,
+			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaign}", "error", pqErrMsg(err)))
+	}
+	switch {
+	case !aud.HasLists:
+		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.start.noLists"))
+	case !aud.HasRecipients:
+		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.start.zero"))
+	}
+	return nil
 }
 
 // checkSendTimeShown refuses a status change from the pre-send confirmation (seenAt given)
@@ -274,23 +298,34 @@ type ScheduledCheck func(hasLists, hasRecipients bool) error
 // that has already picked up the campaign wins the race. The sender skips locked rows and
 // discards counts from an older row version if a save commits while it is counting.
 func (c *Core) UpdateScheduledCampaign(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, check ScheduledCheck) (models.Campaign, error) {
-	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, nil, 0, check, true)
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, nil, 0, check, true, "")
 }
 
 // UpdateScheduledCampaignWithRecentRule atomically saves a scheduled campaign, its replacement
 // recent-send rule, and the recipient check that decides whether the new schedule is viable.
 func (c *Core) UpdateScheduledCampaignWithRecentRule(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule models.RecentRule, userID int, check ScheduledCheck) (models.Campaign, error) {
-	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, &rule, userID, check, true)
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, &rule, userID, check, true, "")
 }
 
 // UpdateCampaignWithRecentRule saves a campaign edit and its dirty rule after locking the live
 // campaign status. The status read in the HTTP handler is only a permission check: another editor
 // may schedule the draft while this request is in flight.
 func (c *Core) UpdateCampaignWithRecentRule(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule models.RecentRule, userID int, check ScheduledCheck) (models.Campaign, error) {
-	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, &rule, userID, check, false)
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, &rule, userID, check, false, "")
 }
 
-func (c *Core) updateCampaignSave(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule *models.RecentRule, userID int, check ScheduledCheck, requireScheduled bool) (models.Campaign, error) {
+// UpdateDraftCampaign saves an edit of a draft or paused campaign under the campaign row lock
+// (LST-71). The handler read the status (expect) before it validated the request, and that
+// read is no lock: another request may have scheduled the campaign, or the sender started it,
+// meanwhile. An unlocked write then put the draft's edit into a scheduled campaign without the
+// scheduled save's check, or rewrote the body and lists of one that was already sending. Under
+// the lock a status that is not the one the edit was judged for is refused: 409 when the
+// campaign can still be edited (the editor reads it again), 400 when it can not.
+func (c *Core) UpdateDraftCampaign(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, expect string) (models.Campaign, error) {
+	return c.updateCampaignSave(ctx, id, o, listIDs, mediaIDs, nil, 0, nil, false, expect)
+}
+
+func (c *Core) updateCampaignSave(ctx context.Context, id int, o models.Campaign, listIDs, mediaIDs []int, rule *models.RecentRule, userID int, check ScheduledCheck, requireScheduled bool, expect string) (models.Campaign, error) {
 	tx, err := c.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return models.Campaign{}, err
@@ -319,6 +354,10 @@ func (c *Core) updateCampaignSave(ctx context.Context, id int, o models.Campaign
 		}
 	default:
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
+	}
+	// AXM (LST-71): the status the caller judged the edit for is the one under the lock.
+	if expect != "" && before.Status != expect {
+		return models.Campaign{}, echo.NewHTTPError(http.StatusConflict, c.i18n.T("campaigns.sendConfirm.changed"))
 	}
 	if rule != nil && !models.CanEditRecentRule(before.Status, before.Started) {
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("campaigns.cantUpdate"))
@@ -368,4 +407,59 @@ func (c *Core) updateCampaignSave(ctx context.Context, id int, o models.Campaign
 		return models.Campaign{}, err
 	}
 	return saved, nil
+}
+
+// ReturnedCampaign is a scheduled campaign that RevertEmptyScheduled took out of the schedule.
+type ReturnedCampaign struct {
+	ID     int    `db:"id"`
+	Name   string `db:"name"`
+	Status string `db:"status"`
+}
+
+// RevertEmptyScheduled takes the campaigns among ids (the ones the sender found due and did not
+// start, because nobody is on their lists) out of the schedule (LST-71): a campaign that never
+// started becomes a draft, one that started before becomes paused. The sender leaves such a
+// campaign scheduled, so it was read again at every scan for as long as nobody subscribed, and
+// went out to whoever did, much later, without a new schedule.
+func (c *Core) RevertEmptyScheduled(ids []int) ([]ReturnedCampaign, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var out []ReturnedCampaign
+	if err := c.q.AxmRevertEmptyScheduled.Select(&out, pq.Array(ids)); err != nil {
+		return nil, err
+	}
+	for _, r := range out {
+		c.log.Printf("campaign %d (%s): nobody is on its lists at its send time, not sent; back to %s", r.ID, r.Name, r.Status)
+	}
+	return out, nil
+}
+
+// ScheduledCampaignRef names a scheduled campaign for a refusal that lists the ones it concerns.
+type ScheduledCampaignRef struct {
+	ID        int    `db:"id"`
+	Name      string `db:"name"`
+	FromEmail string `db:"from_email"`
+}
+
+// GetScheduledByTemplate is the scheduled regular campaigns that go out with template id.
+func (c *Core) GetScheduledByTemplate(id int) ([]ScheduledCampaignRef, error) {
+	var out []ScheduledCampaignRef
+	if err := c.q.AxmScheduledByTemplate.Select(&out, id); err != nil {
+		c.log.Printf("error reading the scheduled campaigns of template %d: %v", id, err)
+		return nil, echo.NewHTTPError(http.StatusInternalServerError,
+			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaigns}", "error", pqErrMsg(err)))
+	}
+	return out, nil
+}
+
+// GetScheduledSenders is the scheduled campaigns with their From.
+func (c *Core) GetScheduledSenders() ([]ScheduledCampaignRef, error) {
+	var out []ScheduledCampaignRef
+	if err := c.q.AxmScheduledSenders.Select(&out); err != nil {
+		c.log.Printf("error reading the senders of scheduled campaigns: %v", err)
+		return nil, echo.NewHTTPError(http.StatusInternalServerError,
+			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.campaigns}", "error", pqErrMsg(err)))
+	}
+	return out, nil
 }

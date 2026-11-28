@@ -169,7 +169,7 @@ describe('proof summary (a team member, a real server)', () => {
   const teamB = `증빙B팀${stamp}`;
   const user = `proof${stamp}`;
   const pass = 'proof-pass-1234';
-  const made = { lists: [], campaigns: [], teams: [] };
+  const made = { lists: [], campaigns: [], teams: [], subscribers: [] };
   let roleId;
   let userId;
   let campA;
@@ -179,8 +179,12 @@ describe('proof summary (a team member, a real server)', () => {
     name, subject: name, lists: [listId], messenger: 'email', content_type: 'html', body: '<p>synthetic</p>', template_id: 0,
   }).then(({ body }) => {
     made.campaigns.push(body.data.id);
-    // No subscribers on the list: starting it sends nothing, and it is no longer a draft.
-    return cy.request('PUT', `/api/campaigns/${body.data.id}/status`, { status: 'running' })
+    // The server refuses to start a campaign with nobody to send to (LST-71), so one synthetic
+    // subscriber (an address that cannot be delivered) is on the list. The campaign is no longer a draft.
+    return cy.request('POST', '/api/subscribers', {
+      email: `proof-${stamp}-${listId}@example.invalid`, name: '증빙 수신자', status: 'enabled', lists: [listId], preconfirm_subscriptions: true,
+    }).then(({ body: sub }) => { made.subscribers.push(sub.data.id); })
+      .then(() => cy.request('PUT', `/api/campaigns/${body.data.id}/status`, { status: 'running' }))
       .then(() => cy.request(`/api/campaigns/${body.data.id}`)).then(({ body: b }) => b.data);
   });
 
@@ -213,6 +217,7 @@ describe('proof summary (a team member, a real server)', () => {
     });
     made.teams.forEach((id) => cy.request('PUT', `/api/teams/${id}/members`, { user_ids: [] }));
     cy.request({ method: 'DELETE', url: `/api/users/${userId}`, failOnStatusCode: false });
+    made.subscribers.forEach((id) => cy.request({ method: 'DELETE', url: `/api/subscribers/${id}`, failOnStatusCode: false }));
     made.lists.forEach((id) => cy.request({ method: 'DELETE', url: `/api/lists/${id}`, failOnStatusCode: false }));
     made.teams.forEach((id) => cy.request({ method: 'DELETE', url: `/api/teams/${id}`, failOnStatusCode: false }));
     cy.request({ method: 'DELETE', url: `/api/roles/${roleId}`, failOnStatusCode: false });

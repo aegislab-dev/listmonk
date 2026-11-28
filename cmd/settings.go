@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -102,6 +103,11 @@ func (a *App) UpdateSettings(c echo.Context) error {
 	// Get the existing settings.
 	cur, err := a.core.GetSettings()
 	if err != nil {
+		return err
+	}
+
+	// AXM (LST-71): not a From list that a scheduled campaign's From is no longer on.
+	if err := a.checkScheduledSenders(cur.AxmSenderDomains, cur.AxmFromAddresses, set.AxmSenderDomains, set.AxmFromAddresses); err != nil {
 		return err
 	}
 
@@ -356,6 +362,8 @@ func (a *App) UpdateSettingsByKey(c echo.Context) error {
 		if err != nil {
 			return err
 		}
+		// The old lists, for the check below: decoding reuses the slices of set.
+		oldDomains, oldList := slices.Clone(set.AxmSenderDomains), slices.Clone(set.AxmFromAddresses)
 		switch key {
 		case "axm.sender_domains":
 			err = json.Unmarshal(b, &set.AxmSenderDomains)
@@ -370,6 +378,12 @@ func (a *App) UpdateSettingsByKey(c echo.Context) error {
 		}
 		if err != nil || normalizeSenderSettings(&set) != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("senders.invalidSettings"))
+		}
+		// AXM (LST-71): not a From list that a scheduled campaign's From is no longer on.
+		if key == "axm.sender_domains" || key == "axm.from_addresses" {
+			if err := a.checkScheduledSenders(oldDomains, oldList, set.AxmSenderDomains, set.AxmFromAddresses); err != nil {
+				return err
+			}
 		}
 		switch key {
 		case "axm.sender_domains":
