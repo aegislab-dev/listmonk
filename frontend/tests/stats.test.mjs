@@ -169,6 +169,12 @@ test('groups: a group needs three campaigns and 1,000 messages, and the best nee
   assert.deepEqual(g.ok.map((r) => r.label), ['월', '화']);
   assert.equal(g.best.label, '월');
   assert.equal(g.rows[2].ok, false, 'one campaign is a small sample');
+  // A card lists the groups that may be compared; the small one is only counted.
+  assert.deepEqual(g.listed.map((r) => r.label), ['월', '화']);
+  assert.equal(g.small, 1);
+  const gaps = groupBy(camps, ['월', '화', '수', '목'], (c) => weekdayOf(c), NOW);
+  assert.deepEqual(gaps.listed.map((r) => r.label), ['월', '화', '목'], 'a group without sends stays, as "no sends"');
+  assert.equal(gaps.small, 1);
   const lone = groupBy(camps.slice(0, 3), ['월', '화'], (c) => weekdayOf(c), NOW);
   assert.equal(lone.best, null, 'no best with one group that qualifies');
 });
@@ -193,6 +199,19 @@ test('list groups name only lists of the caller; the others are merged', () => {
   assert.equal(hidden.a.n, 1);
   assert.ok(g.rows.find((r) => r.key === 'multiple'));
   assert.equal(g.best.label, '뉴스레터', 'the hidden group is never named best');
+  // The ranking a card shows starts with the best group and ends with the hidden one, whatever its rate.
+  assert.deepEqual(g.listed.map((r) => r.key), ['list:1', 'list:2', 'multiple', 'hidden']);
+  assert.equal(g.listed[0], g.best);
+  assert.equal(g.small, 0);
+  const small = listGroups([
+    ...camps,
+    camp({ lists: [{ id: 5, name: '작은 리스트' }], sent: 71, clickers: 40 }),
+    camp({ lists: [{ id: 6, name: '더 작은 리스트' }], sent: 199, clickers: 100 }),
+  ], NOW);
+  assert.equal(small.rows[0].label, '작은 리스트', 'a small list has the highest rate of all');
+  assert.deepEqual(small.listed.map((r) => r.key), ['list:1', 'list:2', 'multiple', 'hidden'], 'and is not ranked');
+  assert.equal(small.small, 2);
+  assert.equal(small.listed[0], small.best);
   assert.ok(!JSON.stringify(g).includes('"name":"B"'));
 });
 
@@ -228,6 +247,7 @@ test('recipient groups: rates per group, the merged other group last', () => {
   assert.equal(rows[1].click, null);
   assert.equal(rows[1].open, null);
   assert.equal(rows[1].ok, false);
+  assert.deepEqual(rows.map((r) => r.small), [false, true, true], 'too few people, and the merged rest: left out of a card');
 });
 
 test('recipient groups require 200 tracked people to show engagement rates', () => {
@@ -237,6 +257,11 @@ test('recipient groups require 200 tracked people to show engagement rates', () 
   assert.equal(row.ok, true);
   assert.equal(row.click, null);
   assert.equal(row.open, null);
+  assert.equal(row.small, true, 'too few tracked people: left out of a card');
+  const [untracked] = recipientRows([{
+    team: '', key: 'KR', sent: 601, recipients: 200, trackedSent: 0, trackedRecipients: 0, opened: 0, clicked: 0, bounced: 3,
+  }], '');
+  assert.equal(untracked.small, false, 'no tracking at all is not a small sample');
   assert.equal(row.trackedSent, 1);
   assert.equal(row.trackedRecipients, 1);
   assert.equal(row.bounce, (3 / 601) * 100);

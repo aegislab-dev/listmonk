@@ -2003,15 +2003,16 @@ th.role-toggle-select a {
 @media (max-width: 1100px) { .st .st-grid2 { grid-template-columns: 1fr; } }
 .st .st-ic h3 { font-size: 14px; font-weight: 600; margin: 0; padding: 11px 16px 0; }
 .st .st-ic .concl { padding: 2px 16px 8px; font-size: 13px; }
+.st .st-ic .left { margin: 7px 16px 9px; font-size: 11.5px; color: #6b7280; }
 .st .st-ic .foot { padding: 7px 16px; font-size: 11.5px; color: #6b7280; border-top: 1px solid #e5e7eb; }
-.st .st-br { display: grid; grid-template-columns: 110px minmax(40px, 1fr) minmax(200px, 330px); gap: 8px; align-items: center; font-size: 12.5px; margin: 5px 16px; word-break: keep-all; }
+.st .st-br { display: grid; grid-template-columns: 110px minmax(40px, 1fr) minmax(200px, 330px); gap: 8px; align-items: center; font-size: 12.5px; margin: 5px 16px; word-break: keep-all; overflow-wrap: anywhere; }
 .st .st-br .tr { height: 10px; background: #eef0f4; border-radius: 2px; position: relative; }
 .st .st-br .fl { position: absolute; left: 0; top: 0; bottom: 0; background: #b9c1cf; border-radius: 2px; }
 .st .st-br .fl.best { background: #0055d4; }
 .st .st-br.mute { color: #a2a8b2; }
 .st .st-br .nn { text-align: right; color: #6b7280; font-size: 11.5px; }
 .st .st-br .nn b { color: #2b2f36; }
-.st .st-best { font-size: 11px; color: #0055d4; font-weight: 700; }
+.st .st-best { font-size: 11px; color: #0055d4; font-weight: 700; white-space: nowrap; }
 .st .st-insuf { margin: 4px 16px 10px; padding: 8px 11px; border: 1px dashed #c4c9d1; border-radius: 6px; color: #666; font-size: 12.5px; background: #fbfbfc; }
 .st .st-seg { display: inline-flex; border: 1px solid #cfd4db; border-radius: 6px; overflow: hidden; }
 .st .st-seg button { padding: 4px 11px; font-size: 13px; border: 0; border-right: 1px solid #cfd4db; background: #fff; cursor: pointer; }

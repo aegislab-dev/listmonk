@@ -23,6 +23,7 @@
             <span v-if="r.best" class="st-best"> {{ $t('stats.best') }}</span>
           </span>
         </div>
+        <div v-if="c.small" class="left" :data-cy="`small-${c.key}`">{{ c.small }}</div>
         <div v-if="c.foot" class="foot">{{ c.foot }}</div>
         <router-link v-if="c.followupSource" class="button is-small is-outlined mt-2" data-cy="insight-followup-start"
           :to="{ name: 'campaign', params: { id: c.followupSource } }">
@@ -76,6 +77,14 @@ export default {
   },
   methods: {
     t(key, params) { return this.$t(`stats.${key}`, params); },
+    // The line under a list for the groups left out of it: how many, and the sample they did not reach.
+    leftOut(n, rule, params) {
+      return n ? this.t('smallLeftOut', { n, rule: this.t(rule, params) }) : '';
+    },
+    // Bars are drawn against 12%, or against the highest rate in the list when that is higher.
+    scaleOf(rows) {
+      return Math.max(12, ...rows.map((r) => r.click || 0));
+    },
     highest(label, rate) {
       return this.t('bestRate', { label, rate: pctText(rate) });
     },
@@ -95,16 +104,15 @@ export default {
     },
     listCard() {
       const g = listGroups(this.camps, this.now);
-      const rows = g.rows.map((r) => {
+      const rows = g.listed.map((r) => {
         const { main, sub } = this.rates(r.a);
         sub.push(this.t('sentCount', { n: fmt(r.a.sent) }));
-        if (!r.ok) sub.push(this.t('small'));
         if (r.list?.createdAt && !r.list.source) {
           const date = new Intl.DateTimeFormat(this.$i18n.locale, { timeZone: 'Asia/Seoul', dateStyle: 'medium' });
           sub.push(this.t('listDate', { date: date.format(new Date(r.list.createdAt)) }));
         }
         return {
-          label: this.listLabel(r), main, sub: sub.join(' · '), click: r.a.click, best: g.best === r, mute: !r.ok,
+          label: this.listLabel(r), main, sub: sub.join(' · '), click: r.a.click, best: g.best === r,
         };
       });
       return {
@@ -112,6 +120,8 @@ export default {
         title: this.t('listTitle'),
         help: 'click',
         rows,
+        scale: this.scaleOf(rows),
+        small: this.leftOut(g.small, 'smallRuleList', { n: MIN.campaignSent }),
         concl: g.best ? this.highest(this.listLabel(g.best), g.best.a.click) : this.t('listInsufficient', { n: MIN.campaignSent }),
         foot: this.t('listFoot'),
       };
@@ -119,13 +129,12 @@ export default {
     bucketCard(key, fn) {
       const g = groupBy(this.camps, this.t(`${key}Labels`).split('|'), fn, this.now);
       const next = g.ok.filter((r) => r !== g.best).sort((a, b) => b.a.click - a.a.click)[0];
-      const rows = g.rows.map((r) => {
+      const rows = g.listed.map((r) => {
         if (!r.n) return { label: r.label, mute: true, text: this.t('noSend') };
         const { main, sub } = this.rates(r.a);
         sub.push(this.t('groupCount', { n: r.n }), this.t('sentCount', { n: fmt(r.a.sent) }));
-        if (!r.ok) sub.push(this.t('small'));
         return {
-          label: r.label, click: r.a.click, best: g.best === r, mute: !r.ok, main, sub: sub.join(' · '),
+          label: r.label, click: r.a.click, best: g.best === r, main, sub: sub.join(' · '),
         };
       });
       return {
@@ -133,6 +142,8 @@ export default {
         title: this.t(`${key}Title`),
         help: 'click',
         rows,
+        scale: this.scaleOf(rows),
+        small: this.leftOut(g.small, 'smallRuleGroup', { campaigns: MIN.groupCampaigns, sent: fmt(MIN.groupSent) }),
         concl: g.best
           ? this.compareClicks(g.best.label, g.best.a.click, next.label, next.a.click)
           : this.t('groupInsufficient', { campaigns: MIN.groupCampaigns, sent: fmt(MIN.groupSent) }),
@@ -155,23 +166,12 @@ export default {
         }[r.key];
         return labelKey ? this.t(labelKey, { n: MIN.recipientGroup }) : r.key;
       };
-      const rows = data.map((r) => {
-        if (!r.ok) {
-          return { label: label(r), mute: true, text: `${this.t('small')} · ${this.t('recipientCount', { n: fmt(r.recipients) })}` };
-        }
+      const listed = data.filter((r) => !r.small);
+      const rows = listed.map((r) => {
         const count = this.t('recipientOverallCount', { n: fmt(r.recipients) });
         const trackedSample = this.t('recipientTrackedSample', { n: fmt(r.trackedRecipients), sent: fmt(r.trackedSent) });
         if (r.click === null) {
-          const bounce = this.t('bounceValue', { rate: pctText(r.bounce) });
-          if (!r.trackedSent) {
-            return { label: label(r), main: this.t('untracked'), sub: `${bounce} · ${count}` };
-          }
-          return {
-            label: label(r),
-            mute: true,
-            main: this.t('recipientTrackingSmall'),
-            sub: [trackedSample, bounce, count].join(' · '),
-          };
+          return { label: label(r), main: this.t('untracked'), sub: `${this.t('bounceValue', { rate: pctText(r.bounce) })} · ${count}` };
         }
         const { main, sub } = this.rates(r);
         sub.push(trackedSample);
@@ -196,6 +196,8 @@ export default {
         title: this.t(`${key}Title`),
         help: 'click',
         rows,
+        scale: this.scaleOf(rows),
+        small: this.leftOut(data.length - listed.length, 'smallRuleRecipient', { n: MIN.recipientSample }),
         concl,
         foot: this.t('recipientFoot', { n: fmt(total) }),
       };

@@ -198,7 +198,9 @@ export function formatKST(iso, locale = 'en') {
 
 // Groups of campaigns by a function of the campaign: the label, the campaigns, the totals,
 // whether the group may be compared (enough campaigns and messages), and the best one (only
-// when two or more groups may be compared).
+// when two or more groups may be compared). `listed` is what a card shows: the groups that may be
+// compared and, to keep the scale whole, those without sends. A group with sends but too few of
+// them is only counted (`small`): its rate would stand next to the others as if it meant as much.
 export function groupBy(camps, labels, indexOf, now = new Date()) {
   const rows = labels.map((label, i) => {
     const cs = camps.filter((c) => classify(c, now).bounceOk && indexOf(c) === i);
@@ -209,10 +211,16 @@ export function groupBy(camps, labels, indexOf, now = new Date()) {
   });
   const ok = rows.filter((r) => r.ok);
   const best = ok.length >= 2 ? ok.reduce((b, r) => (r.a.click > b.a.click ? r : b)) : null;
-  return { rows, ok, best };
+  const listed = rows.filter((r) => r.ok || !r.n);
+  return {
+    rows, ok, best, listed, small: rows.length - listed.length,
+  };
 }
 
 // Named sources may cover multiple lists. Untagged lists keep their ID as their identity.
+// `listed` is the ranking a card shows, highest click rate first: only groups with enough sends,
+// the merged group of other teams' lists after them because it is never named best. The groups
+// left out for a small sample are counted in `small`.
 export function listGroups(camps, now = new Date()) {
   const groups = new Map();
   camps.filter((c) => classify(c, now).bounceOk).forEach((c) => {
@@ -234,7 +242,10 @@ export function listGroups(camps, now = new Date()) {
   rows.sort((x, y) => (y.a.click ?? -1) - (x.a.click ?? -1));
   const ok = rows.filter((r) => r.ok && !r.hidden);
   const best = ok.length >= 2 ? ok.reduce((b, r) => (r.a.click > b.a.click ? r : b)) : null;
-  return { rows, best };
+  const listed = [...ok, ...rows.filter((r) => r.ok && r.hidden)];
+  return {
+    rows, best, listed, small: rows.length - listed.length,
+  };
 }
 
 // The server has already checked ledger coverage and counted overlap per campaign.
@@ -262,7 +273,9 @@ export function overlapRows(camps, overlaps, team = '') {
 }
 
 // The groups of recipients the server sent for one team ('' for everyone), as rows with rates
-// in the order of `order` (keys), the rest by size; the merged "other" group last.
+// in the order of `order` (keys), the rest by size; the merged "other" group last. `small` marks a
+// group a card leaves out: too few people, or too few of them tracked to give a click rate (a
+// group without any tracking is not small, it has no rate for another reason).
 export function recipientRows(groups, team, order = null) {
   const g = (groups || []).filter((x) => x.team === team).map((x) => {
     const ok = x.recipients >= MIN.recipientSample && x.key !== '__other__';
@@ -277,6 +290,7 @@ export function recipientRows(groups, team, order = null) {
       open: enoughTracking ? pct(x.opened, x.trackedSent) : null,
       bounce: pct(x.bounced, x.sent),
       ok,
+      small: !ok || (!enoughTracking && x.trackedSent > 0),
     };
   });
   const rank = (r) => {

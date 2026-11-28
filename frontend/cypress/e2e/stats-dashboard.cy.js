@@ -304,15 +304,17 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('@counts.all').should('have.length', 0);
   });
 
-  it('next-send cards say why a group is too small and hide other teams\' lists', () => {
+  it('next-send cards count the groups that are too small and hide other teams\' lists', () => {
     stub();
     visitWithFixedClock();
     cy.wait('@stats');
     cy.get('[data-cy=card-list]').should('contain', '내 리스트').and('contain', 'Lists outside your access').and('contain', 'Bounce 2.0%');
     cy.get('[data-cy=card-weekday] [data-cy=concl-weekday]').should('contain', '3 campaigns');
     cy.get('[data-cy=card-age]').should('contain', 'New (within 7 days of sending)');
-    // A country group under 30 recipients is merged into "other".
-    cy.get('[data-cy=card-country]').should('contain', 'Other (groups below 30 people)');
+    // A country group under 30 recipients is merged into "other", which is too small to list: it is counted.
+    cy.get('[data-cy=card-country]').should('not.contain', 'Other (groups below 30 people)');
+    cy.get('[data-cy=small-country]').should('have.text', '1 left out for a small sample (fewer than 200 tracked recipients)');
+    cy.get('[data-cy=small-list]').should('not.exist');
     cy.get('[data-cy=card-followup]').should('contain', 'No campaigns have a completed follow-up yet');
     cy.get('[data-cy=insight-followup-start]').should('have.attr', 'href', '/admin/campaigns/10');
     cy.get('[data-cy=concl-age]').should('contain', '30 days or older')
@@ -320,7 +322,9 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=card-overlap]').should('contain', 'previous 30 days').and('contain', 'Previous 7 days');
     cy.get('[data-cy=card-overlap]').should('contain', 'campaigns, combined').and('contain', 'send records');
     cy.get('[data-cy=card-country]').should('contain', 'Bounce 1.3%');
-    cy.get('[data-cy=card-weekday]').should('contain', 'Bounce');
+    // No weekday has three campaigns: none is listed with a rate, the card counts them instead.
+    cy.get('[data-cy=card-weekday]').should('not.contain', 'Bounce').and('not.contain', 'Small sample');
+    cy.get('[data-cy=small-weekday]').should('contain', 'left out for a small sample (fewer than 3 campaigns or 1,000 tracked sends)');
     cy.get('[data-cy=card-hour]').should('contain', 'Bounce');
     cy.get('[data-cy=card-length]').should('contain', 'Bounce');
     cy.get('[data-cy=stats-insights]').should('not.contain', '@');
@@ -328,6 +332,40 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=card-list]').should('not.exist');
     cy.get('[data-cy=insight-all]').click();
     cy.get('[data-cy=card-list]').should('exist');
+  });
+
+  // LST-81: lists with 71 and 139 sends stood at the top of the ranking with full bars, greyed as "small
+  // sample", while the sentence above and "Highest" pointed at a row further down.
+  it('leaves small samples out of the next-send lists and says how many', () => {
+    const cur = [
+      camp({ id: 40, lists: [{ id: 1, name: 'Big A' }], clickers: 126, started_at: day(10) }),
+      camp({ id: 41, lists: [{ id: 2, name: 'Big B' }], clickers: 63, started_at: day(11) }),
+      camp({ id: 42, lists: [{ id: 3, name: 'Tiny top' }], sent: 71, clickers: 40, started_at: day(12) }),
+      camp({ id: 43, lists: [{ id: 4, name: 'Tiny second' }], sent: 139, clickers: 73, started_at: day(13) }),
+    ];
+    stub({ cur });
+    visitWithFixedClock();
+    cy.wait('@stats');
+    // The list, the sentence above it and "Highest" are about the same two lists.
+    cy.get('[data-cy=card-list] .st-br').should('have.length', 2);
+    cy.get('[data-cy=card-list] .st-br').first().should('contain', 'Big A').and('contain', 'Click 12.6%').and('contain', 'Highest');
+    cy.get('[data-cy=concl-list]').should('contain', 'Big A has the highest click rate at 12.6%');
+    cy.get('[data-cy=card-list]').should('not.contain', 'Tiny').and('not.contain', 'Small sample').and('not.contain', '56.3%');
+    cy.get('[data-cy=small-list]').should('have.text', '2 left out for a small sample (fewer than 200 tracked sends)');
+    // Bars are drawn against the highest rate in the list: 12.6% is the full bar, 6.3% half of it.
+    cy.get('[data-cy=card-list] .st-br .fl').then(($bars) => {
+      expect($bars[0].style.width).to.equal('100%');
+      expect(parseFloat($bars[1].style.width)).to.be.closeTo(50, 0.5);
+    });
+    // "Highest" stays in one piece.
+    cy.get('[data-cy=card-list] .st-best').should(($best) => expect($best[0].getClientRects().length).to.equal(1));
+    // One campaign on each of four days: no day may be compared. Days without sends stay as "No sends".
+    cy.get('[data-cy=card-weekday] .st-br').should('have.length', 3).each(($row) => expect($row.text()).to.contain('No sends'));
+    cy.get('[data-cy=card-weekday]').should('not.contain', 'Small sample');
+    cy.get('[data-cy=small-weekday]')
+      .should('have.text', '4 left out for a small sample (fewer than 3 campaigns or 1,000 tracked sends)');
+    // Four campaigns in the same hours: that group is listed and nothing is left out.
+    cy.get('[data-cy=small-hour]').should('not.exist');
   });
 
   it('compares eligible weekday, hour and subject-length groups by click-rate difference', () => {
@@ -448,17 +486,13 @@ describe('Statistics dashboard (fixed answers)', () => {
         : [{ ...sparse, key: 'older' }],
     }));
     visitWithFixedClock();
-    const smallRows = [
-      ['[data-cy=card-country] .st-br', 'KR'],
-      ['[data-cy=card-age] .st-br', '30 days or older'],
-    ];
-    smallRows.forEach(([selector, label]) => {
-      cy.contains(selector, label).should('contain', 'Small tracking sample')
-        .and('contain', 'Tracked sample · Unique recipients 1 · Sends 1')
-        .and('contain', '200 unique recipients overall')
-        .and('contain', 'Bounce 0.5%')
-        .and('not.contain', '100.0%');
-    });
+    // One tracked person of 200 would read "100.0%": a group with too small a tracked sample is not listed.
+    cy.get('[data-cy=card-country] .st-br').should('have.length', 3);
+    cy.get('[data-cy=card-country]').should('not.contain', 'KR').and('not.contain', '100.0%');
+    cy.get('[data-cy=small-country]').should('have.text', '1 left out for a small sample (fewer than 200 tracked recipients)');
+    cy.get('[data-cy=card-age] .st-br').should('not.exist');
+    cy.get('[data-cy=card-age]').should('not.contain', '100.0%');
+    cy.get('[data-cy=small-age]').should('contain', '1 left out for a small sample');
     cy.get('[data-cy=concl-country]').should('contain', 'JP has the highest click rate at 5.0%');
     cy.contains('[data-cy=card-country] .st-br', 'Unknown').should('contain', 'Click 15.0%').and('not.contain', 'Small sample');
     cy.contains('[data-cy=card-country] .st-br', 'JP').should('contain', 'Tracked sample · Unique recipients 200 · Sends 200');
