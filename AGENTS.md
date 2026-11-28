@@ -21,9 +21,19 @@ scripts/axm/axm down              # 내 컨테이너 정리(check 는 끝날 때
 2. **전체 e2e 와 운영 방식 이미지 빌드·smoke 는 CI 가 한다.** 마무리 보고와 PR 설명에 "로컬에서 돌린 spec·Go 시험"과 "CI 에 맡긴 것"을 나눠 적는다. CI(`.github/workflows/axm-image.yml`)의 시험 범위는 줄이지 않는다.
 3. **리뷰 재라운드와 수정 뒤 재검사는 `axm check --since-last`.** 비교는 파일 내용(blob 해시)이라 rebase·squash 뒤에도 맞는다.
 4. **캐시를 따로 만들지 않는다.** Go 모듈·빌드 캐시, 프론트 dist, 시험용 베이스 이미지는 `~/.cache/listmonk-axm`(`AXM_CACHE` 로 바꿈)에서 태스크끼리 같이 쓴다. `$TMPDIR` 에 Go 캐시나 `node_modules` 를 새로 만들지 않는다. 검사가 끝나면 컨테이너를 내린다(`axm down`).
-5. **새 화면·API·spec 을 만들면 `scripts/axm/test-map.json` 에 줄을 추가한다.** `python3 -m unittest scripts/axm/test_axm.py` 가 CI 의 spec 목록과 어긋나거나 규칙이 존재하지 않는 파일을 가리키면 실패한다. CI 가 돌리는 spec 목록은 `axm-image.yml` 의 `cypress run` 명령 전부에서 읽으므로, 기준 브랜치 병합으로 CI spec 이 늘었는데 맵에 없으면 `axm check` 가 그 spec 을 건너뛰지 않고 맵 시험을 돌려 실패한다(맵을 고칠 때까지 통과 기록이 남지 않는다). CI spec 의 파일 이름을 바꾸면 원래 이름의 spec 은 실패로 센다. 고른 spec 은 Cypress 결과 줄이 있어야 통과다.
+5. **새 화면·API·spec 을 만들면 `scripts/axm/test-map.json` 에 줄을 추가한다.** 새 CI spec 은 `axm-image.yml` 의 `browser` 잡에서 가장 짧은 묶음(`case` 의 한 줄)의 끝에 넣는다(아래 「CI 구조」). `python3 -m unittest scripts/axm/test_axm.py` 가 CI 의 spec 목록과 어긋나거나 규칙이 존재하지 않는 파일을 가리키면 실패한다. CI 가 돌리는 spec 목록은 `axm-image.yml` 의 `cypress run` 명령 전부에서 읽으므로, 기준 브랜치 병합으로 CI spec 이 늘었는데 맵에 없으면 `axm check` 가 그 spec 을 건너뛰지 않고 맵 시험을 돌려 실패한다(맵을 고칠 때까지 통과 기록이 남지 않는다). CI spec 의 파일 이름을 바꾸면 원래 이름의 spec 은 실패로 센다. 고른 spec 은 Cypress 결과 줄이 있어야 통과다.
 6. **CPU 한도.** 무거운 단계(이미지 빌드의 RUN 단계 포함 `--cpu-quota`, Go 시험, Cypress)는 컨테이너당 `AXM_CPUS`(기본 4)코어, 동시에 `AXM_SLOTS`(기본 2)개만 돈다. 칸이 다 차 있으면 기다리라는 메시지가 나온다. 화면 캡처용 헤드리스 브라우저를 따로 띄울 때도 같은 한도(`docker run --cpus 4`, 호스트라면 `taskset`/`nice`)를 지킨다.
 7. Cypress 는 로컬에서 Electron, CI 에서는 Chrome 이다. 둘 다 CPU 렌더링(SwiftShader)이다. 통과 판정은 CPU 렌더링 기준이다. GPU 렌더링은 도입하지 않았다: 렌더링 몫이 검사 CPU 의 약 2%(측정은 LST-51 보고서)라 얻을 것이 적고, CI 러너에는 GPU 가 없다. Before/After 화면 캡처 한 쌍은 같은 방식(같은 브라우저·같은 인자)으로 찍는다.
+
+## CI 구조 (LST-83)
+
+`axm-image` 는 잡 여럿이 나란히 돈다: `plan` → `go`(Go 시험) ‖ `build`(이미지 빌드·저장) → `browser (1)`~`(4)`(설치 smoke + 브라우저 시험 묶음) ‖ `upgrade` → `publish`(릴리스 태그만) → `image`(판정).
+
+- **기다리거나 필수로 걸 체크는 `image` 하나다.** 어느 실행에서나 맨 끝에 돌고, 돌아야 할 잡이 모두 통과했을 때만 초록이다(실패·시한 초과·취소는 빨강).
+- **문서만 바뀐 PR**(저장소 맨 위의 `*.md`, `docs/**` 만 바뀌고 `LICENSE`·`README.md`·`FORK.md` 가 남아 있음)은 `plan` 이 이미지 검사를 건너뛰게 하고 `image` 는 초록으로 끝난다(1분 안쪽). 판정은 `scripts/axm/ci-scope`, 시험은 `test_axm.py` 의 `CiScopeTest`. 릴리스 태그와 수동 실행은 건너뛰지 않는다.
+- **브라우저 묶음**은 `browser` 잡 `case` 의 줄 하나씩이고 묶음마다 새 DB 에서 돈다. spec 은 앞 묶음이 남긴 데이터에 기대면 안 된다. 묶음을 늘리면 행렬 `shard` 에도 번호를 넣는다(`CiJobsTest` 가 어긋남을 잡는다). 워크플로 주석에 그 Cypress 실행 명령을 글자 그대로 적지 않는다(도구가 그 줄을 명령으로 읽는다).
+- 모든 잡은 `build` 가 저장한 이미지 파일을 받아 sha256 을 확인한 뒤 쓴다. 게시도 그 파일을 올린다. 실패한 잡만 다시 돌리면 같은 이미지로 다시 시험한다(3일 보관).
+- 이미지 빌드의 GitHub 캐시(`cache-to: type=gha`)는 쓰지 않는다: `Dockerfile.axm` 이 의존성 설치 전에 소스를 복사해서 PR 마다 다시 만들 층을 실행마다 2~3분(느릴 때 9분) 걸려 올리기만 했다.
 
 ## 선택 규칙 요약
 
