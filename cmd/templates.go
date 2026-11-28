@@ -171,10 +171,9 @@ func (a *App) UpdateTemplate(c echo.Context) error {
 
 	// AXM (LST-71): not a change that takes the unsubscribe link away from a scheduled campaign.
 	id := getID(c)
-	if o.Type == models.TemplateTypeCampaign {
-		if err := a.checkScheduledTemplate(id, o.Body); err != nil {
-			return err
-		}
+	// Judged by the template as stored, not by the "type" of the request, which an API client may leave out.
+	if err := a.checkScheduledTemplate(id, o.Body); err != nil {
+		return err
 	}
 
 	// Update the template in the DB.

@@ -283,6 +283,37 @@ func TestDraftSaveThroughHandler(t *testing.T) {
 	}
 }
 
+// The handler's save of a draft waits for a status change that holds the row, and then refuses
+// (409) instead of writing the draft's edit into the scheduled campaign. A handler that wrote
+// without the lock would save it (200).
+func TestDraftSaveHandlerWaitsForTheLock(t *testing.T) {
+	e := newPreflightAppScan(t, false)
+	t.Cleanup(e.a.manager.Close)
+	tx := e.db.MustBegin()
+	if _, err := tx.Exec(`SELECT id FROM campaigns WHERE id=$1 FOR UPDATE`, e.campID); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	var code int
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		code, _ = e.save("Late edit", []int{e.aList}, nil, "regular")
+	}()
+	time.Sleep(700 * time.Millisecond) // the handler has read the campaign as a draft and waits
+	tx.MustExec(`UPDATE campaigns SET status='scheduled', send_at=NOW() + INTERVAL '1 day' WHERE id=$1`, e.campID)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+	if code != http.StatusConflict {
+		t.Fatalf("HTTP %d, want 409", code)
+	}
+	if subject, status, _ := e.saved(); subject != "Subject" || status != "scheduled" {
+		t.Fatalf("%q %s", subject, status)
+	}
+}
+
 func TestTemplateSaveKeepsScheduledUnsubscribeLink(t *testing.T) {
 	e := newPreflightAppScan(t, false)
 	t.Cleanup(e.a.manager.Close)
@@ -296,9 +327,10 @@ func TestTemplateSaveKeepsScheduledUnsubscribeLink(t *testing.T) {
 	other := e.pfCampaign("regular", "scheduled", e.aList)
 	e.db.MustExec(`UPDATE campaigns SET template_id=$2, body='<p>Hi</p>', send_at=NOW() + INTERVAL '1 day' WHERE id=$1`, other, already)
 
+	typed := `"type":"campaign",`
 	put := func(id int, body string) (int, string) {
 		req := httptest.NewRequest(http.MethodPut, "/api/templates/"+strconv.Itoa(id),
-			strings.NewReader(fmt.Sprintf(`{"name":"T","type":"campaign","body":%q}`, body)))
+			strings.NewReader(fmt.Sprintf(`{"name":"T",%s"body":%q}`, typed, body)))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 		c := echo.New().NewContext(req, httptest.NewRecorder())
 		c.Set("id", id)
@@ -320,6 +352,12 @@ func TestTemplateSaveKeepsScheduledUnsubscribeLink(t *testing.T) {
 	if bodyOf(tpl) != link {
 		t.Fatalf("the refused template was saved: %q", bodyOf(tpl))
 	}
+	// The same refusal when the request leaves "type" out (the API): the stored template decides.
+	typed = ""
+	if code, msg := put(tpl, `{{ template "content" . }}<p>no link</p>`); code != http.StatusBadRequest || !strings.Contains(msg, "#"+strconv.Itoa(e.campID)) {
+		t.Fatalf("no type: HTTP %d %q", code, msg)
+	}
+	typed = `"type":"campaign",`
 	// A change that keeps the link: saved.
 	keep := `<div>{{ template "content" . }}</div><a href="{{ UnsubscribeURL }}">leave</a>`
 	if code, msg := put(tpl, keep); code != http.StatusOK || bodyOf(tpl) != keep {
