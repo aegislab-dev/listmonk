@@ -1488,7 +1488,21 @@ def start_mail(ctx, pg, dsn_db):
 
 def e2e(ctx, steps, specs, image, pg, profile=False, browser='electron', extra_env=None, extra_dargs=None):
     """시험 이미지로 새 DB 설치 → 앱 기동 → Cypress. 끝나면 성공·실패와 무관하게 앱을 내린다.
-    고른 spec 마다 결과 줄이 있어야 통과다: 파일이 없거나(이름을 바꾼 CI spec) 결과 줄이 없는 spec 은 실패로 센다."""
+    고른 spec 마다 결과 줄이 있어야 통과다: 파일이 없거나(이름을 바꾼 CI spec) 결과 줄이 없는 spec 은 실패로 센다.
+
+    browser 가 Chrome 계열이면(`chrome`, 사용자 지정 Chrome 경로) 이 PC 에서 첫 spec 이 「read ECONNRESET」으로
+    끝나는 일이 있다(LST-78·79). Chrome 경로나 이 함수의 인자 탓이 아니다. 원인(LST-79, 2026-11-28 재현):
+    - Cypress 는 Chrome 디버깅 포트를 「0번으로 listen → 닫기」로 얻고, Chrome 을 띄운 직후(4-8ms)부터 그 포트에
+      접속을 시도한다. Chrome 이 열 때까지 ECONNREFUSED 로 재시도하는 것이 정상 흐름이다.
+    - 이 PC 의 WSL2 는 `networkingMode=mirrored` 라, listen 했다가 닫은 127.0.0.1 포트가 닫힌 뒤에도 약 10ms 동안
+      접속을 받는다(닫은 직후 200/200 접속 성립, 10ms 뒤 9/100, 50ms 뒤 0). 호스트와 `--network host` 컨테이너가
+      같고, 자기 네트워크를 가진 bridge 컨테이너에서는 300/300 거절된다.
+    - 그 틈에 걸리면 Cypress 는 아직 뜨지 않은 Chrome 대신 그 포트에 붙고, 곧 끊겨 「error finding browser target …
+      read ECONNRESET」으로 실행을 끝낸다. 실패한 실행은 Chrome 을 띄운 지 4-6ms 뒤 첫 접속이 「성공」했고, 통과한
+      실행은 같은 시점에 ECONNREFUSED 였다. 타이밍이라 같은 명령이 통과도 실패도 한다(직접 docker run 도 실패한다:
+      내장 Chrome 152 5회 중 3회, Chrome for Testing 158 5회 중 2회).
+    - Electron(기본값)은 디버깅 포트를 이렇게 쓰지 않아 영향이 없고, CI 러너는 WSL 이 아니다.
+    고치지는 않았다(원인 기록만). 재현 도구: 보드 보고서 폴더 listmonk/79/harness (variants.sh, self_connect.py)."""
     if not specs:
         return True, [], []
     present = [x for x in specs if (ROOT / 'frontend/cypress/e2e' / x).is_file()]
