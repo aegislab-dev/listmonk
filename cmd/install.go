@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/jmoiron/sqlx"
+	"github.com/knadh/goyesql/v2"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/utils"
@@ -17,7 +20,51 @@ import (
 	null "gopkg.in/volatiletech/null.v6"
 )
 
+// installMarkerKey is a settings row that exists only between the moment an install has
+// written the schema and the moment it has finished the sample data and recorded its
+// version. It is how a retry tells "my own unfinished install" from "somebody's data".
+const installMarkerKey = "axm.install_pending"
+
+// installLockID serialises installs on one database (advisory lock ids are per database).
+const installLockID = 7419750075
+
+// installCreds are the optional LISTMONK_ADMIN_* values of an install.
+type installCreds struct {
+	user, password, apiUser string
+}
+
+func installCredsFromEnv() installCreds {
+	return installCreds{
+		user:     os.Getenv("LISTMONK_ADMIN_USER"),
+		password: os.Getenv("LISTMONK_ADMIN_PASSWORD"),
+		apiUser:  os.Getenv("LISTMONK_ADMIN_API_USER"),
+	}
+}
+
+// validate checks the values before anything is written, so a bad environment can be fixed
+// and the install retried. It reports whether an admin user is to be created.
+func (c installCreds) validate() (bool, error) {
+	hasUser := c.user != "" && c.password != ""
+	if hasUser && (len(c.user) < 3 || len(c.password) < 8) {
+		return false, fmt.Errorf("LISTMONK_ADMIN_USER should be min 3 chars and LISTMONK_ADMIN_PASSWORD should be min 8 chars")
+	}
+	if c.apiUser != "" {
+		if !hasUser {
+			return false, fmt.Errorf("LISTMONK_ADMIN_API_USER requires LISTMONK_ADMIN_USER and LISTMONK_ADMIN_PASSWORD to be set")
+		}
+		if len(c.apiUser) < 3 {
+			return false, fmt.Errorf("LISTMONK_ADMIN_API_USER should be min 3 chars")
+		}
+	}
+	return hasUser, nil
+}
+
 // install runs the first time setup of setting up the database.
+//
+// Without idempotent it is the documented reset: it wipes listmonk's tables and types and
+// sets them up again. With idempotent (the default Docker start command) it must never
+// touch data: it installs only into a database that has none of listmonk's objects on its
+// search path, finishes only its own interrupted install, and refuses everything else.
 func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempotent bool) {
 	qMap := readQueries(queryFilePath, fs)
 
@@ -43,102 +90,358 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 		}
 	}
 
-	// If idempotence is on, check if the DB is already setup.
-	if idempotent {
-		if _, err := db.Exec("SELECT count(*) FROM settings"); err != nil {
-			// If "settings" doesn't exist, assume it's a fresh install.
-			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code != "42P01" {
-				lo.Fatalf("error checking existing DB schema: %v", err)
-			}
-		} else {
-			lo.Println("skipping install as database appears to be already setup")
-			os.Exit(0)
-		}
+	skipped, apiToken, err := runInstall(lastVer, db, fs, qMap, installCredsFromEnv(), idempotent)
+	if err != nil {
+		lo.Fatal(err)
+	}
+	if skipped {
+		lo.Println("skipping install as database appears to be already setup")
+		return
 	}
 
-	// Migrate the tables.
-	if err := installSchema(lastVer, db, fs); err != nil {
-		lo.Fatalf("error migrating DB schema: %v", err)
+	if apiToken != "" {
+		// Print the token to stderr so that it can be grepped out.
+		lo.Println("writing API token LISTMONK_ADMIN_API_TOKEN to stderr")
+		fmt.Fprintf(os.Stderr, "export LISTMONK_ADMIN_API_TOKEN=\"%s\"\n", apiToken)
+	}
+	lo.Printf("setup complete")
+	lo.Printf(`run the program and access the dashboard at %s`, ko.MustString("app.address"))
+}
+
+// sqlGetter is what the inspection needs of a database or a transaction.
+type sqlGetter interface {
+	Get(dest interface{}, query string, args ...interface{}) error
+	Select(dest interface{}, query string, args ...interface{}) error
+}
+
+// runInstall does the install in two atomic steps. The schema goes in one transaction that
+// also writes the marker; the sample data, the optional users, the removal of the marker and
+// the migration record go in a second one. So the database is either empty, or has the
+// schema and the marker (and no data), or is finished; a crash or an error never leaves a
+// version recorded for a half-built database. skipped is true when the database was already
+// installed. apiToken is the generated token of the optional API user.
+//
+// Each step takes the same transaction-level advisory lock, so containers started together
+// install one at a time, and holds no connection between the steps: it works with
+// db.max_open = 1.
+func runInstall(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, qMap goyesql.Queries, c installCreds, idempotent bool) (skipped bool, apiToken string, err error) {
+	hasUser, err := c.validate()
+	if err != nil {
+		return false, "", err
+	}
+
+	schemaSQL, err := fs.Read("/schema.sql")
+	if err != nil {
+		return false, "", fmt.Errorf("error reading schema: %v", err)
+	}
+
+	ctx := context.Background()
+	state, why, err := installSchemaStep(ctx, db, string(schemaSQL), idempotent)
+	if err != nil {
+		return false, "", err
+	}
+	switch state {
+	case installDone:
+		return true, "", nil
+	case installForeign:
+		return false, "", fmt.Errorf("refusing to install: %s. Nothing was changed. "+
+			"This is not an empty database, and listmonk does not recognise it as a finished or an interrupted install, "+
+			"so installing would overwrite its data. Restore the record of the installed version "+
+			"(settings key 'migrations') or point listmonk at an empty database. "+
+			"Use --install without --idempotent only to wipe on purpose", why)
+	case installUnfinished:
+		lo.Println("finishing an install that was interrupted before its sample data was written")
 	}
 
 	// Load the queries.
 	q := prepareQueries(qMap, db, ko)
 
-	// Sample list.
-	defList, optinList := installLists(q)
-
-	// Sample subscribers.
-	installSubs(defList, optinList, q)
-
-	// Templates.
-	campTplID, archiveTplID := installTemplates(q)
-
-	// Sample campaign.
-	installCampaign(campTplID, archiveTplID, q)
-
-	// Setup admin user optionally.
-	var (
-		user     = os.Getenv("LISTMONK_ADMIN_USER")
-		password = os.Getenv("LISTMONK_ADMIN_PASSWORD")
-		apiUser  = os.Getenv("LISTMONK_ADMIN_API_USER")
-
-		hasUser = false
-	)
-
-	// Admin user.
-	if user != "" && password != "" {
-		if len(user) < 3 || len(password) < 8 {
-			lo.Fatal("LISTMONK_ADMIN_USER should be min 3 chars and LISTMONK_ADMIN_PASSWORD should be min 8 chars")
-		}
-
-		lo.Printf("creating superadmin user '%s'", user)
-		hasUser = true
-	} else {
-		lo.Printf("no superadmin user created. Visit webpage to create user.")
+	tx, err := db.BeginTxx(ctx, nil)
+	if err != nil {
+		return false, "", err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock($1)", installLockID); err != nil {
+		return false, "", fmt.Errorf("error locking the database for install: %v", err)
 	}
 
-	// API User.
-	if apiUser != "" {
-		if !hasUser {
-			lo.Fatal("LISTMONK_ADMIN_API_USER requires LISTMONK_ADMIN_USER and LISTMONK_ADMIN_PASSWORD to be set")
-		}
+	// Another installer may have finished while this one waited for the lock: the marker is
+	// then gone. (A plain reset has no one to wait for, and its own step just wrote the marker.)
+	var marked bool
+	if err := tx.Get(&marked, "SELECT EXISTS (SELECT 1 FROM settings WHERE key = $1)", installMarkerKey); err != nil {
+		return false, "", err
+	}
+	if !marked {
+		return true, "", nil
+	}
 
-		if len(apiUser) < 3 {
-			lo.Fatal("LISTMONK_ADMIN_API_USER should be min 3 chars")
-		}
+	if apiToken, err = installData(tx, q, fs, c, hasUser); err != nil {
+		return false, "", fmt.Errorf("error installing the sample data (nothing of it was kept, run the install again): %v", err)
+	}
+	if _, err := tx.Exec("DELETE FROM settings WHERE key = $1", installMarkerKey); err != nil {
+		return false, "", err
+	}
+	// Record the version last: from here on the install counts as finished.
+	if err := recordMigrationVersion(lastVer, tx); err != nil {
+		return false, "", fmt.Errorf("error recording migration version: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, "", err
+	}
+	return false, apiToken, nil
+}
 
-		lo.Printf("creating superadmin API user '%s'", apiUser)
+// installSchemaStep takes the install lock, looks at the database (idempotent only) and
+// writes the schema and the marker in one transaction. It returns installFresh when the
+// schema was written, installUnfinished when an earlier install of this tool left the
+// schema and only the data is missing, and installDone or installForeign (with why) when
+// nothing may be installed. A plain reset writes the schema whatever is there.
+func installSchemaStep(ctx context.Context, db *sqlx.DB, schemaSQL string, idempotent bool) (installState, string, error) {
+	tx, err := db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock($1)", installLockID); err != nil {
+		return 0, "", fmt.Errorf("error locking the database for install: %v", err)
+	}
+
+	if idempotent {
+		state, why, err := inspectInstall(tx, schemaSQL)
+		if err != nil {
+			return 0, "", fmt.Errorf("error checking existing DB schema: %v", err)
+		}
+		if state != installFresh {
+			return state, why, nil
+		}
+	}
+
+	// The schema is one multi-statement string; run inside the transaction, it either
+	// applies completely or not at all.
+	if _, err := tx.Exec(schemaSQL); err != nil {
+		return 0, "", fmt.Errorf("error migrating DB schema: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO settings (key, value) VALUES ($1, 'true'::JSONB) ON CONFLICT (key) DO NOTHING`, installMarkerKey); err != nil {
+		return 0, "", fmt.Errorf("error migrating DB schema: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, "", err
+	}
+	return installFresh, "", nil
+}
+
+// txStmt binds a prepared statement to the transaction. sqlx does not carry the unsafe mode
+// of the statement (the app reads rows in it) over to the transaction's statement.
+func txStmt(tx *sqlx.Tx, s *sqlx.Stmt) *sqlx.Stmt {
+	return tx.Stmtx(s).Unsafe()
+}
+
+// installData writes the sample data and the optional admin users in the given transaction.
+func installData(tx *sqlx.Tx, q *models.Queries, fs stuffbin.FileSystem, c installCreds, hasUser bool) (string, error) {
+	defList, optinList, err := installLists(tx, q)
+	if err != nil {
+		return "", err
+	}
+	if err := installSubs(tx, defList, optinList, q); err != nil {
+		return "", err
+	}
+	campTplID, archiveTplID, err := installTemplates(tx, q, fs)
+	if err != nil {
+		return "", err
+	}
+	if err := installCampaign(tx, campTplID, archiveTplID, defList, q); err != nil {
+		return "", err
 	}
 
 	if hasUser {
-		installUser(user, password, apiUser, q)
+		lo.Printf("creating superadmin user '%s'", c.user)
+		if c.apiUser != "" {
+			lo.Printf("creating superadmin API user '%s'", c.apiUser)
+		}
+		return installUser(tx, c.user, c.password, c.apiUser, q)
 	}
-
-	lo.Printf("setup complete")
-	lo.Printf(`run the program and access the dashboard at %s`, ko.MustString("app.address"))
+	lo.Printf("no superadmin user created. Visit webpage to create user.")
+	return "", nil
 }
 
-// installSchema executes the SQL schema and creates the necessary tables and types.
-func installSchema(curVer string, db *sqlx.DB, fs stuffbin.FileSystem) error {
-	q, err := fs.Read("/schema.sql")
+// installState is what a database holds, as far as installing into it is concerned.
+type installState int
+
+const (
+	// installFresh: none of the objects the schema creates or drops exists on the search path.
+	installFresh installState = iota
+	// installDone: a version is recorded in the settings table.
+	installDone
+	// installUnfinished: this installer wrote the schema and the marker and no data followed.
+	installUnfinished
+	// installForeign: objects exist, and they are neither of the above.
+	installForeign
+)
+
+// schemaObjects are the names schema.sql creates or drops. Dropping is what makes a plain
+// install destructive: DROP ... IF EXISTS takes the first object of that name on the search
+// path, whichever schema it is in and whoever owns it.
+type schemaObjects struct {
+	relations map[string]bool // tables, materialized views, indexes, sequences
+	types     map[string]bool
+}
+
+var reSchemaObject = regexp.MustCompile(`(?is)\b(?:DROP|CREATE)\s+(?:UNLOGGED\s+|UNIQUE\s+)?(TABLE|TYPE|INDEX|MATERIALIZED\s+VIEW|VIEW|SEQUENCE)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?("?[A-Za-z_][A-Za-z0-9_]*"?)`)
+
+// parseSchemaObjects reads the names out of the schema script.
+func parseSchemaObjects(schemaSQL string) schemaObjects {
+	var lines []string
+	for _, l := range strings.Split(schemaSQL, "\n") {
+		if i := strings.Index(l, "--"); i >= 0 {
+			l = l[:i]
+		}
+		lines = append(lines, l)
+	}
+
+	out := schemaObjects{relations: map[string]bool{}, types: map[string]bool{}}
+	for _, m := range reSchemaObject.FindAllStringSubmatch(strings.Join(lines, "\n"), -1) {
+		name := strings.ToLower(strings.Trim(m[2], `"`))
+		if name == "on" || name == "if" {
+			continue
+		}
+		if strings.EqualFold(m[1], "TYPE") {
+			out.types[name] = true
+		} else {
+			out.relations[name] = true
+		}
+	}
+	return out
+}
+
+// existingObject is an object of the schema found on the search path.
+type existingObject struct {
+	Schema string `db:"schema"`
+	Name   string `db:"name"`
+	Kind   string `db:"kind"` // relkind, or 'type'
+}
+
+func (o existingObject) String() string { return o.Schema + "." + o.Name }
+
+// findSchemaObjects lists the objects of the schema that exist in any schema of the search
+// path, the first one first. A type counts whatever its kind: the schema drops its types with
+// CASCADE, which also removes the columns of any table that uses a type of that name (an
+// enum, a composite type or a domain, such as another application's own).
+func findSchemaObjects(db sqlGetter, objs schemaObjects) ([]existingObject, error) {
+	rels, types := []string{}, []string{}
+	for n := range objs.relations {
+		rels = append(rels, n)
+	}
+	for n := range objs.types {
+		types = append(types, n)
+	}
+
+	var out []existingObject
+	err := db.Select(&out, `
+		SELECT * FROM (
+			SELECT n.nspname::TEXT AS schema, c.relname::TEXT AS name, c.relkind::TEXT AS kind
+			FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname = ANY(current_schemas(false)) AND c.relname::TEXT = ANY($1)
+			UNION ALL
+			SELECT n.nspname::TEXT, t.typname::TEXT, 'type'
+			FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+			WHERE n.nspname = ANY(current_schemas(false)) AND t.typname::TEXT = ANY($2)
+		) o ORDER BY array_position(current_schemas(false), schema::NAME), name`,
+		pq.Array(rels), pq.Array(types))
+	return out, err
+}
+
+// readInTx runs a read that may fail for a reason that says something about the database
+// (a settings table of another shape) without aborting the transaction around it.
+func readInTx(tx *sqlx.Tx, read func() error) error {
+	if _, err := tx.Exec("SAVEPOINT axm_inspect"); err != nil {
+		return err
+	}
+	if err := read(); err != nil {
+		if _, rbErr := tx.Exec("ROLLBACK TO SAVEPOINT axm_inspect"); rbErr != nil {
+			return rbErr
+		}
+		return err
+	}
+	_, err := tx.Exec("RELEASE SAVEPOINT axm_inspect")
+	return err
+}
+
+// inspectInstall classifies the database. why describes what was found when it is foreign.
+// It runs in the install's transaction, so it needs no second connection.
+func inspectInstall(tx *sqlx.Tx, schemaSQL string) (installState, string, error) {
+	found, err := findSchemaObjects(tx, parseSchemaObjects(schemaSQL))
 	if err != nil {
-		return err
+		return 0, "", err
+	}
+	if len(found) == 0 {
+		return installFresh, "", nil
 	}
 
-	if _, err := db.Exec(string(q)); err != nil {
-		return err
+	names := []string{}
+	for i, o := range found {
+		if i == 5 {
+			names = append(names, fmt.Sprintf("and %d more", len(found)-5))
+			break
+		}
+		names = append(names, o.String())
+	}
+	why := fmt.Sprintf("the database already has listmonk objects (%s) and no record of a finished install", strings.Join(names, ", "))
+
+	var hasSettings bool
+	if err := tx.Get(&hasSettings, `SELECT to_regclass('settings') IS NOT NULL`); err != nil {
+		return 0, "", err
+	}
+	if !hasSettings {
+		return installForeign, why, nil
 	}
 
-	// Insert the current migration version.
-	return recordMigrationVersion(curVer, db)
+	// A settings table of another shape, or a record that is not a list of versions, is not ours.
+	var recorded []string
+	var marked bool
+	err = readInTx(tx, func() error {
+		var err error
+		if recorded, err = getRecordedMigrations(tx); err != nil {
+			return err
+		}
+		return tx.Get(&marked, `SELECT EXISTS (SELECT 1 FROM settings WHERE key = $1)`, installMarkerKey)
+	})
+	if err != nil {
+		if _, ok := err.(*pq.Error); !ok && !strings.Contains(err.Error(), "recorded migrations") {
+			return 0, "", err
+		}
+		return installForeign, fmt.Sprintf("%s (reading its settings: %v)", why, err), nil
+	}
+	if len(recorded) > 0 {
+		return installDone, "", nil
+	}
+
+	// No version recorded. It is this installer's own unfinished install only when it left its
+	// marker and no row of data (the sample data is written in one transaction after it).
+	if !marked {
+		return installForeign, why, nil
+	}
+	for _, o := range found {
+		if o.Kind != "r" && o.Kind != "p" || o.Name == "settings" {
+			continue
+		}
+		var has bool
+		if err := tx.Get(&has, fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s.%s)",
+			pq.QuoteIdentifier(o.Schema), pq.QuoteIdentifier(o.Name))); err != nil {
+			return 0, "", err
+		}
+		if has {
+			return installForeign, fmt.Sprintf("an unfinished install has rows in %s", o), nil
+		}
+	}
+	return installUnfinished, "", nil
 }
 
-func installLists(q *models.Queries) (int, int) {
+func installLists(tx *sqlx.Tx, q *models.Queries) (int, int, error) {
 	var (
 		defList   int
 		optinList int
 	)
-	if err := q.CreateList.Get(&defList,
+	if err := txStmt(tx, q.CreateList).Get(&defList,
 		uuid.Must(uuid.NewV4()),
 		"Default list",
 		models.ListTypePrivate,
@@ -147,10 +450,10 @@ func installLists(q *models.Queries) (int, int) {
 		pq.StringArray{"test"},
 		"", nil, core.DefaultColumnPreset,
 	); err != nil {
-		lo.Fatalf("error creating list: %v", err)
+		return 0, 0, fmt.Errorf("error creating list: %v", err)
 	}
 
-	if err := q.CreateList.Get(&optinList, uuid.Must(uuid.NewV4()),
+	if err := txStmt(tx, q.CreateList).Get(&optinList, uuid.Must(uuid.NewV4()),
 		"Opt-in list",
 		models.ListTypePublic,
 		models.ListOptinDouble,
@@ -158,15 +461,15 @@ func installLists(q *models.Queries) (int, int) {
 		pq.StringArray{"test"},
 		"", nil, core.DefaultColumnPreset,
 	); err != nil {
-		lo.Fatalf("error creating list: %v", err)
+		return 0, 0, fmt.Errorf("error creating list: %v", err)
 	}
 
-	return defList, optinList
+	return defList, optinList, nil
 }
 
-func installSubs(defListID, optinListID int, q *models.Queries) {
+func installSubs(tx *sqlx.Tx, defListID, optinListID int, q *models.Queries) error {
 	// Sample subscriber.
-	if _, err := q.UpsertSubscriber.Exec(
+	if _, err := txStmt(tx, q.UpsertSubscriber).Exec(
 		uuid.Must(uuid.NewV4()),
 		"john@example.com",
 		"John Doe",
@@ -174,9 +477,9 @@ func installSubs(defListID, optinListID int, q *models.Queries) {
 		pq.Int64Array{int64(defListID)},
 		models.SubscriptionStatusUnconfirmed,
 		true, true); err != nil {
-		lo.Fatalf("Error creating subscriber: %v", err)
+		return fmt.Errorf("error creating subscriber: %v", err)
 	}
-	if _, err := q.UpsertSubscriber.Exec(
+	if _, err := txStmt(tx, q.UpsertSubscriber).Exec(
 		uuid.Must(uuid.NewV4()),
 		"anon@example.com",
 		"Anon Doe",
@@ -184,66 +487,67 @@ func installSubs(defListID, optinListID int, q *models.Queries) {
 		pq.Int64Array{int64(optinListID)},
 		models.SubscriptionStatusUnconfirmed,
 		true, true); err != nil {
-		lo.Fatalf("error creating subscriber: %v", err)
+		return fmt.Errorf("error creating subscriber: %v", err)
 	}
+	return nil
 }
 
-func installTemplates(q *models.Queries) (int, int) {
+func installTemplates(tx *sqlx.Tx, q *models.Queries, fs stuffbin.FileSystem) (int, int, error) {
 	// Default campaign template.
 	campTpl, err := fs.Get("/static/email-templates/default.tpl")
 	if err != nil {
-		lo.Fatalf("error reading default e-mail template: %v", err)
+		return 0, 0, fmt.Errorf("error reading default e-mail template: %v", err)
 	}
 
 	var campTplID int
-	if err := q.CreateTemplate.Get(&campTplID, "Default campaign template", models.TemplateTypeCampaign, "", campTpl.ReadBytes(), nil); err != nil {
-		lo.Fatalf("error creating default campaign template: %v", err)
+	if err := txStmt(tx, q.CreateTemplate).Get(&campTplID, "Default campaign template", models.TemplateTypeCampaign, "", campTpl.ReadBytes(), nil); err != nil {
+		return 0, 0, fmt.Errorf("error creating default campaign template: %v", err)
 	}
-	if _, err := q.SetDefaultTemplate.Exec(campTplID); err != nil {
-		lo.Fatalf("error setting default template: %v", err)
+	if _, err := txStmt(tx, q.SetDefaultTemplate).Exec(campTplID); err != nil {
+		return 0, 0, fmt.Errorf("error setting default template: %v", err)
 	}
 
 	// Default campaign archive template.
 	archiveTpl, err := fs.Get("/static/email-templates/default-archive.tpl")
 	if err != nil {
-		lo.Fatalf("error reading default archive template: %v", err)
+		return 0, 0, fmt.Errorf("error reading default archive template: %v", err)
 	}
 
 	var archiveTplID int
-	if err := q.CreateTemplate.Get(&archiveTplID, "Default archive template", models.TemplateTypeCampaign, "", archiveTpl.ReadBytes(), nil); err != nil {
-		lo.Fatalf("error creating default campaign template: %v", err)
+	if err := txStmt(tx, q.CreateTemplate).Get(&archiveTplID, "Default archive template", models.TemplateTypeCampaign, "", archiveTpl.ReadBytes(), nil); err != nil {
+		return 0, 0, fmt.Errorf("error creating default archive template: %v", err)
 	}
 
 	// Sample tx template.
 	txTpl, err := fs.Get("/static/email-templates/sample-tx.tpl")
 	if err != nil {
-		lo.Fatalf("error reading default e-mail template: %v", err)
+		return 0, 0, fmt.Errorf("error reading sample transactional template: %v", err)
 	}
 
-	if _, err := q.CreateTemplate.Exec("Sample transactional template", models.TemplateTypeTx, "Welcome {{ .Subscriber.Name }}", txTpl.ReadBytes(), nil); err != nil {
-		lo.Fatalf("error creating sample transactional template: %v", err)
+	if _, err := txStmt(tx, q.CreateTemplate).Exec("Sample transactional template", models.TemplateTypeTx, "Welcome {{ .Subscriber.Name }}", txTpl.ReadBytes(), nil); err != nil {
+		return 0, 0, fmt.Errorf("error creating sample transactional template: %v", err)
 	}
 
 	// Sample visual campaign template.
 	visualTpl, err := fs.Get("/static/email-templates/default-visual.tpl")
 	if err != nil {
-		lo.Fatalf("error reading default visual template: %v", err)
+		return 0, 0, fmt.Errorf("error reading default visual template: %v", err)
 	}
 	visualSrc, err := fs.Get("/static/email-templates/default-visual.json")
 	if err != nil {
-		lo.Fatalf("error reading default visual template json: %v", err)
+		return 0, 0, fmt.Errorf("error reading default visual template json: %v", err)
 	}
 
-	if _, err := q.CreateTemplate.Exec("Sample visual template", models.TemplateTypeCampaignVisual, "", visualTpl.ReadBytes(), visualSrc.ReadBytes()); err != nil {
-		lo.Fatalf("error creating default campaign template: %v", err)
+	if _, err := txStmt(tx, q.CreateTemplate).Exec("Sample visual template", models.TemplateTypeCampaignVisual, "", visualTpl.ReadBytes(), visualSrc.ReadBytes()); err != nil {
+		return 0, 0, fmt.Errorf("error creating sample visual template: %v", err)
 	}
 
-	return campTplID, archiveTplID
+	return campTplID, archiveTplID, nil
 }
 
-func installCampaign(campTplID, archiveTplID int, q *models.Queries) {
+func installCampaign(tx *sqlx.Tx, campTplID, archiveTplID, listID int, q *models.Queries) error {
 	// Sample campaign.
-	if _, err := q.CreateCampaign.Exec(uuid.Must(uuid.NewV4()),
+	if _, err := txStmt(tx, q.CreateCampaign).Exec(uuid.Must(uuid.NewV4()),
 		models.CampaignTypeRegular,
 		"Test campaign",
 		"Welcome to listmonk",
@@ -264,7 +568,7 @@ func installCampaign(campTplID, archiveTplID int, q *models.Queries) {
 		pq.StringArray{"test-campaign"},
 		emailMsgr,
 		campTplID,
-		pq.Int64Array{1},
+		pq.Int64Array{int64(listID)},
 		false,
 		"welcome-to-listmonk",
 		archiveTplID,
@@ -273,17 +577,18 @@ func installCampaign(campTplID, archiveTplID int, q *models.Queries) {
 		nil,
 		"", // Reply-To is empty for the sample campaign.
 	); err != nil {
-		lo.Fatalf("error creating sample campaign: %v", err)
+		return fmt.Errorf("error creating sample campaign: %v", err)
 	}
-
+	return nil
 }
 
 // recordMigrationVersion inserts the given version (of DB migration) into the
 // `migrations` array in the settings table.
-func recordMigrationVersion(ver string, db *sqlx.DB) error {
-	_, err := db.Exec(fmt.Sprintf(`INSERT INTO settings (key, value)
-	VALUES('migrations', '["%s"]'::JSONB)
-	ON CONFLICT (key) DO UPDATE SET value = settings.value || EXCLUDED.value`, ver))
+// It takes the DB or a transaction.
+func recordMigrationVersion(ver string, db sqlx.Execer) error {
+	_, err := db.Exec(`INSERT INTO settings (key, value)
+	VALUES('migrations', JSONB_BUILD_ARRAY($1::TEXT))
+	ON CONFLICT (key) DO UPDATE SET value = settings.value || EXCLUDED.value`, ver)
 	return err
 }
 
@@ -314,7 +619,7 @@ func checkSchema(db *sqlx.DB) (bool, error) {
 	return true, nil
 }
 
-func installUser(username, password, apiUsername string, q *models.Queries) {
+func installUser(tx *sqlx.Tx, username, password, apiUsername string, q *models.Queries) (string, error) {
 	consts := initConstConfig(ko)
 
 	// Super Admin role gets all permissions.
@@ -325,34 +630,33 @@ func installUser(username, password, apiUsername string, q *models.Queries) {
 
 	// Create the Super Admin role in the DB.
 	var role auth.Role
-	if err := q.CreateRole.Get(&role, "Super Admin", auth.RoleTypeUser, pq.Array(perms)); err != nil {
-		lo.Fatalf("error creating super admin role: %v", err)
+	if err := txStmt(tx, q.CreateRole).Get(&role, "Super Admin", auth.RoleTypeUser, pq.Array(perms)); err != nil {
+		return "", fmt.Errorf("error creating super admin role: %v", err)
 	}
 
 	// Create the admin user.
-	if _, err := q.CreateUser.Exec(username, true, password, username+"@listmonk", username, auth.RoleTypeUser, role.ID, nil, auth.UserStatusEnabled); err != nil {
-		lo.Fatalf("error creating superadmin user: %v", err)
+	if _, err := txStmt(tx, q.CreateUser).Exec(username, true, password, username+"@listmonk", username, auth.RoleTypeUser, role.ID, nil, auth.UserStatusEnabled); err != nil {
+		return "", fmt.Errorf("error creating superadmin user: %v", err)
 	}
 
-	// Create the admin API user.
-	if apiUsername != "" {
-		// Generate a random API token.
-		tk, err := utils.GenerateRandomString(32)
-		if err != nil {
-			lo.Fatalf("error generating API token: %v", err)
-		}
-
-		var (
-			email    = null.String{String: apiUsername + "@api", Valid: true}
-			password = null.String{String: auth.HashAPIToken(tk), Valid: true}
-		)
-
-		if _, err := q.CreateUser.Exec(apiUsername, false, password, email, apiUsername, auth.UserTypeAPI, role.ID, nil, auth.UserStatusEnabled); err != nil {
-			lo.Fatalf("error creating superadmin API user: %v", err)
-		}
-
-		// Print the token to stdout so that it can be grepped out.
-		lo.Println("writing API token LISTMONK_ADMIN_API_TOKEN to stderr")
-		fmt.Fprintf(os.Stderr, "export LISTMONK_ADMIN_API_TOKEN=\"%s\"\n", tk)
+	// Create the admin API user. The token is returned to be printed once the install is committed.
+	if apiUsername == "" {
+		return "", nil
 	}
+
+	// Generate a random API token.
+	tk, err := utils.GenerateRandomString(32)
+	if err != nil {
+		return "", fmt.Errorf("error generating API token: %v", err)
+	}
+
+	var (
+		email = null.String{String: apiUsername + "@api", Valid: true}
+		hash  = null.String{String: auth.HashAPIToken(tk), Valid: true}
+	)
+
+	if _, err := txStmt(tx, q.CreateUser).Exec(apiUsername, false, hash, email, apiUsername, auth.UserTypeAPI, role.ID, nil, auth.UserStatusEnabled); err != nil {
+		return "", fmt.Errorf("error creating superadmin API user: %v", err)
+	}
+	return tk, nil
 }
