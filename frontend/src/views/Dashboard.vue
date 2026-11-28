@@ -29,7 +29,7 @@
         <stats-team-table :rows="rows" :all="all" :prev-by-team="prevByTeam" :prev-all="prevAll" :my-tag="myTeam"
           :previous-error="prevError" :selected="team" :now="now" @select="setTeam" />
         <stats-campaign-table :camps="teamCamps" :all="camps" :team="team" :my-team="myTeam" :limit="limit" :now="now" @clear="setTeam('')" @more="limit += 20" />
-        <stats-insights :camps="teamCamps" :age="age" :country="country" :overlap="overlap" :overlap-error="overlapError"
+        <stats-insights :camps="teamCamps" :all="camps" :my-team="myTeam" :age="age" :country="country" :overlap="overlap" :overlap-error="overlapError"
           :team-key="team" :scope="scopeText" :now="now" />
       </template>
     </template>

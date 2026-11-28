@@ -186,7 +186,7 @@ describe('Statistics dashboard (fixed answers)', () => {
     });
 
     // Above the "?" (the figures it explains are under it); below only when the top of the screen is too near.
-    cy.get('[data-cy=card-hour] [data-cy=help-click]').as('card');
+    cy.get('[data-cy=card-age] [data-cy=help-click]').as('card');
     cy.get('@card').find('button').scrollIntoView({ offset: { top: -400, left: 0 } }).focus();
     cy.get('@card').find('.tooltip-content').should('be.visible').then(($bubble) => {
       const button = $bubble.closest('[data-cy=help-click]').find('button')[0].getBoundingClientRect();
@@ -311,9 +311,12 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=card-list]').should('contain', '내 리스트').and('contain', 'Lists outside your access').and('contain', 'Bounce 2.0%');
     cy.get('[data-cy=card-weekday] [data-cy=concl-weekday]').should('contain', '3 campaigns');
     cy.get('[data-cy=card-age]').should('contain', 'New (within 7 days of sending)');
-    // A country group under 30 recipients is merged into "other", which is too small to list: it is counted.
-    cy.get('[data-cy=card-country]').should('not.contain', 'Other (groups below 30 people)');
-    cy.get('[data-cy=small-country]').should('have.text', '1 left out for a small sample (fewer than 200 tracked recipients)');
+    // Country groups under 30 recipients are merged by the server. That group is not listed, and the card says
+    // why: it was merged (LST-82: it used to be counted as "fewer than 200 tracked recipients").
+    cy.get('[data-cy=card-country] .st-br').should('have.length', 1).and('contain', 'KR');
+    cy.get('[data-cy=small-country]').should('not.exist');
+    cy.get('[data-cy=merged-country]').should('have.text', 'Groups below 30 recipients are merged and left out (20 people)');
+    cy.get('[data-cy=merged-age]').should('not.exist');
     cy.get('[data-cy=small-list]').should('not.exist');
     cy.get('[data-cy=card-followup]').should('contain', 'No campaigns have a completed follow-up yet');
     cy.get('[data-cy=insight-followup-start]').should('have.attr', 'href', '/admin/campaigns/10');
@@ -325,7 +328,6 @@ describe('Statistics dashboard (fixed answers)', () => {
     // No weekday has three campaigns: none is listed with a rate, the card counts them instead.
     cy.get('[data-cy=card-weekday]').should('not.contain', 'Bounce').and('not.contain', 'Small sample');
     cy.get('[data-cy=small-weekday]').should('contain', 'left out for a small sample (fewer than 3 campaigns or 1,000 tracked sends)');
-    cy.get('[data-cy=card-hour]').should('contain', 'Bounce');
     cy.get('[data-cy=card-length]').should('contain', 'Bounce');
     cy.get('[data-cy=stats-insights]').should('not.contain', '@');
     cy.contains('[data-cy=stats-insights] button', 'Country').click();
@@ -364,11 +366,9 @@ describe('Statistics dashboard (fixed answers)', () => {
     cy.get('[data-cy=card-weekday]').should('not.contain', 'Small sample');
     cy.get('[data-cy=small-weekday]')
       .should('have.text', '4 left out for a small sample (fewer than 3 campaigns or 1,000 tracked sends)');
-    // Four campaigns in the same hours: that group is listed and nothing is left out.
-    cy.get('[data-cy=small-hour]').should('not.exist');
   });
 
-  it('compares eligible weekday, hour and subject-length groups by click-rate difference', () => {
+  it('compares eligible weekday and subject-length groups by click-rate difference', () => {
     const camps = [
       ...[7, 14, 21].map((d) => camp({
         id: d, started_at: day(d), clickers: 100, subject: 'Short',
@@ -385,12 +385,80 @@ describe('Statistics dashboard (fixed answers)', () => {
     visitWithFixedClock();
     [
       ['weekday', ['Wed', 'Thu']],
-      ['hour', ['06', '18']],
       ['length', ['20', '21']],
     ].forEach(([key, labels]) => {
       cy.get(`[data-cy=concl-${key}]`).should('contain', labels[0]).and('contain', labels[1])
         .and('contain', '+5.0%p');
     });
+  });
+
+  // LST-82: the time-of-day card (KST six-hour bands) is gone. Recipients are in many time zones and for most
+  // of them the zone is not known, so the bands compared nothing a sender could act on.
+  it('has no time-of-day card, and an odd last card takes the whole row', () => {
+    const widths = () => cy.get('[data-cy=stats-insights] .st-ic').then(($cards) => {
+      const grid = $cards[0].parentElement.getBoundingClientRect().width;
+      return [...$cards].map((card) => Math.round((card.getBoundingClientRect().width / grid) * 100));
+    });
+    stub();
+    visitWithFixedClock();
+    cy.wait('@stats');
+    cy.get('[data-cy=card-overlap] .st-br').should('exist');
+    cy.get('[data-cy=card-hour]').should('not.exist');
+    cy.get('[data-cy=stats-insights] .st-chips button').should('have.length', 8)
+      .each(($chip) => expect($chip.text()).not.to.match(/time of day|six-hour/i));
+    // Seven cards in two columns: the seventh is as wide as the grid, the others are half of it.
+    cy.get('[data-cy=stats-insights] .st-ic').should('have.length', 7).last().should('have.attr', 'data-cy', 'card-followup');
+    widths().then((w) => {
+      expect(w[6]).to.equal(100);
+      w.slice(0, 6).forEach((x) => expect(x).to.be.lessThan(50));
+    });
+    // One card picked with a chip is alone in the grid.
+    cy.contains('[data-cy=stats-insights] .st-chips button', 'Country').click();
+    cy.get('[data-cy=stats-insights] .st-ic').should('have.length', 1);
+    widths().should('deep.equal', [100]);
+    // One column: nothing to span.
+    cy.viewport(1000, 900);
+    cy.get('[data-cy=insight-all]').click();
+    cy.get('[data-cy=stats-insights] .st-ic').should('have.length', 7);
+    widths().then((w) => w.forEach((x) => expect(x).to.equal(100)));
+
+    // Without a country card there are six: every card is half the grid.
+    cy.viewport(1400, 950);
+    cy.intercept('GET', '/api/stats/recipients*', (req) => req.reply({
+      data: req.query.by === 'age'
+        ? [{ team: '', key: 'older', sent: 4000, recipients: 4000, tracked_sent: 4000, tracked_recipients: 4000, opened: 1800, clicked: 400, bounced: 40 }]
+        : [],
+    }));
+    cy.visit('/admin');
+    cy.get('[data-cy=card-overlap] .st-br').should('exist');
+    cy.get('[data-cy=card-country]').should('not.exist');
+    cy.get('[data-cy=stats-insights] .st-ic').should('have.length', 6);
+    widths().then((w) => w.forEach((x) => expect(x).to.be.lessThan(50)));
+  });
+
+  // LST-82: the merged group can hold hundreds of people. It is still not listed, and it is not a small sample.
+  it('says that the merged recipient group is left out because it is merged', () => {
+    const big = { team: '', sent: 4000, recipients: 4000, tracked_sent: 4000, tracked_recipients: 4000, opened: 1800, clicked: 380, bounced: 50 };
+    stub();
+    cy.intercept('GET', '/api/stats/recipients*', (req) => req.reply({
+      data: req.query.by === 'country'
+        ? [{ ...big, key: 'KR' }, { ...big, key: 'US', clicked: 300 },
+          { ...big, key: 'PL', sent: 160, recipients: 150, tracked_sent: 160, tracked_recipients: 150, clicked: 62 },
+          { ...big, key: '__other__', sent: 900, recipients: 850, tracked_sent: 900, tracked_recipients: 850, clicked: 70 }]
+        : [{ ...big, key: 'older' }, { ...big, key: 'new7', clicked: 200 },
+          { ...big, key: '__other__', sent: 40, recipients: 25, tracked_sent: 40, tracked_recipients: 25, clicked: 3 }],
+    }));
+    visitWithFixedClock();
+    cy.get('[data-cy=card-country] .st-br').should('have.length', 2);
+    cy.get('[data-cy=card-country]').should('not.contain', 'PL').and('not.contain', 'Other');
+    // PL (150 people) is the one small sample; the 850 merged people are named on their own line.
+    cy.get('[data-cy=small-country]').should('have.text', '1 left out for a small sample (fewer than 200 tracked recipients)');
+    cy.get('[data-cy=merged-country]').should('have.text', 'Groups below 30 recipients are merged and left out (850 people)');
+    cy.get('[data-cy=concl-country]').should('contain', 'KR has the highest click rate at 9.5%');
+    // The address-age card is built the same way.
+    cy.get('[data-cy=card-age] .st-br').should('have.length', 2);
+    cy.get('[data-cy=small-age]').should('not.exist');
+    cy.get('[data-cy=merged-age]').should('have.text', 'Groups below 30 recipients are merged and left out (25 people)');
   });
 
   it('uses no-team groups and the actual follow-up audience and combined denominator', () => {
@@ -408,11 +476,79 @@ describe('Statistics dashboard (fixed answers)', () => {
     });
     cy.get('[data-cy=card-age]').should('contain', 'Unique recipients 1,500');
     cy.get('[data-cy=card-country]').should('contain', 'Unique recipients 4,000');
-    cy.get('[data-cy=card-followup]')
-      .should('contain', 'Combined · click 6.0% · open 27.5%')
-      .and('contain', '120 unique clickers ÷ 2,000 original sends')
-      .and('contain', 'Audience');
+    // The original (#70) started before the period: its number and send count are known, its own rates are not.
+    cy.get('[data-cy=followup-80] [data-cy=followup-original]').should('contain', '#70')
+      .and('contain', 'Sent before the selected period').and('contain', '2,000 sent');
+    cy.get('[data-cy=followup-80] [data-cy=followup-child]').should('contain', '#80 Synthetic')
+      .and('contain', 'Audience: everyone who received the original');
+    cy.get('[data-cy=followup-80] [data-cy=followup-result]').should('contain', 'With follow-up 6.0%')
+      .and('contain', '120 unique clickers').and('contain', 'Open rate (reference) 27.5%')
+      .and('contain', 'Widen the period').and('not.contain', '→');
     cy.get('[data-cy=card-followup]').should('not.contain', 'not respond');
+  });
+
+  // LST-82: "#72 ← #71" and four runs of figures did not say which campaigns these are, who got the second
+  // mail or what it added. The same row is shown for a campaign of another team (results are public).
+  it('names the original and the follow-up and says what the follow-up added, for every team', () => {
+    const cur = [
+      ...mine, ...other,
+      camp({
+        id: 81, name: 'Mine A reminder', started_at: day(26), sent: 600, clickers: 30, viewers: 120,
+        followup_of: 10, followup_parent_sent: 1000, followup_condition: { open: 'any', click: 'no' },
+        combined_clickers: 110, combined_viewers: 460,
+      }),
+      camp({
+        id: 82, name: 'Other A reminder', team_tags: ['팀:나'], own: false, lists: undefined, started_at: day(21), sent: 700,
+        clickers: 21, viewers: 140, followup_of: 20, followup_parent_sent: 1000, followup_condition: { open: 'no', click: 'no' },
+        combined_clickers: 61, combined_viewers: 480,
+      }),
+    ];
+    stub({ cur });
+    visitWithFixedClock();
+    cy.wait('@stats');
+    cy.get('[data-cy=about-followup]').should('contain', 'How much a follow-up');
+    cy.get('[data-cy=card-followup] [data-cy=help-followup]').should('exist');
+    cy.get('[data-cy=card-followup] .st-fu').should('have.length', 2);
+    cy.get('[data-cy=card-followup]').should('not.contain', '←').and('not.contain', 'Combined');
+
+    // My team's pair: both campaigns by name, the audience, the original alone against with the follow-up.
+    cy.get('[data-cy=followup-81]').within(() => {
+      cy.get('[data-cy=followup-original]').should('contain', '#10 Mine A').and('contain', 'My team').and('contain', '1,000 sent');
+      cy.get('[data-cy=followup-child]').should('contain', '#81 Mine A reminder').and('contain', '600 sent')
+        .and('contain', 'Audience: original · Did not click');
+      cy.get('[data-cy=followup-result]').should('contain', 'Original alone 8.0% → with follow-up 11.0%').and('contain', '+3.0%p')
+        .and('contain', 'Unique clickers 80 → 110').and('contain', 'Open rate (reference) 40.0% → 46.0%')
+        .and('contain', 'Click rate of the follow-up itself 5.0%');
+      // Grey for the original alone, blue for what was added (the scale is 12%).
+      cy.get('.fl').first().should(($bar) => expect(parseFloat($bar[0].style.width)).to.be.closeTo(66.7, 0.1));
+      cy.get('.fl.best').should(($bar) => expect(parseFloat($bar[0].style.width)).to.be.closeTo(25, 0.1));
+    });
+    // No value twice in a row.
+    cy.get('[data-cy=followup-81]').then(($row) => {
+      const text = $row.text();
+      ['8.0%', '11.0%', '1,000', '600', '5.0%', '40.0%', '46.0%'].forEach((value) => {
+        expect(text.split(value).length - 1, value).to.equal(1);
+      });
+    });
+    // Another team's pair reads the same: names, audience and figures, with the team instead of "My team".
+    cy.get('[data-cy=followup-82]').within(() => {
+      cy.get('[data-cy=followup-original]').should('contain', '#20 Other A').and('contain', '나').and('not.contain', 'My team');
+      cy.get('[data-cy=followup-child]').should('contain', '#82 Other A reminder')
+        .and('contain', 'Audience: original · Did not open · Did not click');
+      cy.get('[data-cy=followup-result]').should('contain', 'Original alone 4.0% → with follow-up 6.1%').and('contain', '+2.1%p');
+    });
+    cy.get('[data-cy=card-followup]').should('not.contain', '내 리스트').and('not.contain', '@');
+    // Seven cards: the follow-up card has the whole row and puts the campaigns and the result side by side.
+    cy.get('[data-cy=followup-81]').then(($row) => {
+      const who = $row.find('.who')[0].getBoundingClientRect();
+      const what = $row.find('.what')[0].getBoundingClientRect();
+      expect(Math.abs(who.top - what.top)).to.be.lessThan(2);
+      expect(what.left).to.be.greaterThan(who.right);
+    });
+    // With the team filter the original is still named (it is looked up among all campaigns).
+    cy.get('[data-cy="team-row-팀:나"] button[aria-pressed=false]').click();
+    cy.get('[data-cy=card-followup] .st-fu').should('have.length', 1);
+    cy.get('[data-cy=followup-82] [data-cy=followup-original]').should('contain', '#20 Other A');
   });
 
   it('compares the same team across adjacent periods and explains the active numbers', () => {

@@ -32,7 +32,7 @@ export const NEUTRAL = {
 export const PERIOD_DEFAULT = 90;
 export const PERIODS = [30, 90, 365, null];
 
-const keys = ['sent', 'click', 'open', 'bounce', 'complaint', 'neutral', 'small', 'collecting', 'untracked', 'median'];
+const keys = ['sent', 'click', 'open', 'bounce', 'complaint', 'neutral', 'small', 'collecting', 'untracked', 'median', 'followup'];
 const fields = ['name', 'meaning', 'compare', 'formula', 'sample'];
 export const DEFINITIONS = keys.map((key) => ({
   key,
