@@ -7,9 +7,9 @@ on:
     tags: ['v*-axm.*']
   workflow_dispatch:
 
+# Jobs ask for more themselves: plan reads GHCR, publish writes to it.
 permissions:
   contents: read
-  packages: write
 
 # Serialize reruns of a release so the second run sees the published tag.
 # Only superseded PR runs are cancelled (a new push makes the older run moot);
@@ -18,27 +18,36 @@ concurrency:
   group: axm-image-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# One job did everything in order until LST-83 and took 22-30 minutes of its 30 (ten runs in
+# three days were cut off at 30). Measured over 23 passing runs: browser tests 12-18 min,
+# Go tests 3.5-7 min, image build 4-6 min, of which 2-3 min (once 9 min) was writing a layer
+# cache that only a rerun of the same commit could read. Now the Go tests and the image build
+# start together, the browser tests run as four groups on the built image, and no layer cache
+# is written. Every job tests the image file the build job saved, and publish pushes that file.
+# What is checked did not change; a pull request that only changes documents skips the image
+# checks (see plan), a release tag never does.
 jobs:
-  image:
+  plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: listmonk
-          POSTGRES_PASSWORD: listmonk-ci
-          POSTGRES_DB: listmonk
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U listmonk"
-          --health-interval 5s --health-timeout 5s --health-retries 12
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+      commit: ${{ steps.version.outputs.commit }}
+      revision: ${{ steps.version.outputs.revision }}
+      sha_tag: ${{ steps.version.outputs.sha_tag }}
+      created: ${{ steps.version.outputs.created }}
+      build: ${{ steps.scope.outputs.build }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history is only needed to check a release tag belongs to
-          # origin/axm/*; PR runs only build the merge commit.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+          # origin/axm/*; a PR run needs the merge commit and its two parents
+          # (the base is the first), to list the files the PR changes.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
 
       - name: Resolve and validate version
         id: version
@@ -93,6 +102,36 @@ jobs:
               raise SystemExit('Release tag exists; increment axm.N instead of publishing again')
           PY
 
+      - name: Decide whether the image checks run
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # build=false only for a pull request whose changed files are all documents
+          # (docs/**, *.md at the top of the repository) while the documents the image
+          # carries are still there. Tags and manual runs always get build=true.
+          bash scripts/axm/ci-scope "$EVENT" | tee -a "$GITHUB_OUTPUT"
+
+  go:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: listmonk
+          POSTGRES_PASSWORD: listmonk-ci
+          POSTGRES_DB: listmonk
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U listmonk"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.26.11'
@@ -106,11 +145,27 @@ jobs:
           docker exec ${{ job.services.postgres.id }} createdb -U listmonk listmonk_dynamic_tests
           # The cmd package's DB tests took about 100-150 s; 180 s left no room on a slow runner (LST-47).
           # With more tests it takes 186-281 s here, and one run (2026-11-26) hit 300 s and was killed while
-          # only a trivial test was running. The timeout only catches a hang, so it is 900 s (the job has 30 min).
+          # only a trivial test was running. The timeout only catches a hang, so it is 900 s (the job has 30 min,
+          # and takes 5-8 min).
           go test ./... -timeout 900s
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      image_sha256: ${{ steps.save.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      # No layer cache (cache-from/cache-to type=gha): "COPY . ." comes before the dependency
+      # install in Dockerfile.axm, so a source change rebuilds every layer after it, and a cache
+      # written by one PR cannot be read by another. Writing it took 2-3 min of every run (9 min
+      # when uploads were slow) and filled the repository's 10 GB cache; the build itself is
+      # about 2 min. A rerun of failed jobs takes the saved image below instead.
       - name: Build packed image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -121,23 +176,80 @@ jobs:
           push: false
           tags: listmonk-axm:ci
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            COMMIT=${{ steps.version.outputs.commit }}
+            VERSION=${{ needs.plan.outputs.version }}
+            COMMIT=${{ needs.plan.outputs.commit }}
           labels: |
             org.opencontainers.image.source=https://github.com/aegislab-dev/listmonk
-            org.opencontainers.image.url=https://github.com/aegislab-dev/listmonk/tree/${{ steps.version.outputs.version }}
-            org.opencontainers.image.revision=${{ steps.version.outputs.revision }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.url=https://github.com/aegislab-dev/listmonk/tree/${{ needs.plan.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.plan.outputs.revision }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.version }}
             org.opencontainers.image.licenses=AGPL-3.0
-            org.opencontainers.image.created=${{ steps.version.outputs.created }}
+            org.opencontainers.image.created=${{ needs.plan.outputs.created }}
             org.opencontainers.image.title=listmonk (AXM fork)
             org.opencontainers.image.description=Modified version of knadh/listmonk with AXM frontend changes
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+
+      - name: Save the image for the test and publish jobs
+        id: save
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/axm-image"
+          docker save listmonk-axm:ci -o "$RUNNER_TEMP/axm-image/listmonk-axm.tar"
+          ls -l "$RUNNER_TEMP/axm-image"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/axm-image/listmonk-axm.tar" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: axm-image
+          path: ${{ runner.temp }}/axm-image/listmonk-axm.tar
+          if-no-files-found: error
+          # Long enough to rerun a failed job the next day; a rerun of every job replaces it.
+          retention-days: 3
+          compression-level: 1
+          overwrite: true
+
+  browser:
+    name: browser (${{ matrix.shard }})
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      # A failing group does not stop the others: one run shows every failing spec.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: listmonk
+          POSTGRES_PASSWORD: listmonk-ci
+          POSTGRES_DB: listmonk
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U listmonk"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: axm-image
+          path: ${{ runner.temp }}/axm-image
+
+      - name: Load the built image
+        env:
+          IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+        run: |
+          set -euo pipefail
+          # The file must be the one the build job made: every job tests, and the publish job pushes, the same bytes.
+          test -n "$IMAGE_SHA256"
+          echo "$IMAGE_SHA256  $RUNNER_TEMP/axm-image/listmonk-axm.tar" | sha256sum --check --strict
+          docker load -i "$RUNNER_TEMP/axm-image/listmonk-axm.tar"
+          docker image inspect listmonk-axm:ci > /dev/null
 
       - name: Install and smoke test packed image
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.plan.outputs.version }}
           LISTMONK_db__host: 127.0.0.1
           LISTMONK_db__port: '5432'
           LISTMONK_db__user: listmonk
@@ -220,19 +332,72 @@ jobs:
           CYPRESS_LISTMONK_ADMIN_USER: ci-admin
           CYPRESS_LISTMONK_ADMIN_PASSWORD: ci-only-password
           CYPRESS_mailpitUrl: http://127.0.0.1:8025
+          SHARD: ${{ matrix.shard }}
         run: |
           npm install --global yarn@1.22.22
           cd frontend
           yarn install --frozen-lockfile
-          for tz in Asia/Seoul America/New_York Pacific/Auckland; do TZ=$tz node --test tests/schedule-time.test.mjs; done
-          # One Cypress process runs every CI browser spec. From #54 until LST-79 each spec ran in
+          if [ "$SHARD" = 1 ]; then
+            for tz in Asia/Seoul America/New_York Pacific/Auckland; do TZ=$tz node --test tests/schedule-time.test.mjs; done
+          fi
+          # The CI browser specs run as four groups side by side, each in a job with a fresh database
+          # (LST-83): in one job they took 12-18 of the job's 22-30 minutes. The groups keep the
+          # earlier order, cut where the measured times are about even (2.5-3.6 min each). A new spec
+          # goes at the end of the shortest group; a spec in no group never runs. A new group needs
+          # its number in the matrix above too (scripts/axm/test_axm.py checks that they agree).
+          # Within a group one Cypress process runs every spec. From #54 until LST-79 each spec ran in
           # a process of its own, because Cypress 15.8.1 on Chrome 158 failed the second spec of a
           # process with "`*` is not a valid URL" (cypress-io/cypress#35195). Cypress 15.21.2 (#66)
-          # fixed that, so the split is gone: this step passing is the check that handing over
-          # from one spec to the next works on the runner's Chrome. If a browser update breaks
-          # the handover again, go back to one process per spec. Keep the spec names literal:
-          # the local selection tool (scripts/axm/axm) reads the CI browser set from this command.
-          npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js,cypress/e2e/from-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/reaction-lists.cy.js,cypress/e2e/followup.cy.js,cypress/e2e/subscriber-columns.cy.js,cypress/e2e/column-presets.cy.js,cypress/e2e/audit.cy.js,cypress/e2e/list-trash.cy.js,cypress/e2e/campaign-recent-exclude.cy.js,cypress/e2e/campaign-tracking-check.cy.js,cypress/e2e/analytics-proof.cy.js,cypress/e2e/address-check.cy.js,cypress/e2e/address-gate.cy.js,cypress/e2e/campaign-test-send.cy.js,cypress/e2e/schedule-time.cy.js,cypress/e2e/campaign-send-confirm.cy.js,cypress/e2e/campaign-delete-guard.cy.js,cypress/e2e/campaign-clone-lists.cy.js,cypress/e2e/campaign-scheduled-edit.cy.js,cypress/e2e/import-campaign-flow.cy.js,cypress/e2e/stats-dashboard.cy.js,cypress/e2e/bounce-filter-delete.cy.js,cypress/e2e/visual-text-format.cy.js'
+          # fixed that: these steps passing is the check that handing over from one spec to the next
+          # works on the runner's Chrome. If a browser update breaks the handover again, go back to
+          # one process per spec. Keep the spec names literal, one command per group: the local
+          # selection tool (scripts/axm/axm) reads the CI browser set from these commands.
+          case "$SHARD" in
+            1) npx cypress run --browser chrome --spec 'cypress/e2e/import-mapping.cy.js,cypress/e2e/sender-addresses.cy.js' ;;
+            2) npx cypress run --browser chrome --spec 'cypress/e2e/from-addresses.cy.js,cypress/e2e/dynamic-lists.cy.js,cypress/e2e/list-draw.cy.js,cypress/e2e/list-teams.cy.js,cypress/e2e/reaction-lists.cy.js,cypress/e2e/followup.cy.js,cypress/e2e/subscriber-columns.cy.js,cypress/e2e/column-presets.cy.js,cypress/e2e/audit.cy.js,cypress/e2e/list-trash.cy.js' ;;
+            3) npx cypress run --browser chrome --spec 'cypress/e2e/campaign-recent-exclude.cy.js,cypress/e2e/campaign-tracking-check.cy.js,cypress/e2e/analytics-proof.cy.js,cypress/e2e/address-check.cy.js,cypress/e2e/address-gate.cy.js,cypress/e2e/campaign-test-send.cy.js,cypress/e2e/schedule-time.cy.js' ;;
+            4) npx cypress run --browser chrome --spec 'cypress/e2e/campaign-send-confirm.cy.js,cypress/e2e/campaign-delete-guard.cy.js,cypress/e2e/campaign-clone-lists.cy.js,cypress/e2e/campaign-scheduled-edit.cy.js,cypress/e2e/import-campaign-flow.cy.js,cypress/e2e/stats-dashboard.cy.js,cypress/e2e/bounce-filter-delete.cy.js,cypress/e2e/visual-text-format.cy.js' ;;
+            *) echo "No browser specs for group $SHARD"; exit 1 ;;
+          esac
+
+      - name: Smoke container logs and cleanup
+        if: always()
+        run: |
+          docker logs axm-smoke || true
+          docker rm -f axm-smoke || true
+          docker rm -f axm-mail || true
+
+  upgrade:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: listmonk
+          POSTGRES_PASSWORD: listmonk-ci
+          POSTGRES_DB: listmonk
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U listmonk"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: axm-image
+          path: ${{ runner.temp }}/axm-image
+
+      - name: Load the built image
+        env:
+          IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+        run: |
+          set -euo pipefail
+          # The file must be the one the build job made: every job tests, and the publish job pushes, the same bytes.
+          test -n "$IMAGE_SHA256"
+          echo "$IMAGE_SHA256  $RUNNER_TEMP/axm-image/listmonk-axm.tar" | sha256sum --check --strict
+          docker load -i "$RUNNER_TEMP/axm-image/listmonk-axm.tar"
+          docker image inspect listmonk-axm:ci > /dev/null
 
       - name: Upgrade official v6.2.0 database and smoke test
         env:
@@ -296,8 +461,33 @@ jobs:
           docker run -d --name axm-upgrade-smoke --network host "${env_args[@]}" listmonk-axm:ci
           curl --fail --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 http://127.0.0.1:9001/health
 
+  publish:
+    needs: [plan, go, build, browser, upgrade]
+    # Only a release tag, and only after every check above passed.
+    if: success() && needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: axm-image
+          path: ${{ runner.temp }}/axm-image
+
+      - name: Load the built image
+        env:
+          IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+        run: |
+          set -euo pipefail
+          # The file must be the one the build job made: every job tests, and the publish job pushes, the same bytes.
+          test -n "$IMAGE_SHA256"
+          echo "$IMAGE_SHA256  $RUNNER_TEMP/axm-image/listmonk-axm.tar" | sha256sum --check --strict
+          docker load -i "$RUNNER_TEMP/axm-image/listmonk-axm.tar"
+          docker image inspect listmonk-axm:ci > /dev/null
+
       - name: Login to GHCR
-        if: steps.version.outputs.publish == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
@@ -305,10 +495,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish tested image
-        if: steps.version.outputs.publish == 'true'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          SHA_TAG: ${{ steps.version.outputs.sha_tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHA_TAG: ${{ needs.plan.outputs.sha_tag }}
         run: |
           set -euo pipefail
           image=ghcr.io/aegislab-dev/listmonk
@@ -324,9 +513,46 @@ jobs:
             echo "Source: https://github.com/aegislab-dev/listmonk/tree/$VERSION"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Smoke container logs and cleanup
-        if: always()
+  # The one result to wait for or to require: it runs last on every run, also when the jobs
+  # above were skipped (documents only), failed, timed out or were cancelled, so a pull
+  # request always gets a check named "image" and it is green only when everything that
+  # had to run passed.
+  image:
+    needs: [plan, go, build, browser, upgrade, publish]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check every job's result
+        env:
+          PLAN: ${{ needs.plan.result }}
+          BUILD_WANTED: ${{ needs.plan.outputs.build }}
+          PUBLISH_WANTED: ${{ needs.plan.outputs.publish }}
+          GO: ${{ needs.go.result }}
+          BUILD: ${{ needs.build.result }}
+          BROWSER: ${{ needs.browser.result }}
+          UPGRADE: ${{ needs.upgrade.result }}
+          PUBLISH: ${{ needs.publish.result }}
         run: |
-          docker logs axm-smoke || true
-          docker rm -f axm-smoke || true
-          docker rm -f axm-mail || true
+          set -euo pipefail
+          echo "plan=$PLAN build_wanted=$BUILD_WANTED publish_wanted=$PUBLISH_WANTED go=$GO build=$BUILD browser=$BROWSER upgrade=$UPGRADE publish=$PUBLISH"
+          fail() { echo "::error::$1"; exit 1; }
+          [[ "$PLAN" == success ]] || fail "plan: $PLAN"
+          case "$BUILD_WANTED" in
+            true) checks=success ;;
+            false) checks=skipped ;;
+            *) fail "plan did not say whether the image checks run" ;;
+          esac
+          [[ "$GO" == "$checks" ]] || fail "go: $GO (expected $checks)"
+          [[ "$BUILD" == "$checks" ]] || fail "build: $BUILD (expected $checks)"
+          [[ "$BROWSER" == "$checks" ]] || fail "browser: $BROWSER (expected $checks)"
+          [[ "$UPGRADE" == "$checks" ]] || fail "upgrade: $UPGRADE (expected $checks)"
+          if [[ "$PUBLISH_WANTED" == true ]]; then
+            [[ "$BUILD_WANTED" == true ]] || fail "a release must run the image checks"
+            [[ "$PUBLISH" == success ]] || fail "publish: $PUBLISH"
+          else
+            [[ "$PUBLISH" == skipped ]] || fail "publish: $PUBLISH (expected skipped)"
+          fi
+          if [[ "$BUILD_WANTED" == false ]]; then
+            echo "Only documents changed: the image checks were skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi

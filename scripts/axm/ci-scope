@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# CI(axm-image.yml)의 plan 잡이 부른다(LST-83): 이 실행이 이미지 검사(Go 시험·이미지 빌드·브라우저 시험·
+# 업그레이드 검사)를 돌려야 하는가. 표준 출력에 `build=true` 또는 `build=false` 한 줄, 이유는 표준 오류.
+#
+#   ci-scope <이벤트> [<기준 커밋> <검사할 커밋>]     기본값: HEAD^1 HEAD (PR 병합 커밋의 첫 부모가 기준 브랜치)
+#
+# build=false 는 다음이 모두 맞을 때뿐이다. 하나라도 모르면 true(검사를 돈다).
+#   - 이벤트가 pull_request 다(태그·수동 실행은 언제나 전부 돈다).
+#   - 바뀐 파일이 전부 문서다: docs/ 아래(이미지 빌드 컨텍스트에서 빠져 있다)와 저장소 맨 위의 *.md.
+#     하위 폴더의 .md 는 문서로 치지 않는다(바이너리에 싸 넣는 폴더에 놓일 수 있다). 이름 바꾸기는 삭제+추가로 본다.
+#   - 이미지에 들어가는 문서(LICENSE, README.md, FORK.md — Dockerfile.axm 의 COPY 와 CI smoke 가 본다)가
+#     비어 있지 않게 남아 있다.
+# scripts/axm/test_axm.py 의 CiScopeTest 가 이 규칙을 시험한다.
+set -uo pipefail
+
+event=${1:-}
+base=${2:-HEAD^1}
+head=${3:-HEAD}
+
+if [[ "$event" != pull_request ]]; then
+  echo "event '$event' is not a pull request: the image checks run" >&2
+  echo build=true
+  exit 0
+fi
+
+list=$(mktemp)
+trap 'rm -f "$list"' EXIT
+if ! git -c core.quotePath=false diff --name-only --no-renames -z "$base" "$head" > "$list"; then
+  echo "cannot list the changed files ($base..$head): the image checks run" >&2
+  echo build=true
+  exit 0
+fi
+
+count=0
+while IFS= read -r -d '' path; do
+  count=$((count + 1))
+  case "$path" in
+    docs/*) continue ;;
+    */*) ;;
+    *.md) continue ;;
+  esac
+  echo "not a document: $path: the image checks run" >&2
+  echo build=true
+  exit 0
+done < "$list"
+
+for f in LICENSE README.md FORK.md; do
+  if ! git cat-file -e "$head:$f" 2> /dev/null || [[ "$(git cat-file -s "$head:$f")" == 0 ]]; then
+    echo "$f is missing or empty and the image needs it: the image checks run" >&2
+    echo build=true
+    exit 0
+  fi
+done
+
+echo "$count changed file(s), all documents: the image checks are skipped" >&2
+echo build=false
