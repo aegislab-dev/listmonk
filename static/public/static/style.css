@@ -213,6 +213,21 @@ footer.container {
   margin-top: 30px;
   margin-bottom: 30px;
 }
+  /* AXM (LST-76): business details above the powered-by line. */
+  footer .business-info {
+    color: #888;
+    line-height: 1.6;
+    margin: 0 15px 15px;
+  }
+  footer .business-info p {
+    margin: 0;
+  }
+  footer .business-info .extra {
+    margin-top: 6px;
+  }
+  footer .nowrap {
+    white-space: nowrap;
+  }
   footer a {
     color: #aaa;
     text-decoration: none;
