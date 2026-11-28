@@ -499,10 +499,24 @@
   },
   {
    "paths": [
-    "cmd/public.go"
+    "cmd/public.go",
+    "static/public/templates/index.html",
+    "static/public/static/style.css"
    ],
    "specs": [
     "dynamic-lists.cy.js"
+   ]
+  },
+  {
+   "paths": [
+    "internal/manager/footer.go",
+    "static/email-templates/default.tpl",
+    "static/email-templates/default-visual.tpl",
+    "static/email-templates/default-visual.json"
+   ],
+   "specs": [
+    "campaign-test-send.cy.js",
+    "campaign-send-confirm.cy.js"
    ]
   },
   {
@@ -578,6 +592,7 @@
   }
  ],
  "shared": [
+  "static/public/templates/index.html",
   "frontend/src/main.js",
   "frontend/src/App.vue",
   "frontend/src/router/**",

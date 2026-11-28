@@ -3,6 +3,7 @@ package manager
 import (
 	"bytes"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -21,7 +22,7 @@ func TestBuildBusinessFooter(t *testing.T) {
 		Email: "sample@example.invalid", Extra: "First <b>line</b>\r\nSecond & line\rThird",
 	}
 	markup, plain := BuildBusinessFooter(info, testFooterLabels)
-	for _, want := range []string{`Example &lt;script&gt; &amp; &#34;Company&#34;`, "대표 Sample · 사업자등록번호 000-00-00000", "First &lt;b&gt;line&lt;/b&gt;<br>Second &amp; line<br>Third"} {
+	for _, want := range []string{`Example &lt;script&gt; &amp; &#34;Company&#34;`, `<span style="white-space:nowrap;">대표 Sample</span> · <span style="white-space:nowrap;">사업자등록번호 000-00-00000</span>`, "First &lt;b&gt;line&lt;/b&gt;<br>Second &amp; line<br>Third"} {
 		if !bytes.Contains(markup, []byte(want)) {
 			t.Errorf("HTML missing %q: %s", want, markup)
 		}
@@ -43,6 +44,38 @@ func TestBuildBusinessFooter(t *testing.T) {
 	markup, plain = BuildBusinessFooter(info, testFooterLabels)
 	if len(markup) != 0 || len(plain) != 0 {
 		t.Fatal("Disabled footer must be empty")
+	}
+}
+
+func TestNewBusinessFooterBlock(t *testing.T) {
+	info := models.BusinessFooter{
+		Enabled: true, CompanyName: "Example Co", Representative: "Sample", RegistrationNo: "000-00-00000",
+		Address: "Example address", Phone: "000-0000-0000", Email: "sample@example.invalid", Extra: "One\r\nTwo\rThree",
+	}
+	b := NewBusinessFooterBlock(info, testFooterLabels)
+	want := [][]BusinessFooterItem{
+		{{Text: "Example Co"}, {Text: "대표 Sample", NoWrap: true}, {Text: "사업자등록번호 000-00-00000", NoWrap: true}},
+		{{Text: "Example address"}},
+		{{Text: "전화 000-0000-0000", NoWrap: true}, {Text: "이메일 sample@example.invalid", NoWrap: true}},
+	}
+	if !reflect.DeepEqual(b.Lines, want) || !reflect.DeepEqual(b.Extra, []string{"One", "Two", "Three"}) || b.Empty() {
+		t.Fatalf("Unexpected block: %+v", b)
+	}
+
+	// The text footer of the mail is the same lines.
+	_, plain := BuildBusinessFooter(info, testFooterLabels)
+	if string(plain) != "--\nExample Co · 대표 Sample · 사업자등록번호 000-00-00000\nExample address\n전화 000-0000-0000 · 이메일 sample@example.invalid\nOne\nTwo\nThree" {
+		t.Fatalf("Unexpected text footer: %q", plain)
+	}
+
+	// Empty values leave out their line; a footer that is off is empty.
+	b = NewBusinessFooterBlock(models.BusinessFooter{Enabled: true, Address: "Example address"}, testFooterLabels)
+	if len(b.Lines) != 1 || b.Extra != nil {
+		t.Fatalf("Empty values not left out: %+v", b)
+	}
+	info.Enabled = false
+	if b := NewBusinessFooterBlock(info, testFooterLabels); !b.Empty() {
+		t.Fatalf("A footer that is off must be empty: %+v", b)
 	}
 }
 
