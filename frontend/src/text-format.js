@@ -164,6 +164,17 @@ const markdownRanges = (source, formatting, collapsedLinks = [], emphasis = []) 
         ranges.push([node.from, node.to]);
         return false;
       }
+      // Block markers (#, -, 1., >, [ ]): a tag whose edge falls inside one, or right
+      // after it, turns the line into plain text. The marker, its indent and the
+      // spaces after it keep their format.
+      if (formatting && (node.name === 'ListMark' || node.name === 'QuoteMark' || node.name === 'TaskMarker'
+        || (node.name === 'HeaderMark' && node.node.parent?.name.startsWith('ATXHeading') && !node.node.prevSibling))) {
+        const lineStart = source.lastIndexOf('\n', node.from - 1) + 1;
+        let { to } = node;
+        while (source[to] === ' ' || source[to] === '\t') to += 1;
+        ranges.push([lineStart, to]);
+        return undefined;
+      }
       if (formatting && node.name === 'Table') {
         // Preserve everything between cells, including the alignment row and
         // whitespace next to pipes. Cell text is still eligible for formatting.
@@ -288,6 +299,9 @@ const keepEmphasis = (source, before, runs, emphasis) => {
     while (/[*_~]/.test(source[runEnd] || '')) runEnd += 1;
     if (fresh(b) && (isFormatted(now[b - 1]) || !isEdge(source[runStart - 1]))) bad = true;
     if (fresh(c) && (isFormatted(now[c]) || !isEdge(source[runEnd]))) bad = true;
+    // Marked does not pair the outer marks of **<u>가</u>*나*다**라 (a tag next to the
+    // opening mark and an emphasis inside), so such a tag is not kept there.
+    if ((fresh(b) || fresh(c)) && emphasis.some((inner) => inner !== mark && inner.a > a && inner.d < d)) bad = true;
     if (!bad && crosses(now, mark) && !crosses(old, mark)) bad = true;
     if (!bad) return false;
     // The same format all through the words: the tags go around the marks. Otherwise

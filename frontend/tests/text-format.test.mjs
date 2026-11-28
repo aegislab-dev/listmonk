@@ -139,14 +139,14 @@ const insane = (() => {
 const tagSequence = (html) => (html.match(/<\/?[a-z][a-z0-9]*/gi) || []).map((t) => t.toLowerCase());
 const checkNested = (html, label) => {
   const stack = [];
-  tagSequence(html).filter((t) => !/^<(?:br|hr|img)$/.test(t)).forEach((t) => {
+  tagSequence(html).filter((t) => !/^<(?:br|hr|img|input)$/.test(t)).forEach((t) => {
     if (t[1] === '/') assert.equal(stack.pop(), t.slice(2), `misnested tags: ${label} -> ${html}`);
     else stack.push(t.slice(1));
   });
   assert.deepEqual(stack, [], label);
   if (insane) {
     // Well-nested HTML passes the sanitizer with all its tags (the allow-list of the renderer).
-    const allowed = ['a', 'b', 'br', 'code', 'del', 'div', 'em', 'hr', 'li', 'ol', 'p', 'pre', 'span', 'strong', 'u', 'ul', 'blockquote', 'h1', 'h2', 'h3', 'table', 'thead', 'tbody', 'tr', 'td', 'th'];
+    const allowed = ['a', 'b', 'br', 'code', 'del', 'div', 'em', 'hr', 'li', 'ol', 'p', 'pre', 'span', 'strong', 'u', 'ul', 'blockquote', 'h1', 'h2', 'h3', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'input'];
     const clean = insane(html, { allowedTags: allowed, allowedAttributes: Object.fromEntries(allowed.map((t) => [t, ['style', 'title', 'href', 'target']])) });
     assert.deepEqual(tagSequence(clean), tagSequence(html), `sanitizer cut the tags short: ${label} -> ${html}`);
   }
@@ -203,6 +203,27 @@ test('formatting any selection around Markdown emphasis renders the emphasis as 
       }
     });
   });
+});
+
+test('a selection edge inside a line marker keeps the heading, list and quote', () => {
+  const sources = ['# 제목 **굵게**\n본문', '## 소제목', '- 첫째 **굵게**\n- 둘째', '1. 첫째\n2. 둘째', '> 인용 *기울*을\n> 둘',
+    '  - 안\n  - 둘', '- [ ] 할 일\n- 끝', '> - 둘\n> - 셋', '# 제목\n\n## 둘\n1) 가\n2) 나', '**가*나*다**라'];
+  const fmts = [{ bold: true }, { underline: true }, { size: 20 }];
+  sources.forEach((source) => {
+    const before = runsOf(parseFormatted(source, 'markdown'));
+    fmts.forEach((fmt) => {
+      for (let s = 0; s < source.length; s += 1) {
+        for (let e = s + 1; e <= source.length; e += 1) {
+          const after = [run(source.slice(0, s)), run(source.slice(s, e), fmt), run(source.slice(e))].filter((r) => r.value);
+          const out = serializeFormatted(preserve(before, after), 'markdown').text;
+          const label = JSON.stringify([source, source.slice(s, e), fmt, out]);
+          assert.equal(strip(render(out)).replace(/\s+/g, ' '), strip(render(source)).replace(/\s+/g, ' '), label);
+          checkNested(render(out), label);
+        }
+      }
+    });
+  });
+  assert.equal(format('## 소제목', ' 소제목', { underline: true }), '## <u>소제목</u>');
 });
 
 test('a format run that ends or starts at a backslash does not escape the tag', () => {
