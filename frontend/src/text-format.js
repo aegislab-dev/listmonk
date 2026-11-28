@@ -141,6 +141,14 @@ const markdownRanges = (source, formatting, collapsedLinks = []) => {
         ranges.push([node.from, node.to]);
         return false;
       }
+      // A thematic break (---, ***, ___, "- - -") and the underline of a Setext
+      // heading (===, ---) are only syntax when nothing is around them: a tag in
+      // front turns them into text (or, for "- - -", into a list).
+      if (formatting && (node.name === 'HorizontalRule'
+        || (node.name === 'HeaderMark' && node.node.parent?.name.startsWith('SetextHeading')))) {
+        ranges.push([node.from, node.to]);
+        return false;
+      }
       if (formatting && node.name === 'Table') {
         // Preserve everything between cells, including the alignment row and
         // whitespace next to pipes. Cell text is still eligible for formatting.

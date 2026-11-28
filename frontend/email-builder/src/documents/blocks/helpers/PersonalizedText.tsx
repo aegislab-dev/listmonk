@@ -20,11 +20,17 @@ export default function PersonalizedText({ heading = false, ...data }: TextProps
     // Markdown (and formatted text, which is inline HTML in Markdown, LST-77): show a
     // token as a chip span so it keeps the formatting around it. Inside an HTML tag
     // (an attribute such as href) a span would break the markup, so it stays text.
+    // The same goes for Markdown syntax that is not display text: inline code, a link
+    // destination or title, an autolink or an image.
     let before = '';
+    let offset = 0;
     const shown = parts.map((p) => {
       let out: string;
+      const at = offset;
+      offset += p.type === 'text' ? p.value.length : p.raw.length;
       if (p.type === 'text') out = p.value;
-      else if (before.lastIndexOf('<') > before.lastIndexOf('>')) out = `〔${chipLabel(config, p.item, p.fallback)}〕`;
+      else if (before.lastIndexOf('<') > before.lastIndexOf('>')
+        || config.format?.isMarkdownSyntaxAt(text, at)) out = `〔${chipLabel(config, p.item, p.fallback)}〕`;
       else out = `<span style="${escapeHtml(chipCss)}">${escapeHtml(chipLabel(config, p.item, p.fallback))}</span>`;
       before += out;
       return out;

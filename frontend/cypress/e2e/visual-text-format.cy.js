@@ -293,6 +293,50 @@ describe('Visual editor inline formatting', () => {
     });
   });
 
+  it('keeps a Setext heading and a thematic break when the whole block is made bold', () => {
+    const head = '12월 회원 혜택';
+    const source = `${head}\n==========\n\n첫 번째 안내입니다.\n\n---\n\n두 번째 안내입니다.`;
+    textCampaign(`Format setext ${stamp}`, source).then((id) => {
+      openText(false, id, head);
+      editorDoc().find('#visual-editor-container h1').should('have.length', 1);
+      editorDoc().find('#visual-editor-container hr').should('have.length', 1);
+      box().then(($b) => {
+        const el = $b[0];
+        el.focus();
+        const r = el.ownerDocument.createRange();
+        r.selectNodeContents(el);
+        el.ownerDocument.getSelection().removeAllRanges();
+        el.ownerDocument.getSelection().addRange(r);
+      });
+      editorDoc().find('[data-format=bold]').click();
+      saveText(id, `<strong>${head}</strong>\n==========\n\n<strong>첫 번째 안내입니다.</strong>\n\n---\n\n<strong>두 번째 안내입니다.</strong>`)
+        .then(({ body }) => {
+          const doc = new DOMParser().parseFromString(body, 'text/html');
+          expect(doc.querySelectorAll('h1').length, 'heading').to.equal(1);
+          expect(doc.querySelectorAll('hr').length, 'break').to.equal(1);
+          expect(doc.body.textContent).to.not.match(/==========|---/);
+        });
+    });
+  });
+
+  it('shows a name inside code or a link address as plain text on the canvas', () => {
+    const source = '쿠폰 `{{ .Subscriber.Name }}-2026`을 입력하세요.\n\n[내 페이지](https://example.test/{{.Subscriber.Name}}) '
+      + '[혜택 보기](https://example.test/promo "환영 {{ .Subscriber.Name }}") {{ .Subscriber.Name }}님';
+    textCampaign(`Format syntax ${stamp}`, source).then((id) => {
+      cy.visit(`/admin/campaigns/${id}#content`);
+      ready();
+      cy.waitUntil(() => editorDoc().then((d) => Boolean(findBlock(d, '쿠폰'))), { timeout: 10000 });
+      editorDoc().then((d) => {
+        const block = findBlock(d, '쿠폰');
+        expect(block.querySelector('code').innerHTML, 'code').to.not.include('<span');
+        expect(block.querySelector('code').textContent).to.match(/^〔.+〕-2026$/);
+        expect(block.querySelectorAll('a').length, 'links').to.equal(2);
+        expect(block.textContent).to.not.include('](');
+        expect(block.querySelectorAll('span[style*="background"]').length, 'chip outside syntax').to.equal(1);
+      });
+    });
+  });
+
   it('inserts a name chip and keeps it when undoing and redoing formatting', () => {
     const greet = '안녕하세요 {{ .Subscriber.Name }}님';
     textCampaign(`Format undo ${stamp}`, '안녕하세요 님', false).then((id) => {

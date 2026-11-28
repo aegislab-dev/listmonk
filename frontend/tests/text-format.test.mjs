@@ -91,6 +91,40 @@ test('formatting selections keeps Markdown links and literal code intact', () =>
   assert.equal(isMarkdownSyntaxAt(source, source.indexOf('here')), false);
 });
 
+test('formatting a whole block keeps Setext underlines and thematic breaks as syntax', () => {
+  const sources = [
+    '12월 회원 혜택\n==========\n\n첫 번째 안내입니다.\n\n---\n\n두 번째 안내입니다.',
+    '부제\n----------\n\n본문',
+    '앞 문단\n\n***\n\n___\n\n- - -\n\n* * *\n\n뒤 문단',
+    '> 인용\n> ---\n\n- 항목\n\n    ---\n\n끝',
+  ];
+  sources.forEach((source) => {
+    const before = runsOf(parseFormatted(source, 'markdown'));
+    const output = serializeFormatted(preserve(before, [run(source, { bold: true })]), 'markdown').text;
+    // No symbol line gained a tag, and every break and heading renders as before.
+    assert.doesNotMatch(output, /<strong>[-=*_ ]+<\/strong>/, JSON.stringify(output));
+    const strip = (html) => html.replace(/<\/?strong>/g, '');
+    assert.equal(strip(marked.parse(output, { gfm: true, breaks: true })),
+      strip(marked.parse(source, { gfm: true, breaks: true })), JSON.stringify(output));
+    assert.match(output, /<strong>/);
+  });
+  // The break's own characters are not formatting, but the text around them is.
+  assert.equal(isMarkdownSyntaxAt('앞\n\n---\n\n뒤', 4), true);
+  assert.equal(isMarkdownSyntaxAt('앞\n\n---\n\n뒤', 0), false);
+  assert.equal(isMarkdownSyntaxAt('제목\n===\n본문', 4), true);
+  assert.equal(isMarkdownSyntaxAt('제목\n===\n본문', 1), false);
+});
+
+test('a personalization token inside code or a link destination is Markdown syntax', () => {
+  const source = '쿠폰 `{{ .Subscriber.Name }}-2026`을 [내 페이지](https://example.test/{{.Subscriber.Name}}) '
+    + '[혜택](https://example.test/promo "환영 {{ .Subscriber.Name }}") {{ .Subscriber.Name }}';
+  const at = (n) => source.split('{{')[0].length + source.split('{{').slice(1, n).reduce((s, p) => s + p.length + 2, 0);
+  assert.equal(isMarkdownSyntaxAt(source, at(1)), true);
+  assert.equal(isMarkdownSyntaxAt(source, at(2)), true);
+  assert.equal(isMarkdownSyntaxAt(source, at(3)), true);
+  assert.equal(isMarkdownSyntaxAt(source, at(4)), false);
+});
+
 test('formatting preserves complete GFM automatic links, including their queries and fragments', () => {
   const urls = [
     'https://intranet/event', 'https://example.test?event=summer', 'https://example.test#register',
@@ -341,7 +375,7 @@ test('reading back and writing unchanged is the identity, for any text', () => {
 test('what the editor writes reads back as the same runs, in both modes', () => {
   const texts = ['a', '가 나', '- x', '  y', '<', '&', '{{ .Subscriber.Name }}', '\n', '1. z', '`q`'];
   let seed = 7;
-  const rand = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const rand = (n) => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return (seed >>> 8) % n; };
   for (let i = 0; i < 3000; i += 1) {
     const runs = [];
     for (let k = rand(8); k > 0; k -= 1) {
