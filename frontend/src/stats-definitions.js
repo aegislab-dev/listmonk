@@ -39,11 +39,20 @@ export const DEFINITIONS = keys.map((key) => ({
   ...Object.fromEntries(fields.map((field) => [field, `stats.definition.${key}.${field}`])),
 }));
 
-export function helpText(key, t) {
+// What the "?" bubble shows for a figure: its name and meaning, then one labelled row each for the
+// formula, what it is compared with and the smallest sample.
+export function helpParts(key, t) {
   const d = DEFINITIONS.find((entry) => entry.key === key);
   if (!d) {
-    return '';
+    return null;
   }
-  return [t(d.meaning), `${t('stats.formula')} · ${t(d.formula)}`, `${t('stats.defCompare')} · ${t(d.compare)}`,
-    `${t('stats.minSample')} · ${t(d.sample)}`].join('\n');
+  return {
+    name: t(d.name),
+    meaning: t(d.meaning),
+    rows: [
+      { key: 'formula', label: t('stats.formula'), text: t(d.formula) },
+      { key: 'compare', label: t('stats.defCompare'), text: t(d.compare) },
+      { key: 'sample', label: t('stats.minSample'), text: t(d.sample) },
+    ],
+  };
 }

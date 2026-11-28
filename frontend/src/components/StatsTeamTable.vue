@@ -9,7 +9,7 @@
     <p v-if="comparableTeams < 2" class="st-note px-3 py-2" data-cy="team-comparison-start">
       {{ $t('stats.comparisonStart', { campaigns: MIN.groupCampaigns, sent: n(MIN.groupSent) }) }}
     </p>
-    <table class="st-table">
+    <table class="st-table st-fit">
       <thead>
         <tr>
           <th>{{ $t('stats.team') }}</th>
@@ -48,7 +48,7 @@
               <td>
                 <span class="st-rbv"><b>{{ pt(r.a.click) }}</b> <stats-help field="click" :details="clickDetails(r.a, prevByTeam[r.tag])" />
                   <span class="st-bar"><i :style="{ width: w(r.a.click) }" /><u :style="{ left: w(all.click) }" /></span></span>
-                <span class="s">{{ n(r.a.clickers) }}{{ $t('stats.people') }} · <span :class="chgClass(r, 'click')">{{ prevText(r, 'click') }}</span></span>
+                <span class="s brk">{{ n(r.a.clickers) }}{{ $t('stats.people') }} · <span :class="chgClass(r, 'click')">{{ prevText(r, 'click') }}</span></span>
               </td>
               <td>
 <svg v-if="spark(r).length" :width="spark(r).length * 10" height="24" style="display:block;margin-left:auto">
@@ -57,10 +57,10 @@
                     :fill="i === spark(r).length - 1 ? '#0055d4' : '#aab4c5'" />
                 </svg>
 </td>
-              <td>{{ pt(r.a.open) }}<span class="s">{{ n(r.a.viewers) }}{{ $t('stats.people') }} · <span :class="chgClass(r, 'open')">{{ prevText(r, 'open') }}</span></span></td>
+              <td>{{ pt(r.a.open) }}<span class="s brk">{{ n(r.a.viewers) }}{{ $t('stats.people') }} · <span :class="chgClass(r, 'open')">{{ prevText(r, 'open') }}</span></span></td>
               <td>
 <span :class="{ 'st-over': bounceWarning(r.a) }">{{ pt(r.a.bounce) }}<template v-if="bounceWarning(r.a)"> ⚠</template></span>
-                <span class="s">{{ n(r.a.bounces) }}{{ $t('stats.cases') }} · <span :class="chgClass(r, 'bounce')">{{ prevText(r, 'bounce') }}</span></span>
+                <span class="s brk">{{ n(r.a.bounces) }}{{ $t('stats.cases') }} · <span :class="chgClass(r, 'bounce')">{{ prevText(r, 'bounce') }}</span></span>
 </td>
               <td>
 <span :class="{ 'st-over': complaintWarning(r.a) }">{{ pt(r.a.complaint, 2) }}<template v-if="complaintWarning(r.a)"> ⚠</template></span>

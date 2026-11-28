@@ -50,4 +50,6 @@ export default {
 
 <style scoped>
 .st-actions { display: inline-flex; flex-wrap: wrap; gap: 0.35em 0.7em; }
+/* A link never breaks inside itself: Korean would otherwise break after every letter in a narrow cell. */
+.st-actions > a { white-space: nowrap; }
 </style>
