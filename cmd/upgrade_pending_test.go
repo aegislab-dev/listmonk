@@ -76,10 +76,11 @@ func TestGetPendingMigrationsFromDB(t *testing.T) {
 	if last != "v6.2.1-axm.12" {
 		t.Fatalf("highest recorded is %s", last)
 	}
-	// No record at all is a database that was never installed: everything is pending.
+	// A settings table without any record is a lost record or an unfinished install, not a
+	// database from before v0.7.0: running every migration over it is refused.
 	e.db.MustExec(`DELETE FROM settings WHERE key = 'migrations'`)
-	if _, toRun, err := getPendingMigrations(e.db); err != nil || len(toRun) != len(migList) {
-		t.Fatalf("%d of %d, %v", len(toRun), len(migList), err)
+	if _, toRun, err := getPendingMigrations(e.db); err != errNoMigrationRecord {
+		t.Fatalf("%d of %d pending, err %v, want errNoMigrationRecord", len(toRun), len(migList), err)
 	}
 }
 

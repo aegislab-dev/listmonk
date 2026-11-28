@@ -724,9 +724,12 @@ func TestRecentSendMigrationsMatchFreshSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	trimmedSchema := strings.TrimSpace(string(schema))
-	if !strings.Contains(trimmedSchema, "BEGIN;\n-- AXM recent-send counts after subscriber deletion") ||
-		!strings.Contains(trimmedSchema, "-- End of AXM recent-send counts after subscriber deletion.\nCOMMIT;") {
-		t.Fatal("schema.sql must run the .23 lock and trigger replacement in one transaction")
+	// install runs the whole script in one transaction of its own (cmd/install.go), so the
+	// script carries no BEGIN/COMMIT: a COMMIT would end the install transaction early.
+	if !strings.Contains(trimmedSchema, "-- AXM recent-send counts after subscriber deletion (LST-65). Keep the DDL identical to V6_2_1_axm_23.") ||
+		!strings.Contains(trimmedSchema, "LOCK TABLE axm_campaign_recent_holds IN ACCESS EXCLUSIVE MODE;") ||
+		!strings.Contains(trimmedSchema, "-- End of AXM recent-send counts after subscriber deletion.") {
+		t.Fatal("schema.sql must take the .23 holds lock before the rule-table DDL")
 	}
 	for _, tc := range []struct {
 		version string
